@@ -22,4 +22,8 @@ def _serialise_value(value: Any) -> str:
 
 
 def serialise_options(options: dict[str, Any]) -> list[str]:
-    return [f"{key}={_serialise_value(value)}" for key, value in options.items()]
+    return [
+        f"{key}={_serialise_value(value)}"
+        for key, value in options.items()
+        if value is not None
+    ]
