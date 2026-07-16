@@ -1,11 +1,16 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._core import _ValidateMixin, _unroll_dataclass
+from ._core import _unroll_dataclass, _ValidateMixin
 from ._correlation import CustomCorrelationCorners, HybridCorrelationLength
 from ._geometry import FaultGeometryLimits, SpatialFiltering, Tapering
 from ._output import AseismicParameters, MagnitudeArea, OutputOptions
-from ._rupture import FiniteDifferenceRupture, RuptureTimePerturbation, SegmentDelay
+from ._rupture import (
+    FiniteDifferenceRupture,
+    Hypocentre,
+    RuptureTimePerturbation,
+    SegmentDelay,
+)
 from ._stf import BetaParameters, RiseTimeParameters, RiseTimePerturbation
 from .enums import KModel, Stype
 from .types import PointSourceParams
@@ -108,6 +113,7 @@ class Parameters(_ValidateMixin):
         doc="Unclear to me (Jake) anyway what this does. this and a couple of other variable set rt_scalefac but so far as I can tell that variable is unused. to review further.",
     )
 
+    hypocentre: Hypocentre
     tapering: Tapering
     beta: BetaParameters
     rise_time: RiseTimeParameters

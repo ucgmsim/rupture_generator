@@ -59,5 +59,7 @@ class FaultGeometryLimits(_ValidateMixin):
     extension_factor: float | None = field(
         default=None,
         metadata=dict(alias="extend_fac"),
-        doc="geometric scaling variable used during multi-segment fault simulations to adjust how spatial wavenumber spectra are evaluated. It scales individual segment dimensions up to the full aggregate dimensions of the parent multi-segment fault system, ensuring long-wavelength features are not artificially truncated.",
+        doc="geometric scaling variable used during multi-segment fault simulations to adjust how spatial wavenumber spectra are evaluated."
+        " It scales individual segment dimensions up to the full aggregate dimensions of the parent multi-segment fault system,"
+        " ensuring long-wavelength features are not artificially truncated.",
     )

@@ -5,6 +5,18 @@ from .validation import is_positive
 
 
 @dataclass
+class Hypocentre(_ValidateMixin):
+    along_strike_proportion: float = field(
+        metadata=dict(alias="shypo"),
+        doc="Proportion of along-strike hypocentre location",
+    )
+    down_dip_proportion: float = field(
+        metadata=dict(alias="dhypo"),
+        doc="Proportion of down-dip hypocentre location",
+    )
+
+
+@dataclass
 class RuptureTimePerturbation(_ValidateMixin):
     coefficient: float = field(
         metadata=dict(alias="tsfac_coef"),

@@ -1,7 +1,7 @@
 from ._correlation import CustomCorrelationCorners, HybridCorrelationLength
 from ._geometry import FaultGeometryLimits, SpatialFiltering, Tapering
 from ._output import AseismicParameters, MagnitudeArea, OutputOptions
-from ._rupture import FiniteDifferenceRupture, RuptureTimePerturbation, SegmentDelay
+from ._rupture import FiniteDifferenceRupture, RuptureTimePerturbation, SegmentDelay, Hypocentre,
 from ._stf import BetaParameters, RiseTimeParameters, RiseTimePerturbation
 from .enums import KModel, Stype
 from .parameters import Parameters
@@ -15,6 +15,7 @@ __all__ = [
     "FaultGeometryLimits",
     "FiniteDifferenceRupture",
     "HybridCorrelationLength",
+    "Hypocentre",
     "KModel",
     "MagnitudeArea",
     "OutputOptions",
