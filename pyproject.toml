@@ -6,5 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "mashumaro>=3.22",
+    "numpy>=2.4.6",
+    "pyproj>=3.7.2",
     "source-modelling>=2026.7.1",
 ]

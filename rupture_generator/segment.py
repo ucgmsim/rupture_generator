@@ -10,6 +10,8 @@ from source_modelling import srf
 from source_modelling.srf import SrfFile
 
 from rupture_generator import utils
+from rupture_generator.config import Parameters
+from rupture_generator.geometry import DiscretisedGeometry
 
 MAX_IN_MEMORY_BUFFER = 1 << 30
 
@@ -34,13 +36,19 @@ def _build_geometry_parameters(geometry_path: Path) -> dict[str, Any]:
     return _DEFAULT_GEOMETRY_PARAMETERS | dict(infile=geometry_path)
 
 
-def generate_segment_slip(geometry: Geometry, parameters: Parameters) -> SrfFile:
+def write_gsf(geometry: DiscretisedGeometry, output: Path) -> None:
+    pass
+
+
+def generate_segment_rupture(
+    geometry: DiscretisedGeometry, parameters: Parameters
+) -> SrfFile:
     with (
         tempfile.NamedTemporaryFile() as tmp_gsf_output,
         tempfile.SpooledTemporaryFile(MAX_IN_MEMORY_BUFFER, mode="w+b") as output,
     ):
         tmp_gsf_path = Path(tmp_gsf_output.name)
-        geometry.write_gsf(tmp_gsf_path)
+        write_gsf(geometry, tmp_gsf_path)
 
         options = parameters.to_cmd()
         options.update(_build_geometry_parameters(tmp_gsf_path))

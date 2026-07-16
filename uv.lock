@@ -1163,12 +1163,16 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "mashumaro" },
+    { name = "numpy" },
+    { name = "pyproj" },
     { name = "source-modelling" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "mashumaro", specifier = ">=3.22" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "pyproj", specifier = ">=3.7.2" },
     { name = "source-modelling", specifier = ">=2026.7.1" },
 ]
 
