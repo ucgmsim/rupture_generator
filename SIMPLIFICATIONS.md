@@ -177,3 +177,16 @@ problems, worst first:
 At subfault scale the two are interchangeable, which is why the approximation
 survived. At half the width of a subduction interface it is off by a kilometre. The
 number is recorded before the swap so the change can be judged against it.
+
+### `genslip_v5.6.2.c` — rise time
+
+| Site | Now | Should be | Kind |
+| --- | --- | --- | --- |
+| `main:2268` | `rt1_avg = sqrt(rt1_avg*rt1_avg)` | `rt1_avg.abs()`. A sign-bit mask instead of a real square root — faster *and* exact where `sqrt` need not be. The behaviour is deliberate, though: dividing by the magnitude is what flips a negative-mean field positive, so this is a rewrite of the expression, not of the intent | moves bits |
+| `main:2461,2463` | `sabs = sqrt(slip*slip)` | `slip.abs()`, twice. Slip has already been truncated non-negative by this point, so both are also no-ops — but proving that needs a caller, so it is reproduced | moves bits |
+| `main:2345` | `exp(rtime2slip_exp*log(x))` | `x.powf(rtime2slip_exp)` | moves bits |
+| `main:2226,2262` | `slip_c` is inverse-transformed to get its spatial form and then forward-transformed back | the spatial field is what `reload_for_correlation` transformed in the first place; keeping it costs nothing and saves **two transforms on the padded grid**. The round trip is the identity in exact arithmetic — `dks2*dkd2*dstk*ddip` is exactly `1/N`, which cancels the unnormalised gain — so this differs only by FFT rounding | moves bits, and is a real speed win |
+
+That last one is worth reading twice. The asymmetric normalisation flagged under
+*the transform* exists precisely so a round trip is unity, and `main` uses that to
+recover a value it already had.

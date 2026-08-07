@@ -11,6 +11,7 @@ pub mod field;
 pub mod geodesy;
 pub mod grid;
 pub mod moment;
+pub mod rise_time;
 pub mod rng;
 pub mod rupture;
 pub mod slip;
