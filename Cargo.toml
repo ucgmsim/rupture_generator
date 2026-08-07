@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/genslip", "crates/genslip-oracle"]
+members = ["crates/genslip", "crates/genslip-oracle", "crates/srf"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ license = "MIT"
 [workspace.dependencies]
 genslip = { path = "crates/genslip" }
 genslip-oracle = { path = "crates/genslip-oracle" }
+srf = { path = "crates/srf" }
 
 [workspace.lints.clippy]
 # Clippy at zero is a gate, not an aspiration. Lints are `warn`, never `deny`; a

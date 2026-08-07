@@ -11,12 +11,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from source_modelling import srf
-from source_modelling.srf import SrfFile
-
-from rupture_generator import utils
+from rupture_generator import srf, utils
 from rupture_generator.config import Parameters
 from rupture_generator.geometry import DiscretisedGeometry
+from rupture_generator.srf import SrfFile
 
 # genslip reads the fault grid from a GSF file and writes SRF to stdout. These four
 # are not user choices -- they describe how this function drives the binary -- so
