@@ -133,10 +133,14 @@ impl Wavefront2d {
     /// replaced by the values from six rows shallower. The along-strike passes have
     /// the same defect.
     ///
-    /// Reproduced rather than fixed, per `PORTING_RULES.md` §5. It is reachable: the
-    /// low-side branch triggers when the hypocentre is within three subfaults of an
-    /// edge, and the along-strike hypocentre distribution is tapered rather than
-    /// truncated.
+    /// Reproduced rather than fixed, and it is reachable: the low-side branch triggers
+    /// when the hypocentre is within two subfaults of an edge, and the along-strike
+    /// hypocentre distribution is tapered rather than truncated.
+    ///
+    /// **This is now an open decision, not a settled one** — `ENGINEERING_RULES.md`
+    /// rule 10. It resolves by deletion rather than by argument: fast marching needs no
+    /// near-source analytic region, so replacing this solver removes the padding, this
+    /// replication and the defect together.
     fn pad_slowness(speed: &SpeedGrid, strike: Padding, dip: Padding) -> Vec<f64> {
         let mut slowness = vec![0.0_f64; strike.extent * dip.extent];
         let inverse = |value: f32| f64::from(1.0 / value);

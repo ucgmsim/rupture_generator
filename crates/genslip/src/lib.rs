@@ -3,8 +3,11 @@
 //! Given a discretised fault, a magnitude and a seed, produce a slip distribution,
 //! rupture onset times, rise times and per-subfault slip-rate functions.
 //!
-//! A port of genslip v5.6.2. During Stage 1 the contract is bit-equality with the C,
-//! checked per function against `genslip-oracle`; see `PORTING_RULES.md`.
+//! A port of genslip v5.6.2. The contract is **scientific agreement** with the C, not
+//! bit-equality: `ENGINEERING_RULES.md` defines when two ruptures are the same rupture
+//! and what a failing test in each class obliges you to do. Read it before changing a
+//! kernel. `PORTING_RULES.md` describes the bit-parity regime that got the port here
+//! and is now archaeology.
 
 pub mod fft;
 pub mod field;

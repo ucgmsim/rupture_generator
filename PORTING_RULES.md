@@ -1,11 +1,19 @@
-# Porting rules
+# Porting rules — **EXPIRED**
 
-These govern Stage 1, where the contract is bit-equality with genslip v5.6.2 checked
-per function against `genslip-oracle`. They **expire**. When the scientific suite in
-Stage 2 takes over as the gate, this document becomes archaeology — an explanation of
-why the C looks the way it does — and `ENGINEERING_RULES.md` governs the crate.
+> **These no longer govern the crate.** `ENGINEERING_RULES.md` does.
+>
+> They governed Stage 1, where the contract was bit-equality with genslip v5.6.2
+> checked per function against `genslip-oracle`. That contract is retired: the gate is
+> scientific agreement, and `ENGINEERING_RULES.md` says what that means and what a
+> failing test obliges you to do.
+>
+> Kept because this is **archaeology worth having** — it explains why the C looks the
+> way it does, and why parts of this crate still carry its shape. Read it to
+> understand a strange expression, not to decide whether to change one. Where a rule
+> below survives in substance, `ENGINEERING_RULES.md` says so and states it in the new
+> terms; rules 2, 5 and 7 in particular have been *reversed* rather than carried over.
 
-That expiry is written in from the start deliberately. The predecessor project's
+The expiry was written in from the start, deliberately. The predecessor project's
 equivalent rulebook calcified: one rule mandated Fortran-shaped arrays "for
 fidelity", and undoing it later cost thirteen commits and produced three off-by-ones,
 one of which no gate caught.

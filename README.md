@@ -129,7 +129,8 @@ needed to *rebuild* the corpus.
 
 | | |
 | --- | --- |
-| `PORTING_RULES.md` | How the port is written. **Read rule 1 and rule 2 before touching a kernel.** Expires at the Stage 1/2 boundary |
+| `ENGINEERING_RULES.md` | **How the crate is written, and what makes a change acceptable.** Start here. Carries the definition of "the same rupture", the tolerance policy, and what a failing test in each class obliges you to do |
+| `PORTING_RULES.md` | **Expired.** How the port *was* written under bit-parity. Archaeology: read it to understand a strange expression, not to decide whether to change one |
 | `DEFECTS.md` | Eighteen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, five in its call sites. The last five were found by the corpus and are the argument for having one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
@@ -145,7 +146,9 @@ The two rules that cost the most to learn:
 ## What is left
 
 Ordered, and each is its own commit. **Start at item 1.** Before touching a kernel,
-read `PORTING_RULES.md` rules 1 and 2; before changing the SRF parser, measure it.
+read `ENGINEERING_RULES.md` — in particular what makes a change acceptable and what a
+failing test in each class obliges you to do. Before changing the SRF parser, measure
+it.
 
 Two habits this list assumes, both learned expensively:
 
@@ -228,17 +231,33 @@ belongs — and the slip block has exactly two.
 Reach for both again in Stage 2 and Stage 3, where the gate can no longer be
 bit-parity and every divergence will need decomposing before it can be argued about.
 
-1. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-2. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
-   the plan, not started. **Nothing in Stage 3 may land before this exists**, because
+1. **Stage 2: the scientific suite that replaces bit-parity as the gate.** In progress.
+   `ENGINEERING_RULES.md` is written and governs from now on; the four test classes it
+   defines are being built. **Nothing in Stage 3 may land before this exists**, because
    each of those swaps changes the last bits on purpose and needs something other than
-   bit-parity to adjudicate it. `PORTING_RULES.md` expires at this boundary.
-3. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
-   divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
-   for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
-   disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites. Both those
-   numbers were measured *before* the change they adjudicate, which is the only reason
-   they mean anything — do the same for the eikonal solver before swapping it.
+   bit-parity to adjudicate it.
+
+   One rule from that document is worth repeating here, because it is what stops the
+   suite becoming its own backlog: **no property test lands without the refactor it
+   licenses, in the same commit.**
+
+2. **Stage 3**, once the scientific suite is the gate: the `eikonal` crate for the
+   Fortran solver **first**, because `wavefront-compat` gates the only `EikonalSolver`
+   and until it is replaced `--no-default-features` compiles but cannot generate a
+   rupture at all; then `rustfft` for FFTW (measured divergence **7.06e-8**, recorded
+   before the swap), `Wgs84Geodesic` for the flat-earth approximation (measured
+   disagreement **944 m at 100 km**), and the **nineteen** `SIMPLIFY` sites — four of
+   which are provably free and land immediately.
+
+   Both those numbers were measured *before* the change they adjudicate, which is the
+   only reason they mean anything. The eikonal swap is the exception to the whole
+   scheme: it changes the *discretisation* rather than the arithmetic, so it is judged
+   against analytic truth on a problem where truth is known, not against the solver it
+   replaces. `ENGINEERING_RULES.md` says why.
+
+3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched). Last —
+   and the one place `genslip-oracle` gets rewired, because 1,450 lines of new port
+   needs per-function parity to be built at all.
 
 ### Smaller things, found and not done
 

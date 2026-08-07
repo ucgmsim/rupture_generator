@@ -147,8 +147,8 @@ pub struct RuptureModel {
 /// If the fault grid's per-subfault arrays disagree with its extents.
 #[expect(
     clippy::too_many_arguments,
-    reason = "each argument is a distinct group; collapsing them would build the \
-              god object PORTING_RULES.md rule 1 exists to prevent"
+    reason = "each argument is a distinct group; collapsing them would rebuild the \
+              21-field god object ENGINEERING_RULES.md rule 7 exists to keep out"
 )]
 #[must_use]
 pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(

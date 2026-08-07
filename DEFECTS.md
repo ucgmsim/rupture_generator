@@ -1,7 +1,14 @@
 # Defects in genslip v5.6.2
 
-`PORTING_RULES.md` §5 says reproduce defects and pin each with a test, so a later
-rewrite has to *decide* about them rather than discover them. This is that register.
+`PORTING_RULES.md` §5 said reproduce defects and pin each with a test, so a later
+rewrite would have to *decide* about them rather than discover them. This is that
+register.
+
+**That later rewrite is now.** Under `ENGINEERING_RULES.md` rule 10 every "live, and
+reproduced" entry below is an open question, and each closes with an argument and a
+measurement — fixed, with the physical case and the effect on the corpus; or kept,
+with the reason a user depends on it. *"It is what the C did"* has stopped being a
+reason on its own.
 
 Scattered doc comments were doing the job until there were seven of them. Collect the
 live ones with:
