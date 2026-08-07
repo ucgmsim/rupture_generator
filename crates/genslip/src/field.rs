@@ -415,3 +415,82 @@ fn make_corners_real(spectrum: &mut Spectrum, rescale: impl Fn(f32) -> f32) {
         spectrum[corner] = Complex32::new(rescale(spectrum[corner].re), 0.0);
     }
 }
+
+/// Shift the field's phase, translating it on the fault without regenerating it.
+///
+/// A translation in space is a linear phase ramp in wavenumber, so the whole slip
+/// distribution can be slid along strike and down dip by multiplying each grid point
+/// by `exp(-2*pi*i*(shift_strike*kx + shift_dip*ky))`. The shifts are in the same
+/// units as the reciprocal of the wavenumber step.
+///
+/// # The DC term is restored as a magnitude, which can flip its sign
+///
+/// The original saves `|grid[0]|` on entry and writes it back to the real part
+/// afterwards. At the origin both wavenumbers are zero, so the phase factor is
+/// exactly 1 and the term is already unchanged — except that the saved value is a
+/// *magnitude*. If the DC term was negative going in, it comes out positive. That is
+/// reproduced here; whether it is intended is a question for the scientific suite.
+///
+/// (orig. `shift_phase`, slip.c:1917)
+pub fn shift_phase(
+    spectrum: &mut Spectrum,
+    step: WavenumberStep,
+    strike_shift: f64,
+    dip_shift: f64,
+) {
+    let strike_count = spectrum.strike_count();
+    let dip_count = spectrum.dip_count();
+
+    // SIMPLIFY: the original writes pi as `4.0*atan(1.0)`. That is exactly
+    // `std::f64::consts::PI` -- atan(1) is correctly rounded to pi/4 and scaling by
+    // a power of two is exact -- so this one is free rather than bit-moving.
+    let strike_argument = 2.0 * std::f64::consts::PI * strike_shift;
+    let dip_argument = 2.0 * std::f64::consts::PI * dip_shift;
+
+    // SIMPLIFY: `spectrum[(0, 0)].norm()`, which is a hypot and cannot overflow the
+    // way squaring both parts can.
+    let dc_magnitude = (spectrum[(0, 0)].re * spectrum[(0, 0)].re
+        + spectrum[(0, 0)].im * spectrum[(0, 0)].im)
+        .sqrt();
+
+    for dip in 0..=dip_count / 2 {
+        let ky = wavenumber(dip, dip_count, step.dip);
+        let dip_phase = phase_factor(dip_argument * f64::from(ky));
+        for strike in 0..strike_count {
+            let kx = wavenumber(strike, strike_count, step.strike);
+            let strike_phase = phase_factor(strike_argument * f64::from(kx));
+
+            // Two separate multiplications rather than one combined factor, so the
+            // rounding matches: the original applies the along-strike rotation,
+            // stores the result, then applies the down-dip one.
+            let rotated = spectrum[(strike, dip)] * strike_phase;
+            spectrum[(strike, dip)] = rotated * dip_phase;
+        }
+    }
+
+    spectrum[(0, 0)] = Complex32::new(dc_magnitude, 0.0);
+    // Unlike the generators, only the imaginary parts of the remaining three
+    // self-conjugate points are cleared; their real parts keep whatever the rotation
+    // gave them.
+    let strike_nyquist = strike_count / 2;
+    let dip_nyquist = dip_count / 2;
+    for corner in [
+        (strike_nyquist, 0),
+        (0, dip_nyquist),
+        (strike_nyquist, dip_nyquist),
+    ] {
+        spectrum[corner] = Complex32::new(spectrum[corner].re, 0.0);
+    }
+
+    impose_hermitian_symmetry(spectrum);
+}
+
+/// `exp(-i * argument)`, narrowed to single precision as the original stores it.
+fn phase_factor(argument: f64) -> Complex32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores each part into a float"
+    )]
+    let factor = Complex32::new(argument.cos() as f32, -argument.sin() as f32);
+    factor
+}

@@ -10,3 +10,4 @@ pub mod field;
 pub mod grid;
 pub mod rng;
 pub mod stats;
+pub mod taper;

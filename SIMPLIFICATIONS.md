@@ -73,6 +73,23 @@ Not carried over from the C at all, and recorded here so nobody re-adds them:
 * `kfilt_gaus2` computes the Somerville amplitude unconditionally and then
   overwrites it for four of the six models. The port computes one.
 
+### `slip.c` — the spatial pipeline
+
+| Site | Now | Should be | Kind |
+| --- | --- | --- | --- |
+| `shift_phase` | `pi = 4.0*atan(1.0)` | `std::f64::consts::PI`. `atan(1)` is correctly rounded to π/4 and scaling by a power of two is exact, so this one is provably identical | **free** |
+| `shift_phase` | `sqrt(re*re + im*im)` | `.norm()`, which is a `hypot` and does not overflow when squaring both parts would | moves bits |
+| `shift_phase` | two successive complex multiplies, one per axis | one combined factor `exp(-i(kx·sx + ky·sy))` — half the trigonometry and one rounding instead of two | moves bits |
+
+**Looks like a simplification and is not.** `taper_slip_all_r`'s middle pass writes
+`ix` and `nx-1-ix` explicitly while its first two passes test `ix < xb` and
+`ix > nx-xb`. The two spellings agree while the ramps stay apart and **disagree once
+they overlap**: the middle pass multiplies an overlapped cell twice, once from each
+end, while the other two merely let the second condition overwrite the first. On a
+14-wide fault with an 8-wide taper, cell 6 comes out at 7/8 one way and 1 the other.
+Unifying them would silently pick one. Left separate until the scientific suite can
+say which is right.
+
 ### `misc.c` — statistics
 
 | Site | Now | Should be | Kind |

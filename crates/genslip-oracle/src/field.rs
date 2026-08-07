@@ -241,3 +241,101 @@ pub fn mean_and_sigma(grid: &mut [Complex], strike_count: usize, dip_count: usiz
 
     (mean, sigma)
 }
+
+unsafe extern "C" {
+    /// `void shift_phase(struct complex *s0, int nx0, int ny0, float *dkx,
+    /// float *dky, double *xshift, double *yshift)`
+    fn shift_phase(
+        s0: *mut Complex,
+        nx0: core::ffi::c_int,
+        ny0: core::ffi::c_int,
+        dkx: *mut core::ffi::c_float,
+        dky: *mut core::ffi::c_float,
+        xshift: *mut core::ffi::c_double,
+        yshift: *mut core::ffi::c_double,
+    );
+
+    /// `void taper_slip_all_r(float *sr, int nx, int ny, float *st, float *bt,
+    /// float *tt)`
+    fn taper_slip_all_r(
+        sr: *mut core::ffi::c_float,
+        nx: core::ffi::c_int,
+        ny: core::ffi::c_int,
+        st: *mut core::ffi::c_float,
+        bt: *mut core::ffi::c_float,
+        tt: *mut core::ffi::c_float,
+    );
+}
+
+/// `shift_phase`: translate the field by applying a linear phase ramp.
+pub fn shift_phase_of(
+    grid: &mut [Complex],
+    strike_count: usize,
+    dip_count: usize,
+    strike_step: f32,
+    dip_step: f32,
+    strike_shift: f64,
+    dip_shift: f64,
+) {
+    check_extent(grid, strike_count, dip_count);
+    let (nx0, ny0) = extents(strike_count, dip_count);
+
+    let mut dkx = strike_step;
+    let mut dky = dip_step;
+    let mut xshift = strike_shift;
+    let mut yshift = dip_shift;
+
+    // SAFETY: as above -- uniquely borrowed, length checked against the extents.
+    unsafe {
+        shift_phase(
+            grid.as_mut_ptr(),
+            nx0,
+            ny0,
+            &raw mut dkx,
+            &raw mut dky,
+            &raw mut xshift,
+            &raw mut yshift,
+        );
+    }
+}
+
+/// `taper_slip_all_r`: ramp slip to zero at the fault edges.
+///
+/// Operates on a real field, not a complex spectrum, so it takes a plain `f32`
+/// slice. The extents here are the subfault counts, not the padded grid.
+pub fn taper_edges(
+    slip: &mut [f32],
+    strike_count: usize,
+    dip_count: usize,
+    sides: f32,
+    bottom: f32,
+    top: f32,
+) {
+    assert_eq!(
+        slip.len(),
+        strike_count * dip_count,
+        "slip holds {} values but was described as {strike_count}x{dip_count}",
+        slip.len(),
+    );
+    assert!(
+        i32::try_from(strike_count).is_ok() && i32::try_from(dip_count).is_ok(),
+        "extents must fit in a C int"
+    );
+    let (nx, ny) = extents(strike_count, dip_count);
+
+    let mut st = sides;
+    let mut bt = bottom;
+    let mut tt = top;
+
+    // SAFETY: length checked against the extents; the C writes only within them.
+    unsafe {
+        taper_slip_all_r(
+            slip.as_mut_ptr(),
+            nx,
+            ny,
+            &raw mut st,
+            &raw mut bt,
+            &raw mut tt,
+        );
+    }
+}
