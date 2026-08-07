@@ -184,18 +184,31 @@ Two habits this list assumes, both learned expensively:
      correlation 1.0000000 — on four of five cases. That is every draw, the spectrum,
      the taper and the moment scaling, in one number.
 
-     **`rake_sigma` reaches nothing.** The rake field is normalised to the *slip*
-     field's coefficient of variation, so every rake has a spread of 0.750 degrees
-     where genslip gives 15.0 — exactly `slip_sigma`, on all five cases. That is
-     `DEFECTS.md` 14 and it is the corpus's first find. The per-function parity tests
-     could not have caught it: `rake_field` is correct and is tested with whatever
-     sigma it is handed; the defect is in the **call**. Fixing it needs a boundary
-     argument as well, like 11-13.
+     **It found three defects, all now fixed** — `DEFECTS.md` 14-16, and all of one
+     kind: a correct function called wrongly, or not guarded the way the original
+     guards it.
 
-     Rise time (means 0.989-1.018), onset (correlations 0.92-0.996) and Frankel's
-     slip (0.39 relative, the only case where slip diverges) are recorded and
-     unexplained. Each is pinned with the number as measured, so it fails when it
-     changes rather than sitting silent.
+     | | |
+     | --- | --- |
+     | `rake_sigma` reached nothing | the *slip* field's coefficient of variation was handed to `rake_field`, where a spread in degrees belongs. Every rake had a spread of 0.750 where genslip gives 15.0 — a factor of twenty |
+     | the shallow rise-time blend read the wrong slip | the original blends against the **reloaded** spectrum brought back to space, not the tapered field the reload was built from |
+     | a subfault that does not slip was still given a pulse | the `\|slip\| > MINSLIP` guard is in the SRF *loader*, outside the generator |
+
+     None was reachable by the per-function parity tests. `rake_field`, the blend and
+     `oliu_p` are each correct and each tested against the C — the defects are in the
+     **calls**, and a suite that checks one function at a time cannot see a caller
+     handing the right function the wrong argument.
+
+     After them, **rake matches on 100% of subfaults** across all five cases (the SRF
+     stores whole degrees, so the format is the floor), and **the slip-rate pulse
+     lengths match on 100%** of three cases and 99.83% of `subduction`, with the
+     samples agreeing to 4.2e-05.
+
+     Still open: **onset** (correlations 0.92-0.997, spreads 0.33-1.05 s) and
+     **Frankel's slip** (0.39 relative). `DEFECTS.md` records what has been ruled out
+     for each, which for onset is the perturbation's amplitude, a desynchronised
+     stream, and — mostly — the perturbation field itself. What is left is the travel
+     times.
 
      **The geometry divergence is in the header, not the points** — which is not what
      this list predicted. genslip copies point positions straight out of the GSF, so

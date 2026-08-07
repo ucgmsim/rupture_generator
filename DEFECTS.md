@@ -82,9 +82,9 @@ point:
 That crossover is why this needed a test rather than an eyeball. A fixture near M7.4
 would have shown the defect as a rounding difference and been believed.
 
-### 14: `rake_sigma` reaches nothing
+### 14: `rake_sigma` reached nothing
 
-**Live.** Found by the corpus comparison, on the first run of it.
+**Fixed.** Found by the corpus comparison, on the first run of it.
 
 genslip normalises the rake field to a standard deviation of `rake_sigma` **degrees**
 and adds it to each subfault's base rake:
@@ -119,18 +119,68 @@ every function against the C one function at a time cannot see a caller handing 
 right function the wrong argument. That is the seam an end-to-end corpus closes, and
 it is the argument for the corpus existing.
 
-Pinned by `test_corpus.py::test_rake_carries_slip_sigma_where_rake_sigma_belongs`,
-which asserts the ratio is 20 and tells whoever fixes it to delete the test.
+**The fix** adds `rake_sigma_deg` to `SlipSpec` — the core's and the boundary's — since
+rake is a field drawn through the same spectrum as slip and differs from it only in
+normalisation. Rake now matches the reference on **100% of subfaults across all five
+cases**, with the largest deviation 0.4999 degrees: the SRF stores rake as whole
+degrees, so the format is the floor. Pinned by
+`test_corpus.py::TestRakeAgrees`.
+
+### 15: the shallow rise-time blend read the wrong slip field
+
+**Fixed.** Same commit, same class.
+
+Near the surface the original blends the rise-time field toward slip, to avoid pairing
+a near-zero rise time with appreciable slip. What it blends against is `slip_c` — and
+`slip_c` at that point is the **reloaded** spectrum, inverse-transformed back to space
+in place at `genslip_v5.6.2.c:2225`, *after* both correlations have consumed it in the
+wavenumber domain.
+
+That is not the tapered slip field the reload was built from. The reload renormalises
+the whole padded grid, zeros included, onto the original generated field's mean and
+sigma, so the on-fault values come back through an affine map whose coefficients
+depend on how much of the padded grid is padding. The port was blending against the
+un-renormalised field.
+
+It moves rise times on rows far below the blend zone too, because every normalisation
+after the blend is global. Rise-time field correlation went from 0.89–0.95 to
+0.965–0.993 on the corpus; the rest closed with #16.
+
+### 16: a subfault that does not slip was still given a pulse
+
+**Fixed.** Same commit.
+
+```c
+sabs = sqrt(ps[ip0].slip*ps[ip0].slip);
+if(sabs > MINSLIP)  { ... generate the STF ... }   /* gslip_srf_subs.c:1496 */
+else
+   apval_ptr[ip].nt1 = 0;
+```
+
+`MINSLIP` is `1.0e-02` cm (`defs.h:15`). The guard is in the **loader**, outside
+`gen_OliuP2_stf`, so porting the generator faithfully does not reproduce it — and
+`oliu_p` was faithful. Subfaults with no slip were getting a three-sample spike where
+the original writes `nt1 = 0` and a null `stf1`.
+
+On a tapered fault that is every edge subfault: 21 of 240 on the smallest corpus case,
+108 of 1152 on the largest. With the guard in place the pulse lengths match the
+reference on **100%** of subfaults on three cases and 99.83% on `subduction`, and
+where the lengths match the samples agree to **4.2e-05** relative — the SRF's text
+precision for slip-rate rows.
 
 ### Still open, and only measured
 
-Two more divergences the corpus records without explaining. Both are pinned with the
-numbers as recorded, so they fail when they *change*:
-
-| what | measured | what it is not |
+| what | measured | what has been ruled out |
 | --- | --- | --- |
-| rise time and onset | rise-time means 0.989 to 1.018 of the reference; onset correlations 0.92 to 0.996, differences 0.33 s to 1.05 s | not a desynchronised draw stream — that would destroy the correlation, and slip is still exact. Right shape, wrong amplitude, which points at the two perturbation fields' scaling |
+| onset | correlations 0.92 to 0.997; differences with spread 0.33 s to 1.05 s, on onsets of 4 to 47 s | **not** the perturbation's amplitude — generating with `rupture_time_scale = 0` and differencing gives a perturbation whose spread is `\|tsfac_main\| * tsfac1_sigma` exactly. **Not** a desynchronised stream — the rise-time field is drawn after this one and now agrees exactly. **Not wholly** the perturbation field either — the error correlates with the port's own perturbation at only −0.43 to +0.21, and on three cases its spread is *smaller* than the perturbation's. What is left is the travel times: the eikonal solve or the speed field it runs on |
 | Frankel slip | 0.39 relative on `frankel_corners`, correlation 0.993; the only case where slip diverges at all | not the falloff exponent (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and not the corners (fixed in 11) |
+
+A note on how the onset trail went cold, because it cost time: the rise-time
+divergence looked like a fourth defect for a while. It was not. `nt1` is what the
+slip-rate generator *returned*, not `rise_time / dt`, so comparing the port's rise
+time against `nt1 * dt` compares two different quantities — and produces a bounded,
+systematic-looking offset in `[-2, -0.5]` samples that reads exactly like a real
+defect. The comparison is now against the pulse lengths themselves.
 
 ### Related, and not a defect
 

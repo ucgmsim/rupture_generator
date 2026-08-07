@@ -69,7 +69,11 @@ pub struct SourceSpec {
     pub average_rake_deg: f32,
 }
 
-/// How the slip field is shaped and trimmed.
+/// How the slip and rake fields are shaped and trimmed.
+///
+/// Rake lives here rather than in `SourceSpec` because it is a *field*: drawn off the
+/// same generator, filtered through the same `spectrum`. Only its normalisation
+/// differs, and that difference is the whole of `rake_sigma_deg`.
 #[derive(Clone, Copy, Debug)]
 pub struct SlipSpec {
     pub spectrum: SpectrumSpec,
@@ -78,6 +82,14 @@ pub struct SlipSpec {
     pub truncate_negative: bool,
     /// Minimum slip as a fraction of the mean. Non-positive disables.
     pub water_level: f32,
+    /// Standard deviation of the rake field, in **degrees**, about each subfault's
+    /// base rake. (orig. `genslip_v5.6.2.c:2068`)
+    ///
+    /// Not `spectrum.coefficient_of_variation`, which is the *slip* field's spread
+    /// and is dimensionless. Handing that to `rake_field` is what `DEFECTS.md` 14
+    /// was: every rake came out with a spread of 0.75 degrees where the original
+    /// gives 15, a factor of twenty, on every fault regardless of geometry.
+    pub rake_sigma_deg: f32,
 }
 
 /// How rupture time and rise time relate to slip.
@@ -209,7 +221,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         grid.spacing,
         spectrum,
         &grid.base_rake_deg,
-        spectrum.coefficient_of_variation,
+        slip_spec.rake_sigma_deg,
     );
 
     let rupture_perturbation = slip::correlated_perturbation(
@@ -238,13 +250,19 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     slip::skip_unused_field(draws, refined, refined);
     slip::skip_unused_field(draws, refined, refined);
 
+    // The original inverse-transforms `slip_c` in place once both correlations have
+    // finished with it (`genslip_v5.6.2.c:2225`), and the shallow rise-time blend
+    // reads that spatial field rather than the tapered one the reload was built
+    // from. The two differ by the reload's renormalisation, which is not a scalar.
+    let reference_slip = slip::reference_on_fault(&reference, fft, extents, grid.spacing);
+
     assemble(
         &Drawn {
-            slip,
             scaled,
             rake_deg: rake_deg.clone(),
             rupture_perturbation,
             rise_correlated,
+            reference_slip,
         },
         grid,
         &shear_speed,
@@ -286,11 +304,13 @@ fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> Derived {
 
 /// Everything the draw sequence produced, in the order it produced it.
 struct Drawn {
-    slip: SlipField,
     scaled: ScaledSlip,
     rake_deg: SlipField,
     rupture_perturbation: SlipField,
     rise_correlated: SlipField,
+    /// The reloaded slip spectrum, back in space. What the shallow rise-time blend
+    /// reads -- see `slip::reference_on_fault`.
+    reference_slip: SlipField,
 }
 
 /// Turn the drawn fields into a rupture model. Nothing here draws.
@@ -305,17 +325,21 @@ fn assemble<E: EikonalSolver>(
 ) -> RuptureModel {
     let (strike_count, dip_count) = (grid.extents.fault_strike, grid.extents.fault_dip);
     let Drawn {
-        slip,
         scaled,
         rake_deg,
         rupture_perturbation,
         rise_correlated,
+        reference_slip,
     } = drawn;
     let subfaults = strike_count * dip_count;
 
     // --- rise time --------------------------------------------------------------
-    let normalised_rise =
-        rise_time::rise_time_field(rise_correlated, slip, &grid.depth_km, timing.rise_time);
+    let normalised_rise = rise_time::rise_time_field(
+        rise_correlated,
+        reference_slip,
+        &grid.depth_km,
+        timing.rise_time,
+    );
     let normalisation = rise_time::rise_time_normalisation(
         &normalised_rise,
         &scaled.slip,
@@ -363,13 +387,25 @@ fn assemble<E: EikonalSolver>(
     let mut slip_rate = Vec::with_capacity(subfaults);
     for dip in 0..dip_count {
         for strike in 0..strike_count {
-            slip_rate.push(slip_rate::oliu_p(
-                scaled.slip[(strike, dip)],
-                rise_time_s[(strike, dip)],
-                beta[(strike, dip)],
-                timing.sample_interval_s,
-                timing.max_samples,
-            ));
+            // The original guards the whole generator on `|slip| > MINSLIP`
+            // (`gslip_srf_subs.c:1496`) and writes `nt1 = 0` otherwise. The guard is
+            // in the loader, not in `gen_OliuP2_stf`, so reproducing the generator
+            // faithfully does not reproduce this — a subfault that does not slip was
+            // getting a three-sample spike where the original writes no samples at
+            // all. On a tapered fault that is every edge subfault: 21 of 240 on the
+            // smallest corpus case, 108 of 1152 on the largest.
+            let cm = scaled.slip[(strike, dip)];
+            slip_rate.push(if cm.abs() > slip_rate::MIN_SLIP_CM {
+                slip_rate::oliu_p(
+                    cm,
+                    rise_time_s[(strike, dip)],
+                    beta[(strike, dip)],
+                    timing.sample_interval_s,
+                    timing.max_samples,
+                )
+            } else {
+                SlipRate::empty()
+            });
         }
     }
 

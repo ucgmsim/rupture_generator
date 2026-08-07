@@ -378,7 +378,7 @@ impl SourceSpec {
     }
 }
 
-/// How the slip field is shaped and trimmed.
+/// How the slip and rake fields are shaped and trimmed.
 #[pyclass(skip_from_py_object, module = "rupture_generator._core")]
 #[derive(Clone, Copy, Debug)]
 pub struct SlipSpec {
@@ -388,9 +388,16 @@ pub struct SlipSpec {
 
 #[pymethods]
 impl SlipSpec {
+    /// Build the slip and rake field description.
+    ///
+    /// `coefficient_of_variation` is the **slip** field's spread, dimensionless.
+    /// `rake_sigma_deg` is the **rake** field's, in degrees. They are different
+    /// quantities in different units, they are both spreads of a field drawn through
+    /// the same spectrum, and for a long time this constructor had only the first —
+    /// so the rake field silently took it. See `DEFECTS.md` 14.
     #[new]
     #[pyo3(signature = (
-        model, *, coefficient_of_variation = 0.75,
+        model, *, coefficient_of_variation = 0.75, rake_sigma_deg = 15.0,
         min_wavelength_km = 1.5, max_wavelength_km = 80.0,
         strike_shift = 0.0, dip_shift = 0.0,
         side_taper = 0.02, top_taper = 0.0, bottom_taper = 0.0,
@@ -400,6 +407,7 @@ impl SlipSpec {
     fn new(
         model: SpectrumModel,
         coefficient_of_variation: f32,
+        rake_sigma_deg: f32,
         min_wavelength_km: f32,
         max_wavelength_km: f32,
         strike_shift: f64,
@@ -437,6 +445,7 @@ impl SlipSpec {
                 },
                 truncate_negative,
                 water_level,
+                rake_sigma_deg,
             },
         })
     }

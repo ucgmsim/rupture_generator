@@ -589,3 +589,33 @@ pub fn skip_unused_field<S: DrawSource>(source: &mut S, strike_count: usize, dip
 pub const fn unused_field_draw_count(strike_count: usize, dip_count: usize) -> usize {
     2 * strike_count * (dip_count / 2 + 1)
 }
+
+/// The reloaded slip spectrum brought back to the fault, in space.
+///
+/// The original inverse-transforms `slip_c` **in place** at
+/// `genslip_v5.6.2.c:2225` — after both correlations have consumed it in the
+/// wavenumber domain — and the shallow rise-time blend then reads `slip_c[ip2].re`
+/// from that spatial field (line 2255).
+///
+/// It is **not** the tapered slip field the reload was built from. The reload
+/// renormalises the whole padded grid, zeros included, onto the *original*
+/// generated field's mean and sigma, so the on-fault values come back through an
+/// affine map that depends on how much of the padded grid is padding. Blending
+/// against the un-renormalised field instead is a different weighting of slip
+/// against the correlated field, and it moves every rise time — including on rows
+/// far below the blend zone, because the normalisations that follow are global.
+///
+/// (orig. `genslip_v5.6.2.c:2225`)
+#[must_use]
+pub fn reference_on_fault<F: Fft>(
+    reference: &Spectrum,
+    fft: &mut F,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+) -> SlipField {
+    let mut spectrum = reference.clone();
+    let step = extents.wavenumber_step(spacing);
+    fft::transform_2d(&mut spectrum, fft, Direction::Inverse);
+    fft::scale(&mut spectrum, fft::spacing_product(step.strike, step.dip));
+    extract_corner(&spectrum, extents)
+}

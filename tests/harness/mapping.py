@@ -687,6 +687,12 @@ def slip_spec(geometry: GsfSubfaults, parameters: Parameters) -> SlipSpec:
     return SlipSpec(
         _KMODEL_TO_SPECTRUM[parameters.kmodel],
         coefficient_of_variation=parameters.slip_sigma,
+        # `rake_sigma`, in degrees, and emphatically not `slip_sigma`. genslip
+        # normalises the rake field to this spread about each subfault's base rake
+        # (`sigfac = rake_sigma/rk_sig`, line 2068). The two sit next to each other
+        # in the getpar list, mean different things and carry different units, and
+        # the port took the wrong one for as long as nothing drove it end to end.
+        rake_sigma_deg=parameters.rake_sigma,
         min_wavelength_km=minimum_wavelength_km(geometry, parameters),
         max_wavelength_km=HARDWIRED_MAX_WAVELENGTH_KM,
         strike_shift=parameters.xshift,

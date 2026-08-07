@@ -20,14 +20,25 @@ around measurements.
 
 # What this found
 
-`rake_sigma` reaches nothing. `realisation.rs` passes the slip field's coefficient of
-variation where the rake field's standard deviation in *degrees* belongs, so every
-rake comes out with a spread of 0.75 degrees where genslip gives 15. Confirmed against
-all five cases and written up as `DEFECTS.md` 14.
+Three defects, all of the same kind: a correct function called wrongly, or not
+guarded the way the original guards it. `DEFECTS.md` 14-16.
 
-The per-function parity tests could not have caught it: `rake_field` is correct, and
-is tested with whatever sigma the test hands it. The defect is in the **call**, which
-is exactly the seam an end-to-end corpus closes and a per-function suite cannot.
+1. **`rake_sigma` reached nothing.** The slip field's coefficient of variation was
+   handed to `rake_field` where the rake field's spread in *degrees* belongs.
+2. **The shallow rise-time blend read the wrong slip.** The original blends against
+   the *reloaded* slip spectrum brought back to space, not the tapered field the
+   reload was built from.
+3. **A subfault that does not slip was getting a pulse.** The `|slip| > MINSLIP`
+   guard is in the SRF loader, outside the generator, so porting the generator
+   faithfully did not reproduce it.
+
+None could have been caught by the per-function parity tests. Each of `rake_field`,
+the blend and `oliu_p` is correct and is tested against the C; the defects are in the
+**calls**, and a suite that checks one function at a time cannot see a caller handing
+the right function the wrong argument. That is the seam an end-to-end corpus closes.
+
+What remains is onset -- see `TestTheRecordedDivergences`, which records what has been
+ruled out as well as what is left.
 """
 
 import numpy as np
@@ -56,6 +67,24 @@ def compared() -> dict:
         geometry = corpus.load_geometry(case.name)
         order = corpus.segment_order(geometry)
         rupture = corpus.run_port(case)
+
+        # The slip-rate rows. The reference stores them as a sparse matrix, one row
+        # per subfault; the port as one concatenated array plus offsets. Compare the
+        # lengths first -- `nt1` is stored, not derived -- and the samples only where
+        # the lengths agree, since otherwise there is nothing to line up.
+        sparse = reference.slip_rate
+        reference_length = np.diff(sparse.indptr).astype(int)
+        offsets = rupture.slip_rate_offsets
+        pulse_length = np.diff(offsets)[order].astype(int)
+
+        worst = 0.0
+        for row, index in enumerate(order):
+            if pulse_length[row] != reference_length[row] or reference_length[row] == 0:
+                continue
+            theirs = sparse.data[sparse.indptr[row] : sparse.indptr[row + 1]]
+            mine = rupture.slip_rate[offsets[index] : offsets[index + 1]]
+            worst = max(worst, relative(mine, theirs))
+
         results[case.name] = dict(
             reference=reference,
             points=reference.points,
@@ -66,6 +95,9 @@ def compared() -> dict:
             onset_s=rupture.onset_s[order],
             rise_time_s=rupture.rise_time_s[order],
             base_rake_deg=geometry.rake_deg[order],
+            pulse_length=pulse_length,
+            reference_length=reference_length,
+            slip_rate_relative=worst,
         )
     return results
 
@@ -184,6 +216,89 @@ class TestSlipAgrees:
         assert correlation > 1.0 - 1e-9
 
 
+class TestRakeAgrees:
+    """`DEFECTS.md` 14, fixed. The corpus found it; nothing else could have."""
+
+    @pytest.mark.parametrize("name", CASES)
+    def test_rake_matches_exactly_at_the_format_s_resolution(
+        self, name: str, compared: dict
+    ) -> None:
+        """Every subfault, every case.
+
+        The SRF stores rake as whole degrees, so the format itself is the floor here:
+        the port's continuous value rounds to the reference's stored integer on
+        100% of subfaults, with the largest deviation 0.4999 -- entirely
+        quantisation, and provably so, because a real disagreement could not stay
+        below half a degree on every subfault of five different faults.
+        """
+        result = compared[name]
+        reference = result["points"].rake_deg
+        # The reference really is quantised; if that ever stops being true this test
+        # is measuring something else.
+        assert np.array_equal(reference, np.round(reference))
+
+        assert np.array_equal(np.round(result["rake_deg"]), reference)
+        assert np.abs(result["rake_deg"] - reference).max() < 0.5
+
+    @pytest.mark.parametrize("name", CASES)
+    def test_the_spread_is_rake_sigma_and_not_slip_sigma(
+        self, name: str, compared: dict
+    ) -> None:
+        # The shape of the defect that was: `rake_sigma` is 15 degrees and
+        # `slip_sigma` is 0.75, so taking the wrong one was a factor of twenty. Both
+        # values are in the fixture, so this cannot pass by coincidence.
+        result = compared[name]
+        parameters = corpus.BY_NAME[name].parameters()
+        spread = float(np.std(result["rake_deg"] - result["base_rake_deg"]))
+        assert spread == pytest.approx(parameters.rake_sigma, abs=0.05)
+        assert spread != pytest.approx(parameters.slip_sigma, abs=1.0)
+
+
+class TestTheSlipRatePulsesAgree:
+    """The pulses, and the sample counts the format stores.
+
+    `nt1` is what the slip-rate generator *returned*, not `rise_time / dt`. Comparing
+    the port's rise time against `nt1 * dt` compares two different quantities and
+    shows a bounded, meaningless offset -- which is what it did until the pulse
+    lengths themselves were checked.
+    """
+
+    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    def test_the_pulse_lengths_are_the_reference_s(
+        self, name: str, compared: dict
+    ) -> None:
+        # 100% on three cases, 99.83% on `subduction` -- two subfaults of 1152.
+        result = compared[name]
+        exact = float(np.mean(result["pulse_length"] == result["reference_length"]))
+        assert exact > 0.998, f"{name}: {exact:.4%} of pulse lengths exact"
+
+    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    def test_a_subfault_that_does_not_slip_emits_no_pulse(
+        self, name: str, compared: dict
+    ) -> None:
+        # genslip guards the whole generator on `|slip| > MINSLIP`
+        # (`gslip_srf_subs.c:1496`) and writes `nt1 = 0` otherwise. The guard is in
+        # the loader, not in the generator, so a faithful port of the generator does
+        # not reproduce it. On a tapered fault this is every edge subfault: 21 of 240
+        # on the smallest case here.
+        result = compared[name]
+        silent = result["reference_length"] == 0
+        assert silent.any(), f"{name} has no silent subfaults; this proves nothing"
+        assert np.array_equal(
+            result["pulse_length"][silent], result["reference_length"][silent]
+        )
+
+    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    def test_the_samples_agree_where_the_lengths_do(
+        self, name: str, compared: dict
+    ) -> None:
+        # 4.2e-05 relative at worst, which is the SRF's text precision for the
+        # slip-rate rows. This is the pulse shape, its normalisation and the rise
+        # time that set its duration, all at once.
+        result = compared[name]
+        assert result["slip_rate_relative"] < 1e-4
+
+
 class TestTheRecordedDivergences:
     """What does not agree yet, measured rather than tolerated.
 
@@ -193,57 +308,37 @@ class TestTheRecordedDivergences:
     """
 
     @pytest.mark.parametrize("name", CASES)
-    def test_rake_carries_slip_sigma_where_rake_sigma_belongs(
-        self, name: str, compared: dict
-    ) -> None:
-        """`DEFECTS.md` 14. The corpus found this; nothing else could have.
-
-        genslip normalises the rake field to a standard deviation of `rake_sigma`
-        **degrees** and adds it to the base rake (`genslip_v5.6.2.c:2068`,
-        `sigfac = rake_sigma/rk_sig`). The port passes the slip field's coefficient
-        of variation instead (`realisation.rs`, the `rake_field` call), so the spread
-        is 0.75 where it should be 15 -- a factor of twenty, identical on every case,
-        which is what makes it a wiring error rather than a numerical one.
-        """
-        result = compared[name]
-        case = corpus.BY_NAME[name]
-        reference_spread = float(
-            np.std(result["points"].rake_deg - result["base_rake_deg"])
-        )
-        port_spread = float(np.std(result["rake_deg"] - result["base_rake_deg"]))
-
-        # genslip delivers what was asked for, to a fraction of a degree.
-        assert reference_spread == pytest.approx(case.parameters().rake_sigma, abs=0.1)
-        # The port delivers slip_sigma, exactly.
-        assert port_spread == pytest.approx(case.parameters().slip_sigma, abs=0.01)
-        # Stated as the ratio, so the day someone fixes it this test says so loudly.
-        assert reference_spread / port_spread == pytest.approx(20.0, rel=0.02), (
-            "rake_sigma now reaches the port -- delete this test, move DEFECTS.md 14 "
-            "to fixed, and turn the rake comparison into an assertion"
-        )
-
-    @pytest.mark.parametrize("name", CASES)
-    def test_rise_time_is_within_two_percent_in_the_mean(
-        self, name: str, compared: dict
-    ) -> None:
-        # Recorded: 0.989 to 1.018 across the corpus. The field is the right shape
-        # (correlations 0.89 to 0.95) and slightly the wrong size, which points at
-        # the rise-time perturbation's amplitude rather than at its draws -- a
-        # desynchronised stream would not correlate at all.
-        result = compared[name]
-        ratio = result["rise_time_s"].mean() / result["points"].rise_time_s.mean()
-        assert 0.97 < ratio < 1.04, f"{name}: rise-time mean ratio {ratio}"
-
-    @pytest.mark.parametrize("name", CASES)
     def test_onset_is_the_right_shape_and_not_yet_the_right_times(
         self, name: str, compared: dict
     ) -> None:
-        # Recorded: correlations 0.92 to 0.996, differences with standard deviation
-        # 0.33 s to 1.05 s. Structure right, amplitude not -- the same signature the
-        # rise time has, and probably the same cause.
+        """Correlations 0.92 to 0.997; differences of 0.33 s to 1.05 s.
+
+        What has been ruled out, measured rather than argued:
+
+        - **Not the perturbation's amplitude.** Generating with
+          `rupture_time_scale = 0` and differencing gives a perturbation whose
+          standard deviation is `|tsfac_main| * tsfac1_sigma` exactly.
+        - **Not a desynchronised draw stream.** The rise-time field is drawn *after*
+          this one and now agrees exactly, so the stream is right through both.
+        - **Not wholly the perturbation field either.** The error correlates with the
+          port's own perturbation at only -0.43 to +0.21, and on three cases its
+          spread is *smaller* than the perturbation's -- so the two perturbations
+          largely agree and this is a residual on top.
+
+        What is left is the travel times: the eikonal solve, or the speed field it
+        runs on. Not yet isolated.
+        """
         result = compared[name]
         correlation = np.corrcoef(result["onset_s"], result["points"].onset_s)[0, 1]
         assert correlation > 0.85, f"{name}: onset correlation {correlation}"
+
+    @pytest.mark.parametrize("name", CASES)
+    def test_the_onset_error_stays_within_what_was_recorded(
+        self, name: str, compared: dict
+    ) -> None:
+        result = compared[name]
+        spread = float(np.std(result["onset_s"] - result["points"].onset_s))
+        assert spread < 1.2, f"{name}: onset difference spread {spread} s"
 
     def test_frankel_slip_does_not_agree_and_the_falloff_is_not_why(
         self, compared: dict

@@ -113,6 +113,10 @@ fn slip_spec() -> SlipSpec {
         },
         truncate_negative: true,
         water_level: 0.0,
+        // genslip's `rake_sigma` default, in degrees. Deliberately not the 0.75
+        // above: that is the slip field's coefficient of variation, dimensionless,
+        // and confusing the two is `DEFECTS.md` 14.
+        rake_sigma_deg: 15.0,
     }
 }
 

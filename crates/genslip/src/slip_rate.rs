@@ -170,7 +170,24 @@ pub struct SlipRate {
     values: Vec<f32>,
 }
 
+/// The slip below which the original emits no slip-rate function at all.
+///
+/// `MINSLIP` (`defs.h:15`), in centimetres. The guard is `sabs > MINSLIP` on
+/// `|slip|` in the SRF loader (`gslip_srf_subs.c:1496`), *outside* the pulse
+/// generator — so a subfault that does not slip gets `nt1 = 0` and a null `stf1`
+/// rather than a short pulse of nothing.
+pub const MIN_SLIP_CM: f32 = 1.0e-02;
+
 impl SlipRate {
+    /// A subfault that does not slip: no samples at all.
+    ///
+    /// Not the same as a pulse whose samples happen to be zero. The format stores
+    /// `nt1 = 0` and no samples, and anything counting rows sees the difference.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { values: Vec::new() }
+    }
+
     /// The samples, in cm/s if slip was in cm.
     #[must_use]
     pub fn as_slice(&self) -> &[f32] {

@@ -96,7 +96,13 @@ class SourceSpec:
     ) -> None: ...
 
 class SlipSpec:
-    """How the slip field is shaped and trimmed."""
+    """How the slip and rake fields are shaped and trimmed.
+
+    `coefficient_of_variation` is the slip field's spread and is dimensionless;
+    `rake_sigma_deg` is the rake field's and is in degrees. Both are spreads of a
+    field drawn through the same spectrum, which is how one came to stand in for the
+    other -- see `DEFECTS.md` 14.
+    """
 
     model: SpectrumModel
     def __init__(
@@ -104,6 +110,7 @@ class SlipSpec:
         model: SpectrumModel,
         *,
         coefficient_of_variation: float = 0.75,
+        rake_sigma_deg: float = 15.0,
         min_wavelength_km: float = 1.5,
         max_wavelength_km: float = 80.0,
         strike_shift: float = 0.0,
