@@ -72,6 +72,18 @@ cmake -B build -DCMAKE_C_FLAGS="-O0 -fno-fast-math -ffp-contract=off" \
                -DCMAKE_Fortran_FLAGS="-O0 -fno-fast-math -ffp-contract=off"
 ```
 
+Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
+and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
+before changing it, measure it:
+
+```sh
+cargo test -p srf --release -- --ignored --nocapture parse_throughput  # MiB/s, end to end
+cargo test -p srf --release -- --ignored --nocapture float_leaf        # the number leaf alone
+```
+
+Currently **405 MiB/s** on `tests/srfs/rupture_1.srf` (69 MiB, 190,546 points).
+`SRF_THROUGHPUT_FILE` overrides the input.
+
 ## The documents, and which one answers your question
 
 | | |
@@ -93,17 +105,13 @@ The two rules that cost the most to learn:
 
 Ordered, and each is its own commit.
 
-1. **Replace the hand-rolled scanner with `nom`.** `crates/srf/src/scanner.rs` is 242
-   lines plus `lexical-core`. Semantics are not preserved for their own sake — the
-   SRF suite passing is the contract. Measure: this is the hot path for a
-   multi-gigabyte file.
-2. **Build the Stage 0 fixture corpus.** Realisations spanning single-plane /
+1. **Build the Stage 0 fixture corpus.** Realisations spanning single-plane /
    multi-segment, crustal / subduction dip, small / large `nstk x ndip`, each with a
    fixed seed, storing the GSF and the argument list rather than just the SRF. Drive
    the real binary and compare parsed SRF fields field by field. This is the
    acceptance gate the per-function parity tests roll up into.
-3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
+3. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
    disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites.
