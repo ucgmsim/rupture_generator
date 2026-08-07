@@ -669,3 +669,101 @@ pub fn offset_point(
 
     (slon, slat)
 }
+
+unsafe extern "C" {
+    /// `void get_rspeed_vsden2(float *rspd, struct pointsource *ps, int nx, int ny,
+    /// float *smax, float *savg, float *shal_vr, float *dmin1, float *dmax1,
+    /// float *deep_vr, float *dmin2, float *dmax2, float *rvfmn, float *rvfmx,
+    /// int scl_slip)`
+    fn get_rspeed_vsden2(
+        rspd: *mut core::ffi::c_float,
+        ps: *mut crate::PointSource,
+        nx: core::ffi::c_int,
+        ny: core::ffi::c_int,
+        smax: *mut core::ffi::c_float,
+        savg: *mut core::ffi::c_float,
+        shal_vr: *mut core::ffi::c_float,
+        dmin1: *mut core::ffi::c_float,
+        dmax1: *mut core::ffi::c_float,
+        deep_vr: *mut core::ffi::c_float,
+        dmin2: *mut core::ffi::c_float,
+        dmax2: *mut core::ffi::c_float,
+        rvfmn: *mut core::ffi::c_float,
+        rvfmx: *mut core::ffi::c_float,
+        scl_slip: core::ffi::c_int,
+    );
+}
+
+/// The five depths and factors that shape the rupture-speed profile.
+#[derive(Clone, Copy, Debug)]
+pub struct SpeedProfileArgs {
+    pub shallow_factor: f32,
+    pub shallow_min_km: f32,
+    pub shallow_max_km: f32,
+    pub deep_factor: f32,
+    pub deep_min_km: f32,
+    pub deep_max_km: f32,
+}
+
+/// `get_rspeed_vsden2`: rupture speed per subfault, from shear speed and depth.
+///
+/// `scale_with_slip` is genslip's `fdrup_scale_slip`, configured off.
+#[must_use]
+pub fn rupture_speed(
+    subfaults: &mut [crate::PointSource],
+    strike_count: usize,
+    dip_count: usize,
+    profile: SpeedProfileArgs,
+    scale_with_slip: bool,
+) -> Vec<f32> {
+    assert_eq!(
+        subfaults.len(),
+        strike_count * dip_count,
+        "got {} subfaults for a {strike_count}x{dip_count} fault",
+        subfaults.len()
+    );
+    let (nx, ny) = extents(strike_count, dip_count);
+    let mut speeds = vec![0.0_f32; subfaults.len()];
+
+    // Only read when `scale_with_slip` is set; passed anyway so the signature is
+    // honest about what the C takes.
+    let mut maximum_slip = subfaults
+        .iter()
+        .map(|subfault| subfault.slip)
+        .fold(0.0_f32, f32::max);
+    #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
+    let mut average_slip = subfaults.iter().map(|s| s.slip).sum::<f32>() / subfaults.len() as f32;
+
+    let mut shallow_factor = profile.shallow_factor;
+    let mut shallow_min = profile.shallow_min_km;
+    let mut shallow_max = profile.shallow_max_km;
+    let mut deep_factor = profile.deep_factor;
+    let mut deep_min = profile.deep_min_km;
+    let mut deep_max = profile.deep_max_km;
+    let mut minimum_fraction = 0.25_f32;
+    let mut maximum_fraction = 1.414_f32;
+
+    // SAFETY: `speeds` and `subfaults` both hold nx*ny elements, which is what the
+    // routine indexes; every scalar pointer addresses a live local.
+    unsafe {
+        get_rspeed_vsden2(
+            speeds.as_mut_ptr(),
+            subfaults.as_mut_ptr(),
+            nx,
+            ny,
+            &raw mut maximum_slip,
+            &raw mut average_slip,
+            &raw mut shallow_factor,
+            &raw mut shallow_min,
+            &raw mut shallow_max,
+            &raw mut deep_factor,
+            &raw mut deep_min,
+            &raw mut deep_max,
+            &raw mut minimum_fraction,
+            &raw mut maximum_fraction,
+            i32::from(scale_with_slip),
+        );
+    }
+
+    speeds
+}

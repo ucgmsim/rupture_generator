@@ -42,6 +42,9 @@ mod wavefront;
 #[cfg(feature = "wavefront-compat")]
 pub use wavefront::Wavefront2d;
 
+use crate::rise_time::DepthRamp;
+use crate::taper::SlipField;
+
 /// Rupture speed across the fault, in km/s.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpeedGrid {
@@ -172,4 +175,191 @@ pub trait EikonalSolver {
     /// the along-strike one for both; a caller wanting square cells must arrange
     /// them.
     fn solve(&mut self, speed: &SpeedGrid, hypocentre: Hypocentre, spacing_km: f64) -> TravelTimes;
+}
+
+/// How rupture speed varies with depth, as a fraction of the shear-wave speed.
+///
+/// Rupture is slower near the surface, where the rock is weaker and the free
+/// surface unloads it, and slower again at depth as the transition to stable
+/// sliding begins. Between the two it runs at the full configured fraction.
+#[derive(Clone, Copy, Debug)]
+pub struct SpeedProfile {
+    /// Ramp from `shallow_factor` up to 1 with increasing depth.
+    pub shallow: DepthRamp,
+    pub shallow_factor: f32,
+    /// Ramp from 1 down to `deep_factor` with increasing depth.
+    pub deep: DepthRamp,
+    pub deep_factor: f32,
+}
+
+impl SpeedProfile {
+    /// The depth factor at `depth_km`.
+    ///
+    /// # This is not the ramp `rise_time` uses, and the difference looks like a bug
+    ///
+    /// [`crate::rise_time::rise_time_normalisation`] computes its own rupture-speed
+    /// factor for the slip-and-rupture-speed weighting, and writes the shallow zone
+    /// as `rvfrac * shal_vrup * (dmax - depth)/(dmax - dmin)` — which falls to
+    /// **zero** at the bottom of the transition, where this correctly rises to
+    /// **one**. A rupture speed of zero is not a physical statement about anything.
+    ///
+    /// It is latent: that factor is only consulted when the weighting is
+    /// [`crate::rise_time::Weighting::BySlipAndRuptureSpeed`], and the configured
+    /// weighting is uniform. Both are reproduced as they stand, separately, rather
+    /// than unified onto whichever is right.
+    fn depth_factor(self, depth_km: f32) -> f32 {
+        let shallow_min = self.shallow.centre_km - self.shallow.half_width_km;
+        let shallow_max = self.shallow.centre_km + self.shallow.half_width_km;
+        let deep_min = self.deep.centre_km - self.deep.half_width_km;
+        let deep_max = self.deep.centre_km + self.deep.half_width_km;
+
+        // Each branch is written as the original writes it, in two respects.
+        //
+        // The *form*: `(max - depth)/(max - min)` rather than the
+        // `1 - (depth - min)/(max - min)` used by the ramps elsewhere. Same number,
+        // different float.
+        //
+        // The *precision*: the differences are single, and everything above them is
+        // double because the literal `1.0` is, rounding once at the store.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing seam: C stores rfdep into a float"
+        )]
+        let factor = if depth_km <= shallow_min {
+            self.shallow_factor
+        } else if depth_km < shallow_max {
+            (1.0 - (1.0 - f64::from(self.shallow_factor)) * f64::from(shallow_max - depth_km)
+                / f64::from(shallow_max - shallow_min)) as f32
+        } else if depth_km <= deep_min {
+            1.0
+        } else if depth_km < deep_max {
+            (1.0 - (1.0 - f64::from(self.deep_factor)) * f64::from(depth_km - deep_min)
+                / f64::from(deep_max - deep_min)) as f32
+        } else {
+            self.deep_factor
+        };
+        factor
+    }
+}
+
+/// Build the rupture-speed field the solver runs on.
+///
+/// `shear_speed_km_s` is one value per subfault, `velocity_fraction` the configured
+/// rupture-speed-to-shear-speed ratio at each — a single value repeated unless the
+/// geometry supplied per-subfault ratios. `depth_km` gives one depth per dip row.
+///
+/// # Panics
+///
+/// If the inputs disagree about the fault's extent, or if any resulting speed is not
+/// strictly positive.
+///
+/// (orig. `get_rspeed_vsden2`, ruptime.c:817)
+#[must_use]
+pub fn speed_field(
+    shear_speed_km_s: &SlipField,
+    velocity_fraction: &SlipField,
+    depth_km: &[f32],
+    profile: SpeedProfile,
+) -> SpeedGrid {
+    let strike_count = shear_speed_km_s.strike_count();
+    let dip_count = shear_speed_km_s.dip_count();
+    assert_eq!(
+        (
+            velocity_fraction.strike_count(),
+            velocity_fraction.dip_count()
+        ),
+        (strike_count, dip_count),
+        "the shear-speed and velocity-fraction fields must cover the same fault"
+    );
+    assert_eq!(depth_km.len(), dip_count, "one depth per dip row");
+
+    let mut speeds = Vec::with_capacity(strike_count * dip_count);
+    for dip in 0..dip_count {
+        let depth_factor = profile.depth_factor(depth_km[dip]);
+        for strike in 0..strike_count {
+            speeds.push(
+                velocity_fraction[(strike, dip)] * depth_factor * shear_speed_km_s[(strike, dip)],
+            );
+        }
+    }
+
+    SpeedGrid::new(strike_count, dip_count, speeds)
+}
+
+/// Where the rupture front is when it reaches each subfault, after perturbation.
+#[derive(Clone, Copy, Debug)]
+pub struct OnsetAdjustment {
+    /// Amplitude of the slip-correlated timing perturbation, in seconds.
+    ///
+    /// genslip's `tsfac_main`, resolved from the moment as
+    /// `tsfac_bzero + tsfac_slope * 1e-9 * Mo^(1/3)`. Negative, so patches that slip
+    /// more rupture *earlier*.
+    pub perturbation_scale: f32,
+    /// Constant offset added to every subfault, in seconds.
+    pub delay_s: f32,
+    /// Whether this segment contains the hypocentre.
+    ///
+    /// Only the segment that does gets shifted to start at zero. The others keep
+    /// their offsets, which is what makes a multi-segment rupture propagate between
+    /// them rather than restarting.
+    pub contains_hypocentre: bool,
+}
+
+/// Combine solved travel times with the timing perturbation.
+///
+/// # Panics
+///
+/// If the travel times and the perturbation field disagree about the fault's extent.
+///
+/// (orig. `genslip_v5.6.2.c:3134-3160`)
+#[must_use]
+pub fn onset_times(
+    travel: &TravelTimes,
+    perturbation: &SlipField,
+    adjustment: OnsetAdjustment,
+) -> TravelTimes {
+    let strike_count = travel.strike_count();
+    let dip_count = travel.dip_count();
+    assert_eq!(
+        (perturbation.strike_count(), perturbation.dip_count()),
+        (strike_count, dip_count),
+        "the travel times and the perturbation must cover the same fault"
+    );
+
+    let mut onset = Vec::with_capacity(strike_count * dip_count);
+    let mut earliest = f64::INFINITY;
+    for dip in 0..dip_count {
+        for strike in 0..strike_count {
+            // The perturbation is applied in single precision, as the original
+            // stores it into `psrc[].rupt`, a float.
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the narrowing seam: C stores the sum into a float"
+            )]
+            let narrowed = travel.time(strike, dip) as f32;
+            let time =
+                f64::from(narrowed + adjustment.perturbation_scale * perturbation[(strike, dip)]);
+            earliest = earliest.min(time);
+            onset.push(time);
+        }
+    }
+
+    // A segment without the hypocentre keeps its absolute times; only the one that
+    // has it is re-zeroed.
+    let shift = if adjustment.contains_hypocentre {
+        earliest
+    } else {
+        0.0
+    };
+
+    for time in &mut onset {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing seam: C stores both into floats"
+        )]
+        let (narrowed, narrowed_shift) = (*time as f32, shift as f32);
+        *time = f64::from(narrowed - narrowed_shift + adjustment.delay_s);
+    }
+
+    TravelTimes::new(strike_count, dip_count, onset)
 }
