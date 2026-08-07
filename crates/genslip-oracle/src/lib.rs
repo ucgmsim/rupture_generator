@@ -23,7 +23,10 @@
 )]
 
 pub mod field;
+pub mod point_source;
 pub mod rng;
+
+pub use point_source::PointSource;
 
 /// genslip's complex type (`Genslip/v5.6.2/structure.h`). Single precision, and
 /// laid out as two floats rather than as a C99 `_Complex`.

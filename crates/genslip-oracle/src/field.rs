@@ -339,3 +339,102 @@ pub fn taper_edges(
         );
     }
 }
+
+unsafe extern "C" {
+    /// `void scale_slip_r_vsden(struct pointsource *ps, float *sr, int nstk,
+    /// int ndip, int nys, float *dx, float *dy, float *dtop, float *dip,
+    /// float *mom, float *savg, float *smax)`
+    fn scale_slip_r_vsden(
+        ps: *mut crate::PointSource,
+        sr: *mut core::ffi::c_float,
+        nstk: core::ffi::c_int,
+        ndip: core::ffi::c_int,
+        nys: core::ffi::c_int,
+        dx: *mut core::ffi::c_float,
+        dy: *mut core::ffi::c_float,
+        dtop: *mut core::ffi::c_float,
+        dip: *mut core::ffi::c_float,
+        mom: *mut core::ffi::c_float,
+        savg: *mut core::ffi::c_float,
+        smax: *mut core::ffi::c_float,
+    );
+}
+
+/// What `scale_slip_r_vsden` reports back through its out-parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct SlipScalingResult {
+    pub moment: f32,
+    pub average: f32,
+    pub maximum: f32,
+}
+
+/// `scale_slip_r_vsden`: scale slip to a target moment or average, writing the
+/// result into `subfaults[i].slip`.
+///
+/// `dtop` is accepted and never read by the C; it is passed as zero.
+///
+/// # Panics
+///
+/// If `subfaults` does not hold one entry per subfault, or if the requested block
+/// does not fit inside `field`.
+#[expect(clippy::too_many_arguments, reason = "mirrors the C signature")]
+pub fn scale_slip(
+    subfaults: &mut [crate::PointSource],
+    field: &mut [f32],
+    strike_count: usize,
+    dip_count: usize,
+    dip_offset: usize,
+    strike_km: f32,
+    dip_km: f32,
+    dip_degrees: f32,
+    moment: f32,
+    average: f32,
+) -> SlipScalingResult {
+    assert_eq!(
+        subfaults.len(),
+        strike_count * dip_count,
+        "got {} subfaults for a {strike_count}x{dip_count} fault",
+        subfaults.len()
+    );
+    assert!(
+        field.len() >= strike_count * (dip_count + dip_offset),
+        "field holds {} values, too few for {dip_count} rows at offset {dip_offset}",
+        field.len()
+    );
+    let (nstk, ndip) = extents(strike_count, dip_count);
+    let nys = i32::try_from(dip_offset).expect("dip offset must fit in a C int");
+
+    let mut dx = strike_km;
+    let mut dy = dip_km;
+    let mut dtop = 0.0_f32;
+    let mut dip = dip_degrees;
+    let mut mom = moment;
+    let mut savg = average;
+    let mut smax = 0.0_f32;
+
+    // SAFETY: both buffers are uniquely borrowed and checked above to be at least as
+    // large as the extents the C will index. Every scalar pointer addresses a live
+    // local of the matching type.
+    unsafe {
+        scale_slip_r_vsden(
+            subfaults.as_mut_ptr(),
+            field.as_mut_ptr(),
+            nstk,
+            ndip,
+            nys,
+            &raw mut dx,
+            &raw mut dy,
+            &raw mut dtop,
+            &raw mut dip,
+            &raw mut mom,
+            &raw mut savg,
+            &raw mut smax,
+        );
+    }
+
+    SlipScalingResult {
+        moment: mom,
+        average: savg,
+        maximum: smax,
+    }
+}

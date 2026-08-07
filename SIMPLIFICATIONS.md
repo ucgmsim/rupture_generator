@@ -114,3 +114,19 @@ say which is right.
   only in whether the order is a local constant or an argument. They are one
   function in the port (`WavelengthBand::divisor_at_order`), which is worth noting
   because the same expression appears a third time inside `kfilt_beta2`.
+
+### `slip.c` — moment scaling
+
+| Site | Now | Should be | Kind |
+| --- | --- | --- | --- |
+| `scale_slip_r_vsden` | `sinD = sin(dip*rperd)` computed at the top, recomputed in the `else` branch, and **never read** | delete both, and the truncated `rperd = 0.017453293` with them — it has no other use | **free** |
+| `scale_slip_r_vsden` | `area` computed at the top and recomputed identically in the `else` branch | one computation | **free** |
+| `scale_slip_r_vsden` | the two branches share their scale-and-summarise loop verbatim | one loop, a factor chosen before it — already so in the port | **free** |
+| `scale_slip_r_vsden` | moment and average summed in `float` over every subfault | accumulate in `f64` or sum pairwise | moves bits, and is **more accurate** |
+| `scale_slip_r_vsden` | takes `dtop` and never reads it | drop the argument — already dropped in the port | **free** |
+
+**Looks like a defect.** In average-slip mode the reported moment is recomputed from
+the **unscaled** field, so it describes the field before scaling rather than after.
+In moment mode the answer is the target by construction, so this only shows in the
+`target_savg > 0` path, which the defaults do not take. Reproduced and flagged rather
+than fixed; Stage 2 should decide.
