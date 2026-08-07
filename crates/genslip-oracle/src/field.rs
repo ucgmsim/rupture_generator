@@ -452,6 +452,26 @@ unsafe extern "C" {
     );
 }
 
+/// Installs FFTW's internal planner lock, once per process.
+static MAKE_PLANNER_THREAD_SAFE: std::sync::Once = std::sync::Once::new();
+
+unsafe extern "C" {
+    fn fftwf_make_planner_thread_safe();
+}
+
+/// Make FFTW's planner safe to call from more than one thread.
+///
+/// `fft2d_fftw` plans on **every** call, and FFTW's planner is process-global
+/// mutable state that corrupts — and then segfaults or aborts — when two threads
+/// enter it at once. genslip is one process doing one thing and never meets this. A
+/// test binary running its tests in parallel meets it immediately, and the lock has
+/// to cover *both* sides: the port installs it too, but whichever runs first must,
+/// or the other races against an uninitialised planner.
+fn make_planner_thread_safe() {
+    // SAFETY: idempotent, and required before any planner call.
+    MAKE_PLANNER_THREAD_SAFE.call_once(|| unsafe { fftwf_make_planner_thread_safe() });
+}
+
 /// `fft2d_fftw`: a 2-D transform, scaled by the product of the sample spacings.
 ///
 /// `sign` is `-1` for the fault-to-wavenumber direction and `+1` for the reverse,
@@ -465,6 +485,7 @@ pub fn transform_2d(
     second_spacing: f32,
 ) {
     check_extent(grid, strike_count, dip_count);
+    make_planner_thread_safe();
     let (n1, n2) = extents(strike_count, dip_count);
 
     let mut d1 = first_spacing;

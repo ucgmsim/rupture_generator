@@ -66,6 +66,10 @@ fn main() {
     // genslip's FFTs are single-precision FFTW, and wafront2d.f/fourg.f drag in the
     // gfortran runtime. Both are dynamic; only the genslip objects are vendored.
     println!("cargo:rustc-link-lib=dylib=fftw3f");
+    // See `field::make_planner_thread_safe`: FFTW's planner is process-global and
+    // the C plans on every transform, so the lock has to be installed before any
+    // of it runs.
+    println!("cargo:rustc-link-lib=dylib=fftw3f_threads");
     println!("cargo:rustc-link-lib=dylib=gfortran");
     println!("cargo:rustc-link-lib=dylib=m");
 
