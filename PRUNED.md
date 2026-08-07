@@ -78,6 +78,23 @@ than quietly produce a model that ignores them.
 | **`rtime2`** | A rise-time perturbation correlated with roughness, gated on `rtime_rand > 0` at `genslip_v5.6.2.c:2793`. `rtime_rand` defaults to `-1.0` and the config leaves it unset, so the block never runs and — unlike roughness and `tsfac2` — **draws nothing**. Nothing to skip and nothing to preserve. Refuse a positive `rtime_rand`. |
 | **the GSF reader** | Geometry arrives as arrays from `rupture_generator.geometry`, not as a file. `read_gsfpars_vsden_as` and `read_gsfpars_gsf2` are not ported. A GSF *writer* survives in the test harness, which needs one to drive the C binary. |
 
+## Pruned: inherited from `source_modelling.srf`
+
+`rupture_generator/srf.py` began as a copy of `source_modelling/srf.py`. Three of its
+methods went with the DataFrames when `SrfFile` became dataclasses of arrays.
+
+| Path | Why |
+| --- | --- |
+| `write_hdf5`, `from_hdf5`, `to_xarray` | An xarray/netCDF dump of the same arrays the SRF already holds, in a layout invented here and read by nothing. `rg 'to_xarray\|write_hdf5\|from_hdf5'` across `workflow`, `qcore`, `visualisation`, `simulation_validation` and `IM_calculation` finds the definitions and their own round-trip test, and no caller. They were the only reason this package depended on `xarray`, `h5netcdf`, and directly on `pandas`. |
+
+An xarray view of a `Points` is now three lines at the call site — one dataset
+variable per field over a `subfault` dimension — because the fields are already
+arrays. That is the conversion paying for itself, not a capability lost.
+
+`write_sw4_hdf5` stays. SW4 is an external consumer, `workflow`'s
+`scripts/srf_to_hdf5.py` is a caller, and its layout is specified in someone else's
+user guide rather than by us. It no longer needs pandas either.
+
 ## Refused rather than ignored
 
 A parameter set to a value the port cannot honour must raise, not be dropped. This is

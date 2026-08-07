@@ -14,13 +14,13 @@ kilometre at subduction scale; the caller here already has the answer.
 import dataclasses
 
 import numpy as np
-import pandas as pd
 import scipy as sp
 
 from rupture_generator._core import GeneratedRupture
-from rupture_generator.srf import SrfFile
+from rupture_generator.srf import FloatArray, PlaneHeader, Points, SrfFile
 
-FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
+CM_PER_KM = np.float32(1.0e5)
+"""What an SRF's shear speed is in, over what a velocity model's is in."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,34 +49,19 @@ class SubfaultGeometry:
         """
         lengths = {
             name: len(getattr(self, name))
-            for name in ("longitude_deg", "latitude_deg", "depth_km", "strike_deg", "dip_deg", "area_cm2")
+            for name in (
+                "longitude_deg",
+                "latitude_deg",
+                "depth_km",
+                "strike_deg",
+                "dip_deg",
+                "area_cm2",
+            )
         }
         if len(set(lengths.values())) != 1:
             raise ValueError(f"subfault arrays disagree on length: {lengths}")
         if not any(lengths.values()):
             raise ValueError("a fault needs at least one subfault")
-
-
-@dataclasses.dataclass(frozen=True)
-class PlaneHeader:
-    """One segment's entry in the SRF header.
-
-    `hypocentre_strike_km` is measured from the segment's along-strike **centre** and
-    `hypocentre_dip_km` from its top edge — genslip's convention, and the one
-    `realisation_to_srf.py` already converts into.
-    """
-
-    centre_longitude_deg: float
-    centre_latitude_deg: float
-    strike_count: int
-    dip_count: int
-    length_km: float
-    width_km: float
-    strike_deg: float
-    dip_deg: float
-    top_depth_km: float
-    hypocentre_strike_km: float
-    hypocentre_dip_km: float
 
 
 def to_srf_file(
@@ -97,7 +82,9 @@ def to_srf_file(
     header : PlaneHeader
         The segment's header entry.
     shear_speed_km_s : FloatArray
-        Shear-wave speed at each subfault. Version 2.0 carries it per point.
+        Shear-wave speed at each subfault, in the kilometres per second a velocity
+        model is written in. Version 2.0 carries it per point, in centimetres per
+        second, and this converts.
     density_g_cm3 : FloatArray
         Density at each subfault.
 
@@ -128,42 +115,22 @@ def to_srf_file(
                 f"{name} has {len(values)} entries for {subfaults} subfaults"
             )
 
-    headers = pd.DataFrame(
-        [
-            {
-                "elon": header.centre_longitude_deg,
-                "elat": header.centre_latitude_deg,
-                "nstk": header.strike_count,
-                "ndip": header.dip_count,
-                "len": header.length_km,
-                "wid": header.width_km,
-                "stk": header.strike_deg,
-                "dip": header.dip_deg,
-                "dtop": header.top_depth_km,
-                "shyp": header.hypocentre_strike_km,
-                "dhyp": header.hypocentre_dip_km,
-            }
-        ]
-    )
-    headers["nstk"] = headers["nstk"].astype(int)
-    headers["ndip"] = headers["ndip"].astype(int)
-
-    points = pd.DataFrame(
-        {
-            "lon": geometry.longitude_deg,
-            "lat": geometry.latitude_deg,
-            "dep": geometry.depth_km,
-            "stk": geometry.strike_deg,
-            "dip": geometry.dip_deg,
-            "area": geometry.area_cm2,
-            "tinit": rupture.onset_s,
-            "dt": np.full(subfaults, rupture.sample_interval_s, dtype=np.float32),
-            "vs": np.asarray(shear_speed_km_s, dtype=np.float32),
-            "den": np.asarray(density_g_cm3, dtype=np.float32),
-            "rake": rupture.rake_deg,
-            "slip": rupture.slip_cm,
-            "rise": rupture.rise_time_s,
-        }
+    points = Points(
+        longitude_deg=geometry.longitude_deg,
+        latitude_deg=geometry.latitude_deg,
+        depth_km=geometry.depth_km,
+        strike_deg=geometry.strike_deg,
+        dip_deg=geometry.dip_deg,
+        area_cm2=geometry.area_cm2,
+        onset_s=rupture.onset_s,
+        sample_interval_s=np.full(
+            subfaults, rupture.sample_interval_s, dtype=np.float32
+        ),
+        rake_deg=rupture.rake_deg,
+        slip_cm=rupture.slip_cm,
+        rise_time_s=rupture.rise_time_s,
+        shear_speed_cm_s=np.asarray(shear_speed_km_s, dtype=np.float32) * CM_PER_KM,
+        density_g_cm3=np.asarray(density_g_cm3, dtype=np.float32),
     )
 
     # The pulses are already concatenated with offsets that index into them, which is
@@ -172,9 +139,11 @@ def to_srf_file(
     offsets = np.asarray(rupture.slip_rate_offsets, dtype=np.int64)
     lengths = np.diff(offsets)
     longest = int(lengths.max()) if len(lengths) else 0
-    columns = np.concatenate(
-        [np.arange(length, dtype=np.int64) for length in lengths]
-    ) if longest else np.empty(0, dtype=np.int64)
+    columns = (
+        np.concatenate([np.arange(length, dtype=np.int64) for length in lengths])
+        if longest
+        else np.empty(0, dtype=np.int64)
+    )
 
     slip_rate = sp.sparse.csr_array(
         (np.asarray(rupture.slip_rate, dtype=np.float32), columns, offsets),
@@ -183,7 +152,7 @@ def to_srf_file(
 
     return SrfFile(
         version="2.0",
-        header=headers,
+        planes=[header],
         points=points,
-        slipt1_array=slip_rate,
+        slip_rate=slip_rate,
     )

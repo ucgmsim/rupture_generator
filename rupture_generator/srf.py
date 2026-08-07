@@ -5,15 +5,19 @@ as well as representing their contents.
 See https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
 for details on the SRF format.
 
+The in-memory model is arrays, one per field, named for what they hold and in what
+unit. `SrfFile.points` is a `Points`, not a table: `points.onset_s` is a float32
+array of one onset per subfault, and delaying a rupture is `points.onset_s += 1`.
+The names match `GeneratedRupture` and `assemble.SubfaultGeometry` field for field,
+so assembling an SRF out of a generated rupture is a copy rather than a translation.
+
 **Why not qcore.srf?**
 
 You might use this module instead of the `qcore.srf` module because:
 
 1. The `qcore.srf` module does not support writing SRF files.
 
-2. Exposing SRF points as a pandas dataframe allows manipulation of
-   the points using efficient vectorised operations. We use this in
-   rupture propagation to delay ruptures by adding to the `tinit` column.
+2. The points are arrays, so they can be manipulated with vectorised operations.
 
 3. There is better documentation for the new module than the old one.
 
@@ -21,7 +25,8 @@ You should use `qcore.srf` if you do not eventually intend to read all
 points of the SRF file (it is memory efficient), or you are working
 with code that already uses `qcore.srf`.
 
-Classes: ``SrfFile`` (representation of an SRF file).
+Classes: ``SrfFile`` (representation of an SRF file), ``PlaneHeader`` (one segment's
+header entry), ``Points`` (the subfaults).
 
 Functions: ``read_srf`` (read an SRF file into memory), ``write_srf`` (write an SRF
 object to a filepath).
@@ -29,12 +34,13 @@ object to a filepath).
 Examples
 --------
 >>> srf_file = srf.read_srf('/path/to/srf')
->>> srf_file.points['tinit'].max() # get the last time any point in the SRF ruptures
->>> srf_file.points['tinit'] += 1 # delay all points by one second
+>>> srf_file.points.onset_s.max() # get the last time any point in the SRF ruptures
+>>> srf_file.points.onset_s += 1 # delay all points by one second
 >>> srf.write_srf('/path/to/srf', srf_file)
 """
 
 import dataclasses
+import itertools
 import mmap
 from collections.abc import Buffer, Sequence
 from pathlib import Path
@@ -42,11 +48,11 @@ from typing import Self
 
 import h5py
 import numpy as np
-import pandas as pd
 import scipy as sp
-import xarray as xr
 
 from rupture_generator import srf_parser  # ty: ignore[unresolved-import]
+
+FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
 
 SUPPORTED_VERSIONS = frozenset({"1.0", "2.0"})
 """SRF versions this module reads and writes.
@@ -63,6 +69,229 @@ class ParseError(Exception):
     Two lines, copied from `source_modelling.parse_utils` rather than depended on:
     it was the only symbol this module took from that file.
     """
+
+
+@dataclasses.dataclass(frozen=True)
+class PlaneHeader:
+    """One segment's entry in the SRF header.
+
+    This is the `PLANE` block as the file stores it, and nothing more: no projection
+    and no geometry.
+
+    `hypocentre_strike_km` is measured from the segment's along-strike **centre** and
+    `hypocentre_dip_km` from its top edge — genslip's convention, and the one
+    `realisation_to_srf.py` already converts into.
+    """
+
+    centre_longitude_deg: float
+    centre_latitude_deg: float
+    strike_count: int
+    dip_count: int
+    length_km: float
+    width_km: float
+    strike_deg: float
+    dip_deg: float
+    top_depth_km: float
+    hypocentre_strike_km: float
+    hypocentre_dip_km: float
+
+    @property
+    def subfault_count(self) -> int:  # numpydoc ignore=RT01
+        """int: How many of the file's points belong to this segment."""
+        return self.strike_count * self.dip_count
+
+
+@dataclasses.dataclass
+class Points:
+    """The subfaults of an SRF, one array per field.
+
+    Every array holds one value per subfault, in the file's order: along strike
+    fastest, within each segment in turn.
+
+    `shear_speed_cm_s` and `density_g_cm3` are the version 2.0 material properties.
+    They are present together or not at all, which is what distinguishes a version
+    2.0 point block from a version 1.0 one.
+
+    Attributes
+    ----------
+    longitude_deg, latitude_deg : FloatArray
+        Where the subfault is.
+    depth_km : FloatArray
+        How deep it is.
+    strike_deg, dip_deg : FloatArray
+        Its local orientation, which need not equal its segment's.
+    area_cm2 : FloatArray
+        Its area, in the square centimetres the format stores and the moment sum is
+        expressed in.
+    onset_s : FloatArray
+        When it starts slipping. The SRF calls this `tinit`.
+    sample_interval_s : FloatArray
+        The timestep of its slip-rate function. The SRF calls this `dt`.
+    rake_deg : FloatArray
+        The slip direction.
+    slip_cm : FloatArray
+        Total slip.
+    rise_time_s : FloatArray
+        The duration of the slip-rate function, `nt1 * dt`. Derived on read rather
+        than stored: the file holds `nt1`.
+    shear_speed_cm_s : FloatArray | None
+        Shear-wave speed, in **centimetres** per second — the file's unit, a factor
+        of 1e5 away from the kilometres per second a velocity model is written in.
+    density_g_cm3 : FloatArray | None
+        Density.
+    """
+
+    longitude_deg: FloatArray
+    latitude_deg: FloatArray
+    depth_km: FloatArray
+    strike_deg: FloatArray
+    dip_deg: FloatArray
+    area_cm2: FloatArray
+    onset_s: FloatArray
+    sample_interval_s: FloatArray
+    rake_deg: FloatArray
+    slip_cm: FloatArray
+    rise_time_s: FloatArray
+    shear_speed_cm_s: FloatArray | None = None
+    density_g_cm3: FloatArray | None = None
+
+    def __post_init__(self) -> None:
+        """Check every array describes the same set of subfaults.
+
+        A DataFrame refused ragged columns for free. Nothing else here would notice,
+        and a column filled from the wrong array survives a round trip through the
+        file.
+
+        Raises
+        ------
+        ValueError
+            If the arrays are not all the same length, or only one of the two
+            material properties is present.
+        """
+        present = {
+            field.name: values
+            for field in dataclasses.fields(self)
+            if (values := getattr(self, field.name)) is not None
+        }
+        lengths = {name: len(values) for name, values in present.items()}
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"point arrays disagree on length: {lengths}")
+
+        material = ("shear_speed_cm_s", "density_g_cm3")
+        if len(present.keys() & material) == 1:
+            raise ValueError(
+                "shear_speed_cm_s and density_g_cm3 are the version 2.0 material "
+                "properties and go together; this has only "
+                f"{next(iter(present.keys() & material))}"
+            )
+
+    @property
+    def has_material_properties(self) -> bool:  # numpydoc ignore=RT01
+        """bool: Whether the points carry version 2.0's shear speed and density."""
+        return self.shear_speed_cm_s is not None
+
+    def __len__(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The number of subfaults.
+        """
+        return len(self.longitude_deg)
+
+    def __getitem__(self, subfaults: slice | np.ndarray) -> Self:
+        """Take a subset of the subfaults.
+
+        Parameters
+        ----------
+        subfaults : slice | np.ndarray
+            A slice, or an array of indices or of booleans.
+
+        Returns
+        -------
+        Self
+            The selected subfaults, as their own `Points`.
+
+        Raises
+        ------
+        TypeError
+            If given a single index. One subfault's worth of scalars is not a
+            `Points` and pretending otherwise produces arrays of rank zero.
+        """
+        if not isinstance(subfaults, slice | np.ndarray):
+            raise TypeError(
+                f"points are selected by a slice or an array, not {type(subfaults).__name__}"
+            )
+        return dataclasses.replace(
+            self,
+            **{
+                field.name: values[subfaults]
+                for field in dataclasses.fields(self)
+                if (values := getattr(self, field.name)) is not None
+            },
+        )
+
+
+class Segments(Sequence):
+    """A read-only view of an SRF's points, one segment at a time.
+
+    Parameters
+    ----------
+    planes : Sequence[PlaneHeader]
+        The header of the SRF file.
+    points : Points
+        The points of the SRF file.
+    """
+
+    def __init__(self, planes: Sequence[PlaneHeader], points: Points) -> None:
+        """Initialise the Segments object.
+
+        Parameters
+        ----------
+        planes : Sequence[PlaneHeader]
+            The header of the SRF file.
+        points : Points
+            The points of the SRF file.
+        """
+        self._planes = planes
+        self._points = points
+
+    # ty: slice overload missing to satisfy Sequence LSP; fix by adding
+    # @overload stubs for int and slice once slice support is implemented.
+    def __getitem__(self, index: int) -> Points:  # ty: ignore[invalid-method-override]
+        """Get the points of the nth segment in the SRF.
+
+        Parameters
+        ----------
+        index : int
+            The index of the segment.
+
+        Returns
+        -------
+        Points
+            The points belonging to the nth segment.
+        """
+        if not isinstance(index, int):
+            # NOTE: We are not covering this in test coverage because
+            # we intend to support slicing in the future.
+            raise TypeError(
+                "Segment index must an integer, not slice or tuple"
+            )  # pragma: no cover
+        boundaries = list(
+            itertools.accumulate(
+                (plane.subfault_count for plane in self._planes), initial=0
+            )
+        )
+        return self._points[boundaries[index] : boundaries[index + 1]]
+
+    def __len__(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The number of segments in the SRF.
+        """
+        return len(self._planes)
 
 
 SW4_PLANE_DTYPE = np.dtype(
@@ -103,121 +332,66 @@ SW4_POINTS_DTYPE = np.dtype(
     ]
 )
 
-_SW4_POINTS_EXTERNAL_FIELDS = {"VS", "DEN", "NT1", "SLIP2", "NT2", "SLIP3", "NT3"}
+_SW4_PLANE_FIELDS = {
+    "ELON": "centre_longitude_deg",
+    "ELAT": "centre_latitude_deg",
+    "NSTK": "strike_count",
+    "NDIP": "dip_count",
+    "LEN": "length_km",
+    "WID": "width_km",
+    "STK": "strike_deg",
+    "DIP": "dip_deg",
+    "DTOP": "top_depth_km",
+    "SHYP": "hypocentre_strike_km",
+    "DHYP": "hypocentre_dip_km",
+}
+"""Which attribute of a `PlaneHeader` fills each SW4 plane field.
 
+Named rather than positional. The two coordinates and the two hypocentre offsets are
+adjacent and the same width, so a transposition would be silent.
+"""
 
-class Segments(Sequence):
-    """A read-only view for SRF segments.
+_SW4_POINT_FIELDS = {
+    "LON": "longitude_deg",
+    "LAT": "latitude_deg",
+    "DEP": "depth_km",
+    "STK": "strike_deg",
+    "DIP": "dip_deg",
+    "AREA": "area_cm2",
+    "TINIT": "onset_s",
+    "DT": "sample_interval_s",
+    "RAKE": "rake_deg",
+    "SLIP1": "slip_cm",
+}
+"""Which array of a `Points` fills each SW4 point field.
 
-    Parameters
-    ----------
-    header : pd.DataFrame
-        The header of the SRF file.
-    points : pd.DataFrame
-        The points of the SRF file.
-    """
-
-    def __init__(self, header: pd.DataFrame, points: pd.DataFrame) -> None:
-        """Initialise the Segments object.
-
-        Parameters
-        ----------
-        header : pd.DataFrame
-            The header of the SRF file.
-        points : pd.DataFrame
-            The points of the SRF file.
-        """
-        self._header = header
-        self._points = points
-
-    # ty: slice overload missing to satisfy Sequence LSP; fix by adding
-    # @overload stubs for int and slice once slice support is implemented.
-    def __getitem__(self, index: int) -> pd.DataFrame:  # ty: ignore[invalid-method-override]
-        """Get the nth segment in the SRF.
-
-        Parameters
-        ----------
-        index : int
-            The index of the segment.
-
-        Returns
-        -------
-        int
-            The nth segment in the SRF.
-        """
-        if not isinstance(index, int):
-            # NOTE: We are not covering this in test coverage because
-            # we intend to support slicing in the future.
-            raise TypeError(
-                "Segment index must an integer, not slice or tuple"
-            )  # pragma: no cover
-        points_offset = (self._header["nstk"] * self._header["ndip"]).cumsum()
-        if index == 0:
-            return self._points.iloc[: points_offset.iloc[index]]
-        return self._points.iloc[
-            points_offset.iloc[index - 1] : points_offset.iloc[index]
-        ]
-
-    def __len__(self) -> int:
-        """
-        Returns
-        -------
-        int
-            The number of segments in the SRF.
-        """
-        return len(self._header)
+`VS` and `DEN` are version 2.0 only, `NT1` comes from the slip-rate matrix, and
+`SLIP2`/`NT2`/`SLIP3`/`NT3` describe rake components this format does not carry and
+stay zero.
+"""
 
 
 @dataclasses.dataclass
 class SrfFile:
-    """
-    Representation of an SRF file.
+    """Representation of an SRF file.
+
+    `version` is not inferred from what the points happen to carry. It is declared,
+    and the constructor refuses a declaration the points contradict — which is the
+    only way the two cannot disagree at write time.
 
     Attributes
     ----------
     version : str
-        The version of this SrfFile
-    header : pd.DataFrame
-        A list of SrfSegment objects representing the header of the SRF file.
-        The columns of the header are:
-
-        - elon: The centre longitude of the plane.
-        - elat: The centre latitude of the plane.
-        - nstk: The number of patches along strike for the plane.
-        - ndip: The number of patches along dip for the plane.
-        - len: The length of the plane (in km).
-        - wid: The width of the plane (in km).
-        - stk: The plane strike.
-        - dip: The plane dip.
-        - dtop: The top of the plane.
-        - shyp: The hypocentre location in strike coordinates.
-        - dhyp: The hypocentre location in dip coordinates.
-
-
-    points : pd.DataFrame
-        A dataframe of the points (subfaults) in the SRF file. The columns are:
-
-        - lon: longitude of the patch.
-        - lat: latitude of the patch.
-        - dep: depth of the patch (in kilometres).
-        - stk: local strike.
-        - dip: local dip.
-        - area: area of the patch (in cm^2).
-        - tinit: initial rupture time for this patch (in seconds).
-        - dt: the timestep for all slipt columns (in seconds).
-        - vs: shear-wave velocity at the patch (in cm/s). Version 2.0 only.
-        - den: density at the patch (in g/cm^3). Version 2.0 only.
-        - rake: local rake.
-        - slip: total slip (in cm).
-        - rise: total rise time (in seconds), computed as nt * dt.
-
-        The vs and den columns are only present when version is "2.0". The
-        rise column is computed from the SRF and is not written to disk. See
-        the linked documentation on the SRF format for more details.
-
-    slipt1_array : csr_array
-        A sparse array containing the slip for each point and at each timestep, where
-        slipt1_array[i, j] is the slip for the ith patch at time t = j * dt.
+        The version of this SrfFile, one of `SUPPORTED_VERSIONS`.
+    planes : list[PlaneHeader]
+        The header of the SRF file: one entry per segment.
+    points : Points
+        The subfaults, one array per field. See `Points`.
+    slip_rate : csr_array
+        A sparse array of the slip-rate function of every point, where
+        `slip_rate[i, j]` is the slip rate of the ith subfault `j` samples after its
+        own onset. Row `i` is as long as that subfault's pulse; the matrix is as wide
+        as the longest one.
 
     References
     ----------
@@ -225,9 +399,34 @@ class SrfFile:
     """
 
     version: str
-    header: pd.DataFrame
-    points: pd.DataFrame
-    slipt1_array: sp.sparse.csr_array
+    planes: list[PlaneHeader]
+    points: Points
+    slip_rate: sp.sparse.csr_array
+
+    def __post_init__(self) -> None:
+        """Check the declared version and the points agree.
+
+        Raises
+        ------
+        ValueError
+            If the version is not supported, or the material properties are present
+            when it is 1.0 or absent when it is 2.0.
+        """
+        if self.version not in SUPPORTED_VERSIONS:
+            raise ValueError(
+                f"unsupported SRF version {self.version!r}; "
+                f"supported versions are {', '.join(sorted(SUPPORTED_VERSIONS))}"
+            )
+        if self.version == "2.0" and not self.points.has_material_properties:
+            raise ValueError(
+                "SRF version 2.0 carries vs and den per point, and these points have "
+                "neither. Add them, or set version to '1.0'."
+            )
+        if self.version == "1.0" and self.points.has_material_properties:
+            raise ValueError(
+                "SRF version 1.0 has nowhere to put vs and den. Drop them, or set "
+                "version to '2.0'."
+            )
 
     @classmethod
     def from_file(cls, srf_ffp: Path | str | Buffer) -> Self:
@@ -242,6 +441,11 @@ class SrfFile:
         -------
         Self
             The SRFFile instance for this path.
+
+        Raises
+        ------
+        ParseError
+            If the file is not valid SRF.
         """
         try:
             if isinstance(srf_ffp, (Path, str)):
@@ -258,63 +462,52 @@ class SrfFile:
         except ValueError as parse_error:
             raise ParseError(str(parse_error)) from parse_error
 
-        version = "2.0" if py_srf.metadata.vs is not None else "1.0"
-
-        headers = pd.DataFrame(
-            [
-                {
-                    "elon": plane.elon,
-                    "elat": plane.elat,
-                    "nstk": plane.nstk,
-                    "ndip": plane.ndip,
-                    "len": plane.len,
-                    "wid": plane.wid,
-                    "stk": plane.stk,
-                    "dip": plane.dip,
-                    "dtop": plane.dtop,
-                    "shyp": plane.shyp,
-                    "dhyp": plane.dhyp,
-                }
-                for plane in py_srf.planes
-            ]
-        )
-        headers["nstk"] = headers["nstk"].astype(int)
-        headers["ndip"] = headers["ndip"].astype(int)
-
         metadata = py_srf.metadata
-        points_data = {
-            "lon": metadata.lon,
-            "lat": metadata.lat,
-            "dep": metadata.dep,
-            "stk": metadata.stk,
-            "dip": metadata.dip,
-            "area": metadata.area,
-            "tinit": metadata.tinit,
-            "dt": metadata.dt,
-        }
-        if version == "2.0":
-            points_data["vs"] = metadata.vs
-            points_data["den"] = metadata.density
-        points_data["rake"] = metadata.rake
-        points_data["slip"] = metadata.slip1
-        points_data["rise"] = metadata.rise
-        points_df = pd.DataFrame(points_data)
+        version = "2.0" if metadata.vs is not None else "1.0"
+
+        planes = [
+            PlaneHeader(
+                centre_longitude_deg=plane.elon,
+                centre_latitude_deg=plane.elat,
+                strike_count=int(plane.nstk),
+                dip_count=int(plane.ndip),
+                length_km=plane.len,
+                width_km=plane.wid,
+                strike_deg=plane.stk,
+                dip_deg=plane.dip,
+                top_depth_km=plane.dtop,
+                hypocentre_strike_km=plane.shyp,
+                hypocentre_dip_km=plane.dhyp,
+            )
+            for plane in py_srf.planes
+        ]
+
+        points = Points(
+            longitude_deg=metadata.lon,
+            latitude_deg=metadata.lat,
+            depth_km=metadata.dep,
+            strike_deg=metadata.stk,
+            dip_deg=metadata.dip,
+            area_cm2=metadata.area,
+            onset_s=metadata.tinit,
+            sample_interval_s=metadata.dt,
+            rake_deg=metadata.rake,
+            slip_cm=metadata.slip1,
+            rise_time_s=metadata.rise,
+            shear_speed_cm_s=metadata.vs,
+            density_g_cm3=metadata.density,
+        )
 
         row_ptr = py_srf.slipt1.row_ptr
         data = py_srf.slipt1.data
         indices = py_srf.slipt1.indices
 
         n_timesteps = int(indices.max()) + 1 if len(indices) else 0
-        slipt1_array = sp.sparse.csr_array(
+        slip_rate = sp.sparse.csr_array(
             (data, indices, row_ptr), shape=(len(row_ptr) - 1, n_timesteps)
         )
 
-        return cls(
-            version,
-            headers,
-            points_df,
-            slipt1_array,
-        )
+        return cls(version, planes, points, slip_rate)
 
     def write_srf(self, srf_ffp: str | Path) -> None:
         """Write an SRFFile object to a file.
@@ -323,68 +516,54 @@ class SrfFile:
         ----------
         srf_ffp : Path
             The path to the output SRF.
-
         """
-
         planes = [
             srf_parser.PySrfPlane(
-                elon=row["elon"],
-                elat=row["elat"],
-                nstk=int(row["nstk"]),
-                ndip=int(row["ndip"]),
-                len=row["len"],
-                wid=row["wid"],
-                stk=row["stk"],
-                dip=row["dip"],
-                dtop=row["dtop"],
-                shyp=row["shyp"],
-                dhyp=row["dhyp"],
+                elon=plane.centre_longitude_deg,
+                elat=plane.centre_latitude_deg,
+                nstk=plane.strike_count,
+                ndip=plane.dip_count,
+                len=plane.length_km,
+                wid=plane.width_km,
+                stk=plane.strike_deg,
+                dip=plane.dip_deg,
+                dtop=plane.top_depth_km,
+                shyp=plane.hypocentre_strike_km,
+                dhyp=plane.hypocentre_dip_km,
             )
-            for _, row in self.header.iterrows()
+            for plane in self.planes
         ]
 
-        # The version written is `self.version`, and the point columns have to
-        # agree with it. Previously the version was *inferred* from whether vs and
-        # den happened to be present, so `self.version` was set on read and then
-        # silently ignored on write -- a file could round-trip into a different
-        # version than it came in as.
-        if self.version not in SUPPORTED_VERSIONS:
-            raise ValueError(
-                f"cannot write SRF version {self.version!r}; "
-                f"supported versions are {', '.join(sorted(SUPPORTED_VERSIONS))}"
-            )
+        def as_float32(values: FloatArray) -> FloatArray:
+            return np.ascontiguousarray(values, dtype=np.float32)
 
-        has_material = "vs" in self.points and "den" in self.points
-        if self.version == "2.0" and not has_material:
-            raise ValueError(
-                "SRF version 2.0 carries vs and den per point, and this file has "
-                "neither. Add them, or set version to '1.0'."
-            )
-
+        points = self.points
         metadata = srf_parser.PySrfMetadata(
-            lon=self.points["lon"].to_numpy(dtype=np.float32),
-            lat=self.points["lat"].to_numpy(dtype=np.float32),
-            dep=self.points["dep"].to_numpy(dtype=np.float32),
-            stk=self.points["stk"].to_numpy(dtype=np.float32),
-            dip=self.points["dip"].to_numpy(dtype=np.float32),
-            area=self.points["area"].to_numpy(dtype=np.float32),
-            tinit=self.points["tinit"].to_numpy(dtype=np.float32),
-            dt=self.points["dt"].to_numpy(dtype=np.float32),
-            rake=self.points["rake"].to_numpy(dtype=np.float32),
-            slip1=self.points["slip"].to_numpy(dtype=np.float32),
-            rise=self.points["rise"].to_numpy(dtype=np.float32),
-            vs=self.points["vs"].to_numpy(dtype=np.float32)
-            if self.version == "2.0"
+            lon=as_float32(points.longitude_deg),
+            lat=as_float32(points.latitude_deg),
+            dep=as_float32(points.depth_km),
+            stk=as_float32(points.strike_deg),
+            dip=as_float32(points.dip_deg),
+            area=as_float32(points.area_cm2),
+            tinit=as_float32(points.onset_s),
+            dt=as_float32(points.sample_interval_s),
+            rake=as_float32(points.rake_deg),
+            slip1=as_float32(points.slip_cm),
+            rise=as_float32(points.rise_time_s),
+            # The version and these two agree by construction -- see __post_init__ --
+            # so the file cannot come out as a version other than `self.version`.
+            vs=as_float32(points.shear_speed_cm_s)
+            if points.shear_speed_cm_s is not None
             else None,
-            density=self.points["den"].to_numpy(dtype=np.float32)
-            if self.version == "2.0"
+            density=as_float32(points.density_g_cm3)
+            if points.density_g_cm3 is not None
             else None,
         )
 
         slipt1 = srf_parser.PyCsrMatrix(
-            row_ptr=self.slip.indptr.astype(np.uint64),
-            indices=self.slip.indices.astype(np.uint64),
-            data=self.slip.data.astype(np.float32),
+            row_ptr=self.slip_rate.indptr.astype(np.uint64),
+            indices=self.slip_rate.indices.astype(np.uint64),
+            data=self.slip_rate.data.astype(np.float32),
         )
 
         py_srf_file = srf_parser.PySrfFile(planes, metadata, slipt1)
@@ -411,196 +590,45 @@ class SrfFile:
            Livermore National Laboratory, Livermore, CA.
            https://github.com/geodynamics/sw4/blob/master/doc/SW4_UsersGuide.pdf
         """
-        plane_data = np.empty(len(self.header), dtype=SW4_PLANE_DTYPE)
-        assert SW4_PLANE_DTYPE.names is not None
-        for field in SW4_PLANE_DTYPE.names:
-            plane_data[field] = self.header[field.lower()].values.astype(
-                SW4_PLANE_DTYPE[field].type  # ty: ignore[invalid-argument-type]
-            )  # ty: ignore[invalid-assignment]
+        plane_data = np.zeros(len(self.planes), dtype=SW4_PLANE_DTYPE)
+        for sw4_field, attribute in _SW4_PLANE_FIELDS.items():
+            plane_data[sw4_field] = [getattr(plane, attribute) for plane in self.planes]
 
-        # Build POINTS structured array
-        points_data: np.ndarray = np.zeros(len(self.points), dtype=SW4_POINTS_DTYPE)
-        assert SW4_POINTS_DTYPE.names is not None
-        for field in SW4_POINTS_DTYPE.names:
-            if field in _SW4_POINTS_EXTERNAL_FIELDS:
-                continue
-            points_data[field] = self.points[
-                "slip" if field == "SLIP1" else field.lower()
-            ].values.astype(SW4_POINTS_DTYPE[field].type)  # ty: ignore
+        points_data = np.zeros(len(self.points), dtype=SW4_POINTS_DTYPE)
+        for sw4_field, attribute in _SW4_POINT_FIELDS.items():
+            points_data[sw4_field] = getattr(self.points, attribute)
 
-        points_data["NT1"] = np.diff(self.slipt1_array.indptr).astype(np.int32)
-        if (
-            self.version == "2.0"
-        ):  # vs/den are mandatory in 2.0; missing columns will fail loudly
-            points_data["VS"] = self.points["vs"].to_numpy().astype(np.float32)
-            points_data["DEN"] = self.points["den"].to_numpy().astype(np.float32)
+        points_data["NT1"] = np.diff(self.slip_rate.indptr)
+        if self.points.has_material_properties:
+            points_data["VS"] = self.points.shear_speed_cm_s
+            points_data["DEN"] = self.points.density_g_cm3
 
         with h5py.File(output_ffp, "w") as h5file:
             h5file.attrs.create("VERSION", np.float32(self.version))
             h5file.attrs.create("PLANE", plane_data)
             h5file.create_dataset("POINTS", data=points_data)
-            h5file.create_dataset("SR1", data=self.slipt1_array.data.astype(np.float32))
-
-    def write_hdf5(
-        self, hdf5_ffp: Path, include_slip_time_function: bool = True
-    ) -> None:
-        """Write an SRFFile to disk in an HDF5 format using xarray's to_netcdf.
-
-        Parameters
-        ----------
-        hdf5_ffp : Path
-            The path to the HDF5 file to save to.
-        include_slip_time_function : bool
-            If True, include the slip time function in the HDF5
-            output. Slower and outputs larger files.
-        """
-
-        self.to_xarray(include_slip_time_function=include_slip_time_function).to_netcdf(
-            hdf5_ffp,
-            engine="h5netcdf",
-            encoding={
-                # Apply compression to the 'data' variable of the sparse array
-                "data": {"compression": "zlib", "complevel": 9},
-                # Apply compression to the 'indices' variable of the sparse array
-                "indices": {"compression": "zlib", "complevel": 9},
-            }
-            if include_slip_time_function
-            else None,
-        )
-
-    @classmethod
-    def from_hdf5(cls, hdf5_ffp: Path) -> Self:
-        """
-        Reads an SRFFile object from an HDF5 file.
-
-        Parameters
-        ----------
-        hdf5_ffp : Path
-            The file path to the HDF5 file.
-
-        Returns
-        -------
-        SrfFile
-            An instance of the SrfFile class reconstructed from the HDF5 data.
-        """
-        ds = xr.open_dataset(hdf5_ffp, engine="h5netcdf")
-
-        header_data = {
-            var_name[len("plane_") :]: ds[var_name].values
-            for var_name in ds.data_vars
-            if isinstance(var_name, str) and var_name.startswith("plane_")
-        }
-        header_df = pd.DataFrame(header_data)
-        header_df[["nstk", "ndip"]] = header_df[["nstk", "ndip"]].astype(int)
-
-        points_data = {
-            col: ds[col].values
-            for col in ds.data_vars
-            if isinstance(col, str)
-            and not col.startswith("plane_")
-            and col not in {"data", "indices", "indptr"}
-        }
-        points_df = pd.DataFrame(points_data)
-
-        data = ds["data"].values
-        indices = ds["indices"].values
-        indptr_saved = ds["indptr"].values
-        reconstructed_indptr = np.append(indptr_saved, len(data))
-
-        slipt1_array = sp.sparse.csr_array((data, indices, reconstructed_indptr))
-
-        return cls(
-            version=ds.attrs["version"],
-            header=header_df,
-            points=points_df,
-            slipt1_array=slipt1_array,
-        )
-
-    def to_xarray(self, include_slip_time_function: bool = True) -> xr.Dataset:
-        """Convert an SRFFile into an xarray dataset.
-
-        Parameters
-        ----------
-        include_slip_time_function : bool, default False
-            If True, include the slip time functions as well as the
-            slip summaries in the SRF. Slower.
-
-        Returns
-        -------
-        xr.Dataset
-            An xarray dataset containing the information from an SRF
-            file.
-        """
-        # Prepare data variables and coordinates for the header Dataset
-        header_data_vars = {
-            f"plane_{col}": ("segment", self.header[col].values)
-            for col in self.header.columns
-        }
-        header_coords = {"segment": np.arange(len(self.header))}
-        header_ds = xr.Dataset(header_data_vars, coords=header_coords)
-
-        points_data_vars = {
-            col: ("patch", self.points[col].values) for col in self.points.columns
-        }
-        points_coords = {"patch": np.arange(len(self.points))}
-        points_ds = xr.Dataset(points_data_vars, coords=points_coords)
-
-        datasets = [header_ds, points_ds]
-        if include_slip_time_function:
-            n_patches, n_timesteps = self.slipt1_array.shape
-            slip_ds = xr.Dataset(
-                {
-                    "data": (("nz_idx",), self.slipt1_array.data),
-                    "indices": (("nz_idx",), self.slipt1_array.indices),
-                    "indptr": (
-                        ("row",),
-                        self.slipt1_array.indptr[:-1],
-                    ),  # Apply slicing to the data
-                },
-                coords={
-                    "row": np.arange(n_patches),
-                    "col": np.arange(n_timesteps),
-                },
-                attrs={
-                    "sparse_format": "csr",
-                    "original_shape": self.slipt1_array.shape,
-                    "units": "cm",
-                    "description": "Slip for each patch at each timestep",
-                },
-            )
-            datasets.append(slip_ds)
-        ds = xr.merge(datasets)
-        ds.attrs["version"] = self.version
-
-        return ds
-
-    @property
-    def slip(self):  # numpydoc ignore=RT01
-        "csr_array: A sparse array containing slip-time functions for each point."
-        return self.slipt1_array
-
+            h5file.create_dataset("SR1", data=self.slip_rate.data.astype(np.float32))
 
     @property
     def nt(self):  # numpydoc ignore=RT01
         """int: Samples in the longest slip-rate pulse.
 
-        **Not** the rupture's duration in samples. Each row of `slipt1_array` starts
-        at column zero and the onset lives in `points["tinit"]` as a float, so the
-        matrix is as wide as the longest pulse rather than as wide as the rupture.
-        For the duration, use `(points["tinit"].max() / dt) + nt`.
+        **Not** the rupture's duration in samples. Each row of `slip_rate` starts at
+        column zero and the onset lives in `points.onset_s` as a float, so the matrix
+        is as wide as the longest pulse rather than as wide as the rupture. For the
+        duration, use `(points.onset_s.max() / dt) + nt`.
         """
-        return self.slipt1_array.shape[1]
+        return self.slip_rate.shape[1]
 
     @property
     def dt(self):  # numpydoc ignore=RT01
         """float: time resolution of SRF."""
-        return self.points["dt"].iloc[0]
+        return self.points.sample_interval_s[0]
 
     @property
     def segments(self) -> Segments:  # numpydoc ignore=RT01
         """Segments: A sequence of segments in the SRF."""
-        return Segments(self.header, self.points)
-
+        return Segments(self.planes, self.points)
 
 
 def read_srf(srf_ffp: Path | str | Buffer) -> SrfFile:

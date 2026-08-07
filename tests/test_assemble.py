@@ -18,8 +18,8 @@ from rupture_generator import (
     VelocityModel1D,
     generate_rupture,
 )
-from rupture_generator.assemble import PlaneHeader, SubfaultGeometry, to_srf_file
-from rupture_generator.srf import read_srf, write_srf
+from rupture_generator.assemble import SubfaultGeometry, to_srf_file
+from rupture_generator.srf import PlaneHeader, read_srf, write_srf
 
 STRIKE, DIP = 12, 8
 SUBFAULTS = STRIKE * DIP
@@ -113,32 +113,42 @@ def assemble():
 class TestTheColumnsComeFromTheRightArrays:
     def test_the_physics_columns_are_the_rupture(self) -> None:
         generated, srf_file = assemble()
-        assert srf_file.points["slip"].to_numpy() == pytest.approx(generated.slip_cm)
-        assert srf_file.points["rake"].to_numpy() == pytest.approx(generated.rake_deg)
-        assert srf_file.points["tinit"].to_numpy() == pytest.approx(generated.onset_s)
-        assert srf_file.points["rise"].to_numpy() == pytest.approx(generated.rise_time_s)
+        assert srf_file.points.slip_cm == pytest.approx(generated.slip_cm)
+        assert srf_file.points.rake_deg == pytest.approx(generated.rake_deg)
+        assert srf_file.points.onset_s == pytest.approx(generated.onset_s)
+        assert srf_file.points.rise_time_s == pytest.approx(generated.rise_time_s)
 
     def test_the_location_columns_are_the_geometry(self) -> None:
         _, srf_file = assemble()
         where = geometry()
-        assert srf_file.points["lon"].to_numpy() == pytest.approx(where.longitude_deg)
-        assert srf_file.points["lat"].to_numpy() == pytest.approx(where.latitude_deg)
-        assert srf_file.points["dep"].to_numpy() == pytest.approx(where.depth_km)
+        assert srf_file.points.longitude_deg == pytest.approx(where.longitude_deg)
+        assert srf_file.points.latitude_deg == pytest.approx(where.latitude_deg)
+        assert srf_file.points.depth_km == pytest.approx(where.depth_km)
+
+    def test_the_shear_speed_is_converted_to_the_formats_unit(self) -> None:
+        # The SRF stores vs in cm/s -- genslip writes `1.0e+05*vmod->vs[k]`
+        # (gslip_srf_subs.c:1609) -- and a velocity model is in km/s. Writing the
+        # km/s straight through understates it by a factor of 1e5, which nothing
+        # downstream would flag: 3.2 is a plausible number for something.
+        _, srf_file = assemble()
+        assert srf_file.points.shear_speed_cm_s == pytest.approx(3.2e5)
+        assert srf_file.points.density_g_cm3 == pytest.approx(2.6)
 
     def test_the_header_is_the_plane(self) -> None:
         _, srf_file = assemble()
-        row = srf_file.header.iloc[0]
-        assert row["nstk"] == STRIKE
-        assert row["ndip"] == DIP
-        assert row["dip"] == pytest.approx(60.0)
-        assert row["dhyp"] == pytest.approx(4.0)
+        assert len(srf_file.planes) == 1
+        plane = srf_file.planes[0]
+        assert plane.strike_count == STRIKE
+        assert plane.dip_count == DIP
+        assert plane.dip_deg == pytest.approx(60.0)
+        assert plane.hypocentre_dip_km == pytest.approx(4.0)
 
 
 class TestTheSlipRatePulses:
     def test_each_row_is_its_subfault_pulse(self) -> None:
         generated, srf_file = assemble()
         offsets = np.asarray(generated.slip_rate_offsets, dtype=np.int64)
-        dense = srf_file.slipt1_array.toarray()
+        dense = srf_file.slip_rate.toarray()
         for index in range(0, SUBFAULTS, 5):
             start, end = int(offsets[index]), int(offsets[index + 1])
             expected = generated.slip_rate[start:end]
@@ -148,13 +158,13 @@ class TestTheSlipRatePulses:
 
     def test_every_row_integrates_to_its_slip(self) -> None:
         generated, srf_file = assemble()
-        integrals = srf_file.slipt1_array.sum(axis=1) * generated.sample_interval_s
+        integrals = srf_file.slip_rate.sum(axis=1) * generated.sample_interval_s
         assert integrals == pytest.approx(generated.slip_cm, rel=1e-3)
 
     def test_the_matrix_is_only_as_wide_as_the_longest_pulse(self) -> None:
         generated, srf_file = assemble()
         offsets = np.asarray(generated.slip_rate_offsets, dtype=np.int64)
-        assert srf_file.slipt1_array.shape == (SUBFAULTS, int(np.diff(offsets).max()))
+        assert srf_file.slip_rate.shape == (SUBFAULTS, int(np.diff(offsets).max()))
 
 
 class TestRoundTrip:
@@ -167,13 +177,9 @@ class TestRoundTrip:
         assert reloaded.version == "2.0"
         # The format stores these as text at fixed precision, so the comparison is
         # to that precision rather than exact.
-        assert reloaded.points["slip"].to_numpy() == pytest.approx(
-            generated.slip_cm, rel=1e-4
-        )
-        assert reloaded.points["tinit"].to_numpy() == pytest.approx(
-            generated.onset_s, abs=1e-4
-        )
-        assert reloaded.points["vs"].to_numpy() == pytest.approx(3.2)
+        assert reloaded.points.slip_cm == pytest.approx(generated.slip_cm, rel=1e-4)
+        assert reloaded.points.onset_s == pytest.approx(generated.onset_s, abs=1e-4)
+        assert reloaded.points.shear_speed_cm_s == pytest.approx(3.2e5)
 
     def test_the_reloaded_pulses_still_integrate_to_the_slip(self, tmp_path) -> None:
         generated, srf_file = assemble()
@@ -181,7 +187,7 @@ class TestRoundTrip:
         write_srf(path, srf_file)
         reloaded = read_srf(path)
 
-        integrals = reloaded.slipt1_array.sum(axis=1) * generated.sample_interval_s
+        integrals = reloaded.slip_rate.sum(axis=1) * generated.sample_interval_s
         assert integrals == pytest.approx(generated.slip_cm, rel=1e-3)
 
 

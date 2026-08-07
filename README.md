@@ -43,6 +43,13 @@ The configuration **is** the compiled core's types. Nothing in the library speak
 genslip's `getpar` names; that vocabulary lives only in `tests/harness`, which drives
 the binary the port is compared against. See `tests/harness/README.md`.
 
+An `SrfFile` is dataclasses of arrays, not tables: `points.onset_s` is one float32 per
+subfault and delaying a rupture is `points.onset_s += 1`. The field names are
+`GeneratedRupture`'s and `SubfaultGeometry`'s, so `assemble.to_srf_file` is a copy
+rather than a translation, and every one of them carries its unit — which is how the
+format's centimetres-per-second shear speed stopped being written in the velocity
+model's kilometres per second.
+
 ## Gates
 
 ```sh
@@ -86,21 +93,17 @@ The two rules that cost the most to learn:
 
 Ordered, and each is its own commit.
 
-1. **Replace the SRF data model with dataclasses of arrays.** `SrfFile` holds pandas
-   DataFrames; the Rust side already produces arrays and `GeneratedRupture` already
-   looks like the target. Decide what happens to `write_hdf5` / `from_hdf5` /
-   `write_sw4_hdf5` / `to_xarray`, the only pandas-dependent parts.
-2. **Replace the hand-rolled scanner with `nom`.** `crates/srf/src/scanner.rs` is 242
+1. **Replace the hand-rolled scanner with `nom`.** `crates/srf/src/scanner.rs` is 242
    lines plus `lexical-core`. Semantics are not preserved for their own sake — the
    SRF suite passing is the contract. Measure: this is the hot path for a
    multi-gigabyte file.
-3. **Build the Stage 0 fixture corpus.** Realisations spanning single-plane /
+2. **Build the Stage 0 fixture corpus.** Realisations spanning single-plane /
    multi-segment, crustal / subduction dip, small / large `nstk x ndip`, each with a
    fixed seed, storing the GSF and the argument list rather than just the SRF. Drive
-   the real binary and compare parsed SRF fields column by column. This is the
+   the real binary and compare parsed SRF fields field by field. This is the
    acceptance gate the per-function parity tests roll up into.
-4. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-5. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
+4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
    disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites.
