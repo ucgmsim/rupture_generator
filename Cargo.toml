@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/genslip", "crates/genslip-oracle", "crates/srf"]
+members = ["crates/genslip", "crates/genslip-oracle", "crates/srf", "crates/core"]
 
 [workspace.package]
 edition = "2024"

@@ -28,6 +28,11 @@ target = "rupture_generator.srf_parser"
 path = "crates/srf/Cargo.toml"
 binding = "PyO3"
 
+[[tool.setuptools-rust.ext-modules]]
+target = "rupture_generator._core"
+path = "crates/core/Cargo.toml"
+binding = "PyO3"
+
 [tool.setuptools.packages]
 find = { where = [
   "."
