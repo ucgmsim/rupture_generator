@@ -514,6 +514,52 @@ POINTS 2\n\
         ));
     }
 
+    /// Parse throughput, not correctness. `#[ignore]`d so the gate stays a gate.
+    ///
+    /// ```sh
+    /// cargo test -p srf --release -- --ignored --nocapture parse_throughput
+    /// ```
+    ///
+    /// The number that matters is MB/s: this parser is expected to be handed
+    /// multi-gigabyte files, and a scanner change is worth landing only if it holds
+    /// throughput. Override the input with `SRF_THROUGHPUT_FILE`.
+    #[test]
+    #[ignore = "measures time, not behaviour"]
+    fn parse_throughput() {
+        const DEFAULT: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/srfs/rupture_1.srf"
+        );
+        const RUNS: u32 = 5;
+
+        let path = std::env::var("SRF_THROUGHPUT_FILE").unwrap_or_else(|_| DEFAULT.to_owned());
+        let data = std::fs::read(&path).expect("throughput fixture is readable");
+
+        let mut best = std::time::Duration::MAX;
+        let mut points = 0;
+        for _ in 0..RUNS {
+            let start = std::time::Instant::now();
+            let srf = read_srf_struct(&mut scanner::Scanner::new(&data)).expect("fixture parses");
+            best = best.min(start.elapsed());
+            points = match &srf.metadata {
+                SrfMetadataVersioned::V1(metadata) => metadata.lon.len(),
+                SrfMetadataVersioned::V2(metadata) => metadata.base.lon.len(),
+            };
+        }
+
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "reporting a rate to three significant figures"
+        )]
+        let megabytes = data.len() as f64 / (1024.0 * 1024.0);
+        let seconds = best.as_secs_f64();
+        println!(
+            "{path}: {megabytes:.1} MiB, {points} points, best of {RUNS} {seconds:.3} s \
+             => {:.1} MiB/s",
+            megabytes / seconds
+        );
+    }
+
     fn replace_once(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
         let start = data
             .windows(from.len())
