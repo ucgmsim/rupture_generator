@@ -1,0 +1,18 @@
+[package]
+name = "genslip"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Kinematic rupture model generation: a port of genslip v5.6.2."
+
+[dev-dependencies]
+genslip-oracle.workspace = true
+proptest = "1"
+
+[lints]
+workspace = true
+
+[dependencies]
+rand = "0.10.2"
+rand_distr = "0.6.0"
+rand_pcg = "0.10.2"

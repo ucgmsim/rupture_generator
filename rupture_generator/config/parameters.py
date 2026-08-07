@@ -12,7 +12,7 @@ from ._rupture import (
     SegmentDelay,
 )
 from ._stf import BetaParameters, RiseTimeParameters, RiseTimePerturbation
-from .enums import KModel, Stype
+from .enums import KModel, RiseTimeNormalisation, SlipRateFunction
 from .types import PointSourceParams
 from .validation import is_non_negative, is_positive, is_proportion
 
@@ -45,9 +45,9 @@ class Parameters(_ValidateMixin):
     fractal_rake: bool = field(
         doc="If enabled, uses a von Karman filter for rake (producing self-similar fractal rake).",
     )
-    von_karman_order: float = field(
+    von_karman_order: int = field(
         metadata=dict(alias="kord", validator=is_positive),
-        doc="The von Karman filter order. I believe this determines the rolloff from the correlation lengths",
+        doc="Order of the band-pass filter applied to the roughness-correlated rupture time field (tsfac2). Read as an int by genslip (genslip_v5.6.2.c:1098).",
     )
     magnitude_clamp: float = field(
         metadata=dict(alias="magC"),
@@ -108,9 +108,8 @@ class Parameters(_ValidateMixin):
         metadata=dict(alias="asp_taper_fac", validator=is_non_negative),
         doc="Size (proportion) of the asperity patch taper width.",
     )
-    svr_wt: float = field(
-        metadata=dict(validator=is_non_negative),
-        doc="Unclear to me (Jake) anyway what this does. this and a couple of other variable set rt_scalefac but so far as I can tell that variable is unused. to review further.",
+    svr_wt: RiseTimeNormalisation = field(
+        doc="How the fault-wide rise-time normalisation constant rt_scalefac is averaged: unweighted, slip-weighted, or slip x rupture-velocity weighted (genslip_v5.6.2.c:2461-2466).",
     )
 
     hypocentre: Hypocentre
@@ -129,10 +128,10 @@ class Parameters(_ValidateMixin):
     output: OutputOptions
     fault_geometry_limits: FaultGeometryLimits
 
-    slip_time_function: Stype | None = field(
+    slip_time_function: SlipRateFunction | None = field(
         default=None,
         metadata=dict(alias="stype"),
-        doc="Slip time function for generic_slip2srf",
+        doc="Slip-rate function shape for genslip. None means genslip's own default, OliuP2. NOT the same vocabulary as PointSourceParams.stype, which goes to generic_slip2srf.",
     )
     slip_water_level: float | None = field(
         default=None,

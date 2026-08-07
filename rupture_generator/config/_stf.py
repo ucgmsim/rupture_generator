@@ -62,10 +62,11 @@ class RiseTimeParameters(_ValidateMixin):
         metadata=dict(alias="risetimedep_range", validator=is_positive),
         doc="Half-width of the shallow transition zone (km) used for local rise time",
     )
-    perturbation_sigma_ln: float = field(
-        metadata=dict(alias="rt_rand", validator=is_non_negative),
-        doc="Scales perturbation of risetimes so they are not 1:1 correlated with slip. ln(sigma)=rt_rand*trise",
-    )
+    # `rt_rand` is deliberately absent. It is read into `stfparams` at
+    # genslip_v5.6.2.c:868 but the only code that reads it back is
+    # `load_slip_srf_dd2` (gslip_srf_subs.c:677), which nothing calls -- main uses
+    # `load_slip_srf_dd5_vsden` (genslip_v5.6.2.c:2964). Rise-time perturbation is
+    # supplied by the correlated `rtime1`/`rtime2` fields instead.
     slip_scaling_factor: float = field(
         metadata=dict(alias="rt_scalefac", validator=is_positive),
         doc="A value of 1 implies that local rise time is scaled with sqrt(slip), consistent with GP10 Eq.7.",

@@ -37,11 +37,10 @@ class SpatialFiltering(_ValidateMixin):
         metadata=dict(alias="wavelength_min"),
         doc="Minimum wavelength considered when band-pass filtering the rake spectral distribution (only if fractal_rake=0).",
     )
-    rake_max_wavelength: float | None = field(
-        default=None,
-        metadata=dict(alias="wavelength_max"),
-        doc="Maximum wavelength considered when band-pass filtering the rake spectral distribution (only if fractal_rake=0).",
-    )
+    # `wavelength_max` is deliberately absent. genslip v5.6.2 parses it
+    # (genslip_v5.6.2.c:1092) and then overwrites it unconditionally with 1.0e+15 at
+    # line 1236 ("hardwire for now 2016-10-21"), so no user value can ever reach the
+    # filters. Exposing it would be a knob that silently does nothing.
 
 
 @dataclass

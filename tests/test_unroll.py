@@ -10,6 +10,7 @@ from rupture_generator.config import (
     FaultGeometryLimits,
     FiniteDifferenceRupture,
     HybridCorrelationLength,
+    Hypocentre,
     MagnitudeArea,
     OutputOptions,
     Parameters,
@@ -51,6 +52,9 @@ def _make_minimal_params(**overrides: object) -> Parameters:
         read_gsf=False,
         asperity_taper_factor=0.05,
         svr_wt=0.0,
+        hypocentre=Hypocentre(
+            along_strike_proportion=0.5, down_dip_proportion=0.75,
+        ),
         tapering=Tapering(side=0.02, bottom=0.0, top=0.0),
         beta=BetaParameters(
             shallow=0.5, deep=0.13, mid=0.13, asperity=0.3, sub_event=0.1,
@@ -58,7 +62,7 @@ def _make_minimal_params(**overrides: object) -> Parameters:
         ),
         rise_time=RiseTimeParameters(
             coefficient=2.3, shallow_factor=2.0, shallow_center_depth=6.5,
-            shallow_half_width=1.5, perturbation_sigma_ln=0.0, slip_scaling_factor=1.0,
+            shallow_half_width=1.5, slip_scaling_factor=1.0,
             deep_factor=2.0, deep_center_depth=17.5, deep_half_width=2.5,
         ),
         rise_time_perturbation=RiseTimePerturbation(
@@ -66,7 +70,7 @@ def _make_minimal_params(**overrides: object) -> Parameters:
             level2_slip_exponent=0.5,
         ),
         rupture_time_perturbation=RuptureTimePerturbation(
-            coefficient=1.1, intercept=-0.1, slope=-0.5, level1_sigma=1.0,
+            intercept=-0.1, slope=-0.5, level1_sigma=1.0,
             level1_slip_correlation=0.8, level2_sigma=1.0e-10,
             level2_roughness_correlation=0.5, level2_lambda_max=5.0,
         ),
@@ -135,16 +139,16 @@ class TestUnroll:
             "side_taper", "bot_taper", "top_taper",
             "beta_shal", "beta_deep", "beta_asp", "beta_subevt",
             "risetime_coef", "risetimefac", "risetimedep", "risetimedep_range",
-            "rt_rand", "rt_scalefac",
+            "rt_scalefac",
             "deep_risetimefac", "deep_risetimedep", "deep_risetimedep_range",
             "rtime1_scor", "rtime2_scor", "rtime2slip_exp",
-            "tsfac_coef", "tsfac_bzero", "tsfac_slope",
+            "tsfac_bzero", "tsfac_slope",
             "tsfac1_sigma", "tsfac1_scor", "tsfac2_sigma", "tsfac2_scor",
             "hyb_corlen_flag", "hyb_corlen_kmodel", "hyb_corlen_fac",
             "aseis_flag", "aseis_smooth", "aseis_dep",
             "fdrup_time", "fdrup_scale_slip",
             "seg_delay", "gwid", "rvfac_seg",
-            "lambda_min", "wavelength_max",
+            "lambda_min",
             "kx_corner", "xmag_exponent",
             "mag_area_Acoef",
             "write_srf", "srf_version", "dump_last_seed",
@@ -177,7 +181,7 @@ class TestValidation:
         with pytest.raises(ValueError, match="must be positive"):
             RiseTimeParameters(
                 coefficient=0.0, shallow_factor=2.0, shallow_center_depth=6.5,
-                shallow_half_width=1.5, perturbation_sigma_ln=0.0,
+                shallow_half_width=1.5,
                 slip_scaling_factor=1.0, deep_factor=2.0,
                 deep_center_depth=17.5, deep_half_width=2.5,
             )
@@ -186,7 +190,7 @@ class TestValidation:
         with pytest.raises(ValueError, match="must be positive"):
             RiseTimeParameters(
                 coefficient=1.0, shallow_factor=-1.0, shallow_center_depth=6.5,
-                shallow_half_width=1.5, perturbation_sigma_ln=0.0,
+                shallow_half_width=1.5,
                 slip_scaling_factor=1.0, deep_factor=2.0,
                 deep_center_depth=17.5, deep_half_width=2.5,
             )

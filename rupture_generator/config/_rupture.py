@@ -18,10 +18,10 @@ class Hypocentre(_ValidateMixin):
 
 @dataclass
 class RuptureTimePerturbation(_ValidateMixin):
-    coefficient: float = field(
-        metadata=dict(alias="tsfac_coef"),
-        doc="Coefficient equal to 1.1 given in Eq. A2 from GP16 used to scale rupture time perturbation with seismic moment. Not used anymore in the code, as now this scaling is performed with tsfac_bzero and tsfac_slop",
-    )
+    # `tsfac_coef` is deliberately absent. It is the pre-v5.4.1 scaling coefficient
+    # (GP16 eq. A2); in v5.6.2 it is declared and parsed (genslip_v5.6.2.c:561, 973)
+    # and never read again -- `tsfac_main` is built from `intercept` and `slope`
+    # instead (line 1256).
     intercept: float = field(
         metadata=dict(alias="tsfac_bzero"),
         doc="Offset constant value used when scaling the rupture time perturbation with seismic moment",
