@@ -90,6 +90,19 @@ pub struct SpectrumSpec {
     pub phase_shift: (f64, f64),
 }
 
+/// A slip field and the padded-grid statistics the correlations need.
+///
+/// The statistics are measured on the padded grid immediately after the inverse
+/// transform, before the fault's corner is taken — so they describe the generated
+/// field rather than the trimmed one. [`reload_for_correlation`] maps the processed
+/// field back onto them, which is what keeps every correlated field on the same
+/// scale as the slip it blends with.
+#[derive(Clone, Debug)]
+pub struct NormalisedSlip {
+    pub field: SlipField,
+    pub padded: crate::stats::MeanAndSigma,
+}
+
 /// Generate a dimensionless slip field with unit mean.
 ///
 /// # Panics
@@ -103,7 +116,7 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     extents: GridExtents,
     spacing: SubfaultSpacing,
     spectrum_spec: SpectrumSpec,
-) -> SlipField {
+) -> NormalisedSlip {
     assert!(
         extents.fault_strike <= extents.padded_strike && extents.fault_dip <= extents.padded_dip,
         "a {}x{} fault does not fit in a {}x{} grid",
@@ -149,6 +162,10 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     fft::transform_2d(&mut spectrum, fft, Direction::Inverse);
     fft::scale(&mut spectrum, fft::spacing_product(step.strike, step.dip));
 
+    // Measured here, on the whole padded grid, exactly where the original measures
+    // it -- before the fault's corner is taken and before anything is normalised.
+    let padded = crate::stats::mean_and_sigma(&spectrum);
+
     let mut slip = SlipField::zeros(extents.fault_strike, extents.fault_dip);
     let mut total = 0.0_f32;
     for dip in 0..extents.fault_dip {
@@ -181,7 +198,10 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     }
 
     rescale_variation(&mut slip, spectrum_spec.coefficient_of_variation);
-    slip
+    NormalisedSlip {
+        field: slip,
+        padded,
+    }
 }
 
 /// Rescale a unit-mean field about its mean so its coefficient of variation matches.
@@ -323,25 +343,26 @@ pub fn reload_for_correlation<F: Fft>(
     spectrum
 }
 
-/// A zero-mean field correlated with the slip distribution.
+/// A field correlated with the slip distribution, on the fault, un-normalised.
 ///
-/// Used for the rupture-time and rise-time perturbations, which are meant to vary
-/// *with* slip — patches that slip more rupture sooner and for longer — without
-/// being a deterministic function of it. `correlation` sets how tightly; `sigma`
-/// sets the resulting spread.
+/// The shared half of the two perturbations: generate a field with the same spectrum
+/// as slip, blend it with slip's own spectrum at the requested correlation, transform
+/// back and take the fault's corner. What the callers do next differs — see
+/// [`correlated_perturbation`] and [`crate::rise_time::rise_time_field`].
 ///
-/// Returns a field with mean zero, so the caller adds it to whatever it perturbs.
+/// The correlation is what makes patches that slip more also rupture sooner and slip
+/// for longer, without either being a deterministic function of slip.
 ///
-/// (orig. `genslip_v5.6.2.c:2100-2166`)
+/// (orig. `genslip_v5.6.2.c:2100-2126`)
 #[must_use]
-pub fn correlated_perturbation<S: DrawSource, F: Fft>(
+pub fn correlated_field_on_fault<S: DrawSource, F: Fft>(
     source: &mut S,
     fft: &mut F,
     reference: &Spectrum,
     extents: GridExtents,
     spacing: SubfaultSpacing,
     spectrum_spec: SpectrumSpec,
-    perturbation: PerturbationSpec,
+    correlation: f32,
 ) -> SlipField {
     let mut spectrum = unit_spectrum(fft, extents, spacing);
     let step = extents.wavenumber_step(spacing);
@@ -357,12 +378,41 @@ pub fn correlated_perturbation<S: DrawSource, F: Fft>(
         amplitude_scale,
     );
 
-    correlate_with(&mut spectrum, reference, perturbation.correlation);
+    correlate_with(&mut spectrum, reference, correlation);
 
     fft::transform_2d(&mut spectrum, fft, Direction::Inverse);
     fft::scale(&mut spectrum, fft::spacing_product(step.strike, step.dip));
 
-    let mut field = extract_corner(&spectrum, extents);
+    extract_corner(&spectrum, extents)
+}
+
+/// A zero-mean field correlated with slip, centred and scaled to a target spread.
+///
+/// [`correlated_field_on_fault`] and then centre-and-rescale. That last step is what
+/// the rupture-time perturbation wants and the rise-time one does not: rise time
+/// normalises by the *magnitude* of its mean instead, which is what flips a
+/// negative-mean field positive rather than centring it on zero.
+///
+/// (orig. `genslip_v5.6.2.c:2128-2166`)
+#[must_use]
+pub fn correlated_perturbation<S: DrawSource, F: Fft>(
+    source: &mut S,
+    fft: &mut F,
+    reference: &Spectrum,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+    spectrum_spec: SpectrumSpec,
+    perturbation: PerturbationSpec,
+) -> SlipField {
+    let mut field = correlated_field_on_fault(
+        source,
+        fft,
+        reference,
+        extents,
+        spacing,
+        spectrum_spec,
+        perturbation.correlation,
+    );
     remove_mean(&mut field);
     rescale_to_sigma(&mut field, perturbation.sigma.max(0.0));
     field

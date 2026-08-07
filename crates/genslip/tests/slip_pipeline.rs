@@ -196,7 +196,8 @@ fn check(extents: GridExtents, spectrum_spec: SpectrumSpec, seed: i64, label: &s
 
     let mut source = GenslipLcg::new(seed);
     let mut fft = FftwFft::new();
-    let produced = generate_normalised(&mut source, &mut fft, extents, SPACING, spectrum_spec);
+    let produced =
+        generate_normalised(&mut source, &mut fft, extents, SPACING, spectrum_spec).field;
 
     for (offset, (got, want)) in produced.as_slice().iter().zip(&expected).enumerate() {
         assert_eq!(
@@ -286,7 +287,7 @@ proptest! {
         let mut source = GenslipLcg::new(i64::from(seed));
         let mut fft = FftwFft::new();
         let produced =
-            generate_normalised(&mut source, &mut fft, extents, SPACING, spectrum_spec);
+            generate_normalised(&mut source, &mut fft, extents, SPACING, spectrum_spec).field;
 
         for (offset, (got, want)) in produced.as_slice().iter().zip(&expected).enumerate() {
             prop_assert_eq!(got.to_bits(), want.to_bits(), "at {}", offset);

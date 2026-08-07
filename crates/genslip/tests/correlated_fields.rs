@@ -174,7 +174,7 @@ fn slip_stage(extents: GridExtents, seed: i64) -> (SlipField, genslip::stats::Me
         oracle::mean_and_sigma(&mut grid, extents.padded_strike, extents.padded_dip);
     let original = genslip::stats::MeanAndSigma { mean, sigma };
 
-    let mut slip = generate_normalised(&mut source, &mut fft, extents, SPACING, spec());
+    let mut slip = generate_normalised(&mut source, &mut fft, extents, SPACING, spec()).field;
     truncate_negative_slip(&mut slip);
     taper_edges(
         &mut slip,
