@@ -12,10 +12,25 @@ of a rupture model and they start to drift.
 | --- | --- |
 | `genslip_config/` | The `getpar` parameter model, with each genslip name as an `alias` |
 | `serialise.py` | Rendering that model as `name=value` arguments |
+| `gsf.py` | The geometry file the binary reads, written and read back |
 | `genslip_reference.py` | Running the binary and reading the SRF back |
 
-A GSF *writer* belongs here too when the Stage 0 corpus needs one: the binary reads
-its geometry from a file, and the library does not.
+The GSF reader and writer live here because only the binary reads geometry from a
+file; the library takes arrays. `PRUNED.md` records the reader as deliberately not
+ported. `gsf.py` also computes the four quantities genslip *derives* from a GSF --
+`dstk`, `ddip`, the average dip and `dtop` -- because a caller has to pass some of
+them back on the command line and they have to agree with what the binary works out
+for itself.
+
+Two things about driving the binary that cost time to find, both now pinned by
+`test_genslip_reference.py`:
+
+- **`ns=1 nh=1` are mandatory on the GSF path.** They default to -1, everything that
+  computes them sits inside `if(read_erf == 1)`, and the two loops that write the SRF
+  are bounded by them. Without them genslip runs the whole model, exits **0**, and
+  writes a **zero-byte** file.
+- **`mag`, `nstk` and `ndip` are `mstpar`**, and `nstk`/`ndip` are not in the GSF: it
+  is a flat list of subfaults and does not say what shape the grid is.
 
 Delete all of it when the comparison stops being useful — which is the same moment
 `genslip-oracle`, the `fftw` feature and the `wavefront-compat` feature go.

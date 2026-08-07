@@ -98,6 +98,9 @@ cargo test -p srf --release -- --ignored --nocapture float_leaf        # the num
 Currently **405 MiB/s** on `tests/srfs/rupture_1.srf` (69 MiB, 190,546 points).
 `SRF_THROUGHPUT_FILE` overrides the input.
 
+Seven tests drive the real `genslip_v5.6.2` and skip without it. Point
+`GENSLIP_BINARY` at one to run them.
+
 ## The documents, and which one answers your question
 
 | | |
@@ -119,11 +122,27 @@ The two rules that cost the most to learn:
 
 Ordered, and each is its own commit.
 
-1. **Build the Stage 0 fixture corpus.** Realisations spanning single-plane /
-   multi-segment, crustal / subduction dip, small / large `nstk x ndip`, each with a
-   fixed seed, storing the GSF and the argument list rather than just the SRF. Drive
-   the real binary and compare parsed SRF fields field by field. This is the
-   acceptance gate the per-function parity tests roll up into.
+1. **Finish the Stage 0 fixture corpus.** The reference path works and is pinned:
+   `tests/harness/gsf.py` writes the geometry file, `genslip_reference.py` renders the
+   arguments, and seven tests check that the binary accepts them and that a seed
+   reproduces a rupture. What is left is the half that compares:
+
+   - **Map genslip's `getpar` names onto the port's five spec groups.** This is the
+     hard part and the reason it is not done yet: a wrong mapping and a wrong port
+     look identical from the outside. Do it one spec group at a time against the
+     per-function parity tests, which already know the correct correspondence.
+     `shypo`/`dhypo` are kilometres and the port takes subfault *indices*; the padded
+     extents are genslip's `nstk2`/`ndip2`, which for 20x12 are 22x14 and not what
+     `tests/test_boundary.py` assumes.
+   - **Widen the spread**, then store each case's GSF, argument list and reference SRF
+     under `tests/corpus/`: single-plane / multi-segment, crustal / subduction dip,
+     small / large `nstk x ndip`. Gzip the SRFs; a 20x12 fault is already 458 KB.
+   - **Compare the physics, and measure the geometry.** `slip`, `rake`, `tinit`,
+     `rise` and the slip-rate rows should agree field by field. `lon`, `lat` and `dep`
+     will not: genslip recomputes subfault positions from the plane with the
+     tangent-plane approximation `DEFECTS.md` records, where the port uses the
+     positions it was given. On the fixture above that is already visible in the
+     fourth decimal. Record the divergence rather than asserting it away.
 2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
 3. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
