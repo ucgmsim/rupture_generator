@@ -767,3 +767,53 @@ pub fn rupture_speed(
 
     speeds
 }
+
+unsafe extern "C" {
+    /// `int gen_OliuP_stf(float *slip, float *t0, float *beta, float *stf, int nt,
+    /// float *dt)`
+    fn gen_OliuP_stf(
+        slip: *mut core::ffi::c_float,
+        t0: *mut core::ffi::c_float,
+        beta: *mut core::ffi::c_float,
+        stf: *mut core::ffi::c_float,
+        nt: core::ffi::c_int,
+        dt: *mut core::ffi::c_float,
+    ) -> core::ffi::c_int;
+}
+
+/// `gen_OliuP_stf`: the default slip-rate function.
+///
+/// Returns the samples the routine reports as valid, which is fewer than the buffer
+/// it was given.
+#[must_use]
+pub fn oliu_p_slip_rate(
+    slip: f32,
+    duration_s: f32,
+    beta: f32,
+    sample_interval_s: f32,
+    max_samples: usize,
+) -> Vec<f32> {
+    let mut buffer = vec![0.0_f32; max_samples];
+    let mut slip = slip;
+    let mut duration = duration_s;
+    let mut beta = beta;
+    let mut interval = sample_interval_s;
+    let nt = i32::try_from(max_samples).expect("sample count fits a C int");
+
+    // SAFETY: `buffer` holds `nt` floats, which is the size the routine is told it
+    // has; every scalar pointer addresses a live local.
+    let count = unsafe {
+        gen_OliuP_stf(
+            &raw mut slip,
+            &raw mut duration,
+            &raw mut beta,
+            buffer.as_mut_ptr(),
+            nt,
+            &raw mut interval,
+        )
+    };
+
+    let count = usize::try_from(count).expect("the routine returns a non-negative count");
+    buffer.truncate(count);
+    buffer
+}
