@@ -17,7 +17,7 @@
 //!
 //! (orig. `gslip_sliprate_subs.c` and `load_slip_srf_dd5_vsden`)
 
-use crate::rise_time::DepthRamp;
+use crate::rise_time::{DepthRamp, RiseTimeStretch};
 use crate::taper::SlipField;
 
 /// Shape parameter of the slip-rate function, varying with depth.
@@ -39,11 +39,11 @@ pub struct BetaProfile {
 impl BetaProfile {
     /// Shape parameter at `depth_km`.
     ///
-    /// A **third** spelling of the same linear interpolation. This one precomputes a
-    /// gradient and multiplies by the offset from the ramp's start; the rupture-speed
-    /// profile divides by the ramp's width inline; the rise-time ramps measure from
-    /// the far end. All three are the same number and none is the same float.
-    /// Reproduced separately for that reason — see `DEFECTS.md`.
+    /// SIMPLIFY: `DepthRamp::scaled_from_shallow`. This is the one ramp in the
+    /// program whose grouping differs: it precomputes a gradient,
+    /// `(v_far - v_near) / width`, and multiplies by the offset — `(a/c)*b` where
+    /// every other site writes `(a*b)/c`. Same number, different `f32`, so the
+    /// helper cannot be used here without moving every beta value.
     #[must_use]
     pub fn beta_at(self, depth_km: f32) -> f32 {
         let shallow_min = self.shallow_ramp.centre_km - self.shallow_ramp.half_width_km;
@@ -86,47 +86,6 @@ pub fn beta_field(strike_count: usize, depth_km: &[f32], profile: BetaProfile) -
         }
     }
     field
-}
-
-/// How rise time is stretched at a given depth.
-///
-/// Longer near the surface and at depth, unstretched in between — the same shape as
-/// the rupture-speed profile and for the same reason.
-#[derive(Clone, Copy, Debug)]
-pub struct RiseTimeStretch {
-    pub shallow: DepthRamp,
-    pub shallow_factor: f32,
-    pub deep: DepthRamp,
-    pub deep_factor: f32,
-}
-
-impl RiseTimeStretch {
-    /// Depth stretch at `depth_km`.
-    ///
-    /// Note the asymmetry, which is the original's: the shallow branch measures from
-    /// the ramp's *deep* end and the deep branch from its *shallow* end, so both
-    /// return `1 + excess` at the outer edge and `1` at the inner one.
-    fn factor_at(self, depth_km: f32) -> f32 {
-        let shallow_min = self.shallow.centre_km - self.shallow.half_width_km;
-        let shallow_max = self.shallow.centre_km + self.shallow.half_width_km;
-        let deep_min = self.deep.centre_km - self.deep.half_width_km;
-        let deep_max = self.deep.centre_km + self.deep.half_width_km;
-
-        let shallow_excess = self.shallow_factor - 1.0;
-        let deep_excess = self.deep_factor - 1.0;
-
-        if depth_km <= shallow_min {
-            1.0 + shallow_excess
-        } else if depth_km < shallow_max {
-            1.0 + shallow_excess * (shallow_max - depth_km) / (shallow_max - shallow_min)
-        } else if depth_km <= deep_min {
-            1.0
-        } else if depth_km < deep_max {
-            1.0 + deep_excess * (depth_km - deep_min) / (deep_max - deep_min)
-        } else {
-            1.0 + deep_excess
-        }
-    }
 }
 
 /// Rise time at every subfault, in seconds.

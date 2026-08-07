@@ -213,14 +213,16 @@ impl SpeedProfile {
         let deep_min = self.deep.centre_km - self.deep.half_width_km;
         let deep_max = self.deep.centre_km + self.deep.half_width_km;
 
-        // Each branch is written as the original writes it, in two respects.
+        // SIMPLIFY: `DepthRamp::scaled_from_deep` and `scaled_from_shallow`, which
+        // every other ramp in the program now uses. Not applicable here, because the
+        // scale factor `1.0 - shal_vr` is a *double* — the literal makes it so — and
+        // the helper's is single. The multiply therefore happens at a different
+        // width, and the result differs in the last bit.
         //
-        // The *form*: `(max - depth)/(max - min)` rather than the
-        // `1 - (depth - min)/(max - min)` used by the ramps elsewhere. Same number,
-        // different float.
-        //
-        // The *precision*: the differences are single, and everything above them is
-        // double because the literal `1.0` is, rounding once at the store.
+        // Two things are being reproduced at once. The *form*: `(max - depth)/(max -
+        // min)` rather than `1 - (depth - min)/(max - min)`. And the *precision*: the
+        // two differences are single, everything above them is double, and it rounds
+        // once at the store.
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the narrowing seam: C stores rfdep into a float"

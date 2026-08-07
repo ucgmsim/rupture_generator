@@ -58,5 +58,33 @@ Six of the nine live entries are a value computed one way in one place and a dif
 way in another — two rupture-speed ramps, two taper spellings, a moment measured
 before scaling and reported after, a magnitude standing in for a value. None of them
 is a typo. They are what happens when the same physical idea is written out by hand
-each time it is needed, which is an argument for the port having one `DepthRamp` and
-one `WavelengthBand` rather than eleven copies.
+each time it is needed.
+
+### What was done about it
+
+`DepthRamp` is now one type with three named operations, and the linear
+interpolations that agree with it use it:
+
+| Site | Uses |
+| --- | --- |
+| the rise-time shallow blend | `weight` |
+| `RiseTimeStretch::factor_at` | `scaled_from_deep` / `scaled_from_shallow` |
+| the weighting rupture speed | `scaled_from_deep` / `scaled_from_shallow` |
+
+`RiseTimeStretch` itself replaced **two** identical hand-written copies — one
+computing the fault-wide normalisation constant (`genslip_v5.6.2.c:2429-2453`), one
+setting each subfault's duration (`gslip_srf_subs.c:1498-1508`) — confirmed branch for
+branch before merging, and bit-parity held.
+
+Two sites keep their own arithmetic, each marked `SIMPLIFY` at the site with the
+reason:
+
+| Site | Why the helper does not fit |
+| --- | --- |
+| `SpeedProfile::depth_factor` | Its scale factor `1.0 - shal_vr` is a **double**, because the literal makes it one. The helper's is single, so the multiply happens at a different width. |
+| `BetaProfile::beta_at` | It precomputes a gradient, `(v_far - v_near)/width`, and multiplies by the offset — `(a/c)*b` where every other site writes `(a*b)/c`. |
+
+The grouping is the reason there are only two exceptions rather than six. `*` and `/`
+have equal precedence in C and associate left to right, so `scale * (far - depth) /
+width` multiplies *before* it divides — and the helper does the same. Writing the
+mathematically identical `scale * ((far - depth) / width)` would have matched nothing.

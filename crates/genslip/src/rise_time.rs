@@ -32,17 +32,94 @@ pub struct DepthRamp {
 }
 
 impl DepthRamp {
-    /// Fraction of the way through the ramp at `depth_km`.
+    /// The shallow end of the ramp.
+    #[must_use]
+    pub fn shallow_km(self) -> f32 {
+        self.centre_km - self.half_width_km
+    }
+
+    /// The deep end of the ramp.
+    #[must_use]
+    pub fn deep_km(self) -> f32 {
+        self.centre_km + self.half_width_km
+    }
+
+    /// Fraction of the way through the ramp at `depth_km`, clamped to `0..=1`.
     #[must_use]
     pub fn weight(self, depth_km: f32) -> f32 {
-        let shallow = self.centre_km - self.half_width_km;
-        let deep = self.centre_km + self.half_width_km;
-        if depth_km <= shallow {
+        if depth_km <= self.shallow_km() {
             0.0
-        } else if depth_km < deep {
-            (depth_km - shallow) / (deep - shallow)
+        } else if depth_km < self.deep_km() {
+            (depth_km - self.shallow_km()) / (self.deep_km() - self.shallow_km())
         } else {
             1.0
+        }
+    }
+
+    /// `scale * (depth - shallow) / width`, **unclamped**.
+    ///
+    /// # The grouping is the contract
+    ///
+    /// This multiplies before it divides. `(scale * offset) / width` and
+    /// `scale * (offset / width)` are the same number and not the same `f32`, and
+    /// the original consistently writes the first — a chain of `*` and `/` at equal
+    /// precedence, evaluated left to right. Callers that need the second must say so
+    /// and take the difference.
+    ///
+    /// Unclamped because every caller guards the range with its own branch first;
+    /// clamping here would be a second, redundant comparison.
+    #[must_use]
+    pub fn scaled_from_shallow(self, scale: f32, depth_km: f32) -> f32 {
+        scale * (depth_km - self.shallow_km()) / (self.deep_km() - self.shallow_km())
+    }
+
+    /// `scale * (deep - depth) / width`, **unclamped**.
+    ///
+    /// The mirror of [`scaled_from_shallow`](Self::scaled_from_shallow), and not its
+    /// complement: `scaled_from_deep(s, d) + scaled_from_shallow(s, d)` is `s` only
+    /// in exact arithmetic.
+    #[must_use]
+    pub fn scaled_from_deep(self, scale: f32, depth_km: f32) -> f32 {
+        scale * (self.deep_km() - depth_km) / (self.deep_km() - self.shallow_km())
+    }
+}
+
+/// How rise time is stretched with depth: longer near the surface and at depth,
+/// unstretched in between.
+///
+/// One definition, used in two places that the original writes out separately and
+/// identically — once to compute the fault-wide normalisation constant
+/// (`genslip_v5.6.2.c:2429-2453`) and once to set each subfault's actual duration
+/// (`gslip_srf_subs.c:1498-1508`). Confirmed branch for branch before merging.
+#[derive(Clone, Copy, Debug)]
+pub struct RiseTimeStretch {
+    pub shallow: DepthRamp,
+    pub shallow_factor: f32,
+    pub deep: DepthRamp,
+    pub deep_factor: f32,
+}
+
+impl RiseTimeStretch {
+    /// The stretch at `depth_km`.
+    ///
+    /// Note the asymmetry, which is the original's: the shallow branch measures from
+    /// the ramp's *deep* end and the deep branch from its *shallow* end, so each
+    /// returns `1 + excess` at the outer edge and `1` at the inner one.
+    #[must_use]
+    pub fn factor_at(self, depth_km: f32) -> f32 {
+        let shallow_excess = self.shallow_factor - 1.0;
+        let deep_excess = self.deep_factor - 1.0;
+
+        if depth_km <= self.shallow.shallow_km() {
+            1.0 + shallow_excess
+        } else if depth_km < self.shallow.deep_km() {
+            1.0 + self.shallow.scaled_from_deep(shallow_excess, depth_km)
+        } else if depth_km <= self.deep.shallow_km() {
+            1.0
+        } else if depth_km < self.deep.deep_km() {
+            1.0 + self.deep.scaled_from_shallow(deep_excess, depth_km)
+        } else {
+            1.0 + deep_excess
         }
     }
 }
@@ -103,6 +180,10 @@ pub fn rise_time_field(
 
     // The shallow blend. Depth is taken per dip row, not per subfault: genslip reads
     // it from the first subfault of each row, which is exact for a planar segment.
+    //
+    // `DepthRamp::weight` is used here rather than reproduced because the original
+    // spells this one the same way: `(dep - r_dmin)/(r_dmax - r_dmin)`, with no
+    // scale factor fused into the numerator.
     let mut field = SlipField::zeros(strike_count, dip_count);
     let mut total = 0.0_f32;
     for dip in 0..dip_count {
@@ -226,12 +307,8 @@ pub enum Weighting {
 /// Depth-dependent factors applied to rise time and rupture speed.
 #[derive(Clone, Copy, Debug)]
 pub struct DepthScaling {
-    /// Shallow ramp: rise time is multiplied by `shallow_factor` above it.
-    pub shallow: DepthRamp,
-    pub shallow_factor: f32,
-    /// Deep ramp: rise time is multiplied by `deep_factor` below it.
-    pub deep: DepthRamp,
-    pub deep_factor: f32,
+    /// How rise time stretches with depth.
+    pub stretch: RiseTimeStretch,
     /// Rupture speed as a fraction of shear-wave speed.
     pub rupture_velocity_fraction: f32,
     /// Extra reduction of rupture speed in the shallow zone.
@@ -240,44 +317,27 @@ pub struct DepthScaling {
     pub deep_rupture_velocity: f32,
 }
 
-/// Rise-time and rupture-speed factors at one depth.
+/// The rupture speed this weighting uses, which is **not** the one the solver uses.
 ///
-/// The two are computed together because they share the same ramps and the
-/// slip-and-rupture-speed weighting needs both.
-fn factors_at(depth_km: f32, scaling: DepthScaling, shear_speed: f32) -> (f32, f32) {
-    let shallow_min = scaling.shallow.centre_km - scaling.shallow.half_width_km;
-    let shallow_max = scaling.shallow.centre_km + scaling.shallow.half_width_km;
-    let deep_min = scaling.deep.centre_km - scaling.deep.half_width_km;
-    let deep_max = scaling.deep.centre_km + scaling.deep.half_width_km;
+/// See `DEFECTS.md` #2. Both transitions here run the multiplier down to *zero* at
+/// the inner edge of the zone, where [`crate::rupture::SpeedProfile`] correctly runs
+/// it up to one. Latent — only the slip-and-rupture-speed weighting consults it, and
+/// the configured weighting is uniform — but reproduced as it stands.
+fn weighting_rupture_speed(depth_km: f32, scaling: DepthScaling, shear_speed: f32) -> f32 {
+    let base = shear_speed * scaling.rupture_velocity_fraction;
+    let shallow = scaling.stretch.shallow;
+    let deep = scaling.stretch.deep;
 
-    let shallow_excess = scaling.shallow_factor - 1.0;
-    let deep_excess = scaling.deep_factor - 1.0;
-    let base_speed = shear_speed * scaling.rupture_velocity_fraction;
-
-    if depth_km <= shallow_min {
-        (
-            base_speed * scaling.shallow_rupture_velocity,
-            1.0 + shallow_excess,
-        )
-    } else if depth_km < shallow_max {
-        let fraction = (shallow_max - depth_km) / (shallow_max - shallow_min);
-        (
-            base_speed * scaling.shallow_rupture_velocity * fraction,
-            1.0 + shallow_excess * fraction,
-        )
-    } else if depth_km <= deep_min {
-        (base_speed, 1.0)
-    } else if depth_km < deep_max {
-        let fraction = (depth_km - deep_min) / (deep_max - deep_min);
-        (
-            base_speed * scaling.deep_rupture_velocity * fraction,
-            1.0 + deep_excess * fraction,
-        )
+    if depth_km <= shallow.shallow_km() {
+        base * scaling.shallow_rupture_velocity
+    } else if depth_km < shallow.deep_km() {
+        shallow.scaled_from_deep(base * scaling.shallow_rupture_velocity, depth_km)
+    } else if depth_km <= deep.shallow_km() {
+        base
+    } else if depth_km < deep.deep_km() {
+        deep.scaled_from_shallow(base * scaling.deep_rupture_velocity, depth_km)
     } else {
-        (
-            base_speed * scaling.deep_rupture_velocity,
-            1.0 + deep_excess,
-        )
+        base * scaling.deep_rupture_velocity
     }
 }
 
@@ -321,8 +381,8 @@ pub fn rise_time_normalisation(
     let mut denominator = 0.0_f32;
 
     for dip in 0..dip_count {
-        let (rupture_speed, rise_factor) =
-            factors_at(depth_km[dip], scaling, shear_speed_km_s[dip]);
+        let rise_factor = scaling.stretch.factor_at(depth_km[dip]);
+        let rupture_speed = weighting_rupture_speed(depth_km[dip], scaling, shear_speed_km_s[dip]);
 
         for strike in 0..strike_count {
             // SIMPLIFY: the original writes each of these as `sqrt(s*s)`, which is

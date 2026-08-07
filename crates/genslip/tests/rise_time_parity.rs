@@ -13,7 +13,8 @@
 //! differently.
 
 use genslip::rise_time::{
-    DepthRamp, DepthScaling, RiseTimeSpec, Weighting, rise_time_field, rise_time_normalisation,
+    DepthRamp, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weighting, rise_time_field,
+    rise_time_normalisation,
 };
 use genslip::slip::PerturbationSpec;
 use genslip::taper::SlipField;
@@ -159,15 +160,15 @@ fn reference_normalisation(
     let dip_count = rise_time.dip_count();
 
     let (dmin1, dmax1) = (
-        scaling.shallow.centre_km - scaling.shallow.half_width_km,
-        scaling.shallow.centre_km + scaling.shallow.half_width_km,
+        scaling.stretch.shallow.centre_km - scaling.stretch.shallow.half_width_km,
+        scaling.stretch.shallow.centre_km + scaling.stretch.shallow.half_width_km,
     );
     let (dmin2, dmax2) = (
-        scaling.deep.centre_km - scaling.deep.half_width_km,
-        scaling.deep.centre_km + scaling.deep.half_width_km,
+        scaling.stretch.deep.centre_km - scaling.stretch.deep.half_width_km,
+        scaling.stretch.deep.centre_km + scaling.stretch.deep.half_width_km,
     );
-    let rtfac1 = scaling.shallow_factor - 1.0;
-    let rtfac2 = scaling.deep_factor - 1.0;
+    let rtfac1 = scaling.stretch.shallow_factor - 1.0;
+    let rtfac2 = scaling.stretch.deep_factor - 1.0;
 
     let mut snum = 0.0_f32;
     let mut sden = 0.0_f32;
@@ -208,16 +209,18 @@ fn reference_normalisation(
 
 fn scaling() -> DepthScaling {
     DepthScaling {
-        shallow: DepthRamp {
-            centre_km: 6.5,
-            half_width_km: 1.5,
+        stretch: RiseTimeStretch {
+            shallow: DepthRamp {
+                centre_km: 6.5,
+                half_width_km: 1.5,
+            },
+            shallow_factor: 2.0,
+            deep: DepthRamp {
+                centre_km: 17.5,
+                half_width_km: 2.5,
+            },
+            deep_factor: 2.0,
         },
-        shallow_factor: 2.0,
-        deep: DepthRamp {
-            centre_km: 17.5,
-            half_width_km: 2.5,
-        },
-        deep_factor: 2.0,
         rupture_velocity_fraction: 0.8,
         shallow_rupture_velocity: 0.6,
         deep_rupture_velocity: 0.6,
