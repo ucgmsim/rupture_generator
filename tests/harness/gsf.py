@@ -336,3 +336,139 @@ def on_a_plane(
         onset_s=np.zeros(count, dtype=np.float32),
         segment=np.zeros(count, dtype=int),
     )
+
+
+def on_two_planes(
+    strike_counts: tuple[int, int],
+    dip_count: int,
+    along_strike_km: float,
+    down_dip_km: float,
+    centre_longitude_deg: float,
+    centre_latitude_deg: float,
+    strike_degs: tuple[float, float],
+    dip_deg: float,
+    top_depth_km: float,
+    rake_degs: tuple[float, float],
+) -> GsfSubfaults:
+    """Lay subfaults out on two planes that meet along strike -- a bent fault.
+
+    The two planes share a dip, a top depth and a subfault size, and differ in strike
+    and rake. Their subfaults are interleaved **row by row**, so the result is still
+    one `nstk x ndip` grid in along-strike-fastest order with `nstk` the sum of the
+    two strike counts. That is the layout genslip's `nstk`/`ndip` describe and the
+    only one a single SRF `PLANE` block can hold.
+
+    Why this is worth a fixture: it is the cheapest geometry where `strike_deg` and
+    `rake_deg` vary *within* the grid. Everything derived from an average --
+    `avgdip`, `avgrak`, and through them `alphaT` -- stops being the value every
+    subfault has, so a mapping that quietly read subfault zero instead of averaging
+    would still pass on a single plane and fail here.
+
+    **`segment` is not inert, even with `seg_delay=0`.** `init_plane_srf`
+    (`gslip_srf_subs.c:6`) takes `nseg` to be `max(segno) + 1` and writes one SRF
+    `PLANE` block per segment, with the points grouped by segment -- so the
+    interleaved order built here is *not* the order the SRF comes back in.
+    `corpus.segment_order` is the permutation between them.
+
+    What `seg_delay=1` adds on top -- reducing rupture speed in a zone around each
+    boundary (`rvfac_seg`, `gwid`, `genslip_v5.6.2.c:3061-3092`) -- is **not ported**,
+    so fixtures built from this leave it off.
+
+    Parameters
+    ----------
+    strike_counts : tuple[int, int]
+        Subfaults along strike on each plane. Their sum is `nstk`.
+    dip_count : int
+        Subfaults down dip, shared.
+    along_strike_km, down_dip_km : float
+        One subfault's dimensions.
+    centre_longitude_deg, centre_latitude_deg : float
+        Where the *join* between the two planes is, on the top edge.
+    strike_degs : tuple[float, float]
+        Each plane's strike.
+    dip_deg : float
+        The dip, shared. A bent fault with two dips would need two SRF planes.
+    top_depth_km : float
+        Depth of the top edge, shared.
+    rake_degs : tuple[float, float]
+        Each plane's rake.
+
+    Returns
+    -------
+    GsfSubfaults
+        One subfault per grid cell, `segment` naming which plane it came from.
+
+    Raises
+    ------
+    ValueError
+        If either plane is empty.
+    """
+    if min(strike_counts) < 1:
+        raise ValueError(f"both planes need subfaults, got {strike_counts}")
+
+    km_per_degree_latitude = 111.195
+    km_per_degree_longitude = km_per_degree_latitude * math.cos(
+        math.radians(centre_latitude_deg)
+    )
+
+    planes = []
+    for index, (count, strike_deg, rake_deg) in enumerate(
+        zip(strike_counts, strike_degs, rake_degs, strict=True)
+    ):
+        # The first plane runs back from the join, the second runs forward from it.
+        offset = -count if index == 0 else 0
+        strike_index, dip_index = np.meshgrid(
+            np.arange(count) + offset, np.arange(dip_count)
+        )
+        strike_index = strike_index.ravel().astype(float)
+        dip_index = dip_index.ravel()
+
+        along = (strike_index + 0.5) * along_strike_km
+        down = (dip_index + 0.5) * down_dip_km
+        surface = down * math.cos(math.radians(dip_deg))
+        depth = top_depth_km + down * math.sin(math.radians(dip_deg))
+
+        strike_radians = math.radians(strike_deg)
+        dip_radians = strike_radians + math.pi / 2
+        north = along * math.cos(strike_radians) + surface * math.cos(dip_radians)
+        east = along * math.sin(strike_radians) + surface * math.sin(dip_radians)
+
+        cells = count * dip_count
+        planes.append(
+            dict(
+                longitude_deg=centre_longitude_deg + east / km_per_degree_longitude,
+                latitude_deg=centre_latitude_deg + north / km_per_degree_latitude,
+                depth_km=depth,
+                along_strike_km=np.full(cells, along_strike_km),
+                down_dip_km=np.full(cells, down_dip_km),
+                strike_deg=np.full(cells, strike_deg),
+                dip_deg=np.full(cells, dip_deg),
+                rake_deg=np.full(cells, rake_deg),
+                slip_cm=np.full(cells, -1.0),
+                onset_s=np.zeros(cells),
+                segment=np.full(cells, index),
+            )
+        )
+
+    # Interleave row by row: each dip row is plane 0's subfaults then plane 1's, so
+    # the flat array stays along-strike-fastest across the join.
+    def rows(values, count):
+        return np.asarray(values).reshape(dip_count, count)
+
+    def joined(name):
+        return np.concatenate(
+            [
+                np.concatenate(
+                    [
+                        rows(planes[0][name], strike_counts[0])[row],
+                        rows(planes[1][name], strike_counts[1])[row],
+                    ]
+                )
+                for row in range(dip_count)
+            ]
+        )
+
+    return GsfSubfaults(
+        **{name: joined(name).astype(np.float32) for name in _COLUMNS},
+        segment=joined("segment").astype(int),
+    )

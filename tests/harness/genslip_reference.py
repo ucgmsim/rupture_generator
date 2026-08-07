@@ -81,10 +81,19 @@ class ReferenceRun:
         The rupture it wrote.
     diagnostics : dict[str, float]
         The `name= value` pairs it reported on stderr. See `parse_diagnostics`.
+    raw : bytes | None
+        Exactly the bytes genslip wrote, when `keep_raw` asked for them.
+
+        The fixture corpus stores *these* rather than a re-serialisation of `srf`,
+        because a round trip through this package's own parser and writer would
+        launder any defect in either into the reference -- and the reference is
+        supposed to be genslip's answer, not ours. `None` by default: an SRF can
+        reach gigabytes and no other caller wants it resident.
     """
 
     srf: SrfFile
     diagnostics: dict[str, float]
+    raw: bytes | None = None
 
 # genslip reads the fault grid from a GSF file and writes SRF to stdout. These are not
 # user choices -- they describe how this function drives the binary -- so they are set
@@ -171,6 +180,7 @@ def generate_segment_rupture(
     bottom_depth_km: FloatArray,
     shear_speed_km_s: FloatArray,
     density_g_cm3: FloatArray,
+    keep_raw: bool = False,
 ) -> ReferenceRun:
     """Generate the rupture for one fault segment by invoking genslip.
 
@@ -203,6 +213,9 @@ def generate_segment_rupture(
         The 1D velocity model, written out as genslip's `velfile`. The same three
         arrays a caller passes to `VelocityModel1D`, so both sides are provably given
         the same layers -- see `write_velocity_model`.
+    keep_raw : bool, optional
+        Return the bytes genslip wrote alongside the parsed model. The fixture
+        corpus wants them; nothing else does, and an SRF can reach gigabytes.
 
     Returns
     -------
@@ -279,4 +292,5 @@ def generate_segment_rupture(
             return ReferenceRun(
                 srf=srf.SrfFile.from_file(mapped),
                 diagnostics=parse_diagnostics(completed.stderr),
+                raw=srf_path.read_bytes() if keep_raw else None,
             )
