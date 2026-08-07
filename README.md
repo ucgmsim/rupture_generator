@@ -120,7 +120,16 @@ The two rules that cost the most to learn:
 
 ## What is left
 
-Ordered, and each is its own commit.
+Ordered, and each is its own commit. **Start at item 1.** Before touching a kernel,
+read `PORTING_RULES.md` rules 1 and 2; before changing the SRF parser, measure it.
+
+Two habits this list assumes, both learned expensively:
+
+- **Measure before you change, not after.** A number taken after a swap has nothing to
+  compare against. Every performance and divergence figure below was recorded first.
+- **When the original is silent, make it loud.** genslip exits 0 having written nothing
+  if you forget `ns=1 nh=1`; the SRF stored `vs` in cm/s while the port wrote km/s.
+  Both were invisible, and both are now pinned by a test that says why.
 
 1. **Finish the Stage 0 fixture corpus.** The reference path works and is pinned:
    `tests/harness/gsf.py` writes the geometry file, `genslip_reference.py` renders the
@@ -144,10 +153,35 @@ Ordered, and each is its own commit.
      positions it was given. On the fixture above that is already visible in the
      fourth decimal. Record the divergence rather than asserting it away.
 2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-3. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+3. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
+   the plan, not started. **Nothing in Stage 3 may land before this exists**, because
+   each of those swaps changes the last bits on purpose and needs something other than
+   bit-parity to adjudicate it. `PORTING_RULES.md` expires at this boundary.
+4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
-   disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites.
+   disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites. Both those
+   numbers were measured *before* the change they adjudicate, which is the only reason
+   they mean anything — do the same for the eikonal solver before swapping it.
 
-Stage 2 — the scientific suite that replaces bit-parity as the gate — is designed in
-the plan and not started. It is what has to exist before any of Stage 3 can land.
+### Smaller things, found and not done
+
+Each is a paragraph of work, and each is written down because the discovery cost more
+than the fix will.
+
+- **`VelocityModel1D` is write-only from Python.** PyO3 exposes its constructor and no
+  getters, so `write_velocity_model` in the harness takes three arrays rather than the
+  model a caller already built. Add `#[pyo3(get)]`, the stub entries, and let the
+  stub-consistency test in `tests/test_boundary.py` check them.
+- **`rupture_generator/geometry.py` is a stub.** `Geometry.discretise` and
+  `closest_point_pair` are `pass`, and `DiscretisedGeometry` now has no callers — the
+  harness grew its own `GsfSubfaults` because `DiscretisedGeometry` has no longitude or
+  latitude to write. Decide what that module is for before something depends on it.
+- **`tests/test_boundary.py`'s padded extents are not genslip's.** Its helper uses
+  `2 * ((strike + 4) // 2 + 1)`, which gives 26 for a 20-subfault fault where genslip
+  reports `nstk2 = 22`. The tests pass because `FaultGrid` takes the padding as an
+  argument, so this misleads a reader rather than breaking anything. Find genslip's
+  actual rule and use it.
+- **`tools/` holds locally-built binaries.** `genslip_v5.6.2` and
+  `fault_seg2gsf_dipdir` there were rebuilt from `build-oracle` with the flags above.
+  The directory is gitignored, so on another machine they will not exist.
