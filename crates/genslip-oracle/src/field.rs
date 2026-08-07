@@ -438,3 +438,40 @@ pub fn scale_slip(
         maximum: smax,
     }
 }
+
+unsafe extern "C" {
+    /// `void fft2d_fftw(struct complex *xc, int n1, int n2, int isgn, float *d1,
+    /// float *d2)`
+    fn fft2d_fftw(
+        xc: *mut Complex,
+        n1: core::ffi::c_int,
+        n2: core::ffi::c_int,
+        isgn: core::ffi::c_int,
+        d1: *mut core::ffi::c_float,
+        d2: *mut core::ffi::c_float,
+    );
+}
+
+/// `fft2d_fftw`: a 2-D transform, scaled by the product of the sample spacings.
+///
+/// `sign` is `-1` for the fault-to-wavenumber direction and `+1` for the reverse,
+/// as the C spells it.
+pub fn transform_2d(
+    grid: &mut [Complex],
+    strike_count: usize,
+    dip_count: usize,
+    sign: i32,
+    first_spacing: f32,
+    second_spacing: f32,
+) {
+    check_extent(grid, strike_count, dip_count);
+    let (n1, n2) = extents(strike_count, dip_count);
+
+    let mut d1 = first_spacing;
+    let mut d2 = second_spacing;
+
+    // SAFETY: uniquely borrowed, length checked against the extents.
+    unsafe {
+        fft2d_fftw(grid.as_mut_ptr(), n1, n2, sign, &raw mut d1, &raw mut d2);
+    }
+}

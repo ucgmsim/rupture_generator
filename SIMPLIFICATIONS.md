@@ -130,3 +130,17 @@ the **unscaled** field, so it describes the field before scaling rather than aft
 In moment mode the answer is the target by construction, so this only shows in the
 `target_savg > 0` path, which the defaults do not take. Reproduced and flagged rather
 than fixed; Stage 2 should decide.
+
+### `slip.c` — the transform
+
+| Site | Now | Should be | Kind |
+| --- | --- | --- | --- |
+| `fft2d_fftw` | plans **on every call** — two `fftwf_plan_dft_1d` per 2-D transform, and the first is then leaked | plan once per (length, direction) and cache — already so in the port | **free** (and a real speed win) |
+| `fft2d_fftw` | `check_realloc`s a `check_malloc`ed pointer and frees it with `fftwf_free` | one allocator throughout — already so in the port | **free** |
+| `transform_2d`, dip pass | gathers each column into scratch and scatters it back | transpose once, run contiguous rows, transpose back. Cache-friendlier at realistic fault sizes — *measure before believing it* | moves nothing; speed only |
+| the engine | FFTW | `rustfft`. Measured divergence between them is **7.06e-8** relative, about half an `f32` ulp | moves bits — this is the Stage 3 swap |
+
+The engine swap is the one entry here with its adjudication baseline already
+recorded: `fft_contract.rs` measures FFTW against `rustfft` now, while both are
+present, so when the swap moves every field in the program there is a number saying
+how much of that is the engine.

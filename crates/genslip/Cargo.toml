@@ -10,6 +10,12 @@ genslip-oracle.workspace = true
 num-complex = "0.4.6"
 proptest = "1"
 
+[features]
+default = ["fftw"]
+# Stage 1 only: links FFTW so the port can be compared against genslip bit for
+# bit. Stage 3 drops it and RustFft becomes the only engine.
+fftw = []
+
 [lints]
 workspace = true
 
@@ -18,3 +24,4 @@ num-complex = "0.4.6"
 rand = "0.10.2"
 rand_distr = "0.6.0"
 rand_pcg = "0.10.2"
+rustfft = "6.4.1"

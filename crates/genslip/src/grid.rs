@@ -28,9 +28,12 @@ impl Spectrum {
     ///
     /// If either dimension is zero, or is odd. The generators address the Nyquist
     /// row and column directly (`strike_count / 2`, `dip_count / 2`) and enforce
-    /// Hermitian symmetry about them, which only makes sense for even extents. The
-    /// caller sizes these grids by rounding a padded fault extent, so an odd value
-    /// means the sizing is wrong rather than that the grid should cope.
+    /// Hermitian symmetry about them, which only makes sense for even extents.
+    ///
+    /// This is not a restriction the port invents. genslip sizes all four of its
+    /// padded grids and then rounds each up to even (`if(nstk2%2) nstk2++;` and its
+    /// three siblings, `genslip_v5.6.2.c:1471-1490`), so an odd extent means the
+    /// sizing is wrong rather than that the grid should cope with it.
     #[must_use]
     pub fn zeros(strike_count: usize, dip_count: usize) -> Self {
         assert!(
