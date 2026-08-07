@@ -82,6 +82,7 @@ name = "genslip"
 version = "0.1.0"
 dependencies = [
  "genslip-oracle",
+ "num-complex",
  "proptest",
  "rand 0.10.2",
  "rand_distr",
@@ -133,6 +134,15 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "num-traits"

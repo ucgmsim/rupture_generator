@@ -7,12 +7,14 @@ description = "Kinematic rupture model generation: a port of genslip v5.6.2."
 
 [dev-dependencies]
 genslip-oracle.workspace = true
+num-complex = "0.4.6"
 proptest = "1"
 
 [lints]
 workspace = true
 
 [dependencies]
+num-complex = "0.4.6"
 rand = "0.10.2"
 rand_distr = "0.6.0"
 rand_pcg = "0.10.2"

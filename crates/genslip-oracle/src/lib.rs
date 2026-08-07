@@ -22,10 +22,14 @@
     reason = "test-only crate; panics are the failure mode we want"
 )]
 
+pub mod field;
 pub mod rng;
 
 /// genslip's complex type (`Genslip/v5.6.2/structure.h`). Single precision, and
 /// laid out as two floats rather than as a C99 `_Complex`.
+///
+/// Layout-compatible with `num_complex::Complex32`, which is also `repr(C)` with
+/// the real part first, so a Rust grid can be handed straight to the C.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Complex {

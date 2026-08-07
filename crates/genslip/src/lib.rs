@@ -6,4 +6,6 @@
 //! A port of genslip v5.6.2. During Stage 1 the contract is bit-equality with the C,
 //! checked per function against `genslip-oracle`; see `PORTING_RULES.md`.
 
+pub mod field;
+pub mod grid;
 pub mod rng;
