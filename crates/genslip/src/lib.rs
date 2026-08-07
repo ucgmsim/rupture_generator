@@ -11,6 +11,7 @@ pub mod field;
 pub mod grid;
 pub mod moment;
 pub mod rng;
+pub mod rupture;
 pub mod slip;
 pub mod stats;
 pub mod taper;

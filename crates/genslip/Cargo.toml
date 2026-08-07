@@ -11,10 +11,14 @@ num-complex = "0.4.6"
 proptest = "1"
 
 [features]
-default = ["fftw"]
+default = ["fftw", "wavefront-compat"]
 # Stage 1 only: links FFTW so the port can be compared against genslip bit for
 # bit. Stage 3 drops it and RustFft becomes the only engine.
 fftw = []
+# Stage 1 only: links genslip's Fortran eikonal solver from an EMOD3D build, so
+# rupture times can be compared exactly. Stage 3 drops it for a fast-marching
+# solver. Needs EMOD3D_BUILD_DIR.
+wavefront-compat = []
 
 [lints]
 workspace = true

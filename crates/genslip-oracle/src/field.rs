@@ -496,3 +496,130 @@ pub fn transform_2d(
         fft2d_fftw(grid.as_mut_ptr(), n1, n2, sign, &raw mut d1, &raw mut d2);
     }
 }
+
+unsafe extern "C" {
+    /// `void get_rslow_stretch(float *rspd, int ns, int nd, double *rslw, int nsfd,
+    /// int ndfd, int isoff, int idoff, float *tsf, long *seed)`
+    fn get_rslow_stretch(
+        rspd: *mut core::ffi::c_float,
+        ns: core::ffi::c_int,
+        nd: core::ffi::c_int,
+        rslw: *mut core::ffi::c_double,
+        nsfd: core::ffi::c_int,
+        ndfd: core::ffi::c_int,
+        isoff: core::ffi::c_int,
+        idoff: core::ffi::c_int,
+        tsf: *mut core::ffi::c_float,
+        seed: *mut core::ffi::c_long,
+    );
+
+    /// `subroutine wfront2d(m, n, is, js, h, ns, ttime, slwns, ntot, ti, jm)`
+    #[link_name = "wfront2d_"]
+    fn wfront2d(
+        m: *const core::ffi::c_int,
+        n: *const core::ffi::c_int,
+        is: *const core::ffi::c_int,
+        js: *const core::ffi::c_int,
+        h: *const core::ffi::c_double,
+        ns: *const core::ffi::c_int,
+        ttime: *mut core::ffi::c_double,
+        slwns: *mut core::ffi::c_double,
+        ntot: *const core::ffi::c_int,
+        ti: *mut core::ffi::c_double,
+        jm: *mut core::ffi::c_int,
+    );
+}
+
+/// `get_rslow_stretch`: invert speeds into a padded slowness grid.
+///
+/// `jitter` is genslip's `rvel_rand`, a hardwired 0.0 with no `getpar` behind it, so
+/// the lognormal branch it guards never fires and no deviates are drawn. Exposed
+/// anyway so a test can prove that rather than assume it.
+#[expect(clippy::too_many_arguments, reason = "mirrors the C signature")]
+pub fn padded_slowness(
+    speed: &mut [f32],
+    strike_count: usize,
+    dip_count: usize,
+    padded_strike: usize,
+    padded_dip: usize,
+    strike_offset: usize,
+    dip_offset: usize,
+    jitter: f32,
+    rng_state: &mut i64,
+) -> Vec<f64> {
+    assert_eq!(
+        speed.len(),
+        strike_count * dip_count,
+        "speed extent mismatch"
+    );
+    let mut slowness = vec![0.0_f64; padded_strike * padded_dip];
+    let mut jitter = jitter;
+
+    // SAFETY: `speed` holds ns*nd elements and `slowness` holds nsfd*ndfd, which is
+    // what the routine indexes. The offsets are the caller's and are checked by the
+    // assertions above plus the vector's own length.
+    unsafe {
+        get_rslow_stretch(
+            speed.as_mut_ptr(),
+            i32::try_from(strike_count).expect("extent fits a C int"),
+            i32::try_from(dip_count).expect("extent fits a C int"),
+            slowness.as_mut_ptr(),
+            i32::try_from(padded_strike).expect("extent fits a C int"),
+            i32::try_from(padded_dip).expect("extent fits a C int"),
+            i32::try_from(strike_offset).expect("offset fits a C int"),
+            i32::try_from(dip_offset).expect("offset fits a C int"),
+            &raw mut jitter,
+            std::ptr::from_mut(rng_state),
+        );
+    }
+    slowness
+}
+
+/// `wfront2d`: first-arrival times on a padded slowness grid.
+///
+/// `source_strike` and `source_dip` are **0-based** here; the conversion to Fortran's
+/// 1-based indexing happens inside.
+pub fn wavefront_times(
+    slowness: &mut [f64],
+    padded_strike: usize,
+    padded_dip: usize,
+    source_strike: usize,
+    source_dip: usize,
+    spacing_km: f64,
+    ring_radius: usize,
+) -> Vec<f64> {
+    assert_eq!(
+        slowness.len(),
+        padded_strike * padded_dip,
+        "slowness extent mismatch"
+    );
+    let mut times = vec![0.0_f64; slowness.len()];
+    let mut time_scratch = vec![0.0_f64; padded_strike + padded_dip];
+    let mut index_scratch = vec![0_i32; padded_strike + padded_dip];
+
+    let m = i32::try_from(padded_strike).expect("extent fits a C int");
+    let n = i32::try_from(padded_dip).expect("extent fits a C int");
+    let is = i32::try_from(source_strike + 1).expect("index fits a C int");
+    let js = i32::try_from(source_dip + 1).expect("index fits a C int");
+    let ns = i32::try_from(ring_radius).expect("radius fits a C int");
+    let ntot = i32::try_from(slowness.len()).expect("size fits a C int");
+
+    // SAFETY: `times` and `slowness` are both `ntot` long, and both scratch buffers
+    // are `m + n` long, as the routine's header requires.
+    unsafe {
+        wfront2d(
+            &raw const m,
+            &raw const n,
+            &raw const is,
+            &raw const js,
+            &raw const spacing_km,
+            &raw const ns,
+            times.as_mut_ptr(),
+            slowness.as_mut_ptr(),
+            &raw const ntot,
+            time_scratch.as_mut_ptr(),
+            index_scratch.as_mut_ptr(),
+        );
+    }
+    times
+}
