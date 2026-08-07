@@ -42,16 +42,36 @@ fn index_from(fraction: f64, extent: usize) -> usize {
     ((fraction * extent as f64) as usize).min(extent - 1)
 }
 
-/// `main`'s padding arithmetic, reproduced for the reference side.
-fn padding(source: usize, extent: usize) -> (usize, usize, usize) {
-    if source < RING_RADIUS + 1 {
-        let offset = RING_RADIUS + 1 - source;
+/// `main`'s padding arithmetic, transcribed in **genslip's own variables**.
+///
+/// `ixs` is its 1-based index — the one it hands the Fortran — and the conditions are
+/// copied from `genslip_v5.6.2.c:3003-3031` unchanged. Returned `ixs` is 1-based too.
+///
+/// Written this way on purpose. The earlier version of this helper read the C's
+/// conditions with a 0-based source and handed the result to `oracle::wavefront_times`,
+/// which adds one; the port did the same thing, so the two agreed with each other and
+/// disagreed with genslip by a whole cell in each direction. `DEFECTS.md` 17. A
+/// reference side that converts at one visible seam cannot make that mistake quietly.
+fn padding_1based(ixs: usize, extent: usize) -> (usize, usize, usize) {
+    if ixs < RING_RADIUS + 1 {
+        let offset = RING_RADIUS + 1 - ixs;
         (offset, extent + offset, RING_RADIUS + 1)
-    } else if source + RING_RADIUS + 2 > extent {
-        (0, source + RING_RADIUS + 2, source)
+    // `ixs > extent - (RING_RADIUS + 2)` in the C, where the subtraction is signed and
+    // may go negative. Moved across the comparison so it cannot underflow a `usize`.
+    } else if ixs + RING_RADIUS + 2 > extent {
+        (0, ixs + RING_RADIUS + 2, ixs)
     } else {
-        (0, extent, source)
+        (0, extent, ixs)
     }
+}
+
+/// The same, with the 0-to-1-based conversion at the boundary rather than inside.
+///
+/// `source` is a 0-based subfault index, which is what [`Hypocentre`] holds and what
+/// `oracle::wavefront_times` takes.
+fn padding(source: usize, extent: usize) -> (usize, usize, usize) {
+    let (offset, padded, ixs) = padding_1based(source + 1, extent);
+    (offset, padded, ixs - 1)
 }
 
 /// The C's whole sequence: grow, replicate, solve, crop.
@@ -169,13 +189,13 @@ fn the_padding_overwrites_real_slowness_and_that_is_reproduced() {
     let (strike_count, dip_count) = (12, 12);
     let speed = seeded_speed(strike_count, dip_count);
 
-    // A hypocentre at dip 0 forces a dip offset of RING_RADIUS + 1 = 3.
+    // A hypocentre on the fault's top row forces a dip offset of RING_RADIUS = 2.
     let hypocentre = Hypocentre {
         strike: strike_count / 2,
         dip: 0,
     };
     let (dip_offset, padded_dip, _) = padding(hypocentre.dip, dip_count);
-    assert_eq!((dip_offset, padded_dip), (3, 15));
+    assert_eq!((dip_offset, padded_dip), (2, 14));
 
     let mut speeds: Vec<f32> = (0..dip_count)
         .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
@@ -194,13 +214,13 @@ fn the_padding_overwrites_real_slowness_and_that_is_reproduced() {
         &mut rng_state,
     );
 
-    // The fault's deepest row lives at padded row `dip_offset + dip_count - 1` = 14.
+    // The fault's deepest row lives at padded row `dip_offset + dip_count - 1` = 13.
     // Uncorrupted, it would hold 1/speed of the fault's row 11.
-    let deepest = slowness[strike_count + 14 * strike_count - strike_count];
+    let deepest = slowness[13 * strike_count];
     let intended = f64::from(1.0 / speed.speed(0, dip_count - 1));
 
-    // It does not. The replication overwrote rows 12..15 from padded row 11, which
-    // is the fault's row 8.
+    // It does not. The replication overwrote rows 12..14 from padded row 11, which
+    // is the fault's row 9.
     let clobbered_with = f64::from(1.0 / speed.speed(0, 11 - dip_offset));
     assert!(
         (deepest - clobbered_with).abs() < 1e-12,

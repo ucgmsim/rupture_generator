@@ -82,6 +82,16 @@ point:
 That crossover is why this needed a test rather than an eyeball. A fixture near M7.4
 would have shown the defect as a rounding difference and been believed.
 
+---
+
+## Ours: call sites, found by the corpus comparison — **fixed**
+
+A different class from 11-13. Nothing here is a function that computes the wrong
+thing; each is a correct, C-verified function handed the wrong argument, or a guard
+the original applies somewhere the port did not look. A suite that checks one function
+at a time cannot see any of them, which is the argument for having an end-to-end
+corpus at all.
+
 ### 14: `rake_sigma` reached nothing
 
 **Fixed.** Found by the corpus comparison, on the first run of it.
@@ -168,19 +178,82 @@ reference on **100%** of subfaults on three cases and 99.83% on `subduction`, an
 where the lengths match the samples agree to **4.2e-05** relative — the SRF's text
 precision for slip-rate rows.
 
+### 17: the hypocentre was a cell off, in both directions
+
+**Fixed.** Found by the corpus comparison; it is the whole of the onset divergence.
+
+genslip's `ixs` and `iys` exist for one purpose — they are handed to `wfront2d`, which
+is Fortran and indexes from **1**:
+
+```fortran
+ttime(IS + m*(JS-1)) = 0.0            ! wafront2d.f:31
+```
+
+```c
+ixs = (int)((shypo+0.5*flen)/dstk + 0.5);   /* genslip_v5.6.2.c:3001 */
+...
+wfront2d_(&nstk_fd,&ndip_fd,&ixs,&iys,&dh,&nsring,fdrt,rslw,&ntot,fspace,ispace);
+```
+
+`mapping.hypocentre_indices` reproduced that formula and returned the result as the
+port's `Hypocentre` — which is a 0-based subfault index, and which correctly adds one
+on its way back to the Fortran. The one was therefore added twice. Every subfault
+ruptured as though the hypocentre were one cell further along strike and one further
+down dip.
+
+The same confusion sat in `Padding::for_source`, which read genslip's conditions
+(`ixs < nsring+1`, `ixs > nstk-(nsring+2)`) with a 0-based source. Both are now in
+0-based terms with the conversion at the single seam where the Fortran is called.
+
+| | measured |
+| --- | --- |
+| before | onset correlations 0.92 to 0.997, difference spreads 0.33 s to 1.05 s |
+| after | **worst difference 5.3e-05 s** across the whole corpus, against a `tinit` field the SRF writes as `%10.4f` — half a quantum, which is the format's floor |
+
+**Why it looked like physics.** Moving a hypocentre one cell does not make a rupture
+implausible: the front still expands smoothly, onset still starts at zero, and the
+error is a smooth function of position, so it correlates at 0.99+ with the right
+answer while differing by up to a second. Every diagnostic that asked "is this the
+right *shape*" said yes. It was ruled out as a stream desynchronisation for the same
+reason — the stream was fine.
+
+**Why the per-function suite could not see it.** `rupture_parity.rs` had a `padding()`
+helper that transcribed the C's arithmetic, and transcribed it with the same 0-vs-1
+error; it then passed the result to `oracle::wavefront_times`, which adds one, exactly
+as the port does. Both sides were shifted together and matched bit for bit. That
+helper is now written in genslip's own 1-based variables with a separate wrapper doing
+the conversion, so the two readings can no longer drift together.
+
+The general form: **a reference side that re-implements the original's logic is not a
+reference.** It is a second reading of the same source by the same reader. Only
+genslip's actual output could adjudicate this, which is what the corpus is.
+
 ### Still open, and only measured
 
 | what | measured | what has been ruled out |
 | --- | --- | --- |
-| onset | correlations 0.92 to 0.997; differences with spread 0.33 s to 1.05 s, on onsets of 4 to 47 s | **not** the perturbation's amplitude — generating with `rupture_time_scale = 0` and differencing gives a perturbation whose spread is `\|tsfac_main\| * tsfac1_sigma` exactly. **Not** a desynchronised stream — the rise-time field is drawn after this one and now agrees exactly. **Not wholly** the perturbation field either — the error correlates with the port's own perturbation at only −0.43 to +0.21, and on three cases its spread is *smaller* than the perturbation's. What is left is the travel times: the eikonal solve or the speed field it runs on |
 | Frankel slip | 0.39 relative on `frankel_corners`, correlation 0.993; the only case where slip diverges at all | not the falloff exponent (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and not the corners (fixed in 11) |
 
-A note on how the onset trail went cold, because it cost time: the rise-time
-divergence looked like a fourth defect for a while. It was not. `nt1` is what the
-slip-rate generator *returned*, not `rise_time / dt`, so comparing the port's rise
+`frankel_corners` is also the one case whose **onset** still diverges, by a spread of
+0.041 s. That is not a second problem: the rupture-time perturbation is drawn
+correlated with slip at `tsfac1_scor = 0.8`, so a diverging slip field carries onset
+with it. The `frankel_no_perturbation` corpus twin is what makes that checkable —
+same fault, `tsfac_main = 0`, and its onset is exact.
+
+A note on how the onset trail went cold before 17 was found, because it cost time: the
+rise-time divergence looked like a fourth defect for a while. It was not. `nt1` is what
+the slip-rate generator *returned*, not `rise_time / dt`, so comparing the port's rise
 time against `nt1 * dt` compares two different quantities — and produces a bounded,
 systematic-looking offset in `[-2, -0.5]` samples that reads exactly like a real
 defect. The comparison is now against the pulse lengths themselves.
+
+The measurement that finally worked was subtraction rather than inspection. Onset is
+`travel_time + tsfac_main*perturbation`; setting `tsfac_main = 0` on **both** sides
+removes the second term exactly, leaving travel times against travel times. That
+showed the perturbation fields already agreed bit for bit and the entire divergence was
+upstream of them — which turned a search over the whole timing path into a search over
+`Wavefront2d`'s inputs. Zero is honoured rather than read as "unset": the sentinel is
+`-1.0e+15` and the guard is `tsfac_main > -1.0e+10`.
 
 ### Related, and not a defect
 

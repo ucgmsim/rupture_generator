@@ -38,6 +38,21 @@ should track the grid, passes on a single uniform plane:
 `crustal_small` is deliberately the geometry `test_genslip_reference.py` already
 drives, so the corpus and the older tests cannot disagree about the same fault.
 
+# One case is a twin, and that is the point of it
+
+`frankel_no_perturbation` is `frankel_corners` with `tsfac_main = 0` and nothing else
+changed, built from it with `dataclasses.replace` so "nothing else" is a fact.
+
+Onset is a travel time plus a slip-correlated perturbation, and two wrong things that
+sum to a plausible field are indistinguishable in it. Setting `tsfac_main = 0` removes
+the perturbation term exactly -- see `_perturbation_switched_off` -- so the twin's
+onset is the eikonal solve alone. That is what closed `DEFECTS.md` 17: the whole onset
+divergence was in the travel times, and none of it in the perturbation.
+
+Frankel is the one worth twinning because it is the case whose slip still diverges. Its
+perturbation is drawn correlated with slip, so its onset diverges too, and without the
+twin there is no way to tell that from a travel-time regression.
+
 # The GSF's order is not the SRF's, and only a multi-segment case shows it
 
 `segno` is not inert when `seg_delay=0`, which is what it first looked like.
@@ -78,7 +93,7 @@ import numpy as np
 from rupture_generator import srf
 from rupture_generator.srf import SrfFile
 from tests.harness import serialise as utils
-from tests.harness.genslip_config import KModel, Parameters
+from tests.harness.genslip_config import KModel, Parameters, RuptureTimePerturbation
 from tests.harness.gsf import (
     FloatArray,
     GsfSubfaults,
@@ -140,6 +155,12 @@ class Case:
         `(bottom_depth_km, shear_speed_km_s, density_g_cm3)`.
     overrides : dict
         getpar values differing from the shared fixture set.
+    twin_of : str | None
+        The case this one is a deliberate copy of, differing in one parameter so the
+        two can be *differenced*. A twin is built with `dataclasses.replace` from the
+        case it names, which is what makes "identical but for one field" a fact rather
+        than an intention. It is exempt from the spread checks in `test_corpus.py`,
+        which otherwise require every case to be a different fault.
     """
 
     name: str
@@ -153,6 +174,7 @@ class Case:
     hypocentre_dip_km: float
     layers: tuple[FloatArray, FloatArray, FloatArray]
     overrides: dict[str, Any] = dataclasses.field(default_factory=dict)
+    twin_of: str | None = None
 
     def parameters(self) -> Parameters:
         """
@@ -178,6 +200,50 @@ class Case:
             The discretised fault.
         """
         return self.build()
+
+
+def _perturbation_switched_off() -> RuptureTimePerturbation:
+    """The shared fixture's rupture-time perturbation, with `tsfac_main` set to zero.
+
+    Taken from the fixture rather than written out again, so a twin built with it
+    differs from its original in `tsfac_main` and in nothing else.
+
+    Zero is *honoured*, not read as "unset": the sentinel is `-1.0e+15` and the guard
+    is `tsfac_main > -1.0e+10` (`genslip_v5.6.2.c:3134`), so zero passes it and
+    multiplies the perturbation away. Nothing else reads `tsfac_main`, and the
+    perturbation field is drawn either way, so the draw stream is untouched -- which
+    is what makes the difference between a twin and its original the perturbation
+    alone.
+    """
+    return dataclasses.replace(
+        _make_minimal_params().rupture_time_perturbation, main_value=0.0
+    )
+
+
+_FRANKEL = Case(
+    name="frankel_corners",
+    why="kmodel=Frankel, which DEFECTS.md 11 routed to the wrong corner relation",
+    build=lambda: on_a_plane(
+        strike_count=24,
+        dip_count=16,
+        along_strike_km=1.0,
+        down_dip_km=1.0,
+        centre_longitude_deg=171.5,
+        centre_latitude_deg=-44.2,
+        strike_deg=100.0,
+        dip_deg=45.0,
+        top_depth_km=2.0,
+        rake_deg=90.0,
+    ),
+    strike_count=24,
+    dip_count=16,
+    magnitude=6.6,
+    seed=20260811,
+    hypocentre_strike_km=-4.0,
+    hypocentre_dip_km=8.0,
+    layers=CRUSTAL_LAYERS,
+    overrides=dict(kmodel=KModel.FRANKEL),
+)
 
 
 CASES: tuple[Case, ...] = (
@@ -291,29 +357,16 @@ CASES: tuple[Case, ...] = (
         hypocentre_dip_km=7.0,
         layers=CRUSTAL_LAYERS,
     ),
-    Case(
-        name="frankel_corners",
-        why="kmodel=Frankel, which DEFECTS.md 11 routed to the wrong corner relation",
-        build=lambda: on_a_plane(
-            strike_count=24,
-            dip_count=16,
-            along_strike_km=1.0,
-            down_dip_km=1.0,
-            centre_longitude_deg=171.5,
-            centre_latitude_deg=-44.2,
-            strike_deg=100.0,
-            dip_deg=45.0,
-            top_depth_km=2.0,
-            rake_deg=90.0,
-        ),
-        strike_count=24,
-        dip_count=16,
-        magnitude=6.6,
-        seed=20260811,
-        hypocentre_strike_km=-4.0,
-        hypocentre_dip_km=8.0,
-        layers=CRUSTAL_LAYERS,
-        overrides=dict(kmodel=KModel.FRANKEL),
+    _FRANKEL,
+    dataclasses.replace(
+        _FRANKEL,
+        name="frankel_no_perturbation",
+        why="frankel_corners with tsfac_main=0, so onset is the eikonal solve and "
+        "nothing else -- the only way to check travel times on the one case whose "
+        "slip, and therefore whose slip-correlated timing perturbation, diverges",
+        overrides=_FRANKEL.overrides
+        | dict(rupture_time_perturbation=_perturbation_switched_off()),
+        twin_of="frankel_corners",
     ),
 )
 
@@ -606,10 +659,22 @@ def main() -> int:
         )
         return 1
 
+    # Named cases only, when named. Adding a case should not rewrite the others'
+    # fixtures -- and rebuilding all of them anyway is the check that the binary in
+    # hand is the one the stored references came from, since an unchanged case
+    # rebuilds to identical bytes.
+    wanted = sys.argv[1:]
+    unknown = [name for name in wanted if name not in BY_NAME]
+    if unknown:
+        print(f"no such case: {', '.join(unknown)}", file=sys.stderr)
+        return 1
+
     for case in CASES:
+        if wanted and case.name not in wanted:
+            continue
         generate(case, Path(binary))
         size = srf_path(case.name).stat().st_size
-        print(f"{case.name:20s} {size / 1024:8.1f} KiB  {case.why}")
+        print(f"{case.name:24s} {size / 1024:8.1f} KiB  {case.why}")
     return 0
 
 

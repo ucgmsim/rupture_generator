@@ -20,8 +20,8 @@ around measurements.
 
 # What this found
 
-Three defects, all of the same kind: a correct function called wrongly, or not
-guarded the way the original guards it. `DEFECTS.md` 14-16.
+Four defects, all of the same kind: a correct function called wrongly, or not guarded
+the way the original guards it. `DEFECTS.md` 14-17.
 
 1. **`rake_sigma` reached nothing.** The slip field's coefficient of variation was
    handed to `rake_field` where the rake field's spread in *degrees* belongs.
@@ -31,30 +31,49 @@ guarded the way the original guards it. `DEFECTS.md` 14-16.
 3. **A subfault that does not slip was getting a pulse.** The `|slip| > MINSLIP`
    guard is in the SRF loader, outside the generator, so porting the generator
    faithfully did not reproduce it.
+4. **The hypocentre was a cell off in both directions.** genslip's `ixs`/`iys` count
+   from one, because their only consumer is a Fortran routine. See `TestOnsetAgrees`.
 
 None could have been caught by the per-function parity tests. Each of `rake_field`,
 the blend and `oliu_p` is correct and is tested against the C; the defects are in the
 **calls**, and a suite that checks one function at a time cannot see a caller handing
 the right function the wrong argument. That is the seam an end-to-end corpus closes.
 
-What remains is onset -- see `TestTheRecordedDivergences`, which records what has been
-ruled out as well as what is left.
+The fourth is worse than that and worth its own sentence: the per-function test had a
+reference side that re-implemented the C's index arithmetic, and re-implemented it the
+same wrong way. It agreed with the port exactly. A reference has to be the original's
+*output*, not a second reading of its source.
+
+What remains is slip under `kmodel=Frankel` -- see `TestTheRecordedDivergences`.
 """
 
 import numpy as np
 import pytest
 
 from tests.harness import corpus
+from tests.harness.genslip_config import KModel
 
 CASES = [case.name for case in corpus.CASES]
+
+# Slip under `kmodel=Frankel` diverges -- see `TestTheRecordedDivergences` -- and so
+# does everything computed from it: the pulses it scales, and the timing perturbation
+# it is drawn correlated with. Selected by the spectrum rather than by name, because
+# that is the actual reason, and because the twin shares it.
+SLIP_AGREES = [
+    case.name for case in corpus.CASES if case.parameters().kmodel is not KModel.FRANKEL
+]
+
+# Onset is a travel time plus a slip-correlated perturbation. Only the perturbed
+# Frankel case has the second term diverging, so its twin belongs here.
+ONSET_AGREES = [name for name in CASES if name != "frankel_corners"]
 
 
 @pytest.fixture(scope="module")
 def compared() -> dict:
     """Every case, generated once and compared in the reference's point order.
 
-    Module-scoped because generating five ruptures is seconds of FFT work and every
-    test below wants the same five.
+    Module-scoped because generating the whole corpus is seconds of FFT work and
+    every test below wants the same ruptures.
 
     Returns
     -------
@@ -140,15 +159,38 @@ class TestTheCorpusIsWellFormed:
         assert arguments["nh"] == "1"
 
     def test_the_spread_is_actually_spread(self) -> None:
-        # Five cases that were secretly the same fault would pass everything below
-        # and mean nothing.
-        shapes = {(c.strike_count, c.dip_count) for c in corpus.CASES}
-        assert len(shapes) == len(corpus.CASES)
-        assert len({c.parameters().kmodel for c in corpus.CASES}) >= 3
-        assert len({c.parameters().dt for c in corpus.CASES}) >= 2
-        dips = {float(corpus.load_geometry(c.name).mean_dip_deg) for c in corpus.CASES}
+        # Cases that were secretly the same fault would pass everything below and mean
+        # nothing. Twins are exempt: being the same fault is what they are for, and
+        # `test_a_twin_differs_from_its_original_in_one_thing` is their check instead.
+        distinct = [c for c in corpus.CASES if c.twin_of is None]
+        shapes = {(c.strike_count, c.dip_count) for c in distinct}
+        assert len(shapes) == len(distinct)
+        assert len({c.parameters().kmodel for c in distinct}) >= 3
+        assert len({c.parameters().dt for c in distinct}) >= 2
+        dips = {float(corpus.load_geometry(c.name).mean_dip_deg) for c in distinct}
         assert min(dips) < 20.0, "no shallow-dipping case"
         assert max(dips) > 75.0, "no steep case"
+
+    def test_a_twin_differs_from_its_original_in_one_thing(self) -> None:
+        # A twin exists to be *differenced* against its original, so any second
+        # difference between them silently contaminates the first. The stored
+        # arguments are the check, since they are what genslip was actually given.
+        twins = [c for c in corpus.CASES if c.twin_of is not None]
+        assert twins, "no twins; `Case.twin_of` and its exemptions are now dead"
+
+        for twin in twins:
+            mine = corpus.load_arguments(twin.name)
+            theirs = corpus.load_arguments(twin.twin_of)
+            # infile and velfile name the case, not the physics.
+            differing = {
+                key
+                for key in mine.keys() | theirs.keys()
+                if mine.get(key) != theirs.get(key)
+            } - {"infile", "velfile"}
+            assert differing == {"tsfac_main"}, (
+                f"{twin.name} differs from {twin.twin_of} in {sorted(differing)}"
+            )
+            assert float(mine["tsfac_main"]) == 0.0
 
 
 class TestThePointOrdering:
@@ -195,7 +237,7 @@ class TestThePointOrdering:
 class TestSlipAgrees:
     """The whole stochastic pipeline, in one field."""
 
-    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    @pytest.mark.parametrize("name", SLIP_AGREES)
     def test_slip_matches_to_the_format_s_precision(
         self, name: str, compared: dict
     ) -> None:
@@ -206,7 +248,7 @@ class TestSlipAgrees:
         result = compared[name]
         assert relative(result["slip_cm"], result["points"].slip_cm) < 1e-5
 
-    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    @pytest.mark.parametrize("name", SLIP_AGREES)
     def test_slip_is_the_same_field_and_not_merely_the_same_size(
         self, name: str, compared: dict
     ) -> None:
@@ -263,7 +305,7 @@ class TestTheSlipRatePulsesAgree:
     lengths themselves were checked.
     """
 
-    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    @pytest.mark.parametrize("name", SLIP_AGREES)
     def test_the_pulse_lengths_are_the_reference_s(
         self, name: str, compared: dict
     ) -> None:
@@ -272,7 +314,7 @@ class TestTheSlipRatePulsesAgree:
         exact = float(np.mean(result["pulse_length"] == result["reference_length"]))
         assert exact > 0.998, f"{name}: {exact:.4%} of pulse lengths exact"
 
-    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    @pytest.mark.parametrize("name", SLIP_AGREES)
     def test_a_subfault_that_does_not_slip_emits_no_pulse(
         self, name: str, compared: dict
     ) -> None:
@@ -288,7 +330,7 @@ class TestTheSlipRatePulsesAgree:
             result["pulse_length"][silent], result["reference_length"][silent]
         )
 
-    @pytest.mark.parametrize("name", [n for n in CASES if n != "frankel_corners"])
+    @pytest.mark.parametrize("name", SLIP_AGREES)
     def test_the_samples_agree_where_the_lengths_do(
         self, name: str, compared: dict
     ) -> None:
@@ -299,6 +341,59 @@ class TestTheSlipRatePulsesAgree:
         assert result["slip_rate_relative"] < 1e-4
 
 
+class TestOnsetAgrees:
+    """`DEFECTS.md` 17, fixed. The corpus found it; nothing else could have.
+
+    genslip's `ixs`/`iys` count from **one**, because their only use is `wfront2d`'s
+    argument list and that routine is Fortran. The mapping handed them to the port
+    unconverted, and the port -- whose `Hypocentre` is a 0-based subfault index --
+    added one on the way back out. Every subfault then ruptured as though the
+    hypocentre were a cell further along strike and a cell further down dip.
+
+    What made it survive: the per-function parity test reproduced the C's padding
+    arithmetic *with the same confusion* and fed the result to an oracle wrapper that
+    also adds one, so both sides were shifted together and agreed exactly. A test
+    whose reference side re-implements the surround cannot catch an error in how the
+    surround is read. Only the whole rupture, against genslip's own bytes, could.
+    """
+
+    @pytest.mark.parametrize("name", ONSET_AGREES)
+    def test_onset_matches_to_the_format_s_precision(
+        self, name: str, compared: dict
+    ) -> None:
+        # The SRF writes `tinit` as `%10.4f`, so 1e-4 s is the file's resolution and
+        # the worst disagreement anywhere in the corpus is 5.3e-05 -- half a quantum,
+        # which is what rounding to that field costs and nothing more.
+        result = compared[name]
+        worst = float(np.abs(result["onset_s"] - result["points"].onset_s).max())
+        assert worst < 1e-4, f"{name}: worst onset difference {worst} s"
+
+    @pytest.mark.parametrize("name", ONSET_AGREES)
+    def test_onset_is_the_same_field_and_not_merely_the_same_spread(
+        self, name: str, compared: dict
+    ) -> None:
+        result = compared[name]
+        correlation = np.corrcoef(result["onset_s"], result["points"].onset_s)[0, 1]
+        assert correlation > 1.0 - 1e-9
+
+    def test_the_travel_times_agree_even_where_the_slip_does_not(
+        self, compared: dict
+    ) -> None:
+        """The twin, and the reason it is in the corpus.
+
+        `frankel_no_perturbation` is `frankel_corners` with `tsfac_main = 0`, so its
+        onset is the eikonal solve with no perturbation term on top. It agrees to the
+        format's precision. The perturbed twin does not -- and the difference between
+        the two is a statement about slip, not about travel times.
+
+        Without this case, a regression in the solver and the known Frankel slip
+        divergence would show up in the same number.
+        """
+        result = compared["frankel_no_perturbation"]
+        worst = float(np.abs(result["onset_s"] - result["points"].onset_s).max())
+        assert worst < 1e-4, f"pure travel times differ by {worst} s"
+
+
 class TestTheRecordedDivergences:
     """What does not agree yet, measured rather than tolerated.
 
@@ -307,38 +402,26 @@ class TestTheRecordedDivergences:
     what makes it a record rather than a silence.
     """
 
-    @pytest.mark.parametrize("name", CASES)
-    def test_onset_is_the_right_shape_and_not_yet_the_right_times(
-        self, name: str, compared: dict
+    def test_frankel_onset_diverges_only_by_way_of_its_slip(
+        self, compared: dict
     ) -> None:
-        """Correlations 0.92 to 0.997; differences of 0.33 s to 1.05 s.
+        """The last of the onset field, and it is not an onset problem.
 
-        What has been ruled out, measured rather than argued:
-
-        - **Not the perturbation's amplitude.** Generating with
-          `rupture_time_scale = 0` and differencing gives a perturbation whose
-          standard deviation is `|tsfac_main| * tsfac1_sigma` exactly.
-        - **Not a desynchronised draw stream.** The rise-time field is drawn *after*
-          this one and now agrees exactly, so the stream is right through both.
-        - **Not wholly the perturbation field either.** The error correlates with the
-          port's own perturbation at only -0.43 to +0.21, and on three cases its
-          spread is *smaller* than the perturbation's -- so the two perturbations
-          largely agree and this is a residual on top.
-
-        What is left is the travel times: the eikonal solve, or the speed field it
-        runs on. Not yet isolated.
+        The rupture-time perturbation is drawn correlated with slip (`tsfac1_scor`
+        = 0.8), so the case whose slip diverges has an onset that diverges with it.
+        The twin pins the other half: with the perturbation switched off, the same
+        fault's onset is exact. So this number is downstream of the Frankel slip
+        divergence below, and fixing that fixes this.
         """
-        result = compared[name]
-        correlation = np.corrcoef(result["onset_s"], result["points"].onset_s)[0, 1]
-        assert correlation > 0.85, f"{name}: onset correlation {correlation}"
+        perturbed = compared["frankel_corners"]
+        spread = float(
+            np.std(perturbed["onset_s"] - perturbed["points"].onset_s)
+        )
+        assert 0.02 < spread < 0.08, f"frankel onset spread {spread} s"
 
-    @pytest.mark.parametrize("name", CASES)
-    def test_the_onset_error_stays_within_what_was_recorded(
-        self, name: str, compared: dict
-    ) -> None:
-        result = compared[name]
-        spread = float(np.std(result["onset_s"] - result["points"].onset_s))
-        assert spread < 1.2, f"{name}: onset difference spread {spread} s"
+        # And it really is the perturbation: the same fault without one is exact.
+        pure = compared["frankel_no_perturbation"]
+        assert np.abs(pure["onset_s"] - pure["points"].onset_s).max() < 1e-4
 
     def test_frankel_slip_does_not_agree_and_the_falloff_is_not_why(
         self, compared: dict

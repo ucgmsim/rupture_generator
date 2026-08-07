@@ -185,26 +185,45 @@ class TestFaultGrid:
 
 
 class TestTheHypocentreConversion:
-    """`shypo`/`dhypo` are kilometres; the port takes subfault indices."""
+    """`shypo`/`dhypo` are kilometres; the port takes 0-based subfault indices.
+
+    genslip's `ixs`/`iys` count from one, because their only use is the Fortran
+    solver's argument list. Returning them unconverted is `DEFECTS.md` 17, and it cost
+    the whole onset field: every subfault ruptured as though the hypocentre were one
+    cell further along strike and one further down dip.
+    """
 
     def test_the_centre_of_the_fault_is_the_middle_subfault(self) -> None:
         # shypo is measured from the CENTRE and is signed, so 0.0 is the middle --
         # not the first subfault, which is what a proportion or an index would give.
-        assert mapping.hypocentre_indices(0.0, 3.0, geometry(), derived()) == (10, 6)
+        # An even grid has no middle subfault, and genslip's rounding takes the lower
+        # of the two: `ixs = 10` is 1-based, so subfault 9 of 0..19.
+        assert mapping.hypocentre_indices(0.0, 3.0, geometry(), derived()) == (9, 5)
 
-    def test_the_ends_of_the_fault_are_the_end_subfaults(self) -> None:
-        result = derived()
-        subfaults = geometry()
-        assert mapping.hypocentre_indices(-5.0, 0.0, subfaults, result) == (0, 0)
-        assert mapping.hypocentre_indices(5.0, 6.0, subfaults, result) == (20, 12)
+    def test_the_far_end_of_the_fault_is_its_last_subfault(self) -> None:
+        # The check that the conversion is 0-based, and the one the old convention
+        # could not pass: it returned `(20, 12)` for a 20x12 fault -- one past the
+        # last subfault in both directions, on a grid whose valid indices stop at
+        # (19, 11). Nothing downstream complained.
+        assert mapping.hypocentre_indices(5.0, 6.0, geometry(), derived()) == (19, 11)
+
+    def test_the_near_end_of_the_fault_is_refused(self) -> None:
+        # The other end does not have an index. genslip's rounding gives `ixs = 0`,
+        # which is not a Fortran index at all; its padding then carries the source a
+        # cell outside the fault, and an unsigned subfault index cannot say that.
+        # Refused rather than clamped, because clamping is a different rupture.
+        with pytest.raises(ValueError, match="OFF the near edge"):
+            mapping.hypocentre_indices(-5.0, 3.0, geometry(), derived())
+        with pytest.raises(ValueError, match="OFF the near edge"):
+            mapping.hypocentre_indices(0.0, 0.0, geometry(), derived())
 
     def test_it_is_not_a_proportion(self) -> None:
         # `genslip_config.Hypocentre` used to describe these as proportions. Under
         # that reading the fixture's dhypo=3.0 would be off the fault; under the
         # correct one it is halfway down a 6 km width.
         strike, dip = mapping.hypocentre_indices(0.0, 3.0, geometry(), derived())
-        assert dip == DIP // 2
-        assert strike == STRIKE // 2
+        assert dip == DIP // 2 - 1
+        assert strike == STRIKE // 2 - 1
 
     @pytest.mark.parametrize(
         ("strike_km", "dip_km"),
@@ -602,7 +621,7 @@ class TestEveryGroupTogether:
         )
         assert mapping.hypocentre_indices(
             HYPOCENTRE_STRIKE_KM, HYPOCENTRE_DIP_KM, subfaults, result
-        ) == (10, 6)
+        ) == (9, 5)
 
     def test_a_ramp_is_a_ramp(self) -> None:
         ramp = Ramp(6.5, 1.5)

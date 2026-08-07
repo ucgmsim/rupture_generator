@@ -335,6 +335,15 @@ def hypocentre_indices(
     replaced with `round`: they differ for negative arguments, and `shypo` is negative
     over half the fault.
 
+    # genslip's `ixs` counts from one, and the port's index counts from zero
+
+    `ixs` and `iys` exist in genslip for one purpose: they are handed to `wfront2d`,
+    which is Fortran and indexes from 1 (`wafront2d.f:31`, `ttime(IS + m*(JS-1))`).
+    The port's `Hypocentre` is a 0-based subfault index like every other index it
+    holds, so **the conversion is here** -- and the whole of `DEFECTS.md` 17 is what
+    happens when it is not: onset off by a cell in each direction, which reads as a
+    rupture that is merely a bit early rather than as an index error.
+
     (orig. `genslip_v5.6.2.c:3001` and `:3018`)
 
     Parameters
@@ -351,13 +360,20 @@ def hypocentre_indices(
     Returns
     -------
     tuple[int, int]
-        `(hypocentre_strike, hypocentre_dip)` as subfault indices.
+        `(hypocentre_strike, hypocentre_dip)` as 0-based subfault indices.
 
     Raises
     ------
     ValueError
         If the hypocentre is off the fault. genslip checks the same bounds at line
         3155 and refuses to write a rupture, so this is its check, moved earlier.
+
+        Or if genslip's rounding puts the source *off the near edge of the grid* --
+        `ixs = 0`, reached only at `shypo = -flen/2` or `dhypo = 0` exactly. genslip
+        accepts that and its padding carries the source one cell outside the fault;
+        the port's index is unsigned and cannot say "one cell before subfault zero",
+        so this refuses rather than silently rounding into the fault, which would be
+        a different rupture.
     """
     if not -0.5 * derived.length_km <= hypocentre_strike_km <= 0.5 * derived.length_km:
         raise ValueError(
@@ -374,7 +390,14 @@ def hypocentre_indices(
         + 0.5
     )
     dip = int(hypocentre_dip_km / geometry.mean_down_dip_km + 0.5)
-    return strike, dip
+    if strike == 0 or dip == 0:
+        raise ValueError(
+            f"shypo={hypocentre_strike_km} km, dhypo={hypocentre_dip_km} km round to "
+            f"genslip's ixs={strike}, iys={dip}; a zero there is one cell OFF the "
+            "near edge of the grid, which genslip allows and the port's unsigned "
+            "subfault index cannot represent"
+        )
+    return strike - 1, dip - 1
 
 
 def fault_grid(

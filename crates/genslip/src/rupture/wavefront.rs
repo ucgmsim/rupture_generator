@@ -10,10 +10,10 @@
 //!
 //! # The padding, which is this solver's problem alone
 //!
-//! The analytic near-source solution needs `ring_radius + 1` cells of room in every
-//! direction, so a hypocentre near a fault edge does not fit. genslip grows the grid
-//! and offsets the source to make room, filling the new cells by replicating the
-//! nearest real value.
+//! The analytic near-source solution needs a few cells of room around the source, so
+//! a hypocentre near a fault edge does not fit. genslip grows the grid and offsets
+//! the source to make room, filling the new cells by replicating the nearest real
+//! value. [`Padding::for_source`] has how much room, and why it is asymmetric.
 //!
 //! That happens here rather than in the caller, so swapping in a solver without the
 //! requirement removes the padding along with it.
@@ -62,24 +62,36 @@ struct Padding {
 }
 
 impl Padding {
-    /// Grow `extent` so `source` sits at least `radius + 1` from either edge.
+    /// Grow `extent` so the source has room for the analytic near-source solution.
     ///
-    /// The two branches are not symmetric, and that is the original's shape: a
-    /// source too close to the *low* edge is moved by inserting cells before it,
-    /// while one too close to the *high* edge is accommodated by extending past it
-    /// and leaving the source where it is.
+    /// The room the original demands is not symmetric — `radius` cells below the
+    /// source and `radius + 2` above it — and neither is what it does about a
+    /// shortfall: a source too close to the *low* edge is moved by inserting cells
+    /// before it, while one too close to the *high* edge is accommodated by extending
+    /// past it and leaving the source where it is.
+    ///
+    /// # `source` is 0-based here and 1-based in the original
+    ///
+    /// genslip's `ixs` is the index it hands the Fortran, which counts from one, and
+    /// its conditions are written in those terms — `ixs < nsring+1`,
+    /// `ixs > nstk-(nsring+2)`. Substituting `ixs = source + 1` gives the two below.
+    ///
+    /// Reading the C's conditions with a 0-based `source` costs a whole cell in each
+    /// direction, and the rupture that results is a *plausible* one: onset stays
+    /// smooth and correlates at 0.92 to 0.997 with the original's, while differing by
+    /// up to a second. `DEFECTS.md` 17.
     fn for_source(source: usize, extent: usize, radius: usize) -> Self {
-        if source < radius + 1 {
-            let offset = radius + 1 - source;
+        if source < radius {
+            let offset = radius - source;
             Self {
                 offset,
                 extent: extent + offset,
-                source: radius + 1,
+                source: radius,
             }
-        } else if source + radius + 2 > extent {
+        } else if source + radius + 3 > extent {
             Self {
                 offset: 0,
-                extent: source + radius + 2,
+                extent: source + radius + 3,
                 source,
             }
         } else {

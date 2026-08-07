@@ -26,14 +26,17 @@ rupture = generate_rupture(
 
 **Status: Stage 1 complete for the finite-fault path, and now checked end to end.**
 Every kernel is bit-identical to the C per function, verified against the real library
-linked through `genslip-oracle`. Against a stored corpus of five whole ruptures, slip,
-rake and the slip-rate pulses agree to the SRF's own precision; **rupture onset does
-not yet**, and neither does slip under `kmodel=Frankel`. The point-source path
+linked through `genslip-oracle`. Against a stored corpus of six whole ruptures, slip,
+rake, onset and the slip-rate pulses all agree to the SRF's own precision. **One
+divergence is left**: slip under `kmodel=Frankel`. The point-source path
 (`generic_slip2srf`) is not started.
 
-The end-to-end check earned its keep immediately: it found three defects the
-per-function suite structurally could not (`DEFECTS.md` 14-16), each a correct,
-C-verified function called wrongly.
+The end-to-end check earned its keep immediately: it found four defects the
+per-function suite structurally could not (`DEFECTS.md` 14-17), each a correct,
+C-verified function called wrongly. The fourth is the one worth reading — the
+per-function test's *reference* side re-implemented genslip's index arithmetic and
+made the same mistake the port did, so the two agreed exactly while both were a cell
+off from genslip.
 
 ## Layout
 
@@ -103,7 +106,7 @@ Two things that are not obvious:
   `-ffp-contract=off` do take, which are the two that decide float results.
 
 Parity is checked against exactly this: 137 Rust tests pass with contraction off,
-and 235 Python tests alongside them.
+and 245 Python tests alongside them.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -127,7 +130,7 @@ needed to *rebuild* the corpus.
 | | |
 | --- | --- |
 | `PORTING_RULES.md` | How the port is written. **Read rule 1 and rule 2 before touching a kernel.** Expires at the Stage 1/2 boundary |
-| `DEFECTS.md` | Sixteen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, three in its call sites. The last three were found by the corpus and are the argument for having one |
+| `DEFECTS.md` | Seventeen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, four in its call sites. The last four were found by the corpus and are the argument for having one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
 
@@ -154,10 +157,11 @@ Two habits this list assumes, both learned expensively:
 
 ### Where this was left
 
-Item 1 — the Stage 0 fixture corpus — is **done**. `tests/harness/mapping.py` maps
-every `getpar` name onto the port's five spec groups, `tests/corpus/` holds five
-reference ruptures, and `tests/harness/test_corpus.py` compares the port against them
-without needing a genslip binary.
+The Stage 0 fixture corpus is **done**, and so is rupture onset — the last field that
+did not agree. `tests/harness/mapping.py` maps every `getpar` name onto the port's five
+spec groups, `tests/corpus/` holds six reference ruptures, and
+`tests/harness/test_corpus.py` compares the port against them without needing a genslip
+binary.
 
 To get going:
 
@@ -168,18 +172,21 @@ export GENSLIP_BINARY=...             # only needed to REBUILD the corpus
 ./gate.sh
 ```
 
-What the comparison says today, on all five cases:
+What the comparison says today:
 
 | | |
 | --- | --- |
-| slip | 2.6e-06 relative, correlation 1.0000000 — on four of five cases |
+| slip | 2.6e-06 relative, correlation 1.0000000 — except under `kmodel=Frankel` |
 | rake | **100% of subfaults exact**, worst deviation 0.4999 deg (the SRF stores whole degrees, so the format is the floor) |
+| onset | worst difference **5.3e-05 s** against a `%10.4f` field — half a quantum, the format's floor again. Except on `frankel_corners`, and there only by way of its slip |
 | slip-rate pulse lengths | **100%** exact on three cases, 99.83% on `subduction` |
 | slip-rate samples | 4.2e-05 relative where the lengths match |
-| onset | correlations 0.92–0.997, differences 0.33–1.05 s — **open, item 1 below** |
 | plane centre | genslip's flat-earth error, 43 m crustal to 1.9 km subduction. Not ours: it recomputes what the port is given |
 
-**Two traps that cost real time. Do not re-learn them.**
+Everything the corpus checks now agrees to the SRF's own precision except slip under
+`kmodel=Frankel`, and the one field that trails it.
+
+**Three traps that cost real time. Do not re-learn them.**
 
 - **`nt1` is not `rise_time / dt`.** It is what the slip-rate generator *returned*.
   Comparing the port's rise time against `nt1 * dt` compares two different quantities
@@ -191,55 +198,38 @@ What the comparison says today, on all five cases:
   subfault against another and reports it as a port defect. `corpus.segment_order` is
   the permutation, and it is the identity on the four single-plane cases, so only
   `bent` can catch its absence.
+- **genslip's `ixs`/`iys` count from one, and its subfault indices count from zero.**
+  They are not subfault indices at all — they exist to be handed to `wfront2d`, which
+  is Fortran. Reading them as 0-based costs a whole cell in each direction, and the
+  rupture that results is *plausible*: smooth, starting at zero, correlated 0.99+ with
+  the right one. Nothing short of a whole-rupture comparison saw it. `DEFECTS.md` 17.
 
-1. **Rupture onset.** The last field that does not agree. Correlations 0.92 to 0.997,
-   differences with spread 0.33 s to 1.05 s on onsets of 4 to 47 s — so the structure
-   is right and something in the middle is not.
-
-   Three things are **ruled out by measurement**, and the measurements are worth
-   repeating rather than trusting:
-
-   - **Not the perturbation's amplitude.** Generate twice, once with
-     `rupture_time_scale = 0`, and difference: the perturbation's standard deviation
-     is `|tsfac_main| * tsfac1_sigma` exactly.
-   - **Not a desynchronised draw stream.** The rise-time field is drawn *after* this
-     one and now agrees exactly, so the stream is right through both. A desynchronised
-     stream would also destroy the correlation, and it is 0.99+ on three cases.
-   - **Not wholly the perturbation field.** The error correlates with the port's own
-     perturbation at only −0.43 to +0.21, and on three cases its spread is *smaller*
-     than the perturbation's — so the two perturbations largely agree and this is a
-     residual on top of them.
-
-   What is left is the travel times: `Wavefront2d`, or the speed field it runs on.
-   `get_rspeed_vsden2` (`genslip_v5.6.2.c:2991`) takes `slp_max` and `slp_avg`, which
-   the port's `rupture::speed_field` does not — worth checking whether they are read
-   when `fdrup_scale_slip = 0`, which is what every corpus case sets.
-
-   genslip prints nothing about `rspd`, so the binary is not an oracle here — but it
-   does not need to be. **Set `tsfac_main = 0` on both sides and the perturbation
-   vanishes**, leaving pure travel times to compare against pure travel times:
-
-   ```c
-   psrc[ip].rupt = rt + tsfac_main*tsfac1_r[ip];   /* genslip_v5.6.2.c:3135 */
-   ```
-
-   Zero is honoured rather than read as "unset": the sentinel is `-1.0e+15` and the
-   guard is `tsfac_main > -1.0e+10`, so `0` passes it and multiplies the perturbation
-   away. `Parameters.rupture_time_perturbation.main_value` sets it, and
-   `mapping.rupture_time_scale` already passes an explicit value straight through, so
-   a sixth corpus case is all it takes. That is the measurement to make first.
-
-2. **Slip under `kmodel=Frankel`.** 0.39 relative on `frankel_corners`, correlation
+1. **Slip under `kmodel=Frankel`.** 0.39 relative on `frankel_corners`, correlation
    0.993 — the only case where slip diverges at all. Not the falloff exponent
    (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and
    not the corner relation (`DEFECTS.md` 11, fixed). Unexplained.
 
-3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-4. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
+   It carries onset with it: the rupture-time perturbation is drawn correlated with
+   slip at `tsfac1_scor = 0.8`, so `frankel_corners` is also the one case whose onset
+   is not exact, by a spread of 0.041 s. That is a symptom rather than a second
+   problem, and the `frankel_no_perturbation` twin is what proves it — the same fault
+   with `tsfac_main = 0`, whose onset *is* exact.
+
+   **Reuse the technique that closed onset.** Onset was `travel_time +
+   tsfac_main*perturbation`: two unknowns summing to something plausible, and no
+   diagnostic on the sum could separate them. Setting `tsfac_main = 0` on *both sides*
+   removed one term exactly — zero is honoured rather than read as "unset", the
+   sentinel being `-1.0e+15` against a `> -1.0e+10` guard — and left the other alone
+   to be compared against its counterpart. It turned a search over the whole timing
+   path into a search over one function's arguments. Look for the same seam here
+   before reasoning about the whole slip pipeline at once.
+
+2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
+3. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
    the plan, not started. **Nothing in Stage 3 may land before this exists**, because
    each of those swaps changes the last bits on purpose and needs something other than
    bit-parity to adjudicate it. `PORTING_RULES.md` expires at this boundary.
-5. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
    disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites. Both those

@@ -1,7 +1,8 @@
 # The Stage 0 fixture corpus
 
-What the real `genslip v5.6.2` produced for five faults, stored so the port can be
-compared against it on a machine with no genslip binary and no EMOD3D build.
+What the real `genslip v5.6.2` produced for six ruptures over five faults, stored so
+the port can be compared against it on a machine with no genslip binary and no EMOD3D
+build.
 
 Three files per case:
 
@@ -35,6 +36,24 @@ number that should track the grid, passes on a single uniform plane.
 | `bent` | 32x14 @ 1.0 km, M6.9 | `strike_deg` and `rake_deg` **within** the grid, so `avgrak` and `alphaT` stop being every subfault's value — and the SRF's point order stops being the GSF's |
 | `frankel_corners` | 24x16 @ 1.0 km, M6.6 | the corner relation, which `DEFECTS.md` 11 got wrong |
 
+And one that is deliberately **not** a different fault:
+
+| case | | |
+| --- | --- | --- |
+| `frankel_no_perturbation` | `frankel_corners` with `tsfac_main = 0` | onset with the perturbation term removed, so it is the eikonal solve alone |
+
+Onset is a travel time plus a slip-correlated perturbation, and two wrong terms
+summing to a plausible field are indistinguishable in it. Zeroing `tsfac_main` removes
+the second exactly, which is how `DEFECTS.md` 17 was localised: the whole onset
+divergence turned out to be in the travel times and none of it in the perturbation.
+
+The twin stays because `frankel_corners` is the case whose slip still diverges, and
+its perturbation is drawn correlated with slip. Without the twin, a regression in the
+solver and the known Frankel slip divergence would show up in the same number. It is
+built with `dataclasses.replace` from the case it twins, so "identical but for one
+parameter" is a fact rather than an intention, and `test_corpus.py` checks the stored
+argument lists differ in `tsfac_main` and nothing else.
+
 `subduction`'s magnitude and area agree with genslip's own median relation. An earlier
 draft asked for M8.1 on a 72x48 km fault — four magnitude units of slip on a small
 plane — and every rise time came out absurd. A fixture has to be a rupture that could
@@ -43,14 +62,20 @@ happen, or the numbers it pins are of nothing.
 ## Rebuilding
 
 ```sh
-GENSLIP_BINARY=... .venv/bin/python -m tests.harness.corpus
+GENSLIP_BINARY=... .venv/bin/python -m tests.harness.corpus            # everything
+GENSLIP_BINARY=... .venv/bin/python -m tests.harness.corpus bent       # named cases
 ```
 
-This overwrites everything here. **Do it only when the reference genslip changes, and
-say so in the commit**, because it invalidates every comparison at once: a stored
-reference is a claim about that binary, built with those flags, on the day it was
-recorded. The gzip member time is pinned to zero, so rebuilding an unchanged case
-produces an identical file rather than a diff that is only a timestamp.
+The no-argument form overwrites everything here. **Do it only when the reference
+genslip changes, and say so in the commit**, because it invalidates every comparison at
+once: a stored reference is a claim about that binary, built with those flags, on the
+day it was recorded. The gzip member time is pinned to zero, so rebuilding an unchanged
+case produces an identical file rather than a diff that is only a timestamp.
+
+That last property makes the no-argument form a useful *check* rather than only a
+rewrite: rebuild everything, and a clean `git status` says the binary in hand is the
+one the stored references came from. Adding a case should still name it, so the others
+are not touched at all.
 
 The binary must be built with `-std=gnu17` — the root `README.md` says why, and it is
 not a preference.
