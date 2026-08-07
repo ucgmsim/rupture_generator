@@ -1,0 +1,404 @@
+//! What the magnitude and the fault geometry imply, before any field is drawn.
+//!
+//! Everything the generators need that is not itself random: the seismic moment the
+//! rupture has to carry, the wavenumber corners its slip spectrum turns over at, how
+//! long the average subfault slips for, and the elastic properties at each depth.
+
+use crate::taper::SlipField;
+
+/// Natural log of ten, the base of every magnitude relation here.
+///
+/// The original computes it as `log(10.0)` at run time. `f64::consts::LN_10` is the
+/// same value to the last bit — the C's `log` is correctly rounded for an exact
+/// argument — so this substitution is free.
+const LN_10: f64 = std::f64::consts::LN_10;
+
+/// Which magnitude convention a value is on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MagnitudeScale {
+    /// Moment magnitude, Hanks & Kanamori (1979): `log10(M0) = 1.5*Mw + 16.1`.
+    Moment,
+    /// The variant genslip labels plain `M`, differing only in the constant.
+    Local,
+}
+
+impl MagnitudeScale {
+    /// The additive constant in `log10(M0) = 1.5*(mag + c)`.
+    const fn coefficient(self) -> f64 {
+        match self {
+            Self::Moment => 10.73,
+            Self::Local => 10.7,
+        }
+    }
+}
+
+/// Seismic moment in dyne-cm, from magnitude.
+///
+/// (orig. `genslip_v5.6.2.c:1250`)
+#[must_use]
+pub fn seismic_moment(magnitude: f32, scale: MagnitudeScale) -> f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores the moment into a float"
+    )]
+    let moment = (LN_10 * 1.5 * (f64::from(magnitude) + scale.coefficient())).exp() as f32;
+    moment
+}
+
+/// Which relation sets the wavenumber corners of the slip spectrum.
+///
+/// The corners are where the spectrum turns over from flat to falling — physically,
+/// the largest scale on which slip is still correlated. Every relation here is a
+/// power law in magnitude; they differ in the exponents and the offsets, which come
+/// from different inversions of different earthquake catalogues.
+#[derive(Clone, Copy, Debug)]
+pub enum CornerRelation {
+    /// Somerville et al. (1999). Both corners scale as `10^(0.5*M)`.
+    ///
+    /// The `0.79818` subtracted from each offset is `log10(2*pi)`. genslip's comment
+    /// argues at length that Somerville's corners carry that factor where Mai and
+    /// Beroza's do not, and that removing it is what lets the two be compared
+    /// without an ad-hoc adjustment.
+    Somerville { circular: bool },
+    /// Mai & Beroza (2002). The down-dip corner scales as `10^(M/3)`, not `10^(M/2)`.
+    Mai {
+        strike_offset: f32,
+        dip_offset: f32,
+        circular: bool,
+    },
+    /// Suzuki: along strike as Mai, down dip clamped above a saturation magnitude.
+    Suzuki {
+        strike_offset: f32,
+        dip_offset: f32,
+        saturation_magnitude: f32,
+    },
+    /// Offsets and magnitude exponents supplied directly.
+    Given {
+        strike_offset: f32,
+        dip_offset: f32,
+        strike_exponent: f32,
+        dip_exponent: f32,
+    },
+}
+
+/// Correlation lengths of the slip field, in kilometres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CorrelationLengths {
+    pub strike_km: f32,
+    pub dip_km: f32,
+}
+
+/// `10^(exponent*magnitude - offset)`, evaluated as the original evaluates it.
+///
+/// `offset` is `f64` because the two relations that supply it differ in width, and
+/// the difference is visible: Somerville's offsets are inline `double` literals,
+/// while Mai's and Suzuki's come from `float` getpar variables and are widened at
+/// the call. Callers convert accordingly.
+fn power_law(magnitude: f32, exponent: f64, offset: f64) -> f32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores each length into a float"
+    )]
+    let length = (LN_10 * (exponent * f64::from(magnitude) - offset)).exp() as f32;
+    length
+}
+
+/// The correlation lengths a magnitude implies.
+///
+/// `modified_corners` overrides the relation entirely with `10^(0.5*M - 2.0)` in both
+/// directions. It is applied *after* every branch in the original, so it silently
+/// wins over the chosen relation rather than being an alternative to it.
+///
+/// (orig. `genslip_v5.6.2.c:1303-1370`)
+#[must_use]
+pub fn correlation_lengths(
+    magnitude: f32,
+    relation: CornerRelation,
+    modified_corners: bool,
+) -> CorrelationLengths {
+    /// `log10(2*pi)`, subtracted from both Somerville offsets. See the variant's note.
+    const TWO_PI_DECADES: f64 = 0.79818;
+
+    if modified_corners {
+        let length = power_law(magnitude, 0.5, 2.00);
+        return CorrelationLengths {
+            strike_km: length,
+            dip_km: length,
+        };
+    }
+
+    match relation {
+        CornerRelation::Somerville { circular } => {
+            // The original subtracts the two offsets separately --
+            // `0.5*mag - 1.72 - 0.79818` -- and `(a - b) - c` is not `a - (b + c)`
+            // in floating point. Folding them would move every corner.
+            let somerville = |offset: f64| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the narrowing seam: C stores each length into a float"
+                )]
+                let length =
+                    (LN_10 * (0.5 * f64::from(magnitude) - offset - TWO_PI_DECADES)).exp() as f32;
+                length
+            };
+
+            if circular {
+                let length = somerville(1.825);
+                CorrelationLengths {
+                    strike_km: length,
+                    dip_km: length,
+                }
+            } else {
+                CorrelationLengths {
+                    strike_km: somerville(1.72),
+                    dip_km: somerville(1.93),
+                }
+            }
+        }
+        CornerRelation::Mai {
+            strike_offset,
+            dip_offset,
+            circular,
+        } => {
+            let strike_km = power_law(magnitude, 0.5, f64::from(strike_offset));
+            // 0.3333, not 1/3. Reproduced: the difference is in the fourth decimal
+            // of the exponent, which at M8 is a percent of the corner.
+            let dip_km = if circular {
+                strike_km
+            } else {
+                power_law(magnitude, 0.3333, f64::from(dip_offset))
+            };
+            CorrelationLengths { strike_km, dip_km }
+        }
+        CornerRelation::Suzuki {
+            strike_offset,
+            dip_offset,
+            saturation_magnitude,
+        } => CorrelationLengths {
+            strike_km: power_law(magnitude, 0.5, f64::from(strike_offset)),
+            dip_km: power_law(
+                magnitude.min(saturation_magnitude),
+                0.5,
+                f64::from(dip_offset),
+            ),
+        },
+        CornerRelation::Given {
+            strike_offset,
+            dip_offset,
+            strike_exponent,
+            dip_exponent,
+        } => CorrelationLengths {
+            strike_km: power_law(
+                magnitude,
+                f64::from(strike_exponent),
+                f64::from(strike_offset),
+            ),
+            dip_km: power_law(magnitude, f64::from(dip_exponent), f64::from(dip_offset)),
+        },
+    }
+}
+
+/// The rise-time and rupture-speed correction for dip and rake.
+///
+/// Graves & Pitarka's 2010 model was calibrated on strike-slip earthquakes. A
+/// shallow-dipping reverse fault ruptures differently: the free surface is closer to
+/// the whole fault plane, so slip is faster and the pulse shorter. `alpha_t` shortens
+/// rise time and raises rupture speed together, by the same factor, as a function of
+/// how far the geometry is from vertical strike-slip.
+///
+/// Both factors are 1 for a vertical strike-slip fault, so `alpha_t` is 1 and nothing
+/// changes — which is the calibration point.
+#[derive(Clone, Copy, Debug)]
+pub struct GeometryCorrection {
+    /// `alpha_t` itself, in `[1/(1+c), 1]`.
+    pub alpha_t: f32,
+    /// How far from vertical the fault dips, 0 at 90 degrees and 1 at or below 45.
+    pub dip_factor: f32,
+    /// How close the rake is to pure reverse, 1 at 90 degrees and 0 at 0 or 180.
+    pub rake_factor: f32,
+}
+
+/// The coefficient in `alpha_t = 1/(1 + f_D*f_R*c)`.
+///
+/// **Hardwired** at `genslip_v5.6.2.c:1416`, despite a comment 1200 lines earlier
+/// listing `Calpha` as a `getpar` variable. The workflow configuration carries a
+/// `corner_frequency_alpha` of 0.1 that never reaches this program.
+///
+/// Worth knowing because the sibling HF port had the same constant read from a deck,
+/// with a sentinel of `-99.0` meaning "use the default" — and when its deck reader
+/// was deleted, the sentinel went through literally and produced negative corner
+/// frequencies for every non-strike-slip fault.
+const ALPHA_COEFFICIENT: f32 = 0.1;
+
+/// Compute the dip and rake correction.
+///
+/// `average_rake_deg` is averaged over the fault before being wrapped into
+/// `[-180, 180]`, so a fault straddling the wrap gives a mean that is not the mean of
+/// the angles. Reproduced.
+///
+/// (orig. `genslip_v5.6.2.c:1416-1444`)
+#[must_use]
+pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> GeometryCorrection {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores fD and fR into floats"
+    )]
+    let dip_factor = if (45.0..=90.0).contains(&average_dip_deg) && average_dip_deg > 45.0 {
+        (1.0 - (f64::from(average_dip_deg) - 45.0) / 45.0) as f32
+    } else if (0.0..=45.0).contains(&average_dip_deg) {
+        1.0
+    } else {
+        // A dip outside 0..90 is not a fault this program describes; the original
+        // leaves the factor at zero rather than refusing, and so does this.
+        0.0
+    };
+
+    let mut rake = average_rake_deg;
+    while rake < -180.0 {
+        rake += 360.0;
+    }
+    while rake > 180.0 {
+        rake -= 360.0;
+    }
+
+    // SIMPLIFY: the original writes this as `sqrt((r-90)*(r-90))/90`, which is
+    // `(r - 90).abs()/90`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores fR into a float"
+    )]
+    let rake_factor = if (0.0..=180.0).contains(&rake) {
+        let offset = f64::from(rake) - 90.0;
+        (1.0 - (offset * offset).sqrt() / 90.0) as f32
+    } else {
+        0.0
+    };
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores alphaT into a float"
+    )]
+    let alpha_t = (1.0 / (1.0 + f64::from(dip_factor * rake_factor * ALPHA_COEFFICIENT))) as f32;
+
+    GeometryCorrection {
+        alpha_t,
+        dip_factor,
+        rake_factor,
+    }
+}
+
+/// Average rise time in seconds, from moment.
+///
+/// `M0^(1/3)` scaling: rise time grows with the cube root of moment, which is the
+/// same as saying it grows linearly with fault dimension.
+///
+/// The `alpha_t` correction is **not** applied here; the caller multiplies, because
+/// the same factor also divides the rupture-speed fraction and doing both in one
+/// place keeps them from drifting apart.
+///
+/// (orig. `genslip_v5.6.2.c:1412`)
+#[must_use]
+pub fn average_rise_time(moment_dyne_cm: f32, coefficient: f32) -> f32 {
+    // SIMPLIFY: `moment.cbrt()`. The original writes `exp(log(M0)/3.0)`, a
+    // transcendental pair where one call would do -- and `cbrt` is exact for
+    // arguments a cube root lands on, where the pair is not.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores trise into a float"
+    )]
+    let rise_time =
+        (f64::from(coefficient) * (1.0e-09 * (f64::from(moment_dyne_cm).ln() / 3.0).exp())) as f32;
+    rise_time
+}
+
+/// One layer of a one-dimensional velocity model.
+#[derive(Clone, Copy, Debug)]
+pub struct Layer {
+    /// Depth to the **bottom** of the layer, in km.
+    pub bottom_depth_km: f32,
+    /// Shear-wave speed, in km/s.
+    pub shear_speed_km_s: f32,
+    /// Density, in g/cm³.
+    pub density_g_cm3: f32,
+}
+
+impl Layer {
+    /// Rigidity in CMS units (dyne/cm²), `rho * vs^2`.
+    ///
+    /// The `1e10` converts from `(km/s)^2 * g/cm^3`.
+    #[must_use]
+    pub fn rigidity(self) -> f32 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing seam: C stores mu into a float"
+        )]
+        let rigidity =
+            (f64::from(self.shear_speed_km_s * self.shear_speed_km_s * self.density_g_cm3)
+                * 1.0e+10) as f32;
+        rigidity
+    }
+}
+
+/// A layered velocity model.
+#[derive(Clone, Debug)]
+pub struct VelocityModel {
+    layers: Vec<Layer>,
+}
+
+impl VelocityModel {
+    /// Build from layers ordered shallow to deep.
+    ///
+    /// # Panics
+    ///
+    /// If there are no layers.
+    #[must_use]
+    pub fn new(layers: Vec<Layer>) -> Self {
+        assert!(
+            !layers.is_empty(),
+            "a velocity model needs at least one layer"
+        );
+        Self { layers }
+    }
+
+    /// The layer containing `depth_km`, or the deepest one if it falls below them all.
+    ///
+    /// Clamping rather than extrapolating is the original's behaviour and the right
+    /// one: a subfault below the model is a modelling error, not a reason to invent
+    /// properties for it. Note the search is a linear scan by depth, so a subfault
+    /// exactly on a boundary belongs to the layer *above* it.
+    #[must_use]
+    pub fn layer_at(&self, depth_km: f32) -> Layer {
+        let mut index = 0;
+        while depth_km > self.layers[index].bottom_depth_km && index < self.layers.len() - 1 {
+            index += 1;
+        }
+        self.layers[index]
+    }
+
+    /// Shear speed and rigidity at every subfault.
+    ///
+    /// Returned as two fields rather than a struct per subfault: the moment scaling
+    /// wants rigidity alone and the rupture-speed field wants shear speed alone.
+    ///
+    /// # Panics
+    ///
+    /// If `depth_km` is empty.
+    ///
+    /// (orig. `load_vsden`, ruptime.c)
+    #[must_use]
+    pub fn sample(&self, strike_count: usize, depth_km: &[f32]) -> (SlipField, SlipField) {
+        let dip_count = depth_km.len();
+        let mut shear_speed = SlipField::zeros(strike_count, dip_count);
+        let mut rigidity = SlipField::zeros(strike_count, dip_count);
+
+        for dip in 0..dip_count {
+            let layer = self.layer_at(depth_km[dip]);
+            for strike in 0..strike_count {
+                shear_speed[(strike, dip)] = layer.shear_speed_km_s;
+                rigidity[(strike, dip)] = layer.rigidity();
+            }
+        }
+
+        (shear_speed, rigidity)
+    }
+}

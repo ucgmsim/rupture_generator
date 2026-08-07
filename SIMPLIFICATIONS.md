@@ -190,3 +190,18 @@ number is recorded before the swap so the change can be judged against it.
 That last one is worth reading twice. The asymmetric normalisation flagged under
 *the transform* exists precisely so a round trip is unity, and `main` uses that to
 recover a value it already had.
+
+### `genslip_v5.6.2.c` — setup
+
+| Site | Now | Should be | Kind |
+| --- | --- | --- | --- |
+| `main:1440` | `sqrt((rake-90)*(rake-90))/90` | `(rake - 90.0).abs()/90.0`. The third `sqrt(a*a)` in the program | moves bits |
+| `main:1412` | `exp(log(Mo)/3.0)` | `Mo.cbrt()`, which is exact where a cube root lands and the exp/log pair is not | moves bits |
+| `main:1249` | `bigM = log(10.0)` at run time | `f64::consts::LN_10`. Already done — the C's `log` is correctly rounded for an exact argument, so the two agree to the last bit | **free**, taken |
+
+**Two things that look foldable and are not.** Somerville's corners are written
+`0.5*mag - 1.72 - 0.79818`, two separate subtractions; `(a - b) - c` is not
+`a - (b + c)`. And the offsets differ in *width* between relations — Somerville's are
+inline `double` literals while Mai's and Suzuki's come from `float` getpar variables
+and widen at the call. Both cost a round of test failures to find, and both are now
+stated at the site.
