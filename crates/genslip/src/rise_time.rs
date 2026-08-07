@@ -197,10 +197,9 @@ pub fn rise_time_field(
         }
     }
 
-    // SIMPLIFY: the original writes this as `sqrt(x*x)`, which is `abs(x)` -- and
-    // `f32::abs` is a sign-bit mask where `sqrt` is a real square root, so this is
-    // both slower and less exact. Dividing by the magnitude rather than the mean is
-    // deliberate, though: it flips a negative-mean field positive.
+    // The original spells the magnitude `sqrt(x*x)`, which is exactly `abs` -- see
+    // `tests/float_identities.rs`. Dividing by the *magnitude* rather than the mean is
+    // the part that is not a spelling: it flips a negative-mean field positive.
     let mean_magnitude = (total / subfault_count).abs();
     for value in field.as_mut_slice() {
         *value /= mean_magnitude;
@@ -385,10 +384,9 @@ pub fn rise_time_normalisation(
         let rupture_speed = weighting_rupture_speed(depth_km[dip], scaling, shear_speed_km_s[dip]);
 
         for strike in 0..strike_count {
-            // SIMPLIFY: the original writes each of these as `sqrt(s*s)`, which is
-            // `abs(s)`. Slip has already been truncated non-negative by this point,
-            // so it is also a no-op -- but reproduced, because proving that here
-            // means reasoning about a caller.
+            // The original spells each of these `sqrt(s*s)`, which is exactly `abs`.
+            // It is additionally a no-op, since slip reaches here already truncated
+            // non-negative -- but that is a fact about the caller, so the `abs` stays.
             let weight = match weighting {
                 Weighting::Uniform => 1.0,
                 Weighting::BySlip => slip[(strike, dip)].abs(),

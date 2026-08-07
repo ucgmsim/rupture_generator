@@ -1,51 +1,66 @@
-# Simplifications waiting on the gate
+# Simplifications, and what each one costs to make
 
-Stage 1 transliterates. Where an expression in the original is written in a
-roundabout way — `exp(n*log(x))` for a power, `sqrt(a*a)` for an absolute value, a
-constant recomputed per grid point — the port **reproduces it** and leaves a note.
+Stage 1 transliterated. Where an expression in the original is written in a roundabout
+way — `exp(n*log(x))` for a power, `sqrt(a*a)` for an absolute value, a constant
+recomputed per grid point — the port **reproduced it** and left a note, because under
+bit-parity a rewrite that moves the last bit of every grid point is indistinguishable
+from a defect.
 
-That is not deference. It is that these rewrites are exactly the ones that look free
-and are not: `exp(4*log(x))` and `x.powi(4)` agree to within an ulp or two and
-disagree *somewhere*, and a change that moves the last bit of every grid point is
-indistinguishable from a real defect once the exact gate is gone. Doing them under
-bit-parity, one at a time, is cheap; doing them afterwards is an argument.
+**That reservation is over.** `ENGINEERING_RULES.md` governs now, the gate is
+scientific agreement, and rule 7 of the old rulebook — note what to simplify, do not
+simplify yet — is reversed. What remains is the accounting: which of these are free,
+which owe a measurement, and how many there actually are.
 
-## The convention
+## Status
 
-A site marked in the code with
+| | |
+| --- | --- |
+| markers in the code | **15** |
+| closed so far | 4 |
+| free, no adjudication | 0 remaining — all four are taken |
+| owe a measurement | 15 |
 
-```rust
-// SIMPLIFY: <what it should become> -- <why it is written this way now>
-```
+`README.md` said eleven for a while. It was never eleven.
 
-is a candidate for the first refactor round. Collect them with:
+Collect them with:
 
 ```sh
-rg 'SIMPLIFY:' crates/
+rg 'SIMPLIFY:' crates/genslip/src
 ```
-
-Each one is its own commit, each states whether it stayed bit-identical, and each
-that did not says by how much and why the new value is the better one.
 
 ## How to tell the two kinds apart
 
-Some of these are **free** — provably identical, so they can land under bit-parity
-with no adjudication at all:
+**Free** — provably identical, so no test can tell and none is owed:
 
 * dead stores (a constant assigned three times, only the last read);
 * dead branches (`if (j <= ny0/2)` inside a loop bounded by `j <= ny0/2`);
 * dead computations whose result is never used;
-* hoisting a loop-invariant out of a loop, *if* the arithmetic is unchanged.
+* hoisting a loop-invariant out of a loop, *if* the arithmetic is unchanged;
+* **`sqrt(x*x)` → `abs(x)`**, and **`4*atan(1)` → `PI``** — see below.
 
-The rest **move bits** and need the gate to say by how much:
+**Moves bits** — needs a measurement and a drift line in the commit:
 
-* `exp(n*log(x))` → `powi`/`powf`;
+* `exp(n*log(x))` → `powi`/`powf`/`cbrt`;
 * `sqrt(a*a + b*b)` → `hypot`;
 * changing an accumulation from single to double precision, or reassociating it;
-* folding two roundings into one.
+* folding two roundings into one;
+* regrouping `(a/c)*b` as `(a*b)/c`, or a `double` scale factor as a `float`.
 
-Do the free ones first. They shrink the code without spending any of the
-adjudication budget.
+### The classification was wrong, and being wrong is the reason to make it executable
+
+`sqrt(x*x)` was filed under "moves bits". It does not. Under round-to-nearest with a
+correctly rounded `sqrt`, `sqrt(fl(x*x)) == |x|` **exactly**, wherever `x*x` neither
+overflows nor underflows: `fl(x*x)` lands within half an ulp of `x²`, and the root of
+that interval contains exactly one representable value, which is `|x|` — and `|x|` is
+representable because `x` is. Verified over 800k values in every evaluation order.
+
+Three sites were mis-filed on that basis, and a fourth (`4*atan(1)`) was filed
+correctly but never un-marked after being taken. So four of the nineteen were not work
+at all.
+
+The lesson is not "check harder". It is that a taxonomy nobody can execute drifts:
+`crates/genslip/tests/float_identities.rs` now asserts each claim in both columns,
+including the **false** ones, so a site cannot be moved between them by assertion.
 
 ---
 
@@ -77,7 +92,7 @@ Not carried over from the C at all, and recorded here so nobody re-adds them:
 
 | Site | Now | Should be | Kind |
 | --- | --- | --- | --- |
-| `shift_phase` | `pi = 4.0*atan(1.0)` | `std::f64::consts::PI`. `atan(1)` is correctly rounded to π/4 and scaling by a power of two is exact, so this one is provably identical | **free** |
+| `shift_phase` | `pi = 4.0*atan(1.0)` | `std::f64::consts::PI`. `atan(1)` is correctly rounded to π/4 and scaling by a power of two is exact | **free — taken** |
 | `shift_phase` | `sqrt(re*re + im*im)` | `.norm()`, which is a `hypot` and does not overflow when squaring both parts would | moves bits |
 | `shift_phase` | two successive complex multiplies, one per axis | one combined factor `exp(-i(kx·sx + ky·sy))` — half the trigonometry and one rounding instead of two | moves bits |
 
@@ -182,8 +197,8 @@ number is recorded before the swap so the change can be judged against it.
 
 | Site | Now | Should be | Kind |
 | --- | --- | --- | --- |
-| `main:2268` | `rt1_avg = sqrt(rt1_avg*rt1_avg)` | `rt1_avg.abs()`. A sign-bit mask instead of a real square root — faster *and* exact where `sqrt` need not be. The behaviour is deliberate, though: dividing by the magnitude is what flips a negative-mean field positive, so this is a rewrite of the expression, not of the intent | moves bits |
-| `main:2461,2463` | `sabs = sqrt(slip*slip)` | `slip.abs()`, twice. Slip has already been truncated non-negative by this point, so both are also no-ops — but proving that needs a caller, so it is reproduced | moves bits |
+| `main:2268` | `rt1_avg = sqrt(rt1_avg*rt1_avg)` | `rt1_avg.abs()`. A sign-bit mask instead of a real square root. The *behaviour* is deliberate and stays: dividing by the magnitude is what flips a negative-mean field positive | **free — taken** |
+| `main:2461,2463` | `sabs = sqrt(slip*slip)` | `slip.abs()`, twice. Additionally a no-op, since slip arrives already truncated non-negative — but that is a fact about the caller, so the `abs` stays | **free — taken** |
 | `main:2345` | `exp(rtime2slip_exp*log(x))` | `x.powf(rtime2slip_exp)` | moves bits |
 | `main:2226,2262` | `slip_c` is inverse-transformed to get its spatial form and then forward-transformed back | the spatial field is what `reload_for_correlation` transformed in the first place; keeping it costs nothing and saves **two transforms on the padded grid**. The round trip is the identity in exact arithmetic — `dks2*dkd2*dstk*ddip` is exactly `1/N`, which cancels the unnormalised gain — so this differs only by FFT rounding | moves bits, and is a real speed win |
 
@@ -195,7 +210,7 @@ recover a value it already had.
 
 | Site | Now | Should be | Kind |
 | --- | --- | --- | --- |
-| `main:1440` | `sqrt((rake-90)*(rake-90))/90` | `(rake - 90.0).abs()/90.0`. The third `sqrt(a*a)` in the program | moves bits |
+| `main:1440` | `sqrt((rake-90)*(rake-90))/90` | `(rake - 90.0).abs()/90.0`. The third `sqrt(a*a)` in the program, and the only one still written the long way when the classification was audited | **free — taken** |
 | `main:1412` | `exp(log(Mo)/3.0)` | `Mo.cbrt()`, which is exact where a cube root lands and the exp/log pair is not | moves bits |
 | `main:1249` | `bigM = log(10.0)` at run time | `f64::consts::LN_10`. Already done — the C's `log` is correctly rounded for an exact argument, so the two agree to the last bit | **free**, taken |
 

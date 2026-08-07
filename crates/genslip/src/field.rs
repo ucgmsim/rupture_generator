@@ -469,9 +469,9 @@ pub fn shift_phase(
     let strike_count = spectrum.strike_count();
     let dip_count = spectrum.dip_count();
 
-    // SIMPLIFY: the original writes pi as `4.0*atan(1.0)`. That is exactly
-    // `std::f64::consts::PI` -- atan(1) is correctly rounded to pi/4 and scaling by
-    // a power of two is exact -- so this one is free rather than bit-moving.
+    // The original writes pi as `4.0*atan(1.0)`, which is exactly this constant:
+    // `atan(1)` is correctly rounded to pi/4 and scaling by a power of two is exact.
+    // See `tests/float_identities.rs`.
     let strike_argument = 2.0 * std::f64::consts::PI * strike_shift;
     let dip_argument = 2.0 * std::f64::consts::PI * dip_shift;
 

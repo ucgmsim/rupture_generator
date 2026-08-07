@@ -246,8 +246,11 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    and until it is replaced `--no-default-features` compiles but cannot generate a
    rupture at all; then `rustfft` for FFTW (measured divergence **7.06e-8**, recorded
    before the swap), `Wgs84Geodesic` for the flat-earth approximation (measured
-   disagreement **944 m at 100 km**), and the **nineteen** `SIMPLIFY` sites — four of
-   which are provably free and land immediately.
+   disagreement **944 m at 100 km**), and the **fifteen** remaining `SIMPLIFY` sites.
+   Four of the original nineteen were never work: three were mis-filed as bit-moving
+   when `sqrt(x*x)` is provably exactly `abs(x)`, and one had been taken and never
+   un-marked. `SIMPLIFICATIONS.md` has the audit and
+   `crates/genslip/tests/float_identities.rs` makes it executable.
 
    Both those numbers were measured *before* the change they adjudicate, which is the
    only reason they mean anything. The eikonal swap is the exception to the whole

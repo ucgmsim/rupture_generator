@@ -261,15 +261,16 @@ pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> Geome
         rake -= 360.0;
     }
 
-    // SIMPLIFY: the original writes this as `sqrt((r-90)*(r-90))/90`, which is
-    // `(r - 90).abs()/90`.
+    // The original spells the magnitude `sqrt((r-90)*(r-90))`. That is `abs`, and
+    // provably so rather than approximately: `sqrt(fl(x*x)) == |x|` exactly under
+    // round-to-nearest wherever `x*x` neither overflows nor underflows, which on a
+    // rake offset bounded by 90 it cannot. See `tests/float_identities.rs`.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the narrowing seam: C stores fR into a float"
     )]
     let rake_factor = if (0.0..=180.0).contains(&rake) {
-        let offset = f64::from(rake) - 90.0;
-        (1.0 - (offset * offset).sqrt() / 90.0) as f32
+        (1.0 - (f64::from(rake) - 90.0).abs() / 90.0) as f32
     } else {
         0.0
     };
