@@ -52,9 +52,10 @@ def _make_minimal_params(**overrides: object) -> Parameters:
         read_gsf=False,
         asperity_taper_factor=0.05,
         svr_wt=0.0,
-        hypocentre=Hypocentre(
-            along_strike_proportion=0.5, down_dip_proportion=0.75,
-        ),
+        # Kilometres, not proportions -- see `Hypocentre`. `generate_segment_rupture`
+        # overrides both with its own arguments, so these only have to be a set
+        # genslip accepts.
+        hypocentre=Hypocentre(along_strike_km=0.0, down_dip_km=3.0),
         tapering=Tapering(side=0.02, bottom=0.0, top=0.0),
         beta=BetaParameters(
             shallow=0.5, deep=0.13, mid=0.13, asperity=0.3, sub_event=0.1,

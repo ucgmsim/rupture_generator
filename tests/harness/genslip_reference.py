@@ -5,8 +5,10 @@ something to compare against and so the Stage 0 fixture corpus can be generated;
 it is the seam ``rupture_generator`` replaces.
 """
 
+import dataclasses
 import math
 import mmap
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -19,6 +21,70 @@ from rupture_generator.srf import SrfFile
 from tests.harness import serialise as utils
 from tests.harness.genslip_config import Parameters
 from tests.harness.gsf import FloatArray, GsfSubfaults, write_gsf
+
+# genslip reports what it derived on stderr before it generates anything: the padded
+# extents, the subfault spacing, alphaT, and the rise-time and rupture-velocity
+# constants alphaT was applied to. Those are exactly the quantities `mapping.py` has
+# to reconstruct from the getpar names, so the binary is their oracle and a
+# transcription of the C is not needed to check them.
+#
+# `%13.5e` and `%.4f` mean the values arrive rounded. Every assertion against them
+# allows for that; see `test_mapping.py`.
+_DIAGNOSTIC = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_()]*)=\s*(?P<value>-?(?:\d+\.?\d*(?:[eE][-+]?\d+)?|\d*\.\d+))"
+)
+
+
+def parse_diagnostics(stderr: bytes) -> dict[str, float]:
+    """Read genslip's `name= value` progress reports off stderr.
+
+    genslip has no machine-readable output beyond the SRF, but it prints what it
+    derived -- `nstk2`, `ndip2`, `dstk`, `ddip`, `alphaT`, `trise_avg`, `rvfrac_avg`,
+    `mom` -- in a uniform `name= value` shape. Parsing it turns the reference binary
+    into an oracle for the *inputs* of the port as well as its outputs, which is what
+    lets a wrong mapping be told apart from a wrong port.
+
+    **The first occurrence of a name wins.** genslip prints
+    `mag= 6.20 median mag= 5.78` on one line (line 1630), and a name here cannot
+    contain a space, so the second pair parses as `mag` too -- letting the last win
+    would silently report the median magnitude as the magnitude, which is a plausible
+    number and the wrong one. Nothing genslip revises is printed twice: it resolves
+    `mag` against `use_median_mag` at line 1268, well before it reports it.
+
+    Names that recur as noise (`re`, `im`, `avg`, `min`, `max`, `sig`, from the field
+    summaries) are meaningless under either rule and are not read by anything.
+
+    Parameters
+    ----------
+    stderr : bytes
+        Everything genslip wrote to stderr.
+
+    Returns
+    -------
+    dict[str, float]
+        Every `name= value` pair it printed, first occurrence winning.
+    """
+    text = stderr.decode(errors="replace")
+    diagnostics: dict[str, float] = {}
+    for match in _DIAGNOSTIC.finditer(text):
+        diagnostics.setdefault(match.group("name"), float(match.group("value")))
+    return diagnostics
+
+
+@dataclasses.dataclass(frozen=True)
+class ReferenceRun:
+    """One invocation of genslip: what it produced and what it said it derived.
+
+    Attributes
+    ----------
+    srf : SrfFile
+        The rupture it wrote.
+    diagnostics : dict[str, float]
+        The `name= value` pairs it reported on stderr. See `parse_diagnostics`.
+    """
+
+    srf: SrfFile
+    diagnostics: dict[str, float]
 
 # genslip reads the fault grid from a GSF file and writes SRF to stdout. These are not
 # user choices -- they describe how this function drives the binary -- so they are set
@@ -105,7 +171,7 @@ def generate_segment_rupture(
     bottom_depth_km: FloatArray,
     shear_speed_km_s: FloatArray,
     density_g_cm3: FloatArray,
-) -> SrfFile:
+) -> ReferenceRun:
     """Generate the rupture for one fault segment by invoking genslip.
 
     The keyword arguments are the ones genslip takes with `mstpar` on the GSF path
@@ -140,8 +206,8 @@ def generate_segment_rupture(
 
     Returns
     -------
-    SrfFile
-        The generated rupture.
+    ReferenceRun
+        The generated rupture, and the quantities genslip reported deriving.
 
     Raises
     ------
@@ -210,4 +276,7 @@ def generate_segment_rupture(
         ):
             if hasattr(mapped, "madvise"):
                 mapped.madvise(mmap.MADV_SEQUENTIAL)
-            return srf.SrfFile.from_file(mapped)
+            return ReferenceRun(
+                srf=srf.SrfFile.from_file(mapped),
+                diagnostics=parse_diagnostics(completed.stderr),
+            )

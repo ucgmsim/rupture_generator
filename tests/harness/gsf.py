@@ -133,6 +133,53 @@ class GsfSubfaults:
         return float(total / np.float32(len(self)))
 
     @property
+    def mean_rake_deg(self) -> float:
+        """float: The `avgrak` genslip derives, and the only thing it uses it for.
+
+        Accumulated in **float32** exactly as `mean_dip_deg` is, because
+        `avgrak = avgrak + psrc_orig[j].rak` over a `float avgrak` is the same loop
+        (`genslip_v5.6.2.c:1424-1428`).
+
+        Returned *unwrapped*. genslip folds it into [-180, 180] at lines 1429-1432,
+        but so does the port's `geometry_correction`, and wrapping here as well would
+        be a second fold rather than the same one.
+        """
+        total = np.float32(0.0)
+        for rake in self.rake_deg:
+            total = np.float32(total + rake)
+        return float(total / np.float32(len(self)))
+
+    def depth_by_row_km(self, strike_count: int) -> FloatArray:
+        """The depth genslip reads for each dip row.
+
+        genslip indexes `psrc[j*nstk].dep` -- the *first* subfault of each row -- for
+        every depth-dependent quantity (rise-time stretch, rupture speed, beta), so a
+        row's depth is one subfault's, not the row's average. Exact for a planar
+        segment and not exact otherwise, which is why this takes the row length rather
+        than reshaping and averaging.
+
+        Parameters
+        ----------
+        strike_count : int
+            `nstk`. The rows are this long, along strike fastest.
+
+        Returns
+        -------
+        FloatArray
+            One depth per dip row.
+
+        Raises
+        ------
+        ValueError
+            If the subfaults do not divide into rows of that length.
+        """
+        if strike_count <= 0 or len(self) % strike_count:
+            raise ValueError(
+                f"{len(self)} subfaults do not divide into rows of {strike_count}"
+            )
+        return self.depth_km[::strike_count].copy()
+
+    @property
     def top_depth_km(self) -> float:
         """float: The `dtop` genslip derives, and puts in the SRF header.
 

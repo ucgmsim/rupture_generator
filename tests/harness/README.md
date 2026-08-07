@@ -13,7 +13,26 @@ of a rupture model and they start to drift.
 | `genslip_config/` | The `getpar` parameter model, with each genslip name as an `alias` |
 | `serialise.py` | Rendering that model as `name=value` arguments |
 | `gsf.py` | The geometry file the binary reads, written and read back |
-| `genslip_reference.py` | Running the binary and reading the SRF back |
+| `genslip_reference.py` | Running the binary, reading the SRF back, and parsing its diagnostics |
+| `mapping.py` | Rendering the *same* model as the port's five spec groups |
+
+`serialise.py` and `mapping.py` are the two halves of the comparison: one
+`Parameters` becomes both the binary's command line and the library's arguments, so a
+divergence between the two runs is a divergence in the physics rather than in what
+each side was asked to compute. `mapping.py`'s own docstring lists the four
+correspondences that are not name-to-name; `DEFECTS.md` entries 11-13 list the three
+genslip configurations the PyO3 boundary cannot yet spell.
+
+**The binary is an oracle for its own inputs.** genslip reports what it derived on
+stderr before generating anything — `nstk2`, `ndip2`, `dstk`, `ddip`, `alphaT`,
+`trise_avg`, `rvfrac_avg`. Those are exactly the quantities `mapping.py` has to
+reconstruct, so `parse_diagnostics` turns the reference into a check on the mapping
+and no transcription of the C is needed for them. It is the difference between "this
+is what I read the source to mean" and "this is what the program says it did".
+
+One catch, pinned by a test: genslip prints `mag= 6.20 median mag= 5.78` on one line,
+and a diagnostic name cannot contain a space, so the second pair parses as `mag` too.
+First occurrence wins, or the median magnitude silently becomes the magnitude.
 
 The GSF reader and writer live here because only the binary reads geometry from a
 file; the library takes arrays. `PRUNED.md` records the reader as deliberately not

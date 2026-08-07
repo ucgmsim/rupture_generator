@@ -6,13 +6,30 @@ from .validation import is_positive
 
 @dataclass
 class Hypocentre(_ValidateMixin):
-    along_strike_proportion: float = field(
+    """Where the rupture starts, in **kilometres** -- not proportions, not indices.
+
+    Both fields were named and documented as proportions here, and are neither.
+    genslip converts them to subfault indices itself, with
+    `ixs = (int)((shypo + 0.5*flen)/dstk + 0.5)` and `iys = (int)(dhypo/ddip + 0.5)`
+    (`genslip_v5.6.2.c:3001` and `:3018`), and refuses to write a rupture if they fall
+    outside the fault (line 3155).
+
+    The distinction is a trap rather than a crash. Read as proportions, a hypocentre
+    lands somewhere else on the same fault and produces a perfectly plausible rupture
+    -- which is why `mapping.hypocentre_indices` owns the conversion and
+    `test_mapping.py` pins it against genslip's own arithmetic.
+    """
+
+    along_strike_km: float = field(
         metadata=dict(alias="shypo"),
-        doc="Proportion of along-strike hypocentre location",
+        doc="Hypocentre position along strike, in km from the fault's CENTRE. Signed:"
+        " it runs from -flen/2 to +flen/2, so 0.0 is the middle of the fault.",
     )
-    down_dip_proportion: float = field(
+    down_dip_km: float = field(
         metadata=dict(alias="dhypo"),
-        doc="Proportion of down-dip hypocentre location",
+        doc="Hypocentre position down dip, in km from the fault's TOP EDGE. Runs from"
+        " 0 to fwid. Unset, genslip uses dhypo_frac*fwid = 0.75*fwid"
+        " (genslip_v5.6.2.c:1627-1628).",
     )
 
 

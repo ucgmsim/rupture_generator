@@ -65,7 +65,11 @@ def geometry() -> gsf.GsfSubfaults:
 
 
 def run(**overrides):
-    """Drive genslip once, with the configured defaults and version 2.0 output."""
+    """Drive genslip once, with the configured defaults and version 2.0 output.
+
+    Returns the whole `ReferenceRun` -- the SRF and the quantities genslip reported
+    deriving on stderr. `test_mapping.py` checks the mapping against the latter.
+    """
     parameters = _make_minimal_params(
         read_gsf=True,
         read_erf=False,
@@ -112,12 +116,12 @@ class TestTheVelocityModelFile:
 class TestTheReferenceRuns:
     def test_it_produces_one_point_per_subfault(self) -> None:
         reference = run()
-        assert len(reference.points) == STRIKE * DIP
-        assert len(reference.planes) == 1
+        assert len(reference.srf.points) == STRIKE * DIP
+        assert len(reference.srf.planes) == 1
 
     def test_the_header_is_the_geometry_it_was_given(self) -> None:
         reference = run()
-        plane = reference.planes[0]
+        plane = reference.srf.planes[0]
         assert plane.strike_count == STRIKE
         assert plane.dip_count == DIP
         assert plane.length_km == pytest.approx(STRIKE * SUBFAULT_KM)
@@ -130,7 +134,7 @@ class TestTheReferenceRuns:
         # check that `GsfSubfaults.top_depth_km` computes what the binary computes --
         # including the truncated radians constant and the float32 dip average.
         reference = run()
-        assert reference.planes[0].top_depth_km == pytest.approx(
+        assert reference.srf.planes[0].top_depth_km == pytest.approx(
             geometry().top_depth_km, abs=1e-4
         )
 
@@ -138,20 +142,20 @@ class TestTheReferenceRuns:
         # Not a physics claim, a "the arguments were accepted and something happened"
         # claim: a run that silently produced zeros would pass every assertion above.
         reference = run()
-        assert reference.points.slip_cm.max() > 0.0
-        assert reference.points.onset_s.min() == pytest.approx(0.0)
-        assert reference.points.onset_s.max() > 0.0
-        assert reference.slip_rate.data.max() > 0.0
+        assert reference.srf.points.slip_cm.max() > 0.0
+        assert reference.srf.points.onset_s.min() == pytest.approx(0.0)
+        assert reference.srf.points.onset_s.max() > 0.0
+        assert reference.srf.slip_rate.data.max() > 0.0
 
     def test_a_seed_reproduces_a_rupture(self) -> None:
         first, second = run(), run()
-        assert np.array_equal(first.points.slip_cm, second.points.slip_cm)
-        assert np.array_equal(first.points.onset_s, second.points.onset_s)
-        assert np.array_equal(first.slip_rate.data, second.slip_rate.data)
+        assert np.array_equal(first.srf.points.slip_cm, second.srf.points.slip_cm)
+        assert np.array_equal(first.srf.points.onset_s, second.srf.points.onset_s)
+        assert np.array_equal(first.srf.slip_rate.data, second.srf.slip_rate.data)
 
     def test_a_different_seed_is_a_different_rupture(self) -> None:
         assert not np.array_equal(
-            run(seed=SEED).points.slip_cm, run(seed=SEED + 1).points.slip_cm
+            run(seed=SEED).srf.points.slip_cm, run(seed=SEED + 1).srf.points.slip_cm
         )
 
 

@@ -136,13 +136,32 @@ Two habits this list assumes, both learned expensively:
    arguments, and seven tests check that the binary accepts them and that a seed
    reproduces a rupture. What is left is the half that compares:
 
-   - **Map genslip's `getpar` names onto the port's five spec groups.** This is the
-     hard part and the reason it is not done yet: a wrong mapping and a wrong port
-     look identical from the outside. Do it one spec group at a time against the
-     per-function parity tests, which already know the correct correspondence.
-     `shypo`/`dhypo` are kilometres and the port takes subfault *indices*; the padded
-     extents are genslip's `nstk2`/`ndip2`, which for 20x12 are 22x14 and not what
-     `tests/test_boundary.py` assumes.
+   - ~~**Map genslip's `getpar` names onto the port's five spec groups.**~~ **Done**:
+     `tests/harness/mapping.py`, pinned by `test_mapping.py`. One `Parameters` now
+     renders both as the binary's command line and as the library's five groups.
+
+     The lever that made it tractable was noticing genslip **reports what it
+     derived** on stderr — `nstk2`, `ndip2`, `dstk`, `ddip`, `alphaT`, `trise_avg`,
+     `rvfrac_avg` — so for those quantities the binary is the oracle and reading the
+     C is not the evidence. `parse_diagnostics` reads them back.
+
+     Four correspondences are not name-to-name, and each would have produced a
+     plausible wrong rupture. Two were known; two were not:
+
+     | | |
+     | --- | --- |
+     | `shypo`/`dhypo` are **km**, signed from the fault's centre and from its top edge | the port takes subfault *indices* |
+     | padded extents are `nstk2`/`ndip2` = fault scaled by `extend_fac` (default **1.10**) then rounded up to even | 20x12 pads to 22x14 |
+     | the slip spectrum's band is `wavelength_min`/`wavelength_max`, **not** `lambda_*` (which is roughness) | and `wavelength_max` is hardwired to `1.0e+15`, so the port's 80 km default is wrong |
+     | `velocity_fraction` must carry the `alphaT` division | genslip divides both `rvfrac` and every `psrc[].rvf` by it; the port applies `alphaT` to rise time only |
+
+     It also found three configurations the **PyO3 boundary cannot spell** while the
+     core can: `kmodel=Frankel` (routed to the Somerville corner relation; genslip
+     shares Mai's), `circular_average` (no parameter at all), and the rise-time and
+     rupture-speed depth ramps (collapsed into one pair; genslip reads four). All
+     three are `DEFECTS.md` 11-13, and `mapping.py` raises rather than approximating.
+     **Fixing them is the natural next commit**, and it is a `crates/core` change with
+     `crates/genslip` already correct underneath.
    - **Widen the spread**, then store each case's GSF, argument list and reference SRF
      under `tests/corpus/`: single-plane / multi-segment, crustal / subduction dip,
      small / large `nstk x ndip`. Gzip the SRFs; a 20x12 fault is already 458 KB.
@@ -180,8 +199,9 @@ than the fix will.
 - **`tests/test_boundary.py`'s padded extents are not genslip's.** Its helper uses
   `2 * ((strike + 4) // 2 + 1)`, which gives 26 for a 20-subfault fault where genslip
   reports `nstk2 = 22`. The tests pass because `FaultGrid` takes the padding as an
-  argument, so this misleads a reader rather than breaking anything. Find genslip's
-  actual rule and use it.
+  argument, so this misleads a reader rather than breaking anything. genslip's actual
+  rule is now written down and checked against the binary —
+  `mapping.padded_extents` — so this is a two-line change to use it.
 - **`tools/` holds locally-built binaries.** `genslip_v5.6.2` and
   `fault_seg2gsf_dipdir` there were rebuilt from `build-oracle` with the flags above.
   The directory is gitignored, so on another machine they will not exist.
