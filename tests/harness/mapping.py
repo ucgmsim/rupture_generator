@@ -36,12 +36,17 @@ produced a plausible, wrong rupture:
   and the rupture-velocity fraction (lines 1443-1445). The port applies it to the
   first internally and takes the second as given, so the caller has to divide.
 
-# What the port cannot currently express
+# What building this found in the boundary
 
-Three genslip configurations have no spelling in the PyO3 boundary. They are recorded
-in `MAPPING_GAPS` and asserted to be unreachable from the parameters this harness
-builds, so a fixture that wanders into one fails here rather than silently comparing
-two different models. See `DEFECTS.md`.
+Three genslip configurations had no spelling in the PyO3 boundary while
+`crates/genslip` modelled all three: `kmodel=Frankel` routed to the Somerville corner
+relation, `circular_average` absent entirely, and the rise-time and rupture-speed
+depth ramps collapsed into one pair. They are `DEFECTS.md` 11-13, they are **fixed**,
+and this module now maps all three -- which is the only reason there is a test that
+would notice if they came back.
+
+None of them was visible until something tried to drive the port from a full getpar
+set. That is what a mapping is for.
 """
 
 from __future__ import annotations
@@ -81,31 +86,6 @@ HARDWIRED_MAX_WAVELENGTH_KM = 1.0e15
 # `DEFAULT_VR_TO_VS_FRAC` (`defs.h:32`). genslip has a `rvfrac` getpar; `Parameters`
 # does not carry one, so every fixture runs at the default and this is that default.
 DEFAULT_VELOCITY_FRACTION = 0.8
-
-MAPPING_GAPS = (
-    (
-        "circular_average -- the core's CornerRelation carries a `circular` flag and "
-        "SourceSpec.__init__ hardwires it false, so kmodel=Mai/Somerville with "
-        "circular_average=1 cannot be expressed"
-    ),
-    (
-        "kmodel=Frankel -- SourceSpec.__init__ routes Frankel to the Somerville "
-        "corner relation, but genslip:1303 shares the *Mai* relation with it "
-        "(`kmodel == MAI_FLAG || kmodel == FRANKEL_FLAG`)"
-    ),
-    (
-        "shal_vrup_dep/deep_vrup_dep -- TimingSpec.__init__ passes one shallow_ramp "
-        "and one deep_ramp to both the rise-time stretch and the speed profile, so "
-        "the rupture-speed depth ramps cannot differ from the rise-time ones; "
-        "genslip reads them as separate getpar names that merely share defaults"
-    ),
-)
-"""genslip configurations with no spelling in the PyO3 boundary.
-
-Each is a boundary gap, not a core gap: `crates/genslip` models all three. They are
-listed rather than worked around because a workaround would be the harness quietly
-compensating for the library, which is how the two descriptions start to drift.
-"""
 
 _KMODEL_TO_SPECTRUM = {
     KModel.SOMERVILLE: SpectrumModel.Somerville,
@@ -625,13 +605,8 @@ def source_spec(
     Raises
     ------
     UnmappableConfigurationError
-        If `circular_average` or `kmodel=FRANKEL` is asked for. See `MAPPING_GAPS`.
+        If `kmodel=INPUT_CORNERS` is asked for without its mandatory corners.
     """
-    if parameters.circular_average:
-        raise UnmappableConfigurationError(MAPPING_GAPS[0])
-    if parameters.kmodel == KModel.FRANKEL:
-        raise UnmappableConfigurationError(MAPPING_GAPS[1])
-
     strike_offset, dip_offset = corner_offsets(parameters)
     strike_exponent, dip_exponent = magnitude_exponents(parameters)
 
@@ -642,6 +617,7 @@ def source_spec(
         dip_offset,
         use_moment_magnitude=parameters.use_moment_magnitude,
         modified_corners=parameters.modified_corners,
+        circular_average=parameters.circular_average,
         saturation_magnitude=parameters.magnitude_clamp,
         strike_exponent=strike_exponent,
         dip_exponent=dip_exponent,
@@ -756,11 +732,12 @@ def rupture_time_scale(parameters: Parameters, derived: Derived) -> float:
 
 def deep_ramp_centre_km(
     geometry: GsfSubfaults,
-    parameters: Parameters,
+    centre_km: float,
+    half_width_km: float,
     *,
     hypocentre_dip_km: float,
 ) -> float:
-    """genslip's `deep_risetimedep`, pushed down to the hypocentre when it is deeper.
+    """A deep ramp's centre, pushed down to the hypocentre when that is deeper.
 
     **This is not a parameter read straight through.** genslip recomputes it per
     hypocentre:
@@ -772,8 +749,10 @@ def deep_ramp_centre_km(
 
     so a deep hypocentre moves the deep rise-time ramp below itself, keeping the
     hypocentre out of the stretched zone. `deep_vrup_dep` gets the identical treatment
-    with its own range at line 2974. The two agree only because their ranges default
-    to the same 2.5 km -- see `MAPPING_GAPS`.
+    at line 2974 **with its own half-width**, which is why this takes the centre and
+    range as arguments rather than reading one pair: the rise-time ramp and the
+    rupture-speed ramp go through the same adjustment with different inputs, and can
+    come out unequal even when their configured centres agree.
 
     `rperd` is genslip's truncated radians constant, not `math.radians`; `gsf.py`
     explains why that matters.
@@ -784,8 +763,10 @@ def deep_ramp_centre_km(
     ----------
     geometry : GsfSubfaults
         For `avgdip` and `dtop`.
-    parameters : Parameters
-        For the configured centre and range.
+    centre_km : float
+        The configured centre depth: `deep_risetimedep` or `deep_vrup_dep`.
+    half_width_km : float
+        That ramp's own half-width: `deep_risetimedep_range` or `deep_vrup_deprange`.
     hypocentre_dip_km : float
         `dhypo`, in km down dip.
 
@@ -794,13 +775,12 @@ def deep_ramp_centre_km(
     float
         The deep ramp's centre depth, in km.
     """
-    rise_time = parameters.rise_time
     hypocentre_depth = _f32(
         hypocentre_dip_km * math.sin(geometry.mean_dip_deg * RADIANS_PER_DEGREE)
         + geometry.top_depth_km
-        + rise_time.deep_half_width
+        + half_width_km
     )
-    return max(rise_time.deep_center_depth, hypocentre_depth)
+    return max(centre_km, hypocentre_depth)
 
 
 def rise_time_perturbation_defaults(
@@ -861,11 +841,17 @@ def timing_spec(
     `rtime1_depth_range` default to the *beta* shallow ramp (lines 1063-1064), so
     three of these fields silently follow parameters in other groups.
 
-    The deep ramp additionally depends on the hypocentre -- see
-    `deep_ramp_centre_km` -- which is why this takes `dhypo` and the other four groups
-    do not.
+    The deep ramps additionally depend on the hypocentre -- see `deep_ramp_centre_km`
+    -- which is why this takes `dhypo` and the other four groups do not.
 
-    (orig. `genslip_v5.6.2.c:860-890` for the getpar block, `:2378` for the deep ramp)
+    **The rupture-speed ramps are not the rise-time ramps.** They come from
+    `RuptureVelocity`, they are passed explicitly rather than left to the port's
+    fallback, and that matters as soon as anything moves one pair and not the other:
+    genslip's `shal_vrup_dep` stays at 6.5 when `risetimedep` is set to 10, and a
+    fallback would silently move it too.
+
+    (orig. `genslip_v5.6.2.c:860-890` for the getpar block, `:2378` and `:2974` for
+    the deep ramps)
 
     Parameters
     ----------
@@ -887,6 +873,7 @@ def timing_spec(
     rise_perturbation = parameters.rise_time_perturbation
     rupture_perturbation = parameters.rupture_time_perturbation
     beta = parameters.beta
+    velocity = parameters.rupture_velocity
 
     level1_sigma, blend_depth, blend_range = rise_time_perturbation_defaults(parameters)
 
@@ -903,15 +890,32 @@ def timing_spec(
         shallow_rise_factor=rise_time.shallow_factor,
         deep_ramp=Ramp(
             deep_ramp_centre_km(
-                geometry, parameters, hypocentre_dip_km=hypocentre_dip_km
+                geometry,
+                rise_time.deep_center_depth,
+                rise_time.deep_half_width,
+                hypocentre_dip_km=hypocentre_dip_km,
             ),
             rise_time.deep_half_width,
         ),
         deep_rise_factor=rise_time.deep_factor,
-        # `shal_vrup` and `deep_vrup`, both 0.60 (lines 720-721). `Parameters` has no
-        # field for either, so every fixture runs at the default.
-        shallow_speed_factor=0.60,
-        deep_speed_factor=0.60,
+        # Passed rather than left to the port's fallback: these are `shal_vrup_dep`
+        # and `deep_vrup_dep`, which share the rise time's defaults and are not the
+        # same parameters. The deep one takes the same hypocentre adjustment with its
+        # own half-width, so the two can diverge without either being reconfigured.
+        shallow_speed_ramp=Ramp(
+            velocity.shallow_center_depth, velocity.shallow_half_width
+        ),
+        deep_speed_ramp=Ramp(
+            deep_ramp_centre_km(
+                geometry,
+                velocity.deep_center_depth,
+                velocity.deep_half_width,
+                hypocentre_dip_km=hypocentre_dip_km,
+            ),
+            velocity.deep_half_width,
+        ),
+        shallow_speed_factor=velocity.shallow_factor,
+        deep_speed_factor=velocity.deep_factor,
         weighting=_SVR_WT_TO_WEIGHTING[RiseTimeNormalisation(int(parameters.svr_wt))],
         beta_shallow_ramp=Ramp(beta.shallow_depth, beta.shallow_depth_range),
         beta_shallow=beta.shallow,

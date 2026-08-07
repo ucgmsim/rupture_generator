@@ -17,6 +17,7 @@ from tests.harness.genslip_config import (
     RiseTimeParameters,
     RiseTimePerturbation,
     RuptureTimePerturbation,
+    RuptureVelocity,
     SegmentDelay,
     SpatialFiltering,
     Tapering,
@@ -56,6 +57,10 @@ def _make_minimal_params(**overrides: object) -> Parameters:
         # overrides both with its own arguments, so these only have to be a set
         # genslip accepts.
         hypocentre=Hypocentre(along_strike_km=0.0, down_dip_km=3.0),
+        # genslip's own defaults. Spelled out because the rupture-speed depth ramps
+        # share the rise time's numbers and are not the same parameters -- see
+        # `RuptureVelocity` and `DEFECTS.md` 13.
+        rupture_velocity=RuptureVelocity(),
         tapering=Tapering(side=0.02, bottom=0.0, top=0.0),
         beta=BetaParameters(
             shallow=0.5, deep=0.13, mid=0.13, asperity=0.3, sub_event=0.1,

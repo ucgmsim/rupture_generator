@@ -5,6 +5,7 @@ from ._rupture import (
     FiniteDifferenceRupture,
     Hypocentre,
     RuptureTimePerturbation,
+    RuptureVelocity,
     SegmentDelay,
 )
 from ._stf import BetaParameters, RiseTimeParameters, RiseTimePerturbation
@@ -30,6 +31,7 @@ __all__ = [
     "RiseTimeParameters",
     "RiseTimePerturbation",
     "RuptureTimePerturbation",
+    "RuptureVelocity",
     "SegmentDelay",
     "SlipRateFunction",
     "SpatialFiltering",

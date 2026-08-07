@@ -291,10 +291,25 @@ pub struct SourceSpec {
 
 #[pymethods]
 impl SourceSpec {
+    /// Build the source description.
+    ///
+    /// `model` selects two things at once, because the original's `kmodel` does:
+    /// the spectral falloff shape, and the relation mapping magnitude onto the
+    /// wavenumber corners. **They do not partition the same way** — Frankel has a
+    /// falloff of its own (`slip.c:1651`) while sharing Mai's corner relation, since
+    /// the original's branch is `kmodel == MAI_FLAG || kmodel == FRANKEL_FLAG`
+    /// (`genslip_v5.6.2.c:1303`). Routing it to Somerville instead is a different
+    /// power law with different offsets, and every corner comes out wrong.
+    ///
+    /// `circular_average` forces the down-dip corner to equal the along-strike one.
+    /// It reaches Somerville and Mai — the two relations whose branches test it —
+    /// and not Suzuki, Input Corners, or the Mai-Somerville hybrid, whose branches
+    /// do not. Under Somerville it is not merely equality: the original switches to
+    /// a *third* offset, 1.825 rather than 1.72 and 1.93.
     #[new]
     #[pyo3(signature = (
         magnitude, model, strike_offset, dip_offset, *,
-        use_moment_magnitude = true, modified_corners = false,
+        use_moment_magnitude = true, modified_corners = false, circular_average = false,
         saturation_magnitude = 6.3, strike_exponent = 0.5, dip_exponent = 0.5,
         rise_time_coefficient = 1.6, average_dip_deg, average_rake_deg,
     ))]
@@ -306,6 +321,7 @@ impl SourceSpec {
         dip_offset: f32,
         use_moment_magnitude: bool,
         modified_corners: bool,
+        circular_average: bool,
         saturation_magnitude: f32,
         strike_exponent: f32,
         dip_exponent: f32,
@@ -314,10 +330,19 @@ impl SourceSpec {
         average_rake_deg: f32,
     ) -> Self {
         let corners = match model {
-            SpectrumModel::Somerville | SpectrumModel::Frankel => {
-                CornerRelation::Somerville { circular: false }
-            }
-            SpectrumModel::Mai | SpectrumModel::MaiSomerville => CornerRelation::Mai {
+            SpectrumModel::Somerville => CornerRelation::Somerville {
+                circular: circular_average,
+            },
+            // Frankel takes the Mai relation, not Somerville's: one branch serves
+            // both in the original. Its falloff shape stays its own.
+            SpectrumModel::Mai | SpectrumModel::Frankel => CornerRelation::Mai {
+                strike_offset,
+                dip_offset,
+                circular: circular_average,
+            },
+            // The hybrid's branch tests neither `circular_average` nor the corner
+            // parameters -- it evaluates Mai's literals. See `mapping.corner_offsets`.
+            SpectrumModel::MaiSomerville => CornerRelation::Mai {
                 strike_offset,
                 dip_offset,
                 circular: false,
@@ -431,6 +456,25 @@ pub struct TimingSpec {
 
 #[pymethods]
 impl TimingSpec {
+    /// Build the timing description.
+    ///
+    /// `shallow_ramp` and `deep_ramp` are the depth ramps that stretch **rise time**.
+    /// Rupture *speed* has ramps of its own — the original reads four independent
+    /// pairs, `risetimedep`/`risetimedep_range` and `deep_risetimedep`/
+    /// `deep_risetimedep_range` against `shal_vrup_dep`/`shal_vrup_deprange` and
+    /// `deep_vrup_dep`/`deep_vrup_deprange`. They share defaults, 6.5/1.5 and
+    /// 17.5/2.5, so collapsing them into one pair is invisible until someone moves
+    /// one and not the other.
+    ///
+    /// `shallow_speed_ramp` and `deep_speed_ramp` are therefore optional and fall
+    /// back to the rise-time ramps, which reproduces the shared-default case exactly
+    /// while leaving the divergent one expressible.
+    ///
+    /// The two also diverge without being configured differently: both deep ramps
+    /// are pushed down to the hypocentre depth per realisation
+    /// (`genslip_v5.6.2.c:2378-2381` and `:2974-2977`), each using its *own*
+    /// half-width in that adjustment. Equal centres and unequal half-widths give
+    /// unequal ramps at a deep hypocentre.
     #[new]
     #[pyo3(signature = (
         *, rupture_time_correlation = 0.8, rupture_time_sigma = 1.0,
@@ -439,6 +483,7 @@ impl TimingSpec {
         rise_time_blend, slip_exponent = 0.5,
         shallow_ramp, shallow_rise_factor = 2.0,
         deep_ramp, deep_rise_factor = 2.0,
+        shallow_speed_ramp = None, deep_speed_ramp = None,
         shallow_speed_factor = 0.6, deep_speed_factor = 0.6,
         weighting = RiseTimeWeighting::Uniform,
         beta_shallow_ramp, beta_shallow = 0.5,
@@ -459,6 +504,8 @@ impl TimingSpec {
         shallow_rise_factor: f32,
         deep_ramp: Ramp,
         deep_rise_factor: f32,
+        shallow_speed_ramp: Option<Ramp>,
+        deep_speed_ramp: Option<Ramp>,
         shallow_speed_factor: f32,
         deep_speed_factor: f32,
         weighting: RiseTimeWeighting,
@@ -470,6 +517,17 @@ impl TimingSpec {
         sample_interval_s: f32,
         max_samples: usize,
     ) -> Self {
+        // `Option::unwrap_or` is not const, and a match is clearer about the
+        // fallback being "the rise-time ramp" rather than some neutral default.
+        let shallow_speed_ramp = match shallow_speed_ramp {
+            Some(ramp) => ramp,
+            None => shallow_ramp,
+        };
+        let deep_speed_ramp = match deep_speed_ramp {
+            Some(ramp) => ramp,
+            None => deep_ramp,
+        };
+
         Self {
             inner: realisation::TimingSpec {
                 rupture_time: PerturbationSpec {
@@ -494,9 +552,9 @@ impl TimingSpec {
                 },
                 rise_time_weighting: weighting.weighting(),
                 speed_profile: SpeedProfile {
-                    shallow: shallow_ramp.ramp(),
+                    shallow: shallow_speed_ramp.ramp(),
                     shallow_factor: shallow_speed_factor,
-                    deep: deep_ramp.ramp(),
+                    deep: deep_speed_ramp.ramp(),
                     deep_factor: deep_speed_factor,
                 },
                 beta: BetaProfile {

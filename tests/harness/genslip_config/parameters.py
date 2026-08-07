@@ -9,6 +9,7 @@ from ._rupture import (
     FiniteDifferenceRupture,
     Hypocentre,
     RuptureTimePerturbation,
+    RuptureVelocity,
     SegmentDelay,
 )
 from ._stf import BetaParameters, RiseTimeParameters, RiseTimePerturbation
@@ -113,6 +114,7 @@ class Parameters(_ValidateMixin):
     )
 
     hypocentre: Hypocentre
+    rupture_velocity: RuptureVelocity
     tapering: Tapering
     beta: BetaParameters
     rise_time: RiseTimeParameters

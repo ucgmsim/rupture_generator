@@ -161,6 +161,69 @@ fn correlation_lengths_match_for_every_relation() {
 }
 
 #[test]
+fn frankel_takes_mai_s_corners_because_one_branch_serves_both() {
+    // `if(kmodel == MAI_FLAG || kmodel == FRANKEL_FLAG)` (main:1303). Frankel has a
+    // spectral falloff of its own (`slip.c:1651`) but no corner relation of its own,
+    // so the two uses of `kmodel` do not partition the same way. The PyO3 boundary
+    // read that as Somerville for a while (`DEFECTS.md` 11).
+    //
+    // What the misrouting actually cost, measured rather than assumed:
+    //
+    // - **Along strike, a constant 4.3%.** Both scale as 10^(0.5*M), so only the
+    //   offsets differ -- Mai's 2.50 against Somerville's 1.72 + 0.79818 = 2.51818.
+    //   The ratio is 10^0.01818 at every magnitude.
+    // - **Down dip, anything from 3.6x to 0.65x**, because the exponents differ:
+    //   10^(0.3333*M) against 10^(0.5*M). They **cross at M7.37**, where the wrong
+    //   relation is briefly indistinguishable from the right one.
+    //
+    // That crossover is why this is worth a test rather than an eyeball. A fixture
+    // near M7.4 would have shown the defect as a rounding difference.
+    let relations = |magnitude| {
+        (
+            correlation_lengths(
+                magnitude,
+                CornerRelation::Mai {
+                    strike_offset: 2.50,
+                    dip_offset: 1.50,
+                    circular: false,
+                },
+                false,
+            ),
+            correlation_lengths(
+                magnitude,
+                CornerRelation::Somerville { circular: false },
+                false,
+            ),
+        )
+    };
+
+    for magnitude in [4.0_f32, 5.0, 6.3, 7.5, 8.5] {
+        let (mai, somerville) = relations(magnitude);
+        let strike_ratio = mai.strike_km / somerville.strike_km;
+        assert!(
+            (strike_ratio - 1.042_75).abs() < 1e-4,
+            "M{magnitude}: strike ratio {strike_ratio}, expected the constant 10^0.01818"
+        );
+    }
+
+    // Mai's down-dip corner is the larger below the crossover and the smaller above.
+    let (below, below_somerville) = relations(6.0);
+    assert!(below.dip_km > below_somerville.dip_km);
+    let (above, above_somerville) = relations(8.0);
+    assert!(above.dip_km < above_somerville.dip_km);
+
+    // And at the crossover they agree to better than a percent, which is the case a
+    // fixture would have failed to notice.
+    let (at, at_somerville) = relations(7.3676);
+    assert!(
+        ((at.dip_km / at_somerville.dip_km) - 1.0).abs() < 0.01,
+        "M7.3676: Mai {} vs Somerville {}",
+        at.dip_km,
+        at_somerville.dip_km
+    );
+}
+
+#[test]
 fn circular_relations_give_equal_corners() {
     for magnitude in [5.0_f32, 7.5] {
         let mai = correlation_lengths(

@@ -155,13 +155,14 @@ Two habits this list assumes, both learned expensively:
      | the slip spectrum's band is `wavelength_min`/`wavelength_max`, **not** `lambda_*` (which is roughness) | and `wavelength_max` is hardwired to `1.0e+15`, so the port's 80 km default is wrong |
      | `velocity_fraction` must carry the `alphaT` division | genslip divides both `rvfrac` and every `psrc[].rvf` by it; the port applies `alphaT` to rise time only |
 
-     It also found three configurations the **PyO3 boundary cannot spell** while the
-     core can: `kmodel=Frankel` (routed to the Somerville corner relation; genslip
-     shares Mai's), `circular_average` (no parameter at all), and the rise-time and
-     rupture-speed depth ramps (collapsed into one pair; genslip reads four). All
-     three are `DEFECTS.md` 11-13, and `mapping.py` raises rather than approximating.
-     **Fixing them is the natural next commit**, and it is a `crates/core` change with
-     `crates/genslip` already correct underneath.
+     It also found three configurations the **PyO3 boundary could not spell** while
+     the core could — `kmodel=Frankel` routed to the Somerville corner relation,
+     `circular_average` absent entirely, and the rise-time and rupture-speed depth
+     ramps collapsed into one pair. All three are `DEFECTS.md` 11-13 and **all three
+     are now fixed**, each pinned by a test. The Frankel one was worth measuring: the
+     two relations differ by a constant 4.3% along strike, by up to 3.6x down dip, and
+     **cross at M7.37** — so a fixture near M7.4 would have shown the defect as a
+     rounding difference and been believed.
    - **Widen the spread**, then store each case's GSF, argument list and reference SRF
      under `tests/corpus/`: single-plane / multi-segment, crustal / subduction dip,
      small / large `nstk x ndip`. Gzip the SRFs; a 20x12 fault is already 458 KB.

@@ -368,32 +368,78 @@ class TestSourceSpec:
         assert trise * result.alpha_t == pytest.approx(reported["trise_avg"], abs=5e-5)
 
 
-class TestTheGapsInTheBoundary:
-    """genslip configurations the PyO3 boundary cannot spell.
+class TestTheBoundaryGapsThatWereFixed:
+    """`DEFECTS.md` 11-13, each now expressible.
 
-    Refused rather than approximated. Each is a boundary gap, not a core gap --
-    `crates/genslip` models all three -- and each would otherwise compare two
-    different models and report the difference as a port defect.
+    These were found by building the mapping and are pinned here so they cannot come
+    back quietly. Each was a *boundary* gap -- `crates/genslip` modelled all three
+    correctly the whole time -- and each would otherwise have compared two different
+    models and reported the difference as a port defect.
+
+    What these can assert from Python is that the configuration is accepted. That the
+    resulting corners are the right *numbers* is `source_parity.rs`'s job, since the
+    spec groups expose no getters; `correlation_lengths_match_for_every_relation` and
+    `circular_relations_give_equal_corners` are the tests that carry it.
     """
 
-    def test_circular_average_is_refused(self) -> None:
-        with pytest.raises(mapping.UnmappableConfigurationError, match="circular"):
-            mapping.source_spec(
-                geometry(), parameters(circular_average=True), magnitude=MAGNITUDE
-            )
+    def test_circular_average_is_expressible(self) -> None:
+        # Not merely equal corners: under Somerville the original switches to a third
+        # offset, 1.825 rather than 1.72 and 1.93.
+        assert mapping.source_spec(
+            geometry(), parameters(circular_average=True), magnitude=MAGNITUDE
+        )
+        assert mapping.source_spec(
+            geometry(),
+            parameters(kmodel=KModel.SOMERVILLE, circular_average=True),
+            magnitude=MAGNITUDE,
+        )
 
-    def test_frankel_is_refused(self) -> None:
-        # genslip:1329 is `kmodel == MAI_FLAG || kmodel == FRANKEL_FLAG`, so Frankel
-        # shares the *Mai* corner relation. SourceSpec.__init__ routes it to
-        # Somerville, which is a different power law entirely.
-        with pytest.raises(mapping.UnmappableConfigurationError, match="Frankel"):
-            mapping.source_spec(
-                geometry(), parameters(kmodel=KModel.FRANKEL), magnitude=MAGNITUDE
-            )
+    def test_frankel_is_expressible(self) -> None:
+        # genslip:1303 is `kmodel == MAI_FLAG || kmodel == FRANKEL_FLAG`, so Frankel
+        # shares the *Mai* corner relation while keeping its own falloff shape.
+        assert mapping.source_spec(
+            geometry(), parameters(kmodel=KModel.FRANKEL), magnitude=MAGNITUDE
+        )
 
-    def test_every_gap_is_written_down(self) -> None:
-        assert len(mapping.MAPPING_GAPS) == 3
-        assert all(gap.strip() for gap in mapping.MAPPING_GAPS)
+    def test_frankel_defaults_to_mai_s_corners(self) -> None:
+        # The tell that it takes Mai's relation and not Somerville's: it reads
+        # kx_corner/ky_corner, and they default to Mai's pair.
+        assert mapping.corner_offsets(parameters(kmodel=KModel.FRANKEL)) == (2.50, 1.50)
+        assert mapping.corner_offsets(parameters(kmodel=KModel.SOMERVILLE)) == (
+            0.0,
+            0.0,
+        )
+
+    def test_the_speed_ramps_can_differ_from_the_rise_time_ramps(self) -> None:
+        # The case that was unrepresentable: genslip's shal_vrup_dep stays at its own
+        # default when risetimedep moves, and a shared ramp would move both.
+        given = parameters()
+        given.rise_time.shallow_center_depth = 10.0
+        assert given.rupture_velocity.shallow_center_depth == 6.5
+        assert mapping.timing_spec(
+            geometry(), given, derived(), hypocentre_dip_km=HYPOCENTRE_DIP_KM
+        )
+
+    def test_the_two_deep_ramps_take_the_same_adjustment_with_their_own_widths(
+        self,
+    ) -> None:
+        # Both are pushed down to the hypocentre depth, each using its own half-width
+        # (lines 2378-2381 and 2974-2977). Equal centres and unequal widths give
+        # unequal ramps -- which one shared `deep_ramp` could not represent.
+        subfaults = geometry()
+        rise = mapping.deep_ramp_centre_km(subfaults, 17.5, 2.5, hypocentre_dip_km=20.0)
+        speed = mapping.deep_ramp_centre_km(
+            subfaults, 17.5, 4.0, hypocentre_dip_km=20.0
+        )
+        assert speed > rise
+        assert speed - rise == pytest.approx(1.5, abs=1e-4)
+
+    def test_they_agree_when_their_widths_do(self) -> None:
+        # Which is the configured case, and why this was latent rather than loud.
+        subfaults = geometry()
+        assert mapping.deep_ramp_centre_km(
+            subfaults, 17.5, 2.5, hypocentre_dip_km=20.0
+        ) == mapping.deep_ramp_centre_km(subfaults, 17.5, 2.5, hypocentre_dip_km=20.0)
 
 
 class TestSlipSpec:
@@ -469,12 +515,12 @@ class TestTimingSpec:
         # 2378-2381). A hypocentre at 3 km leaves the 17.5 km default alone; one at
         # 20 km down dip pushes the ramp below itself.
         shallow = mapping.deep_ramp_centre_km(
-            geometry(), parameters(), hypocentre_dip_km=3.0
+            geometry(), 17.5, 2.5, hypocentre_dip_km=3.0
         )
         assert shallow == 17.5
 
         deep = mapping.deep_ramp_centre_km(
-            geometry(), parameters(), hypocentre_dip_km=20.0
+            geometry(), 17.5, 2.5, hypocentre_dip_km=20.0
         )
         assert deep > 17.5
         assert deep == pytest.approx(

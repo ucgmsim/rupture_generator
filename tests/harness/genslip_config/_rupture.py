@@ -5,6 +5,62 @@ from .validation import is_positive
 
 
 @dataclass
+class RuptureVelocity(_ValidateMixin):
+    """How fast the rupture front travels, and how that varies with depth.
+
+    These are **not** the rise-time depth ramps, though they share their defaults --
+    6.5/1.5 shallow and 17.5/2.5 deep, so the two agree until someone moves one. That
+    coincidence hid a boundary gap (`DEFECTS.md` 13) until this group existed to
+    exercise it.
+
+    `fraction` carries a further trap: genslip divides it, and every per-subfault
+    copy, by `alphaT` at `genslip_v5.6.2.c:1443-1445`. The port applies `alphaT` to
+    rise time internally and takes the fraction as given, so `mapping.fault_grid`
+    does that division. See `mapping.DEFAULT_VELOCITY_FRACTION`.
+    """
+
+    fraction: float = field(
+        default=0.8,
+        metadata=dict(alias="rvfrac", validator=is_positive),
+        doc="Rupture speed as a fraction of local shear-wave speed, before the depth"
+        " ramps and before the alphaT division. genslip's DEFAULT_VR_TO_VS_FRAC.",
+    )
+    shallow_factor: float = field(
+        default=0.6,
+        metadata=dict(alias="shal_vrup", validator=is_positive),
+        doc="Rupture speed multiplier at the shallow end of the shallow ramp.",
+    )
+    shallow_center_depth: float = field(
+        default=6.5,
+        metadata=dict(alias="shal_vrup_dep", validator=is_positive),
+        doc="Centre depth of the shallow rupture-speed transition (km). Independent"
+        " of risetimedep despite sharing its default.",
+    )
+    shallow_half_width: float = field(
+        default=1.5,
+        metadata=dict(alias="shal_vrup_deprange", validator=is_positive),
+        doc="Half-width of the shallow rupture-speed transition (km).",
+    )
+    deep_factor: float = field(
+        default=0.6,
+        metadata=dict(alias="deep_vrup", validator=is_positive),
+        doc="Rupture speed multiplier at the deep end of the deep ramp.",
+    )
+    deep_center_depth: float = field(
+        default=17.5,
+        metadata=dict(alias="deep_vrup_dep", validator=is_positive),
+        doc="Centre depth of the deep rupture-speed transition (km). Pushed down to"
+        " the hypocentre depth when that is deeper (genslip_v5.6.2.c:2974-2977),"
+        " using deep_vrup_deprange -- its own half-width, not the rise time's.",
+    )
+    deep_half_width: float = field(
+        default=2.5,
+        metadata=dict(alias="deep_vrup_deprange", validator=is_positive),
+        doc="Half-width of the deep rupture-speed transition (km).",
+    )
+
+
+@dataclass
 class Hypocentre(_ValidateMixin):
     """Where the rupture starts, in **kilometres** -- not proportions, not indices.
 

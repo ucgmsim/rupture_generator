@@ -69,7 +69,13 @@ class VelocityModel1D:
     ) -> None: ...
 
 class SourceSpec:
-    """What the earthquake is, before any field is drawn."""
+    """What the earthquake is, before any field is drawn.
+
+    `model` selects the spectral falloff shape *and* the corner relation, and the two
+    do not partition the same way: Frankel has a falloff of its own while taking
+    Mai's corners. `circular_average` reaches Somerville and Mai only -- the two
+    relations whose branches test it.
+    """
 
     def __init__(
         self,
@@ -82,6 +88,7 @@ class SourceSpec:
         average_rake_deg: float,
         use_moment_magnitude: bool = True,
         modified_corners: bool = False,
+        circular_average: bool = False,
         saturation_magnitude: float = 6.3,
         strike_exponent: float = 0.5,
         dip_exponent: float = 0.5,
@@ -109,7 +116,13 @@ class SlipSpec:
     ) -> None: ...
 
 class TimingSpec:
-    """How rupture time and rise time relate to slip."""
+    """How rupture time and rise time relate to slip.
+
+    `shallow_ramp` and `deep_ramp` stretch **rise time**. Rupture speed has ramps of
+    its own; they default to the rise-time ones, which is the case the original's
+    four independent parameters share, and `shallow_speed_ramp`/`deep_speed_ramp`
+    override them when they do not.
+    """
 
     def __init__(
         self,
@@ -128,6 +141,8 @@ class TimingSpec:
         slip_exponent: float = 0.5,
         shallow_rise_factor: float = 2.0,
         deep_rise_factor: float = 2.0,
+        shallow_speed_ramp: Ramp | None = None,
+        deep_speed_ramp: Ramp | None = None,
         shallow_speed_factor: float = 0.6,
         deep_speed_factor: float = 0.6,
         weighting: RiseTimeWeighting = ...,

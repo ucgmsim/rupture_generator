@@ -50,30 +50,46 @@ rg 'PORTING_RULES.md' crates/genslip/src --files-with-matches
 | --- | --- | --- |
 | 10 | `workflow/.../realisation_to_srf.py:805` | The default binary path is `genslip_v5.4.2`, but the `srf:` defaults are written for v5.6.2. `getpar` never asks for names it does not recognise, so `beta_asp`, `beta_subevt`, `beta_*_depth`, `hyb_corlen_*` and `rtime2slip_exp` have been passed and **silently dropped** in production. Same class as the HF port's `calpha = -99.0`. |
 
-## Ours: gaps in the PyO3 boundary, found by building the getpar mapping
+## Ours: gaps in the PyO3 boundary, found by building the getpar mapping — **fixed**
 
-Each of these is a genslip configuration `crates/genslip` models correctly and
-`crates/core` cannot spell. They are **boundary** defects, not core ones: the physics
-is ported, the constructor cannot express the input. None was visible before there was
-a mapping, because nothing had yet tried to drive the port from a full getpar set.
+Each of these was a genslip configuration `crates/genslip` modelled correctly and
+`crates/core` could not spell. They were **boundary** defects, not core ones: the
+physics was ported, the constructor could not express the input. None was visible
+before there was a mapping, because nothing had tried to drive the port from a full
+getpar set.
 
-`tests/harness/mapping.py` raises `UnmappableConfiguration` on all three rather than
-approximating, and `MAPPING_GAPS` is the list. Approximating would have meant
-comparing two different models and reporting the difference as a port defect — which
-is the failure this item exists to avoid.
+All three are fixed. They stay in this register because the register's job is to make
+a later rewrite *decide* rather than discover, and because each is now pinned by a
+test that says what it cost.
 
-| # | Where | What | Reachable? |
+| # | Where | What | Fixed by |
 | --- | --- | --- | --- |
-| 11 | `crates/core/src/lib.rs`, `SourceSpec::new` | `kmodel=FRANKEL` is routed to `CornerRelation::Somerville`. genslip shares the **Mai** relation with Frankel — the branch is `if(kmodel == MAI_FLAG \|\| kmodel == FRANKEL_FLAG)` (`genslip_v5.6.2.c:1303`) — and defaults `kx_corner`/`ky_corner` for it at 994-999. Somerville is a different power law with different offsets, so every corner would be wrong. Frankel's *spectral falloff* is separately correct: `kflag` and the corner relation are two distinct uses of `kmodel` (`slip.c:1651`). | Yes, `kmodel=3` |
-| 12 | `crates/core/src/lib.rs`, `SourceSpec::new` | `circular_average` has no parameter at all; `circular` is hardwired `false` in every arm. The core's `CornerRelation` carries the flag and `source_parity.rs::circular_relations_give_equal_corners` already tests it, so this is a missing argument and nothing more. | Yes, `circular_average=1` |
-| 13 | `crates/core/src/lib.rs`, `TimingSpec::new` | One `shallow_ramp` and one `deep_ramp` are passed to **both** the rise-time stretch and the rupture-speed profile. genslip reads four independent getpar pairs: `risetimedep`/`risetimedep_range` and `deep_risetimedep`/`deep_risetimedep_range` against `shal_vrup_dep`/`shal_vrup_deprange` and `deep_vrup_dep`/`deep_vrup_deprange`. They share defaults (6.5/1.5 and 17.5/2.5), which is why the fixture passes and why this is latent rather than loud. The core keeps `RiseTimeStretch` and `SpeedProfile` separate and is unaffected. | Yes, any `shal_vrup_dep != risetimedep` |
+| 11 | `crates/core/src/lib.rs`, `SourceSpec::new` | `kmodel=FRANKEL` was routed to `CornerRelation::Somerville`. genslip shares the **Mai** relation with Frankel — the branch is `if(kmodel == MAI_FLAG \|\| kmodel == FRANKEL_FLAG)` (`genslip_v5.6.2.c:1303`) — and defaults `kx_corner`/`ky_corner` for it at 994-999. Frankel's *spectral falloff* was separately correct: `kflag` and the corner relation are two distinct uses of `kmodel` (`slip.c:1651`), and they do not partition the same way. | Frankel now takes `CornerRelation::Mai`. `frankel_takes_mai_s_corners_because_one_branch_serves_both` |
+| 12 | `crates/core/src/lib.rs`, `SourceSpec::new` | `circular_average` had no parameter at all; `circular` was hardwired `false` in every arm. Under Somerville it is not merely equal corners — the original switches to a third offset, 1.825 rather than 1.72 and 1.93. | A `circular_average` argument, reaching Somerville and Mai only — the two relations whose branches test it. `test_mapping.py::test_circular_average_is_expressible` |
+| 13 | `crates/core/src/lib.rs`, `TimingSpec::new` | One `shallow_ramp` and one `deep_ramp` went to **both** the rise-time stretch and the rupture-speed profile. genslip reads four independent pairs: `risetimedep`/`risetimedep_range` and `deep_risetimedep`/`deep_risetimedep_range` against `shal_vrup_dep`/`shal_vrup_deprange` and `deep_vrup_dep`/`deep_vrup_deprange`. They share defaults (6.5/1.5 and 17.5/2.5), which is why every fixture passed. | Optional `shallow_speed_ramp`/`deep_speed_ramp`, falling back to the rise-time ramps so the shared-default case is unchanged. `genslip_config.RuptureVelocity` carries the getpar names, which did not exist before |
 
-Related, and *not* a defect: both deep ramps are additionally pushed down to the
-hypocentre depth per realisation (`genslip_v5.6.2.c:2378-2381` and `:2974-2977`), each
-using its **own** range in the adjustment. So #13 also means the two can diverge at a
-deep hypocentre even when their configured centres agree, provided their ranges
-differ. `mapping.deep_ramp_centre_km` reproduces the rise-time one and
-`test_mapping.py` pins it.
+### What #11 actually cost, measured
+
+The two relations are closer than "different power law" suggests, and that is the
+point:
+
+| | |
+| --- | --- |
+| along strike | a **constant 4.3%** at every magnitude. Both scale as `10^(0.5*M)`, so only the offsets differ — Mai's 2.50 against Somerville's `1.72 + 0.79818 = 2.51818`, a ratio of `10^0.01818` |
+| down dip | anything from **3.6x at M4 to 0.65x at M8.5**, because the exponents differ: `10^(0.3333*M)` against `10^(0.5*M)` |
+| down dip, at **M7.37** | they **cross**, and the wrong relation is indistinguishable from the right one |
+
+That crossover is why this needed a test rather than an eyeball. A fixture near M7.4
+would have shown the defect as a rounding difference and been believed.
+
+### Related, and not a defect
+
+Both deep ramps are additionally pushed down to the hypocentre depth per realisation
+(`genslip_v5.6.2.c:2378-2381` and `:2974-2977`), each using its **own** half-width in
+the adjustment. So #13 also meant the two could diverge at a deep hypocentre even with
+equal configured centres, provided their half-widths differed.
+`mapping.deep_ramp_centre_km` takes the centre and half-width as arguments for exactly
+that reason, and `test_mapping.py` pins both cases.
 
 ---
 
