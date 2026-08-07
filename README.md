@@ -24,9 +24,16 @@ rupture = generate_rupture(
 )
 ```
 
-**Status: Stage 1 complete for the finite-fault path.** Every kernel is
-bit-identical to the C, verified per function against the real library linked
-through `genslip-oracle`. The point-source path (`generic_slip2srf`) is not started.
+**Status: Stage 1 complete for the finite-fault path, and now checked end to end.**
+Every kernel is bit-identical to the C per function, verified against the real library
+linked through `genslip-oracle`. Against a stored corpus of five whole ruptures, slip,
+rake and the slip-rate pulses agree to the SRF's own precision; **rupture onset does
+not yet**, and neither does slip under `kmodel=Frankel`. The point-source path
+(`generic_slip2srf`) is not started.
+
+The end-to-end check earned its keep immediately: it found three defects the
+per-function suite structurally could not (`DEFECTS.md` 14-16), each a correct,
+C-verified function called wrongly.
 
 ## Layout
 
@@ -95,7 +102,8 @@ Two things that are not obvious:
   `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
   `-ffp-contract=off` do take, which are the two that decide float results.
 
-Parity is checked against exactly this: 136 Rust tests pass with contraction off.
+Parity is checked against exactly this: 137 Rust tests pass with contraction off,
+and 235 Python tests alongside them.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -109,15 +117,17 @@ cargo test -p srf --release -- --ignored --nocapture float_leaf        # the num
 Currently **405 MiB/s** on `tests/srfs/rupture_1.srf` (69 MiB, 190,546 points).
 `SRF_THROUGHPUT_FILE` overrides the input.
 
-Seven tests drive the real `genslip_v5.6.2` and skip without it. Point
-`GENSLIP_BINARY` at one to run them.
+Thirteen tests drive the real `genslip_v5.6.2` and skip without it. Point
+`GENSLIP_BINARY` at one to run them. **The corpus comparison is not among them** --
+`tests/corpus/` is committed, so `test_corpus.py` runs anywhere. The binary is only
+needed to *rebuild* the corpus.
 
 ## The documents, and which one answers your question
 
 | | |
 | --- | --- |
 | `PORTING_RULES.md` | How the port is written. **Read rule 1 and rule 2 before touching a kernel.** Expires at the Stage 1/2 boundary |
-| `DEFECTS.md` | Nine defects in the original, each with a disposition and the test that pins it |
+| `DEFECTS.md` | Sixteen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, three in its call sites. The last three were found by the corpus and are the argument for having one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
 
@@ -142,91 +152,94 @@ Two habits this list assumes, both learned expensively:
   if you forget `ns=1 nh=1`; the SRF stored `vs` in cm/s while the port wrote km/s.
   Both were invisible, and both are now pinned by a test that says why.
 
-1. **Finish the Stage 0 fixture corpus.** The reference path works and is pinned:
-   `tests/harness/gsf.py` writes the geometry file, `genslip_reference.py` renders the
-   arguments, and seven tests check that the binary accepts them and that a seed
-   reproduces a rupture. What is left is the half that compares:
+### Where this was left
 
-   - ~~**Map genslip's `getpar` names onto the port's five spec groups.**~~ **Done**:
-     `tests/harness/mapping.py`, pinned by `test_mapping.py`. One `Parameters` now
-     renders both as the binary's command line and as the library's five groups.
+Item 1 — the Stage 0 fixture corpus — is **done**. `tests/harness/mapping.py` maps
+every `getpar` name onto the port's five spec groups, `tests/corpus/` holds five
+reference ruptures, and `tests/harness/test_corpus.py` compares the port against them
+without needing a genslip binary.
 
-     The lever that made it tractable was noticing genslip **reports what it
-     derived** on stderr — `nstk2`, `ndip2`, `dstk`, `ddip`, `alphaT`, `trise_avg`,
-     `rvfrac_avg` — so for those quantities the binary is the oracle and reading the
-     C is not the evidence. `parse_diagnostics` reads them back.
+To get going:
 
-     Four correspondences are not name-to-name, and each would have produced a
-     plausible wrong rupture. Two were known; two were not:
+```sh
+uv sync --extra test --group dev      # both extras: a bare `uv sync` drops pytest
+export EMOD3D_BUILD_DIR=...           # an EMOD3D build, flags under "Gates" above
+export GENSLIP_BINARY=...             # only needed to REBUILD the corpus
+./gate.sh
+```
 
-     | | |
-     | --- | --- |
-     | `shypo`/`dhypo` are **km**, signed from the fault's centre and from its top edge | the port takes subfault *indices* |
-     | padded extents are `nstk2`/`ndip2` = fault scaled by `extend_fac` (default **1.10**) then rounded up to even | 20x12 pads to 22x14 |
-     | the slip spectrum's band is `wavelength_min`/`wavelength_max`, **not** `lambda_*` (which is roughness) | and `wavelength_max` is hardwired to `1.0e+15`, so the port's 80 km default is wrong |
-     | `velocity_fraction` must carry the `alphaT` division | genslip divides both `rvfrac` and every `psrc[].rvf` by it; the port applies `alphaT` to rise time only |
+What the comparison says today, on all five cases:
 
-     It also found three configurations the **PyO3 boundary could not spell** while
-     the core could — `kmodel=Frankel` routed to the Somerville corner relation,
-     `circular_average` absent entirely, and the rise-time and rupture-speed depth
-     ramps collapsed into one pair. All three are `DEFECTS.md` 11-13 and **all three
-     are now fixed**, each pinned by a test. The Frankel one was worth measuring: the
-     two relations differ by a constant 4.3% along strike, by up to 3.6x down dip, and
-     **cross at M7.37** — so a fixture near M7.4 would have shown the defect as a
-     rounding difference and been believed.
-   - ~~**Widen the spread**~~ **Done**: five cases under `tests/corpus/`, 2.4 MB
-     gzipped, each with its GSF, its argument list and the bytes genslip wrote. See
-     `tests/corpus/README.md` for what each case makes non-constant.
-   - ~~**Compare the physics, and measure the geometry.**~~ **Done**:
-     `tests/harness/test_corpus.py`, and it needs no binary.
+| | |
+| --- | --- |
+| slip | 2.6e-06 relative, correlation 1.0000000 — on four of five cases |
+| rake | **100% of subfaults exact**, worst deviation 0.4999 deg (the SRF stores whole degrees, so the format is the floor) |
+| slip-rate pulse lengths | **100%** exact on three cases, 99.83% on `subduction` |
+| slip-rate samples | 4.2e-05 relative where the lengths match |
+| onset | correlations 0.92–0.997, differences 0.33–1.05 s — **open, item 1 below** |
+| plane centre | genslip's flat-earth error, 43 m crustal to 1.9 km subduction. Not ours: it recomputes what the port is given |
 
-     **Slip agrees** to the format's own precision — 2.6e-06 relative at worst,
-     correlation 1.0000000 — on four of five cases. That is every draw, the spectrum,
-     the taper and the moment scaling, in one number.
+**Two traps that cost real time. Do not re-learn them.**
 
-     **It found three defects, all now fixed** — `DEFECTS.md` 14-16, and all of one
-     kind: a correct function called wrongly, or not guarded the way the original
-     guards it.
+- **`nt1` is not `rise_time / dt`.** It is what the slip-rate generator *returned*.
+  Comparing the port's rise time against `nt1 * dt` compares two different quantities
+  and produces a bounded, systematic-looking offset in `[-2, -0.5]` samples that reads
+  exactly like an off-by-one. It is not one. Compare pulse lengths.
+- **`segno` is not inert when `seg_delay=0`.** genslip emits one `PLANE` per segment
+  and writes points grouped by segment, so the SRF's order is not the GSF's — on the
+  `bent` case by 0.18 degrees of position. Comparing in file order compares one
+  subfault against another and reports it as a port defect. `corpus.segment_order` is
+  the permutation, and it is the identity on the four single-plane cases, so only
+  `bent` can catch its absence.
 
-     | | |
-     | --- | --- |
-     | `rake_sigma` reached nothing | the *slip* field's coefficient of variation was handed to `rake_field`, where a spread in degrees belongs. Every rake had a spread of 0.750 where genslip gives 15.0 — a factor of twenty |
-     | the shallow rise-time blend read the wrong slip | the original blends against the **reloaded** spectrum brought back to space, not the tapered field the reload was built from |
-     | a subfault that does not slip was still given a pulse | the `\|slip\| > MINSLIP` guard is in the SRF *loader*, outside the generator |
+1. **Rupture onset.** The last field that does not agree. Correlations 0.92 to 0.997,
+   differences with spread 0.33 s to 1.05 s on onsets of 4 to 47 s — so the structure
+   is right and something in the middle is not.
 
-     None was reachable by the per-function parity tests. `rake_field`, the blend and
-     `oliu_p` are each correct and each tested against the C — the defects are in the
-     **calls**, and a suite that checks one function at a time cannot see a caller
-     handing the right function the wrong argument.
+   Three things are **ruled out by measurement**, and the measurements are worth
+   repeating rather than trusting:
 
-     After them, **rake matches on 100% of subfaults** across all five cases (the SRF
-     stores whole degrees, so the format is the floor), and **the slip-rate pulse
-     lengths match on 100%** of three cases and 99.83% of `subduction`, with the
-     samples agreeing to 4.2e-05.
+   - **Not the perturbation's amplitude.** Generate twice, once with
+     `rupture_time_scale = 0`, and difference: the perturbation's standard deviation
+     is `|tsfac_main| * tsfac1_sigma` exactly.
+   - **Not a desynchronised draw stream.** The rise-time field is drawn *after* this
+     one and now agrees exactly, so the stream is right through both. A desynchronised
+     stream would also destroy the correlation, and it is 0.99+ on three cases.
+   - **Not wholly the perturbation field.** The error correlates with the port's own
+     perturbation at only −0.43 to +0.21, and on three cases its spread is *smaller*
+     than the perturbation's — so the two perturbations largely agree and this is a
+     residual on top of them.
 
-     Still open: **onset** (correlations 0.92-0.997, spreads 0.33-1.05 s) and
-     **Frankel's slip** (0.39 relative). `DEFECTS.md` records what has been ruled out
-     for each, which for onset is the perturbation's amplitude, a desynchronised
-     stream, and — mostly — the perturbation field itself. What is left is the travel
-     times.
+   What is left is the travel times: `Wavefront2d`, or the speed field it runs on.
+   `get_rspeed_vsden2` (`genslip_v5.6.2.c:2991`) takes `slp_max` and `slp_avg`, which
+   the port's `rupture::speed_field` does not — worth checking whether they are read
+   when `fdrup_scale_slip = 0`, which is what every corpus case sets.
 
-     **The geometry divergence is in the header, not the points** — which is not what
-     this list predicted. genslip copies point positions straight out of the GSF, so
-     they do not diverge at all; what it *derives* is each plane's top-edge centre,
-     on a flat earth. That is **43 m** on a 10 km crustal plane and **1.9 km** at
-     subduction scale, recorded per case.
+   genslip prints nothing about `rspd`, so the binary is not an oracle here — but it
+   does not need to be. **Set `tsfac_main = 0` on both sides and the perturbation
+   vanishes**, leaving pure travel times to compare against pure travel times:
 
-     One trap, and only the bent case shows it: `segno` is **not** inert with
-     `seg_delay=0`. genslip emits one `PLANE` per segment and writes points grouped
-     by segment, so the SRF's order is not the GSF's — by up to 0.18 degrees of
-     position. Comparing in file order compares one subfault against another and
-     reports it as a port defect. `corpus.segment_order` is the permutation.
-2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-3. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
+   ```c
+   psrc[ip].rupt = rt + tsfac_main*tsfac1_r[ip];   /* genslip_v5.6.2.c:3135 */
+   ```
+
+   Zero is honoured rather than read as "unset": the sentinel is `-1.0e+15` and the
+   guard is `tsfac_main > -1.0e+10`, so `0` passes it and multiplies the perturbation
+   away. `Parameters.rupture_time_perturbation.main_value` sets it, and
+   `mapping.rupture_time_scale` already passes an explicit value straight through, so
+   a sixth corpus case is all it takes. That is the measurement to make first.
+
+2. **Slip under `kmodel=Frankel`.** 0.39 relative on `frankel_corners`, correlation
+   0.993 — the only case where slip diverges at all. Not the falloff exponent
+   (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and
+   not the corner relation (`DEFECTS.md` 11, fixed). Unexplained.
+
+3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
+4. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
    the plan, not started. **Nothing in Stage 3 may land before this exists**, because
    each of those swaps changes the last bits on purpose and needs something other than
    bit-parity to adjudicate it. `PORTING_RULES.md` expires at this boundary.
-4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+5. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
    disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites. Both those
