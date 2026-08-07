@@ -12,13 +12,13 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from rupture_generator.config import (
+from tests.harness.genslip_config import (
     KModel,
     RiseTimeNormalisation,
     SlipRateFunction,
     Stype,
 )
-from rupture_generator.utils import _serialise_value, serialise_options
+from tests.harness.serialise import _serialise_value, serialise_options
 
 
 class TestSerialiseValue:

@@ -11,8 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from rupture_generator import srf, utils
-from rupture_generator.config import Parameters
+from rupture_generator import srf
+from tests.harness import serialise as utils
+from tests.harness.genslip_config import Parameters
 from rupture_generator.geometry import DiscretisedGeometry
 from rupture_generator.srf import SrfFile
 

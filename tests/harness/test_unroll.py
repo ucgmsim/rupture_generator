@@ -2,8 +2,8 @@ import dataclasses
 
 import pytest
 
-from rupture_generator.config import KModel, Stype
-from rupture_generator.config import (
+from tests.harness.genslip_config import KModel, Stype
+from tests.harness.genslip_config import (
     AseismicParameters,
     BetaParameters,
     CustomCorrelationCorners,

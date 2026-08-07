@@ -1,53 +1,52 @@
-from rupture_generator.config import (
-    AseismicParameters,
-    BetaParameters,
-    CustomCorrelationCorners,
-    FaultGeometryLimits,
-    FiniteDifferenceRupture,
-    HybridCorrelationLength,
-    Hypocentre,
-    KModel,
-    MagnitudeArea,
-    OutputOptions,
-    Parameters,
-    PointSourceParams,
-    RiseTimeNormalisation,
-    RiseTimeParameters,
-    RiseTimePerturbation,
-    RuptureTimePerturbation,
-    SegmentDelay,
-    SlipRateFunction,
-    SpatialFiltering,
-    Stype,
-    Tapering,
-    is_non_negative,
-    is_positive,
-    is_proportion,
+"""Kinematic rupture model generation.
+
+A port of genslip v5.6.2, in Rust with a Python front door.
+
+The configuration **is** the compiled core's own types — there is no second
+description of a rupture model in this package, and nothing here speaks genslip's
+`getpar` vocabulary. That vocabulary exists only in `tests/harness`, which drives the
+reference binary the port is compared against.
+
+```python
+import numpy as np
+from rupture_generator import (
+    FaultGrid, Ramp, SlipSpec, SourceSpec, SpectrumModel, TimingSpec,
+    VelocityModel1D, generate_rupture,
+)
+
+grid = FaultGrid(
+    24, 14, 28, 16, 1.0, 1.0,
+    depth_km=depths, base_rake_deg=rakes, velocity_fraction=fractions,
+)
+rupture = generate_rupture(
+    grid, velocity_model, source, slip, timing,
+    seed=1234, hypocentre_strike=12, hypocentre_dip=8,
+)
+```
+"""
+
+from rupture_generator._core import (
+    FaultGrid,
+    GeneratedRupture,
+    Ramp,
+    RiseTimeWeighting,
+    SlipSpec,
+    SourceSpec,
+    SpectrumModel,
+    TimingSpec,
+    VelocityModel1D,
+    generate_rupture,
 )
 
 __all__ = [
-    "AseismicParameters",
-    "BetaParameters",
-    "CustomCorrelationCorners",
-    "FaultGeometryLimits",
-    "FiniteDifferenceRupture",
-    "HybridCorrelationLength",
-    "Hypocentre",
-    "KModel",
-    "MagnitudeArea",
-    "OutputOptions",
-    "Parameters",
-    "PointSourceParams",
-    "RiseTimeNormalisation",
-    "RiseTimeParameters",
-    "RiseTimePerturbation",
-    "RuptureTimePerturbation",
-    "SegmentDelay",
-    "SlipRateFunction",
-    "SpatialFiltering",
-    "Stype",
-    "Tapering",
-    "is_non_negative",
-    "is_positive",
-    "is_proportion",
+    "FaultGrid",
+    "GeneratedRupture",
+    "Ramp",
+    "RiseTimeWeighting",
+    "SlipSpec",
+    "SourceSpec",
+    "SpectrumModel",
+    "TimingSpec",
+    "VelocityModel1D",
+    "generate_rupture",
 ]
