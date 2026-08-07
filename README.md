@@ -174,15 +174,40 @@ Two habits this list assumes, both learned expensively:
      two relations differ by a constant 4.3% along strike, by up to 3.6x down dip, and
      **cross at M7.37** — so a fixture near M7.4 would have shown the defect as a
      rounding difference and been believed.
-   - **Widen the spread**, then store each case's GSF, argument list and reference SRF
-     under `tests/corpus/`: single-plane / multi-segment, crustal / subduction dip,
-     small / large `nstk x ndip`. Gzip the SRFs; a 20x12 fault is already 458 KB.
-   - **Compare the physics, and measure the geometry.** `slip`, `rake`, `tinit`,
-     `rise` and the slip-rate rows should agree field by field. `lon`, `lat` and `dep`
-     will not: genslip recomputes subfault positions from the plane with the
-     tangent-plane approximation `DEFECTS.md` records, where the port uses the
-     positions it was given. On the fixture above that is already visible in the
-     fourth decimal. Record the divergence rather than asserting it away.
+   - ~~**Widen the spread**~~ **Done**: five cases under `tests/corpus/`, 2.4 MB
+     gzipped, each with its GSF, its argument list and the bytes genslip wrote. See
+     `tests/corpus/README.md` for what each case makes non-constant.
+   - ~~**Compare the physics, and measure the geometry.**~~ **Done**:
+     `tests/harness/test_corpus.py`, and it needs no binary.
+
+     **Slip agrees** to the format's own precision — 2.6e-06 relative at worst,
+     correlation 1.0000000 — on four of five cases. That is every draw, the spectrum,
+     the taper and the moment scaling, in one number.
+
+     **`rake_sigma` reaches nothing.** The rake field is normalised to the *slip*
+     field's coefficient of variation, so every rake has a spread of 0.750 degrees
+     where genslip gives 15.0 — exactly `slip_sigma`, on all five cases. That is
+     `DEFECTS.md` 14 and it is the corpus's first find. The per-function parity tests
+     could not have caught it: `rake_field` is correct and is tested with whatever
+     sigma it is handed; the defect is in the **call**. Fixing it needs a boundary
+     argument as well, like 11-13.
+
+     Rise time (means 0.989-1.018), onset (correlations 0.92-0.996) and Frankel's
+     slip (0.39 relative, the only case where slip diverges) are recorded and
+     unexplained. Each is pinned with the number as measured, so it fails when it
+     changes rather than sitting silent.
+
+     **The geometry divergence is in the header, not the points** — which is not what
+     this list predicted. genslip copies point positions straight out of the GSF, so
+     they do not diverge at all; what it *derives* is each plane's top-edge centre,
+     on a flat earth. That is **43 m** on a 10 km crustal plane and **1.9 km** at
+     subduction scale, recorded per case.
+
+     One trap, and only the bent case shows it: `segno` is **not** inert with
+     `seg_delay=0`. genslip emits one `PLANE` per segment and writes points grouped
+     by segment, so the SRF's order is not the GSF's — by up to 0.18 degrees of
+     position. Comparing in file order compares one subfault against another and
+     reports it as a port defect. `corpus.segment_order` is the permutation.
 2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
 3. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
    the plan, not started. **Nothing in Stage 3 may land before this exists**, because

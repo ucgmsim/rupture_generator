@@ -82,6 +82,56 @@ point:
 That crossover is why this needed a test rather than an eyeball. A fixture near M7.4
 would have shown the defect as a rounding difference and been believed.
 
+### 14: `rake_sigma` reaches nothing
+
+**Live.** Found by the corpus comparison, on the first run of it.
+
+genslip normalises the rake field to a standard deviation of `rake_sigma` **degrees**
+and adds it to each subfault's base rake:
+
+```c
+sigfac = rake_sigma/rk_sig;                           /* genslip_v5.6.2.c:2068 */
+rake_r[ip] = sigfac*rake_r[ip] + psrc_rake[ip];
+```
+
+`rake_sigma` defaults to 15.0 and the fixtures configure 15.0. The port calls
+`slip::rake_field(..., spectrum.coefficient_of_variation)` — the **slip** field's
+coefficient of variation, 0.75 and dimensionless — where a spread in degrees belongs.
+The parameter is named `sigma_degrees` at the definition, so the call site is reading
+it as something it is not.
+
+| | |
+| --- | --- |
+| reference rake spread | 14.96 to 15.02 degrees, on all five cases |
+| port rake spread | **0.750 degrees, exactly, on all five** |
+| ratio | 20, which is `rake_sigma / slip_sigma` |
+
+Exactly `slip_sigma` on every case, regardless of geometry or magnitude, is what makes
+this a wiring error rather than a numerical one.
+
+There is a second half: **no spec group carries `rake_sigma` at all**, so this cannot
+be fixed in `crates/genslip` alone. Like `DEFECTS.md` 11-13 it needs a boundary
+argument, and `genslip_config` already has the getpar name waiting.
+
+**Why nothing caught it earlier.** `slip::rake_field` is correct, and its parity test
+passes whatever sigma it likes. The defect is in the *call*, and a suite that checks
+every function against the C one function at a time cannot see a caller handing the
+right function the wrong argument. That is the seam an end-to-end corpus closes, and
+it is the argument for the corpus existing.
+
+Pinned by `test_corpus.py::test_rake_carries_slip_sigma_where_rake_sigma_belongs`,
+which asserts the ratio is 20 and tells whoever fixes it to delete the test.
+
+### Still open, and only measured
+
+Two more divergences the corpus records without explaining. Both are pinned with the
+numbers as recorded, so they fail when they *change*:
+
+| what | measured | what it is not |
+| --- | --- | --- |
+| rise time and onset | rise-time means 0.989 to 1.018 of the reference; onset correlations 0.92 to 0.996, differences 0.33 s to 1.05 s | not a desynchronised draw stream — that would destroy the correlation, and slip is still exact. Right shape, wrong amplitude, which points at the two perturbation fields' scaling |
+| Frankel slip | 0.39 relative on `frankel_corners`, correlation 0.993; the only case where slip diverges at all | not the falloff exponent (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and not the corners (fixed in 11) |
+
 ### Related, and not a defect
 
 Both deep ramps are additionally pushed down to the hypocentre depth per realisation
