@@ -10,11 +10,12 @@
 //! random extents would almost never produce the degenerate 2xN case.
 
 use genslip::field::{
-    CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep, correlated_field,
+    CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep, band_pass, correlated_field,
     self_affine_field,
 };
 use genslip::grid::{Spectrum, impose_hermitian_symmetry};
 use genslip::rng::GenslipLcg;
+use genslip::stats::mean_and_sigma;
 use genslip_oracle::{Complex, field as oracle};
 use num_complex::Complex32;
 use proptest::prelude::*;
@@ -292,3 +293,117 @@ proptest! {
 // - Anything about the amplitude scale being read from grid[0]. That is an
 //   interface accident of the C which the port does not reproduce -- the scale is
 //   an argument here -- so there is nothing to pin.
+
+/// Band-passing an existing field matches, including the infinity-arithmetic DC.
+#[test]
+fn band_pass_matches_across_every_shape_and_order() {
+    for (strike_count, dip_count) in SHAPES {
+        for order in [1_i32, 2, 4, 8] {
+            // Seed both sides with the same non-trivial field. A band-pass on zeros
+            // is zeros, which would pass no matter what the gain was.
+            let mut ported = Spectrum::zeros(strike_count, dip_count);
+            let mut source = GenslipLcg::new(31);
+            self_affine_field(
+                &mut ported,
+                &mut source,
+                1.0,
+                WavenumberStep {
+                    strike: 0.04,
+                    dip: 0.06,
+                },
+                WavelengthBand::new(0.08, 120.0),
+            );
+
+            let mut expected = as_oracle_grid(&ported);
+            oracle::band_pass(
+                &mut expected,
+                strike_count,
+                dip_count,
+                0.04,
+                0.06,
+                order,
+                60.0,
+                0.5,
+            );
+            band_pass(
+                &mut ported,
+                WavenumberStep {
+                    strike: 0.04,
+                    dip: 0.06,
+                },
+                WavelengthBand::new(0.5, 60.0),
+                order,
+            );
+
+            assert_grids_equal(
+                &ported,
+                &expected,
+                &format!("band_pass order {order} {strike_count}x{dip_count}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn band_pass_removes_the_dc_component() {
+    // Not a parity claim -- a statement about what the infinity arithmetic at the
+    // origin actually does, so that a future rewrite with an explicit k2 > 0 guard
+    // has to decide deliberately rather than by accident.
+    let mut spectrum = Spectrum::zeros(8, 8);
+    for dip in 0..8 {
+        for strike in 0..8 {
+            spectrum[(strike, dip)] = Complex32::new(5.0, 0.0);
+        }
+    }
+    band_pass(
+        &mut spectrum,
+        WavenumberStep {
+            strike: 0.04,
+            dip: 0.06,
+        },
+        WavelengthBand::new(0.5, 60.0),
+        4,
+    );
+    assert_eq!(spectrum[(0, 0)], Complex32::new(0.0, 0.0));
+}
+
+#[test]
+fn mean_and_sigma_match_across_every_shape() {
+    for (strike_count, dip_count) in SHAPES {
+        let mut ported = Spectrum::zeros(strike_count, dip_count);
+        let mut source = GenslipLcg::new(77);
+        correlated_field(
+            &mut ported,
+            &mut source,
+            Spectrum2D::Mai,
+            WavenumberStep {
+                strike: 0.05,
+                dip: 0.07,
+            },
+            CorrelationLengths {
+                strike: 12.0,
+                dip: 6.0,
+            },
+            WavelengthBand::new(1.5, 80.0),
+            3.5,
+        );
+
+        let mut oracle_grid = as_oracle_grid(&ported);
+        let (want_mean, want_sigma) =
+            oracle::mean_and_sigma(&mut oracle_grid, strike_count, dip_count);
+        let got = mean_and_sigma(&ported);
+
+        assert_eq!(
+            got.mean.to_bits(),
+            want_mean.to_bits(),
+            "mean {strike_count}x{dip_count}: {} vs {want_mean}",
+            got.mean
+        );
+        assert_eq!(
+            got.sigma.to_bits(),
+            want_sigma.to_bits(),
+            "sigma {strike_count}x{dip_count}: {} vs {want_sigma}",
+            got.sigma
+        );
+    }
+}

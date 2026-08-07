@@ -109,6 +109,11 @@ impl Spectrum2D {
             Self::Mai | Self::Suzuki | Self::MaiSomerville => {
                 // Two narrowings, matching the original's two assignments: the
                 // falloff is stored into a float before the division happens.
+                //
+                // SIMPLIFY: `(1.0 + a).powf(VON_KARMAN_EXPONENT / 2.0)` -- the
+                // exponentiation and the square root fold into one call, which also
+                // removes the intermediate narrowing. Written this way because the
+                // original stores the falloff before taking its root.
                 let falloff = (Self::VON_KARMAN_EXPONENT * (1.0 + a).ln()).exp() as f32;
                 (scale / f64::from(falloff).sqrt()) as f32
             }
@@ -116,6 +121,9 @@ impl Spectrum2D {
                 if a < 1.0 {
                     scale as f32
                 } else {
+                    // SIMPLIFY: `scale / a`. The exponent is exactly -1, since
+                    // FRANKEL_EXPONENT is 2.0 and it is halved here, so the whole
+                    // exp/log pair is a reciprocal written the long way.
                     (scale * (-0.5 * Self::FRANKEL_EXPONENT * a.ln()).exp()) as f32
                 }
             }
@@ -161,13 +169,26 @@ impl WavelengthBand {
     ///
     /// At `k2 == 0` both logarithms diverge; callers handle the origin separately.
     fn divisor(self, k2: f32) -> f64 {
+        self.divisor_at_order(k2, BAND_PASS_ORDER)
+    }
+
+    /// As [`divisor`](Self::divisor), but at a caller-chosen roll-off order.
+    ///
+    /// [`band_pass`] takes its order from configuration; the generators do not.
+    fn divisor_at_order(self, k2: f32, order: f64) -> f64 {
         // Both products are single precision before they reach the logarithm: the
         // original multiplies two floats and the widening happens at the call. The
         // rounding differs if the operands are widened first.
         let high = f64::from(k2 * self.min_squared);
         let low = f64::from(k2 * self.max_squared);
-        let high_cut = 1.0 + (BAND_PASS_ORDER * high.ln()).exp();
-        let low_cut = 1.0 + (-BAND_PASS_ORDER * low.ln()).exp();
+        // SIMPLIFY: `high.powi(order)` and `1.0 / low.powi(order)`. The order is
+        // always an integer -- 4 in the generators, `kord` in `band_pass`, itself an
+        // int getpar -- so both exp/log pairs are integer powers written the long
+        // way, a transcendental pair each where three multiplies would do. Written
+        // this way because the original does, and because `powi` and `exp(n*ln(x))`
+        // disagree in the last bit somewhere in the domain.
+        let high_cut = 1.0 + (order * high.ln()).exp();
+        let low_cut = 1.0 + (-order * low.ln()).exp();
         high_cut * low_cut
     }
 }
@@ -253,6 +274,47 @@ pub fn correlated_field<S: DrawSource>(
     impose_hermitian_symmetry(spectrum);
 }
 
+/// Band-pass an existing field in place, at a caller-chosen order.
+///
+/// Unlike the band-pass folded into the generators above, this one is applied to a
+/// field that already exists, and its order is configurable — it is genslip's
+/// `kord`, used on the roughness-correlated rupture-time perturbation.
+///
+/// # The origin is zeroed by infinity arithmetic
+///
+/// There is no `k2 > 0` guard here, unlike [`correlated_field`]. At the origin
+/// `ln(0)` is `-inf`, so the high-cut term is `1 + exp(-inf) = 1` and the low-cut is
+/// `1 + exp(+inf) = inf`; their product is infinite and the gain is `1/inf = 0`.
+/// The DC component is therefore removed — deterministically, and only because IEEE
+/// arithmetic makes it so rather than because anything says it should.
+///
+/// (orig. `kfilter`, slip.c:1698)
+pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: WavelengthBand, order: i32) {
+    let strike_count = spectrum.strike_count();
+    let dip_count = spectrum.dip_count();
+    let order = f64::from(order);
+
+    for dip in 0..=dip_count / 2 {
+        let ky = wavenumber(dip, dip_count, step.dip);
+        for strike in 0..strike_count {
+            let kx = wavenumber(strike, strike_count, step.strike);
+            let k2 = kx * kx + ky * ky;
+
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the narrowing seam: C stores the gain into a float"
+            )]
+            let gain = (1.0 / band.divisor_at_order(k2, order)) as f32;
+            spectrum[(strike, dip)] *= gain;
+        }
+    }
+
+    // Only the imaginary parts are cleared here; the real parts keep the gain they
+    // were just given, unlike the correlated generator which rescales them.
+    make_corners_real(spectrum, |value| value);
+    impose_hermitian_symmetry(spectrum);
+}
+
 /// Generate a self-affine field: a pure power law, no corner.
 ///
 /// `hurst_exponent` is the Hurst exponent `H`; the spectral falloff is `k^-(H+1)`.
@@ -293,6 +355,9 @@ pub fn self_affine_field<S: DrawSource>(
                     reason = "the narrowing seam: C stores each of these into a float"
                 )]
                 let gain = (1.0 / band.divisor(k2)) as f32;
+                // SIMPLIFY: `f64::from(k2).powf(-0.5 * falloff)`, with the exponent
+                // hoisted out of both loops -- it depends only on `hurst_exponent`
+                // and is recomputed at every grid point.
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "the narrowing seam: C stores the product into a float"

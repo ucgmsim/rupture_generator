@@ -162,3 +162,82 @@ pub fn impose_hermitian_symmetry(grid: &mut [Complex], strike_count: usize, dip_
     // SAFETY: as above.
     unsafe { hermit(grid.as_mut_ptr(), nx0, ny0) }
 }
+
+unsafe extern "C" {
+    /// `void kfilter(struct complex *s0, int nx0, int ny0, float *dkx, float *dky,
+    /// int ord, float *lambda_max, float *lambda_min)`
+    fn kfilter(
+        s0: *mut Complex,
+        nx0: core::ffi::c_int,
+        ny0: core::ffi::c_int,
+        dkx: *mut core::ffi::c_float,
+        dky: *mut core::ffi::c_float,
+        ord: core::ffi::c_int,
+        lambda_max: *mut core::ffi::c_float,
+        lambda_min: *mut core::ffi::c_float,
+    );
+
+    /// `void get_mean_sigma_c(struct complex *x, int ns, int nd, float *avg,
+    /// float *sig)`
+    fn get_mean_sigma_c(
+        x: *mut Complex,
+        ns: core::ffi::c_int,
+        nd: core::ffi::c_int,
+        avg: *mut core::ffi::c_float,
+        sig: *mut core::ffi::c_float,
+    );
+}
+
+/// `kfilter`: band-pass an existing field at a caller-chosen order.
+#[expect(clippy::too_many_arguments, reason = "mirrors the C signature")]
+pub fn band_pass(
+    grid: &mut [Complex],
+    strike_count: usize,
+    dip_count: usize,
+    strike_step: f32,
+    dip_step: f32,
+    order: i32,
+    max_wavelength: f32,
+    min_wavelength: f32,
+) {
+    check_extent(grid, strike_count, dip_count);
+    let (nx0, ny0) = extents(strike_count, dip_count);
+
+    let mut dkx = strike_step;
+    let mut dky = dip_step;
+    let mut lambda_max = max_wavelength;
+    let mut lambda_min = min_wavelength;
+
+    // SAFETY: as above -- uniquely borrowed, length checked against the extents.
+    unsafe {
+        kfilter(
+            grid.as_mut_ptr(),
+            nx0,
+            ny0,
+            &raw mut dkx,
+            &raw mut dky,
+            order,
+            &raw mut lambda_max,
+            &raw mut lambda_min,
+        );
+    }
+}
+
+/// `get_mean_sigma_c`: mean and population standard deviation of the real part.
+///
+/// Takes the grid by mutable reference only because the C signature is non-const;
+/// it does not write.
+pub fn mean_and_sigma(grid: &mut [Complex], strike_count: usize, dip_count: usize) -> (f32, f32) {
+    check_extent(grid, strike_count, dip_count);
+    let (ns, nd) = extents(strike_count, dip_count);
+
+    let mut mean = 0.0_f32;
+    let mut sigma = 0.0_f32;
+
+    // SAFETY: as above; `avg` and `sig` address live locals.
+    unsafe {
+        get_mean_sigma_c(grid.as_mut_ptr(), ns, nd, &raw mut mean, &raw mut sigma);
+    }
+
+    (mean, sigma)
+}
