@@ -228,17 +228,72 @@ The general form: **a reference side that re-implements the original's logic is 
 reference.** It is a second reading of the same source by the same reader. Only
 genslip's actual output could adjudicate this, which is what the corpus is.
 
-### Still open, and only measured
+### 18: a Frankel field was stretched where it should have been shifted
 
-| what | measured | what has been ruled out |
-| --- | --- | --- |
-| Frankel slip | 0.39 relative on `frankel_corners`, correlation 0.993; the only case where slip diverges at all | not the falloff exponent (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and not the corners (fixed in 11) |
+**Fixed.** Found by the corpus comparison; it is the whole of the Frankel slip
+divergence, and the last field that did not agree.
 
-`frankel_corners` is also the one case whose **onset** still diverges, by a spread of
-0.041 s. That is not a second problem: the rupture-time perturbation is drawn
-correlated with slip at `tsfac1_scor = 0.8`, so a diverging slip field carries onset
-with it. The `frankel_no_perturbation` corpus twin is what makes that checkable —
-same fault, `tsfac_main = 0`, and its onset is exact.
+A field drawn through any of these spectra comes out with roughly zero mean and both
+signs. genslip turns that into slip in one of two ways, and **which one is a property
+of the spectrum**:
+
+```c
+if(kmodel == FRANKEL_FLAG)                     /* genslip_v5.6.2.c:1809 */
+   {
+   slip_sigma = -1.0;
+   slp_min = 1.0e+20;
+   for(ip=0;ip<nstk*ndip;ip++)
+      if(slip_r[ip] < slp_min) slp_min = slip_r[ip];
+
+   slp_avg = 0.0;
+   for(ip=0;ip<nstk*ndip;ip++)
+      { slip_r[ip] = slip_r[ip] - slp_min; slp_avg = slp_avg + slip_r[ip]; }
+   }
+```
+
+Everything else is normalised to unit mean and then **stretched** about it until the
+coefficient of variation is the configured `slip_sigma` of 0.75. Frankel is **shifted**
+to its own minimum instead — the least-slipping subfault becomes exactly zero, nothing
+is negative — and the configured spread is then ignored. The original says that by
+assigning `slip_sigma = -1.0`, which its single `if(slip_sigma > 0.0)` guard skips on
+twenty lines later.
+
+The port had no branch at all. A Frankel field was stretched like every other.
+
+| | measured on `frankel_corners` |
+| --- | --- |
+| before | slip 0.39 relative, correlation 0.9934, **spread 1.63x** the reference's, means within 2% |
+| after | slip **1.1e-06** relative, correlation 1.0000000 |
+
+**Why it looked like physics.** Both operations are affine in the same generated field,
+so they produce the same *pattern* — hence the 0.993 correlation and the matching mean,
+which is forced by the moment scaling anyway. Only the spread differed, and a slip
+field with the right pattern and too much contrast is a perfectly plausible earthquake.
+The truncation of negative slip is what broke the affine relation and kept the
+correlation off 1.0; a stretched field arrives at truncation with negative subfaults
+and a shifted one cannot.
+
+**Why the per-function suite could not see it, again.** `slip_pipeline.rs` builds its
+reference by calling the oracle's functions in the order `main` calls them — and the
+transcription omitted this stage on *both* sides. Same shape as 17, and the second time
+in two commits: **a reference side that re-implements the original's logic is not a
+reference.** Both tests now have the transcription written in the original's own terms
+with the conversion at a visible seam, and `slip_pipeline.rs` additionally asserts
+things about its *output* (`a_frankel_field_is_shifted_to_zero_and_keeps_the_spectrum_s_own_spread`)
+that no shared misreading can satisfy.
+
+This also closed the last of onset. `frankel_corners` was the one case whose onset
+still diverged, by a spread of 0.041 s, because the rupture-time perturbation is drawn
+correlated with slip at `tsfac1_scor = 0.8`. It was a symptom, and the
+`frankel_no_perturbation` twin is what said so before the cause was known: same fault,
+`tsfac_main = 0`, onset already exact.
+
+### Nothing open
+
+Every field the corpus checks — slip, rake, onset, the slip-rate pulses — agrees to the
+SRF's own text precision on all six cases. The only divergence still recorded is
+genslip's flat-earth error in the plane header, which is not the port's: it recomputes
+a centre the port is given.
 
 A note on how the onset trail went cold before 17 was found, because it cost time: the
 rise-time divergence looked like a fourth defect for a while. It was not. `nt1` is what
@@ -254,6 +309,13 @@ showed the perturbation fields already agreed bit for bit and the entire diverge
 upstream of them — which turned a search over the whole timing path into a search over
 `Wavefront2d`'s inputs. Zero is honoured rather than read as "unset": the sentinel is
 `-1.0e+15` and the guard is `tsfac_main > -1.0e+10`.
+
+18 fell to a cheaper version of the same idea: **look at the summary statistics
+separately before looking at the field.** A max relative difference of 0.39 says only
+"wrong somewhere". Splitting it into mean, spread and correlation said mean 0.98,
+correlation 0.993, **spread 1.63** — which is not a description of a broken pipeline,
+it is a description of one affine transform where another belongs, and there are only
+two of those in the slip block. The whole search was three numbers wide.
 
 ### Related, and not a defect
 

@@ -84,6 +84,34 @@ impl Spectrum2D {
     /// Falloff exponent for the strictly self-similar Frankel branch.
     const FRANKEL_EXPONENT: f64 = 2.0;
 
+    /// Whether a generated field is made non-negative by *shifting* it.
+    ///
+    /// A field drawn through any of these spectra comes out with roughly zero mean
+    /// and both signs. There are two ways to turn that into slip, and which one is
+    /// used is a property of the spectrum:
+    ///
+    /// - **About the mean** (everything but Frankel). Normalise to unit mean, then
+    ///   stretch about it until the coefficient of variation is the configured one.
+    ///   The field keeps its negative values, and truncation removes them later.
+    /// - **From the minimum** (Frankel). Subtract the field's own minimum, so the
+    ///   least-slipping subfault becomes exactly zero and nothing is negative, then
+    ///   normalise to unit mean. The spread is then whatever the spectrum gave and
+    ///   the configured coefficient of variation is **ignored** — genslip says this
+    ///   by assigning `slip_sigma = -1.0`, which its one `slip_sigma > 0` guard then
+    ///   skips on.
+    ///
+    /// The two are not small variations on each other. Both are affine in the
+    /// generated field, so they produce the same *pattern*, but a stretch and a shift
+    /// give different spreads — and it is the spread that survives truncation to
+    /// become a different rupture. Getting this wrong left slip correlated at 0.993
+    /// with the original and 63% too variable. `DEFECTS.md` 18.
+    ///
+    /// (orig. `genslip_v5.6.2.c:1809-1825`)
+    #[must_use]
+    pub const fn normalises_from_its_minimum(self) -> bool {
+        matches!(self, Self::Frankel)
+    }
+
     /// Spectral amplitude at normalised squared wavenumber `a`, scaled by `scale`.
     ///
     /// `a` is `(kx * clen_strike)^2 + (ky * clen_dip)^2`: wavenumber measured in

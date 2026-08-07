@@ -47,12 +47,18 @@ summing to a plausible field are indistinguishable in it. Zeroing `tsfac_main` r
 the second exactly, which is how `DEFECTS.md` 17 was localised: the whole onset
 divergence turned out to be in the travel times and none of it in the perturbation.
 
-The twin stays because `frankel_corners` is the case whose slip still diverges, and
-its perturbation is drawn correlated with slip. Without the twin, a regression in the
-solver and the known Frankel slip divergence would show up in the same number. It is
-built with `dataclasses.replace` from the case it twins, so "identical but for one
-parameter" is a fact rather than an intention, and `test_corpus.py` checks the stored
-argument lists differ in `tsfac_main` and nothing else.
+It then did the job a second time. `frankel_corners`' onset was still off after 17 was
+fixed, and the twin — same fault, no perturbation, onset already exact — said that the
+remaining error was arriving *through* the perturbation's correlation with slip rather
+than from the solver. That is what made `DEFECTS.md` 18 a slip problem before anything
+was known about it.
+
+Both are fixed and every case now agrees, so the twin's job from here is to keep the
+two terms separable: a future regression in the eikonal solve and one in the slip
+field would otherwise show up in the same number. It is built with
+`dataclasses.replace` from the case it twins, so "identical but for one parameter" is a
+fact rather than an intention, and `test_corpus.py` checks the stored argument lists
+differ in `tsfac_main` and nothing else.
 
 `subduction`'s magnitude and area agree with genslip's own median relation. An earlier
 draft asked for M8.1 on a 72x48 km fault — four magnitude units of slip on a small

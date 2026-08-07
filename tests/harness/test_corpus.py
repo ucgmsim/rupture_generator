@@ -3,25 +3,27 @@
 This is what the mapping was built for, and it needs no genslip binary: the reference
 is `tests/corpus/`, recorded from the real v5.6.2 and committed.
 
-# Two kinds of claim, kept apart on purpose
+# Everything the corpus checks now agrees
 
-**Asserted** are the things that must agree: slip, and the point ordering. Slip is the
-whole stochastic pipeline -- draws, spectrum, taper, moment scaling -- so agreement to
-the SRF's text precision is a strong statement about all of it.
+Slip, rake, onset and the slip-rate pulses all match to the SRF's own text precision,
+on all six cases. That is the whole stochastic pipeline -- draws, spectrum, taper,
+moment scaling, the eikonal solve and every perturbation drawn against them -- in four
+numbers.
 
-**Recorded** are the things that do not yet agree. Each carries the measured number
-and an envelope around it, so it is a regression pin on a known-wrong quantity rather
-than a silence. `README.md` says to record the divergence rather than assert it away;
-an envelope is how a recorded divergence still fails when it *changes*.
+One divergence is still recorded rather than asserted, and it is not the port's:
+`TestTheGeometryDivergence` measures genslip's flat-earth error in the plane header,
+which it recomputes from a length, a width and a dip rather than reading the positions
+it was given.
 
-The envelopes are deliberately loose enough not to be flaky and tight enough that a
-real move breaks them. They are not tolerances anyone argued for -- they are fences
-around measurements.
+A recorded divergence carries the measured number and an envelope around it, so it
+fails when the divergence *changes*. The envelopes are not tolerances anyone argued
+for -- they are fences around measurements.
 
 # What this found
 
-Four defects, all of the same kind: a correct function called wrongly, or not guarded
-the way the original guards it. `DEFECTS.md` 14-17.
+Five defects, all of the same kind: a correct function called wrongly, not guarded the
+way the original guards it, or a stage of the original that was never transcribed at
+all. `DEFECTS.md` 14-18.
 
 1. **`rake_sigma` reached nothing.** The slip field's coefficient of variation was
    handed to `rake_field` where the rake field's spread in *degrees* belongs.
@@ -33,18 +35,35 @@ the way the original guards it. `DEFECTS.md` 14-17.
    faithfully did not reproduce it.
 4. **The hypocentre was a cell off in both directions.** genslip's `ixs`/`iys` count
    from one, because their only consumer is a Fortran routine. See `TestOnsetAgrees`.
+5. **A Frankel field was stretched where it should have been shifted.** See
+   `TestTheFrankelSpectrumIsShiftedNotStretched`.
 
 None could have been caught by the per-function parity tests. Each of `rake_field`,
 the blend and `oliu_p` is correct and is tested against the C; the defects are in the
 **calls**, and a suite that checks one function at a time cannot see a caller handing
 the right function the wrong argument. That is the seam an end-to-end corpus closes.
 
-The fourth is worse than that and worth its own sentence: the per-function test had a
-reference side that re-implemented the C's index arithmetic, and re-implemented it the
-same wrong way. It agreed with the port exactly. A reference has to be the original's
-*output*, not a second reading of its source.
+The last two are worse than that, and they are the same failure twice. Both had a test
+whose *reference side re-implemented the original's logic* -- `main`'s index arithmetic
+in one case, `main`'s slip block in the other -- and both re-implementations made
+exactly the mistake the port made, so the two agreed bit for bit while both were wrong.
+A reference has to be the original's **output**. A second reading of its source by the
+same reader is not independent of the first.
 
-What remains is slip under `kmodel=Frankel` -- see `TestTheRecordedDivergences`.
+# What every one of them looked like from outside
+
+Plausible. Not one produced a rupture that was obviously broken:
+
+| defect | how it presented |
+| --- | --- |
+| 14 | a rake field with the right shape and 1/20th the spread |
+| 16 | a three-sample spike on subfaults that do not slip |
+| 17 | onset correlated 0.92-0.997, smooth, starting at zero, up to a second early |
+| 18 | slip correlated 0.993, the right mean, 63% too variable |
+
+Each is the kind of thing an eyeball, a plot, or a summary statistic passes. The
+numbers that caught them were ratios and worst-case differences against a stored
+reference, which is the argument for having one.
 """
 
 import numpy as np
@@ -54,18 +73,6 @@ from tests.harness import corpus
 from tests.harness.genslip_config import KModel
 
 CASES = [case.name for case in corpus.CASES]
-
-# Slip under `kmodel=Frankel` diverges -- see `TestTheRecordedDivergences` -- and so
-# does everything computed from it: the pulses it scales, and the timing perturbation
-# it is drawn correlated with. Selected by the spectrum rather than by name, because
-# that is the actual reason, and because the twin shares it.
-SLIP_AGREES = [
-    case.name for case in corpus.CASES if case.parameters().kmodel is not KModel.FRANKEL
-]
-
-# Onset is a travel time plus a slip-correlated perturbation. Only the perturbed
-# Frankel case has the second term diverging, so its twin belongs here.
-ONSET_AGREES = [name for name in CASES if name != "frankel_corners"]
 
 
 @pytest.fixture(scope="module")
@@ -237,7 +244,7 @@ class TestThePointOrdering:
 class TestSlipAgrees:
     """The whole stochastic pipeline, in one field."""
 
-    @pytest.mark.parametrize("name", SLIP_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_slip_matches_to_the_format_s_precision(
         self, name: str, compared: dict
     ) -> None:
@@ -248,7 +255,7 @@ class TestSlipAgrees:
         result = compared[name]
         assert relative(result["slip_cm"], result["points"].slip_cm) < 1e-5
 
-    @pytest.mark.parametrize("name", SLIP_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_slip_is_the_same_field_and_not_merely_the_same_size(
         self, name: str, compared: dict
     ) -> None:
@@ -305,7 +312,7 @@ class TestTheSlipRatePulsesAgree:
     lengths themselves were checked.
     """
 
-    @pytest.mark.parametrize("name", SLIP_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_the_pulse_lengths_are_the_reference_s(
         self, name: str, compared: dict
     ) -> None:
@@ -314,7 +321,7 @@ class TestTheSlipRatePulsesAgree:
         exact = float(np.mean(result["pulse_length"] == result["reference_length"]))
         assert exact > 0.998, f"{name}: {exact:.4%} of pulse lengths exact"
 
-    @pytest.mark.parametrize("name", SLIP_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_a_subfault_that_does_not_slip_emits_no_pulse(
         self, name: str, compared: dict
     ) -> None:
@@ -330,7 +337,7 @@ class TestTheSlipRatePulsesAgree:
             result["pulse_length"][silent], result["reference_length"][silent]
         )
 
-    @pytest.mark.parametrize("name", SLIP_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_the_samples_agree_where_the_lengths_do(
         self, name: str, compared: dict
     ) -> None:
@@ -357,7 +364,7 @@ class TestOnsetAgrees:
     surround is read. Only the whole rupture, against genslip's own bytes, could.
     """
 
-    @pytest.mark.parametrize("name", ONSET_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_onset_matches_to_the_format_s_precision(
         self, name: str, compared: dict
     ) -> None:
@@ -368,7 +375,7 @@ class TestOnsetAgrees:
         worst = float(np.abs(result["onset_s"] - result["points"].onset_s).max())
         assert worst < 1e-4, f"{name}: worst onset difference {worst} s"
 
-    @pytest.mark.parametrize("name", ONSET_AGREES)
+    @pytest.mark.parametrize("name", CASES)
     def test_onset_is_the_same_field_and_not_merely_the_same_spread(
         self, name: str, compared: dict
     ) -> None:
@@ -394,48 +401,65 @@ class TestOnsetAgrees:
         assert worst < 1e-4, f"pure travel times differ by {worst} s"
 
 
-class TestTheRecordedDivergences:
-    """What does not agree yet, measured rather than tolerated.
+class TestTheFrankelSpectrumIsShiftedNotStretched:
+    """`DEFECTS.md` 18, fixed. The last field that did not agree.
 
-    Each number below was recorded from the corpus as it stands. They are fences
-    around measurements: a test here fails when the divergence *changes*, which is
-    what makes it a record rather than a silence.
+    genslip turns a generated field into slip in one of two ways, and which one is a
+    property of the spectrum. Everything but Frankel is *stretched* about its mean
+    until the coefficient of variation is the configured 0.75. Frankel is *shifted*
+    to its own minimum instead, and the configured value is then ignored -- the
+    original says so by assigning `slip_sigma = -1.0` inside the branch
+    (`genslip_v5.6.2.c:1809-1825`).
+
+    The port had no branch at all, so a Frankel field was stretched like the rest. It
+    stayed correlated at 0.993 with the original, because both operations are affine
+    in the same generated field, while being **63% too variable** -- and the spread is
+    what survives truncation and moment scaling to become a different rupture.
     """
 
-    def test_frankel_onset_diverges_only_by_way_of_its_slip(
+    def test_a_frankel_field_has_no_negative_slip_before_truncation(
         self, compared: dict
     ) -> None:
-        """The last of the onset field, and it is not an onset problem.
+        # The physical content of the shift, and the reason it is not merely a
+        # different normalisation: subtracting the minimum makes the field
+        # non-negative by construction, so the truncation that follows has nothing to
+        # do. A stretched field reaches truncation with negative subfaults, and
+        # clipping them is what stopped the two being related by an affine map.
+        for name in ("frankel_corners", "frankel_no_perturbation"):
+            assert (compared[name]["slip_cm"] >= 0.0).all()
 
-        The rupture-time perturbation is drawn correlated with slip (`tsfac1_scor`
-        = 0.8), so the case whose slip diverges has an onset that diverges with it.
-        The twin pins the other half: with the perturbation switched off, the same
-        fault's onset is exact. So this number is downstream of the Frankel slip
-        divergence below, and fixing that fixes this.
+    def test_the_spread_is_the_spectrum_s_own_and_not_the_configured_one(
+        self, compared: dict
+    ) -> None:
+        """The measurement that identified it, kept as the check.
+
+        Slip agreeing to 1.1e-06 already covers this. It is asserted separately
+        because a *ratio of spreads* is what made the defect legible when the fields
+        themselves just looked "nearly right": the means matched to 2%, the pattern
+        correlated at 0.993, and only the spread said 1.63.
         """
-        perturbed = compared["frankel_corners"]
-        spread = float(
-            np.std(perturbed["onset_s"] - perturbed["points"].onset_s)
-        )
-        assert 0.02 < spread < 0.08, f"frankel onset spread {spread} s"
+        for name in ("frankel_corners", "frankel_no_perturbation"):
+            result = compared[name]
+            mine, theirs = result["slip_cm"], result["points"].slip_cm
+            assert float(np.std(mine) / np.std(theirs)) == pytest.approx(1.0, abs=1e-4)
 
-        # And it really is the perturbation: the same fault without one is exact.
-        pure = compared["frankel_no_perturbation"]
-        assert np.abs(pure["onset_s"] - pure["points"].onset_s).max() < 1e-4
-
-    def test_frankel_slip_does_not_agree_and_the_falloff_is_not_why(
+    def test_and_the_stretched_spectra_still_are_stretched(
         self, compared: dict
     ) -> None:
-        # The one case where slip diverges: 0.39 relative, correlation 0.993. Not the
-        # exponent -- `kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610` and the
-        # port hardwires the same. Not the corners either, now that `DEFECTS.md` 11
-        # is fixed and Frankel takes Mai's relation with kx_corner/ky_corner at their
-        # 2.50/1.50 defaults. Unexplained, and recorded so it stays visible.
-        result = compared["frankel_corners"]
-        divergence = relative(result["slip_cm"], result["points"].slip_cm)
-        assert 0.2 < divergence < 0.6, f"frankel slip divergence {divergence}"
-        correlation = np.corrcoef(result["slip_cm"], result["points"].slip_cm)[0, 1]
-        assert correlation > 0.98, "mostly the same field, which is the puzzle"
+        # The shift must be Frankel's alone. If it ever reached the other spectra
+        # their slip would move, so this is really a statement that the branch is on
+        # the right side of its condition -- checked here rather than left to the
+        # slip comparison, which would report it as five unrelated failures.
+        for name in CASES:
+            if corpus.BY_NAME[name].parameters().kmodel is KModel.FRANKEL:
+                continue
+            result = compared[name]
+            assert (result["slip_cm"] == 0.0).any(), (
+                f"{name} has no zero subfault; the taper should give it one"
+            )
+            assert float(np.std(result["slip_cm"])) == pytest.approx(
+                float(np.std(result["points"].slip_cm)), rel=1e-4
+            )
 
 
 class TestTheGeometryDivergence:

@@ -24,19 +24,19 @@ rupture = generate_rupture(
 )
 ```
 
-**Status: Stage 1 complete for the finite-fault path, and now checked end to end.**
+**Status: Stage 1 complete for the finite-fault path, and checked end to end.**
 Every kernel is bit-identical to the C per function, verified against the real library
-linked through `genslip-oracle`. Against a stored corpus of six whole ruptures, slip,
-rake, onset and the slip-rate pulses all agree to the SRF's own precision. **One
-divergence is left**: slip under `kmodel=Frankel`. The point-source path
-(`generic_slip2srf`) is not started.
+linked through `genslip-oracle`. Against a stored corpus of six whole ruptures, **slip,
+rake, onset and the slip-rate pulses all agree to the SRF's own precision** — nothing
+the corpus checks diverges. The point-source path (`generic_slip2srf`) is not started.
 
-The end-to-end check earned its keep immediately: it found four defects the
-per-function suite structurally could not (`DEFECTS.md` 14-17), each a correct,
-C-verified function called wrongly. The fourth is the one worth reading — the
-per-function test's *reference* side re-implemented genslip's index arithmetic and
-made the same mistake the port did, so the two agreed exactly while both were a cell
-off from genslip.
+The end-to-end check earned its keep immediately: it found five defects the
+per-function suite structurally could not (`DEFECTS.md` 14-18). The last two are the
+ones worth reading, because they are the same mistake twice. In each, the per-function
+test's *reference* side re-implemented a piece of `main` — the hypocentre index
+arithmetic in one case, the slip normalisation block in the other — and re-implemented
+it exactly as wrongly as the port did. Both sides agreed bit for bit while both were
+wrong. **A second reading of the source by the same reader is not a reference.**
 
 ## Layout
 
@@ -105,8 +105,8 @@ Two things that are not obvious:
   `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
   `-ffp-contract=off` do take, which are the two that decide float results.
 
-Parity is checked against exactly this: 137 Rust tests pass with contraction off,
-and 245 Python tests alongside them.
+Parity is checked against exactly this: 138 Rust tests pass with contraction off,
+and 258 Python tests alongside them.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -130,7 +130,7 @@ needed to *rebuild* the corpus.
 | | |
 | --- | --- |
 | `PORTING_RULES.md` | How the port is written. **Read rule 1 and rule 2 before touching a kernel.** Expires at the Stage 1/2 boundary |
-| `DEFECTS.md` | Seventeen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, four in its call sites. The last four were found by the corpus and are the argument for having one |
+| `DEFECTS.md` | Eighteen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, five in its call sites. The last five were found by the corpus and are the argument for having one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
 
@@ -157,9 +157,10 @@ Two habits this list assumes, both learned expensively:
 
 ### Where this was left
 
-The Stage 0 fixture corpus is **done**, and so is rupture onset — the last field that
-did not agree. `tests/harness/mapping.py` maps every `getpar` name onto the port's five
-spec groups, `tests/corpus/` holds six reference ruptures, and
+**Stage 1 is done for the finite-fault path.** The Stage 0 fixture corpus, rupture
+onset and the Frankel spectrum all closed in the last three commits, and nothing the
+corpus checks diverges any more. `tests/harness/mapping.py` maps every `getpar` name
+onto the port's five spec groups, `tests/corpus/` holds six reference ruptures, and
 `tests/harness/test_corpus.py` compares the port against them without needing a genslip
 binary.
 
@@ -172,21 +173,18 @@ export GENSLIP_BINARY=...             # only needed to REBUILD the corpus
 ./gate.sh
 ```
 
-What the comparison says today:
+What the comparison says today, on all six cases:
 
 | | |
 | --- | --- |
-| slip | 2.6e-06 relative, correlation 1.0000000 — except under `kmodel=Frankel` |
-| rake | **100% of subfaults exact**, worst deviation 0.4999 deg (the SRF stores whole degrees, so the format is the floor) |
-| onset | worst difference **5.3e-05 s** against a `%10.4f` field — half a quantum, the format's floor again. Except on `frankel_corners`, and there only by way of its slip |
+| slip | **2.6e-06 relative**, correlation 1.0000000 |
+| rake | **100% of subfaults exact** — the SRF stores whole degrees, so the format is the floor |
+| onset | **5.3e-05 s** worst, against a `%10.4f` field — half a quantum, the floor again |
 | slip-rate pulse lengths | **100%** exact on three cases, 99.83% on `subduction` |
 | slip-rate samples | 4.2e-05 relative where the lengths match |
 | plane centre | genslip's flat-earth error, 43 m crustal to 1.9 km subduction. Not ours: it recomputes what the port is given |
 
-Everything the corpus checks now agrees to the SRF's own precision except slip under
-`kmodel=Frankel`, and the one field that trails it.
-
-**Three traps that cost real time. Do not re-learn them.**
+**Four traps that cost real time. Do not re-learn them.**
 
 - **`nt1` is not `rise_time / dt`.** It is what the slip-rate generator *returned*.
   Comparing the port's rise time against `nt1 * dt` compares two different quantities
@@ -203,33 +201,39 @@ Everything the corpus checks now agrees to the SRF's own precision except slip u
   is Fortran. Reading them as 0-based costs a whole cell in each direction, and the
   rupture that results is *plausible*: smooth, starting at zero, correlated 0.99+ with
   the right one. Nothing short of a whole-rupture comparison saw it. `DEFECTS.md` 17.
+- **A reference side that re-implements the original is not a reference.** Both 17 and
+  18 hid inside a parity test whose expected value was a second transcription of
+  `main`, written by the same reader who wrote the port — and which therefore made the
+  same mistake. They agreed bit for bit and were both wrong. Where a test cannot call
+  the C directly, assert something about the **output** that no shared misreading can
+  satisfy, and keep the transcription in the original's own variables so the
+  conversion is visible at one seam.
 
-1. **Slip under `kmodel=Frankel`.** 0.39 relative on `frankel_corners`, correlation
-   0.993 — the only case where slip diverges at all. Not the falloff exponent
-   (`kfilt_gaus2` hardwires `beta2 = 2.0` at `slip.c:1610`, and so does the port) and
-   not the corner relation (`DEFECTS.md` 11, fixed). Unexplained.
+### The technique that closed the last two
 
-   It carries onset with it: the rupture-time perturbation is drawn correlated with
-   slip at `tsfac1_scor = 0.8`, so `frankel_corners` is also the one case whose onset
-   is not exact, by a spread of 0.041 s. That is a symptom rather than a second
-   problem, and the `frankel_no_perturbation` twin is what proves it — the same fault
-   with `tsfac_main = 0`, whose onset *is* exact.
+Both were found by **splitting a divergence into independent parts and removing one
+exactly**, rather than by reading code until something looked wrong.
 
-   **Reuse the technique that closed onset.** Onset was `travel_time +
-   tsfac_main*perturbation`: two unknowns summing to something plausible, and no
-   diagnostic on the sum could separate them. Setting `tsfac_main = 0` on *both sides*
-   removed one term exactly — zero is honoured rather than read as "unset", the
-   sentinel being `-1.0e+15` against a `> -1.0e+10` guard — and left the other alone
-   to be compared against its counterpart. It turned a search over the whole timing
-   path into a search over one function's arguments. Look for the same seam here
-   before reasoning about the whole slip pipeline at once.
+Onset is `travel_time + tsfac_main*perturbation`. Setting `tsfac_main = 0` on *both*
+sides — zero is honoured, the sentinel being `-1.0e+15` against a `> -1.0e+10` guard —
+deleted the second term and left travel times facing travel times. That showed the
+perturbations already agreed bit for bit, and turned a search over the whole timing
+path into a search over one function's arguments.
 
-2. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
-3. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
+Frankel slip fell to a cheaper version: **look at mean, spread and correlation
+separately before looking at the field.** "0.39 relative" says only "wrong somewhere".
+Mean 0.98, correlation 0.993, spread **1.63** says one affine transform where another
+belongs — and the slip block has exactly two.
+
+Reach for both again in Stage 2 and Stage 3, where the gate can no longer be
+bit-parity and every divergence will need decomposing before it can be argued about.
+
+1. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched).
+2. **Stage 2: the scientific suite that replaces bit-parity as the gate.** Designed in
    the plan, not started. **Nothing in Stage 3 may land before this exists**, because
    each of those swaps changes the last bits on purpose and needs something other than
    bit-parity to adjudicate it. `PORTING_RULES.md` expires at this boundary.
-4. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+3. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
    divergence **7.06e-8**, recorded before the swap), a fast-marching eikonal solver
    for the Fortran, `Wgs84Geodesic` for the flat-earth approximation (measured
    disagreement **944 m at 100 km**), and the eleven `SIMPLIFY` sites. Both those

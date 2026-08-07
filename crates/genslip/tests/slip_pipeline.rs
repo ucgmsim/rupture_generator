@@ -64,6 +64,16 @@ const SPACING: SubfaultSpacing = SubfaultSpacing {
     dip_km: 1.5,
 };
 
+/// Every spectral shape `kmodel` can select.
+const SHAPES: [Spectrum2D; 6] = [
+    Spectrum2D::Somerville,
+    Spectrum2D::Mai,
+    Spectrum2D::Frankel,
+    Spectrum2D::MaiSomerville,
+    Spectrum2D::Suzuki,
+    Spectrum2D::InputCorners,
+];
+
 fn spec(coefficient_of_variation: f32, phase_shift: (f64, f64)) -> SpectrumSpec {
     SpectrumSpec {
         shape: Spectrum2D::Mai,
@@ -168,6 +178,27 @@ fn reference(
         total = -total;
     }
 
+    // :1809 -- `if(kmodel == FRANKEL_FLAG)`. Shift to the field's own minimum, rebuild
+    // the sum from the shifted values, and force `slip_sigma` negative so the rescale
+    // below is skipped. This stage was missing from *both* sides of this test for as
+    // long as it existed, which is why it passed while the port was 63% too variable:
+    // see `DEFECTS.md` 18, and 17 for the same shape of mistake.
+    let mut variation_target = spectrum_spec.coefficient_of_variation;
+    if spectrum_spec.shape == Spectrum2D::Frankel {
+        variation_target = -1.0;
+        let mut minimum = 1.0e+20_f32;
+        for value in &slip {
+            if *value < minimum {
+                minimum = *value;
+            }
+        }
+        total = 0.0;
+        for value in &mut slip {
+            *value -= minimum;
+            total += *value;
+        }
+    }
+
     // :1829 -- unit mean.
     let subfault_count = (extents.fault_strike * extents.fault_dip) as f32;
     let mean = total / subfault_count;
@@ -176,13 +207,13 @@ fn reference(
     }
 
     // :1838 -- the target coefficient of variation.
-    if spectrum_spec.coefficient_of_variation > 0.0 {
+    if variation_target > 0.0 {
         let mut sum_of_squares = 0.0_f32;
         for value in &slip {
             sum_of_squares += (*value - 1.0) * (*value - 1.0);
         }
         let variation = f64::from(sum_of_squares / subfault_count).sqrt() as f32;
-        let factor = spectrum_spec.coefficient_of_variation / variation;
+        let factor = variation_target / variation;
         for value in &mut slip {
             *value = factor * (*value - 1.0) + 1.0;
         }
@@ -236,8 +267,10 @@ fn the_pipeline_matches_with_a_phase_shift() {
 
 #[test]
 fn the_pipeline_matches_without_a_variation_target() {
-    // A non-positive target leaves the field's own variation alone, which is the
-    // path the Frankel spectrum forces.
+    // A non-positive target leaves the field's own variation alone. Frankel reaches
+    // this path too, by forcing the target negative -- but it also shifts the field
+    // first, so the two are not the same test. `a_frankel_field_is_shifted_to_zero`
+    // is what pins the shift.
     for extents in CASES {
         check(
             extents,
@@ -249,16 +282,55 @@ fn the_pipeline_matches_without_a_variation_target() {
 }
 
 #[test]
+fn a_frankel_field_is_shifted_to_zero_and_keeps_the_spectrum_s_own_spread() {
+    // The claim the parity check above cannot make, because both of its sides would
+    // have to be wrong in the same way to hide it -- and for `DEFECTS.md` 18 they
+    // were. Stated here about the *output* instead: a shifted field has a subfault at
+    // exactly zero, and its spread is whatever the spectrum gave rather than the
+    // configured 0.75.
+    let mut spectrum_spec = spec(0.75, (0.0, 0.0));
+    spectrum_spec.shape = Spectrum2D::Frankel;
+
+    let mut source = GenslipLcg::new(909);
+    let mut fft = FftwFft::new();
+    let field = generate_normalised(&mut source, &mut fft, CASES[2], SPACING, spectrum_spec).field;
+
+    let values = field.as_slice();
+    let minimum = values.iter().copied().fold(f32::INFINITY, f32::min);
+    // Exactly zero rather than nearly: `x - x` is `+0.0` for any finite `x`, and
+    // dividing by the positive mean that follows leaves it there.
+    assert_eq!(
+        minimum.to_bits(),
+        0.0_f32.to_bits(),
+        "the least-slipping subfault must be exactly zero, got {minimum}"
+    );
+
+    #[expect(clippy::cast_precision_loss, reason = "small test grids")]
+    let count = values.len() as f32;
+    let variation = (values.iter().map(|v| (v - 1.0) * (v - 1.0)).sum::<f32>() / count).sqrt();
+    assert!(
+        (variation - 0.75).abs() > 0.05,
+        "the configured 0.75 must be ignored, got {variation}"
+    );
+
+    // And the same spectrum with the shift removed does honour it, so the assertion
+    // above is about Frankel rather than about this fault.
+    spectrum_spec.shape = Spectrum2D::Somerville;
+    let mut source = GenslipLcg::new(909);
+    let other = generate_normalised(&mut source, &mut fft, CASES[2], SPACING, spectrum_spec).field;
+    let stretched = (other
+        .as_slice()
+        .iter()
+        .map(|v| (v - 1.0) * (v - 1.0))
+        .sum::<f32>()
+        / count)
+        .sqrt();
+    assert!((stretched - 0.75).abs() < 1e-4, "got {stretched}");
+}
+
+#[test]
 fn every_spectral_shape_matches() {
-    let shapes = [
-        Spectrum2D::Somerville,
-        Spectrum2D::Mai,
-        Spectrum2D::Frankel,
-        Spectrum2D::MaiSomerville,
-        Spectrum2D::Suzuki,
-        Spectrum2D::InputCorners,
-    ];
-    for shape in shapes {
+    for shape in SHAPES {
         let mut spectrum_spec = spec(0.75, (0.0, 0.0));
         spectrum_spec.shape = shape;
         check(CASES[2], spectrum_spec, 909, &format!("{shape:?}"));
@@ -274,6 +346,7 @@ proptest! {
         extra_strike in 0usize..3,
         extra_dip in 0usize..3,
         coefficient_of_variation in 0.05f32..2.0,
+        shape in 0usize..SHAPES.len(),
     ) {
         // The padded grid is the fault rounded up to even, plus a little.
         let padded_strike = 2 * (fault_strike.div_ceil(2) + extra_strike);
@@ -281,7 +354,11 @@ proptest! {
         let extents = GridExtents {
             fault_strike, fault_dip, padded_strike, padded_dip,
         };
-        let spectrum_spec = spec(coefficient_of_variation, (0.0, 0.0));
+        // The shape varies here as well as the grid, so the Frankel branch meets a
+        // 1x1 fault and a degenerate padded grid rather than only the fixed case
+        // above. It was the sequence, not the arithmetic, that was wrong.
+        let mut spectrum_spec = spec(coefficient_of_variation, (0.0, 0.0));
+        spectrum_spec.shape = SHAPES[shape];
 
         let expected = reference(extents, SPACING, spectrum_spec, i64::from(seed));
         let mut source = GenslipLcg::new(i64::from(seed));

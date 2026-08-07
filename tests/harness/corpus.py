@@ -49,9 +49,14 @@ the perturbation term exactly -- see `_perturbation_switched_off` -- so the twin
 onset is the eikonal solve alone. That is what closed `DEFECTS.md` 17: the whole onset
 divergence was in the travel times, and none of it in the perturbation.
 
-Frankel is the one worth twinning because it is the case whose slip still diverges. Its
-perturbation is drawn correlated with slip, so its onset diverges too, and without the
-twin there is no way to tell that from a travel-time regression.
+It then found `DEFECTS.md` 18. After 17 was fixed, `frankel_corners`' onset was still
+wrong while the twin's was exact -- which said the error was reaching onset *through*
+the perturbation's correlation with slip, and so was a slip problem, before anything
+was known about the slip problem itself.
+
+Both are fixed and every case agrees now. The twin stays to keep the two terms
+separable: a regression in the eikonal solve and one in the slip field would otherwise
+land in the same number.
 
 # The GSF's order is not the SRF's, and only a multi-segment case shows it
 
@@ -362,8 +367,8 @@ CASES: tuple[Case, ...] = (
         _FRANKEL,
         name="frankel_no_perturbation",
         why="frankel_corners with tsfac_main=0, so onset is the eikonal solve and "
-        "nothing else -- the only way to check travel times on the one case whose "
-        "slip, and therefore whose slip-correlated timing perturbation, diverges",
+        "nothing else -- it keeps a travel-time error and a slip error from landing "
+        "in the same number, which is how DEFECTS.md 17 and 18 were each localised",
         overrides=_FRANKEL.overrides
         | dict(rupture_time_perturbation=_perturbation_switched_off()),
         twin_of="frankel_corners",

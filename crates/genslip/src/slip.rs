@@ -187,6 +187,25 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
         total = -total;
     }
 
+    // Frankel is shifted to its own minimum rather than stretched about its mean --
+    // see `Spectrum2D::normalises_from_its_minimum`, which explains why that is a
+    // property of the spectrum. The sum is rebuilt from the shifted values in the
+    // same order it was accumulated, because it is a single-precision fold and the
+    // order is part of the answer.
+    let from_minimum = spectrum_spec.shape.normalises_from_its_minimum();
+    if from_minimum {
+        let minimum = slip
+            .as_slice()
+            .iter()
+            .copied()
+            .fold(f32::INFINITY, f32::min);
+        total = 0.0;
+        for value in slip.as_mut_slice() {
+            *value -= minimum;
+            total += *value;
+        }
+    }
+
     #[expect(
         clippy::cast_precision_loss,
         reason = "subfault counts are far below 2^24"
@@ -197,7 +216,15 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
         *value /= mean;
     }
 
-    rescale_variation(&mut slip, spectrum_spec.coefficient_of_variation);
+    // The original spells this as `slip_sigma = -1.0` inside the Frankel branch and
+    // one `if(slip_sigma > 0.0)` guard afterwards, so a shifted field falls through
+    // the rescale rather than being excluded from it by name.
+    let variation_target = if from_minimum {
+        -1.0
+    } else {
+        spectrum_spec.coefficient_of_variation
+    };
+    rescale_variation(&mut slip, variation_target);
     NormalisedSlip {
         field: slip,
         padded,
