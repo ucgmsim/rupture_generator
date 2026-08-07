@@ -494,3 +494,44 @@ fn phase_factor(argument: f64) -> Complex32 {
     let factor = Complex32::new(argument.cos() as f32, -argument.sin() as f32);
     factor
 }
+
+/// Blend a field with a reference at a target correlation, in the wavenumber domain.
+///
+/// `target` becomes `rho * reference + sqrt(1 - rho^2) * target`. Because both
+/// inputs have unit variance by construction and the weights are `cos`/`sin` of the
+/// same angle, the result does too — so this sets the correlation without disturbing
+/// the amplitude, which is what makes it composable with the rescaling that follows.
+///
+/// Done in the wavenumber domain rather than on the fault because the two fields
+/// share a spectrum there: blending after the inverse transform would correlate the
+/// *values* while leaving the spatial structure of each untouched.
+///
+/// This is how slip, rupture time and rise time become statistically linked — the
+/// mechanism behind `tsfac1_scor` and `rtime1_scor`.
+///
+/// # Panics
+///
+/// If the two grids have different extents.
+///
+/// (orig. `genslip_v5.6.2.c:2116-2121`)
+pub fn correlate_with(target: &mut Spectrum, reference: &Spectrum, correlation: f32) {
+    assert_eq!(
+        (target.strike_count(), target.dip_count()),
+        (reference.strike_count(), reference.dip_count()),
+        "cannot correlate grids of different extents"
+    );
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C stores the root into a float"
+    )]
+    let independent = (1.0 - f64::from(correlation * correlation)).sqrt() as f32;
+
+    for (value, other) in target
+        .as_mut_slice()
+        .iter_mut()
+        .zip(reference.as_slice().iter())
+    {
+        *value = *other * correlation + *value * independent;
+    }
+}

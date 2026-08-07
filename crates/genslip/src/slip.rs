@@ -33,7 +33,8 @@ use num_complex::Complex32;
 
 use crate::fft::{self, Direction, Fft};
 use crate::field::{
-    CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep, correlated_field, shift_phase,
+    CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep, correlate_with,
+    correlated_field, shift_phase,
 };
 use crate::grid::Spectrum;
 use crate::rng::DrawSource;
@@ -256,5 +257,243 @@ pub fn apply_water_level(slip: &mut SlipField, mean: f32, fraction: f32) {
         if *value < floor {
             *value = floor;
         }
+    }
+}
+
+/// How tightly a perturbation tracks slip, and how far it spreads.
+///
+/// The two together are what "a perturbation" means here, so they travel together.
+#[derive(Clone, Copy, Debug)]
+pub struct PerturbationSpec {
+    /// Correlation with the slip spectrum, 0 (independent) to 1 (a scaled copy).
+    pub correlation: f32,
+    /// Standard deviation of the resulting zero-mean field.
+    ///
+    /// Negative is treated as zero, which is how genslip disables a perturbation
+    /// without removing it from the draw sequence.
+    pub sigma: f32,
+}
+
+/// Rebuild the wavenumber-domain slip field that the perturbations correlate against.
+///
+/// By this point the slip field on the fault has been truncated, tapered and had its
+/// mean and variation fixed — it is no longer the field the generator produced. The
+/// perturbations must correlate against *that* field rather than the raw one, so it
+/// goes back onto a padded grid and is transformed again.
+///
+/// Two things about this are worth stating because neither is obvious:
+///
+/// **The padding is zero-filled first, and that changes the statistics.** The mean
+/// and standard deviation are then measured over the *whole padded grid*, zeros
+/// included, so they are not the fault's own. The affine map that follows uses them
+/// anyway.
+///
+/// **The map restores the padded field's original mean and deviation**, measured
+/// before any of the fault-domain processing. So the padding does not stay zero: it
+/// becomes the original mean. That is what keeps the correlated fields on the same
+/// scale as the slip field they are blended with.
+///
+/// (orig. `genslip_v5.6.2.c:1982-2008`)
+#[must_use]
+pub fn reload_for_correlation<F: Fft>(
+    slip: &SlipField,
+    fft: &mut F,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+    original: crate::stats::MeanAndSigma,
+) -> Spectrum {
+    let mut spectrum = Spectrum::zeros(extents.padded_strike, extents.padded_dip);
+    for dip in 0..slip.dip_count() {
+        for strike in 0..slip.strike_count() {
+            spectrum[(strike, dip)] = Complex32::new(slip[(strike, dip)], 0.0);
+        }
+    }
+
+    let padded = crate::stats::mean_and_sigma(&spectrum);
+    let factor = original.sigma / padded.sigma;
+    for value in spectrum.as_mut_slice() {
+        *value = Complex32::new(factor * (value.re - padded.mean) + original.mean, value.im);
+    }
+
+    fft::transform_2d(&mut spectrum, fft, Direction::Forward);
+    fft::scale(
+        &mut spectrum,
+        fft::spacing_product(spacing.strike_km, spacing.dip_km),
+    );
+    spectrum
+}
+
+/// A zero-mean field correlated with the slip distribution.
+///
+/// Used for the rupture-time and rise-time perturbations, which are meant to vary
+/// *with* slip — patches that slip more rupture sooner and for longer — without
+/// being a deterministic function of it. `correlation` sets how tightly; `sigma`
+/// sets the resulting spread.
+///
+/// Returns a field with mean zero, so the caller adds it to whatever it perturbs.
+///
+/// (orig. `genslip_v5.6.2.c:2100-2166`)
+#[must_use]
+pub fn correlated_perturbation<S: DrawSource, F: Fft>(
+    source: &mut S,
+    fft: &mut F,
+    reference: &Spectrum,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+    spectrum_spec: SpectrumSpec,
+    perturbation: PerturbationSpec,
+) -> SlipField {
+    let mut spectrum = unit_spectrum(fft, extents, spacing);
+    let step = extents.wavenumber_step(spacing);
+
+    let amplitude_scale = spectrum[(0, 0)].norm();
+    correlated_field(
+        &mut spectrum,
+        source,
+        spectrum_spec.shape,
+        step,
+        spectrum_spec.correlation,
+        spectrum_spec.band,
+        amplitude_scale,
+    );
+
+    correlate_with(&mut spectrum, reference, perturbation.correlation);
+
+    fft::transform_2d(&mut spectrum, fft, Direction::Inverse);
+    fft::scale(&mut spectrum, fft::spacing_product(step.strike, step.dip));
+
+    let mut field = extract_corner(&spectrum, extents);
+    remove_mean(&mut field);
+    rescale_to_sigma(&mut field, perturbation.sigma.max(0.0));
+    field
+}
+
+/// A rake perturbation field, added to the fault's base rake.
+///
+/// Unlike the perturbations above this does **not** correlate with slip: rake is
+/// generated independently, so a patch that slips more has no reason to slip in a
+/// different direction. `base_rake` is one value per subfault, in degrees.
+///
+/// # Panics
+///
+/// If `base_rake` does not hold exactly one value per subfault.
+///
+/// (orig. `genslip_v5.6.2.c:2014-2094`)
+#[must_use]
+pub fn rake_field<S: DrawSource, F: Fft>(
+    source: &mut S,
+    fft: &mut F,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+    spectrum_spec: SpectrumSpec,
+    base_rake: &[f32],
+    sigma_degrees: f32,
+) -> SlipField {
+    assert_eq!(
+        base_rake.len(),
+        extents.fault_strike * extents.fault_dip,
+        "got {} base rakes for a {}x{} fault",
+        base_rake.len(),
+        extents.fault_strike,
+        extents.fault_dip
+    );
+
+    let mut spectrum = unit_spectrum(fft, extents, spacing);
+    let step = extents.wavenumber_step(spacing);
+
+    let amplitude_scale = spectrum[(0, 0)].norm();
+    correlated_field(
+        &mut spectrum,
+        source,
+        spectrum_spec.shape,
+        step,
+        spectrum_spec.correlation,
+        spectrum_spec.band,
+        amplitude_scale,
+    );
+
+    fft::transform_2d(&mut spectrum, fft, Direction::Inverse);
+    fft::scale(&mut spectrum, fft::spacing_product(step.strike, step.dip));
+
+    let mut field = extract_corner(&spectrum, extents);
+    remove_mean(&mut field);
+
+    let variation = population_sigma(&field);
+    let factor = sigma_degrees / variation;
+    for (value, base) in field.as_mut_slice().iter_mut().zip(base_rake) {
+        *value = factor * *value + *base;
+    }
+    field
+}
+
+/// A padded grid of ones, transformed and scaled — the starting point of every field.
+fn unit_spectrum<F: Fft>(fft: &mut F, extents: GridExtents, spacing: SubfaultSpacing) -> Spectrum {
+    let mut spectrum = Spectrum::zeros(extents.padded_strike, extents.padded_dip);
+    for value in spectrum.as_mut_slice() {
+        *value = Complex32::new(1.0, 0.0);
+    }
+    fft::transform_2d(&mut spectrum, fft, Direction::Forward);
+    fft::scale(
+        &mut spectrum,
+        fft::spacing_product(spacing.strike_km, spacing.dip_km),
+    );
+    spectrum
+}
+
+/// The fault's own corner of a padded grid, real parts only.
+fn extract_corner(spectrum: &Spectrum, extents: GridExtents) -> SlipField {
+    let mut field = SlipField::zeros(extents.fault_strike, extents.fault_dip);
+    for dip in 0..extents.fault_dip {
+        for strike in 0..extents.fault_strike {
+            field[(strike, dip)] = spectrum[(strike, dip)].re;
+        }
+    }
+    field
+}
+
+/// Subtract the field's mean, leaving it centred on zero.
+fn remove_mean(field: &mut SlipField) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "subfault counts are far below 2^24"
+    )]
+    let count = (field.strike_count() * field.dip_count()) as f32;
+
+    let mut total = 0.0_f32;
+    for value in field.as_slice() {
+        total += *value;
+    }
+    let mean = total / count;
+    for value in field.as_mut_slice() {
+        *value -= mean;
+    }
+}
+
+/// Population standard deviation of a zero-mean field.
+fn population_sigma(field: &SlipField) -> f32 {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "subfault counts are far below 2^24"
+    )]
+    let count = (field.strike_count() * field.dip_count()) as f32;
+
+    // SIMPLIFY: single-precision fold again.
+    let mut sum_of_squares = 0.0_f32;
+    for value in field.as_slice() {
+        sum_of_squares += *value * *value;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: C's sqrt returns double and is stored to a float"
+    )]
+    let sigma = f64::from(sum_of_squares / count).sqrt() as f32;
+    sigma
+}
+
+/// Scale a zero-mean field so its standard deviation is `sigma`.
+fn rescale_to_sigma(field: &mut SlipField, sigma: f32) {
+    let factor = sigma / population_sigma(field);
+    for value in field.as_mut_slice() {
+        *value *= factor;
     }
 }
