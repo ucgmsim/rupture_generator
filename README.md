@@ -68,9 +68,23 @@ It is the Stage 3 endpoint, checked continuously so it cannot rot.
 without fast-math and without FP contraction:
 
 ```sh
-cmake -B build -DCMAKE_C_FLAGS="-O0 -fno-fast-math -ffp-contract=off" \
-               -DCMAKE_Fortran_FLAGS="-O0 -fno-fast-math -ffp-contract=off"
+cmake -B build-oracle \
+  -DCMAKE_C_FLAGS="-O0 -fno-fast-math -ffp-contract=off -std=gnu17 \
+                   -Wno-implicit-function-declaration -Wno-implicit-int" \
+  -DCMAKE_Fortran_FLAGS="-O0 -fno-fast-math -ffp-contract=off"
 ```
+
+Two things that are not obvious:
+
+- **`-std=gnu17` is required**, not a preference. EMOD3D declares `FILE *fopfile();`
+  with an empty parameter list, which C23 reads as `(void)`, so gcc 15 refuses to
+  compile `StandRupFormat/srf_subs.c` at all. This bites the `genslip_v5.6.2` binary
+  the Stage 0 corpus needs; the `genrand` library the oracle links happens not to.
+- **The Fortran `-O0` does not take.** `CMakeLists.txt` appends its own `-O2` after
+  `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
+  `-ffp-contract=off` do take, which are the two that decide float results.
+
+Parity is checked against exactly this: 136 Rust tests pass with contraction off.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
