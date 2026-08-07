@@ -53,6 +53,7 @@ model's kilometres per second.
 ## Gates
 
 ```sh
+uv sync --extra test --group dev   # builds the compiled extensions
 ./gate.sh
 ```
 
@@ -60,6 +61,16 @@ Runs clippy at `-D warnings` across all five crates, `cargo fmt --check`, the Ru
 suite in **debug and release** (they must agree with each other — a disagreement
 means the port depends on optimisation-level float behaviour), the suite again with
 `--no-default-features`, and pytest.
+
+**Both extras are needed.** A bare `uv sync` drops the `test` extra and the `dev`
+group, taking pytest with them, and `gate.sh`'s last stage then fails on a missing
+module rather than on anything real.
+
+`rupture_generator/*.so` is **not** tracked, so a fresh clone has to run the sync
+before pytest will import anything. A committed binary goes stale silently: it
+disagrees with `_core.pyi` and with the Rust it claims to be, and no gate can tell,
+because pytest imports the `.so` while clippy checks source that never reached it.
+Anything that changes `crates/core` needs a re-sync before pytest means anything.
 
 `--no-default-features` builds without FFTW and without the Fortran eikonal solver.
 It is the Stage 3 endpoint, checked continuously so it cannot rot.
