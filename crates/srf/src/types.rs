@@ -116,13 +116,27 @@ impl CsrMatrix {
         }
     }
 
-    pub fn add_row<I>(&mut self, starting: usize, values: I)
+    /// Append one point's slip-rate pulse.
+    ///
+    /// Column `i` is the `i`th sample **of the pulse**, not of the rupture. The
+    /// onset time lives in `tinit`, as a float, and is not folded in here.
+    ///
+    /// It used to be. `add_row` took a `starting` column of `floor(tinit / dt)` and
+    /// placed the samples there, which quantised every onset to a sample boundary --
+    /// a pulse starting at 1.003 s with `dt = 0.005` was written at 1.000 s. It also
+    /// made the matrix as wide as the whole rupture rather than as wide as its
+    /// longest pulse, and needed a guard against a negative `tinit` casting to a huge
+    /// index.
+    ///
+    /// Relative columns remove all three, and they are the layout the rupture
+    /// generator already produces.
+    pub fn add_row<I>(&mut self, values: I)
     where
         I: Iterator<Item = f32>,
     {
-        for (i, v) in values.enumerate() {
-            self.indices.push(starting + i);
-            self.data.push(v);
+        for (index, value) in values.enumerate() {
+            self.indices.push(index);
+            self.data.push(value);
         }
         self.row_ptr.push(self.data.len());
     }
@@ -188,7 +202,7 @@ mod csr_tests {
     fn build(rows: &[&[f32]]) -> CsrMatrix {
         let mut matrix = CsrMatrix::new(rows.len(), rows.iter().map(|row| row.len()).sum());
         for row in rows {
-            matrix.add_row(0, row.iter().copied());
+            matrix.add_row(row.iter().copied());
         }
         matrix
     }
@@ -213,22 +227,26 @@ mod csr_tests {
     fn invariant_holds_after_every_add_row() {
         let mut matrix = CsrMatrix::new(3, 6);
         for (i, row) in [&[1.0f32, 2.0][..], &[][..], &[3.0][..]].iter().enumerate() {
-            matrix.add_row(0, row.iter().copied());
+            matrix.add_row(row.iter().copied());
             assert_indptr_invariant(&matrix, i + 1);
         }
     }
 
-    // Each row's column indices start at the point's own offset on the global
-    // timeline (floor(tinit / dt)), so rows can sit at different columns.
+    /// Every row starts at column zero, whatever its onset time.
+    ///
+    /// This test used to assert the opposite: rows were placed at
+    /// `floor(tinit / dt)` on a shared timeline, so two pulses with different onsets
+    /// occupied different columns and the matrix was as wide as the whole rupture.
+    /// The onset is a float in the metadata now, so nothing quantises it and the
+    /// matrix is only as wide as the longest pulse.
     #[test]
-    fn starting_offset_shifts_column_indices() {
+    fn every_row_starts_at_column_zero() {
         let mut matrix = CsrMatrix::new(2, 4);
-        matrix.add_row(0, [1.0f32, 2.0].into_iter());
-        matrix.add_row(1, [3.0f32, 4.0].into_iter());
-        assert_eq!(matrix.indices, vec![0, 1, 1, 2]);
+        matrix.add_row([1.0f32, 2.0].into_iter());
+        matrix.add_row([3.0f32, 4.0].into_iter());
+        assert_eq!(matrix.indices, vec![0, 1, 0, 1]);
         assert_eq!(matrix.row_ptr, vec![0, 2, 4]);
-        // Widest column touched is 2, so the matrix spans 3 columns.
-        assert_eq!(matrix.indices.iter().max().copied(), Some(2));
+        assert_eq!(matrix.indices.iter().max().copied(), Some(1));
     }
 
     #[test]

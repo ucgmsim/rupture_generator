@@ -45,8 +45,6 @@ pub enum SrfParseError {
     },
     #[error("SRF parser does not support slip{0} array ")]
     UnsupportedSlipArray(usize),
-    #[error("onset time {tinit} at dt {dt} is negative or not finite")]
-    NegativeOnset { tinit: f32, dt: f32 },
 }
 
 fn read_srf_header(
@@ -116,30 +114,16 @@ fn read_point_header(scanner: &mut scanner::Scanner) -> Result<PointHeader, SrfP
     })
 }
 
+/// Read one point's slip-rate pulse into the matrix.
+///
+/// It no longer needs `tinit` or `dt`: the columns are relative to the pulse, and
+/// the onset stays the float already read into the metadata. See `CsrMatrix::add_row`.
 fn read_slip_row(
     scanner: &mut scanner::Scanner,
     slipt1: &mut CsrMatrix,
-    tinit: f32,
-    dt: f32,
     nt: usize,
 ) -> Result<(), SrfParseError> {
     let _slip2 = scanner.next::<f32>()?;
-    // The choice between round and floor is relatively arbitrary. We choose floor here.
-    //
-    // A negative or non-finite `tinit / dt` would make this meaningless, so it is
-    // rejected rather than cast: an SRF whose onset times run backwards is not a
-    // file this parser should silently accept.
-    let offset = (tinit / dt).floor();
-    if !offset.is_finite() || offset < 0.0 {
-        return Err(SrfParseError::NegativeOnset { tinit, dt });
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "guarded finite and non-negative immediately above"
-    )]
-    let starting = offset as usize;
-
     let nt2 = scanner.next::<usize>()?;
     if nt2 != 0 {
         return Err(SrfParseError::UnsupportedSlipArray(2));
@@ -151,7 +135,7 @@ fn read_slip_row(
         return Err(SrfParseError::UnsupportedSlipArray(3));
     }
     itertools::process_results((0..nt).map(|_| scanner.next()), |clean_iter| {
-        slipt1.add_row(starting, clean_iter);
+        slipt1.add_row(clean_iter);
     })?;
     Ok(())
 }
@@ -208,7 +192,7 @@ fn read_srf_points_v1(
         };
         metadata.push(&point);
 
-        read_slip_row(scanner, &mut slipt1, header.tinit, header.dt, nt)?;
+        read_slip_row(scanner, &mut slipt1, nt)?;
     }
     Ok((metadata, slipt1))
 }
@@ -278,7 +262,7 @@ fn read_srf_points_v2(
                 vs,
                 density,
             });
-            read_slip_row(scanner, &mut slipt1, header.tinit, header.dt, nt)?;
+            read_slip_row(scanner, &mut slipt1, nt)?;
         }
     }
     Ok((metadata, slipt1))

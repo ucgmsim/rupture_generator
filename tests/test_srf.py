@@ -52,9 +52,10 @@ def test_christchurch_srf():
     # Check that the segments code correctly identifies one segment
     assert len(christchurch_srf.segments) == 1
     assert len(christchurch_srf.segments[0]) == len(christchurch_srf.points)
-    # NOTE: This value is not validated in any way, it's more of a
-    # regression test for future parsing changes.
-    assert christchurch_srf.nt == 361
+    # The longest pulse, not the rupture's duration. Those were the same number
+    # while the column index was `floor(tinit/dt) + i`; they are not now that it is
+    # `i`. This event's longest pulse is 206 samples and its rupture spans 361.
+    assert christchurch_srf.nt == 206
 
     assert christchurch_srf.points.iloc[0].to_dict() == pytest.approx(
         {
@@ -71,12 +72,10 @@ def test_christchurch_srf():
             "rise": 0.3,
         }
     )
-    tinit_index = int(christchurch_srf.points["tinit"].iloc[0] // christchurch_srf.dt)
+    # Every pulse starts at column zero now, so finding one no longer means
+    # computing `tinit // dt` -- which was the arithmetic that quantised the onset.
     # have to manually slice because the sparse arrays do not support slicing
-    slip_window = [
-        christchurch_srf.slipt1_array[0, t]
-        for t in range(tinit_index, tinit_index + 12)
-    ]
+    slip_window = [christchurch_srf.slipt1_array[0, t] for t in range(12)]
     assert slip_window == [
         0.00000e00,
         2.07568e02,
@@ -94,12 +93,8 @@ def test_christchurch_srf():
 
     # Just to check that the last row is also parsed correctly
     last_index = len(christchurch_srf.points) - 1
-    end_tinit_index = int(
-        christchurch_srf.points["tinit"].iloc[-1] // christchurch_srf.dt
-    )
     end_slip_window = [
-        christchurch_srf.slipt1_array[last_index, t]
-        for t in range(end_tinit_index, end_tinit_index + 7)
+        christchurch_srf.slipt1_array[last_index, t] for t in range(7)
     ]
     assert end_slip_window == [
         0.00000e00,
@@ -378,15 +373,19 @@ def test_read_srf_v2():
             "rise": 0.2,
         }
     )
-    # 2 points (rows) x 3 time-step columns. Columns are 0-indexed, so the column
-    # count is (highest filled column index) + 1 = 2 + 1 = 3 (columns 0, 1, 2).
-    assert srf_v2.slipt1_array.shape == (2, 3)
+    # 2 points, and the matrix is as wide as the longest pulse -- not as wide as the
+    # rupture. Column i is the ith sample OF THE PULSE; the onset lives in `tinit`
+    # as a float and is not folded into the column index.
+    #
+    # It used to be: the column was `floor(tinit / dt) + i`, which quantised every
+    # onset to a sample boundary and made the matrix as wide as the whole rupture.
+    # Point 1 here starts at tinit = 0.1 with dt = 0.1, so it used to occupy columns
+    # 1 and 2 and the matrix was (2, 3).
+    assert srf_v2.slipt1_array.shape == (2, 2)
     # the stored values, row by row; each point starts with a slip-rate of 0.0.
     assert srf_v2.slipt1_array.data.tolist() == pytest.approx([0.0, 5.0, 0.0, 6.0])
-    # each sample's column = floor(tinit / dt) + offset, where offset is the
-    # sample's index within its point's slip-rate function (0 to nt1 - 1):
-    # point 0 (floor(0.0/0.1)=0) fills cols 0,1; point 1 (floor(0.1/0.1)=1) fills cols 1,2.
-    assert srf_v2.slipt1_array.indices.tolist() == [0, 1, 1, 2]
+    # Both points fill columns 0 and 1, whatever their onsets.
+    assert srf_v2.slipt1_array.indices.tolist() == [0, 1, 0, 1]
     # row boundaries into data/indices: nt1 = 2 per point, so cuts at 0, 2, 4.
     assert srf_v2.slipt1_array.indptr.tolist() == [0, 2, 4]
 

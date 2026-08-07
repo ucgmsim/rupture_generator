@@ -582,7 +582,13 @@ class SrfFile:
 
     @property
     def nt(self):  # numpydoc ignore=RT01
-        """int: The number of timeslices in the SRF."""
+        """int: Samples in the longest slip-rate pulse.
+
+        **Not** the rupture's duration in samples. Each row of `slipt1_array` starts
+        at column zero and the onset lives in `points["tinit"]` as a float, so the
+        matrix is as wide as the longest pulse rather than as wide as the rupture.
+        For the duration, use `(points["tinit"].max() / dt) + nt`.
+        """
         return self.slipt1_array.shape[1]
 
     @property
