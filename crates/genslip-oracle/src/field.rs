@@ -623,3 +623,49 @@ pub fn wavefront_times(
     }
     times
 }
+
+unsafe extern "C" {
+    /// `void set_ll(float *elon, float *elat, float *slon, float *slat, float *sn,
+    /// float *se)`
+    fn set_ll(
+        elon: *mut core::ffi::c_float,
+        elat: *mut core::ffi::c_float,
+        slon: *mut core::ffi::c_float,
+        slat: *mut core::ffi::c_float,
+        sn: *mut core::ffi::c_float,
+        se: *mut core::ffi::c_float,
+    );
+}
+
+/// `set_ll`: a kilometre offset from a point, as a longitude and latitude.
+///
+/// Returns `(longitude, latitude)` in degrees.
+#[must_use]
+pub fn offset_point(
+    origin_longitude: f32,
+    origin_latitude: f32,
+    north_km: f32,
+    east_km: f32,
+) -> (f32, f32) {
+    let mut elon = origin_longitude;
+    let mut elat = origin_latitude;
+    let mut slon = 0.0_f32;
+    let mut slat = 0.0_f32;
+    let mut north = north_km;
+    let mut east = east_km;
+
+    // SAFETY: all six pointers address live locals of the matching type. The routine
+    // reads four and writes two.
+    unsafe {
+        set_ll(
+            &raw mut elon,
+            &raw mut elat,
+            &raw mut slon,
+            &raw mut slat,
+            &raw mut north,
+            &raw mut east,
+        );
+    }
+
+    (slon, slat)
+}

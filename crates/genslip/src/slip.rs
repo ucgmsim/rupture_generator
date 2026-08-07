@@ -497,3 +497,45 @@ fn rescale_to_sigma(field: &mut SlipField, sigma: f32) {
         *value *= factor;
     }
 }
+
+/// Consume the randomness a spectral field would have used, without building it.
+///
+/// # Why two of genslip's fields are skipped rather than ported
+///
+/// The **roughness** field perturbs each subfault's position, strike and dip by an
+/// amount proportional to `alpha_rough`, which is configured to `0.0`. Every
+/// perturbation is therefore exactly zero and the field has no effect on anything.
+///
+/// **`tsfac2`** is a rupture-time perturbation correlated with that roughness. Its
+/// values reach the model through one branch at `genslip_v5.6.2.c:3143`, and that
+/// branch is unreachable: it is the `else` of `if(tsfac_main > -1.0e+10)`, and
+/// `tsfac_main` is resolved at line 1255 to `tsfac_bzero + tsfac_slope * Mo^(1/3)`
+/// whenever it was left at its sentinel — a small negative number, never below
+/// `-1e10`. So the `if` always wins and `tsfac2_r` is never read.
+///
+/// Neither field is *inert*, though, because both draw. They sit on the 3x refined
+/// grid, which is squared up to `max(strike, dip)` in both directions, so together
+/// they are the largest consumer of randomness in the program. Skipping the draws
+/// as well would change every field generated afterwards while still producing
+/// output that looks entirely plausible.
+///
+/// # What would bring them back
+///
+/// Setting `alpha_rough` above zero, or passing `tsfac_main` below `-1e10` to reach
+/// the `tsfac2` branch. The input layer should refuse both rather than silently
+/// producing a model that ignores them — see `PRUNED.md`.
+///
+/// (orig. `genslip_v5.6.2.c:2482-2789`)
+pub fn skip_unused_field<S: DrawSource>(source: &mut S, strike_count: usize, dip_count: usize) {
+    source.skip_gaussians(unused_field_draw_count(strike_count, dip_count));
+}
+
+/// Normal deviates a spectral field of this extent consumes.
+///
+/// The generators walk the non-negative dip half — `dip_count / 2 + 1` rows, the
+/// midpoint included — over every strike index, drawing a complex deviate at each
+/// point. Two normals per point, unconditionally, whatever the spectrum.
+#[must_use]
+pub const fn unused_field_draw_count(strike_count: usize, dip_count: usize) -> usize {
+    2 * strike_count * (dip_count / 2 + 1)
+}

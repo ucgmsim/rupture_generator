@@ -8,6 +8,7 @@
 
 pub mod fft;
 pub mod field;
+pub mod geodesy;
 pub mod grid;
 pub mod moment;
 pub mod rng;

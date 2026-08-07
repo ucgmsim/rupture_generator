@@ -144,3 +144,36 @@ The engine swap is the one entry here with its adjudication baseline already
 recorded: `fft_contract.rs` measures FFTW against `rustfft` now, while both are
 present, so when the swap moves every field in the program there is a number saying
 how much of that is the engine.
+
+### `misc.c` / `geoproj_subs.c` — geodesy
+
+`gcproj`, `gen_matrices`, `set_g2`, `geocen` and `latlon2km` — the whole gnomonic
+projection — are called from **one place**, `genslip_v5.6.2.c:2572-2573`, inside the
+roughness block. Roughness is not implemented, so none of them is ported. That is
+175 lines of `geoproj_subs.c` plus the pieces of `misc.c` around them, gone with a
+single upstream decision.
+
+What survives is `set_ll`, reproduced as `geodesy::LocalFlatEarth` and replaced by
+`geodesy::Wgs84Geodesic`. It is a tangent-plane linearisation with four separate
+problems, worst first:
+
+| Problem | Detail |
+| --- | --- |
+| It is a linearisation | Kilometres per degree are evaluated once at the origin and applied linearly. Error grows with the square of the distance. |
+| The ellipsoid is not WGS84 | `a = 6378.139`, `1/f = 298.256` — roughly the 1964 IAU figure. WGS84 is `6378.137` and `298.257223563`, which is what everything downstream uses. |
+| Latitude conventions are mixed | `lat0` is converted to *geocentric*, and its cosine is then used as though it were the geodetic parallel radius. |
+| The constant is truncated | `rperd = 0.017453293`, about 2e-9 short. |
+
+**Measured disagreement**, from `geodesy.rs`, at Christchurch, offset north-east:
+
+| offset | disagreement |
+| ---: | ---: |
+| 1 km | 0.9 m |
+| 10 km | 20 m |
+| 50 km | 264 m |
+| 100 km | 944 m |
+| 200 km | 3.5 km |
+
+At subfault scale the two are interchangeable, which is why the approximation
+survived. At half the width of a subduction interface it is off by a kilometre. The
+number is recorded before the swap so the change can be judged against it.

@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "accurate"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f209f0bc218ee6cf50db56ec0d9fe10b3cbfb6f3900d019b36c8fdb6d3bc03e"
+dependencies = [
+ "cfg-if",
+ "ieee754",
+ "num-traits",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -82,6 +93,7 @@ name = "genslip"
 version = "0.1.0"
 dependencies = [
  "genslip-oracle",
+ "geographiclib-rs",
  "num-complex",
  "proptest",
  "rand 0.10.2",
@@ -93,6 +105,16 @@ dependencies = [
 [[package]]
 name = "genslip-oracle"
 version = "0.1.0"
+
+[[package]]
+name = "geographiclib-rs"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7f08910fd98737a6eda7568e7c5e645093e073328eeef49758cfe8b0489c7"
+dependencies = [
+ "accurate",
+ "libm",
+]
 
 [[package]]
 name = "getrandom"
@@ -117,6 +139,12 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
 ]
+
+[[package]]
+name = "ieee754"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9007da9cacbd3e6343da136e98b0d2df013f553d35bdec8b518f07bea768e19c"
 
 [[package]]
 name = "libc"

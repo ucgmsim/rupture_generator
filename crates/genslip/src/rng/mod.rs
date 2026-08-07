@@ -52,6 +52,22 @@ pub trait DrawSource {
     /// `sigma` and `mean` are `f32` because that is what the fields carry; the
     /// deviate is `f64`.
     fn gaussian(&mut self, sigma: f32, mean: f32) -> f64;
+
+    /// Advance the stream by `count` normal deviates, discarding them.
+    ///
+    /// This exists for fields that genslip generates and never uses. Their values
+    /// are dead, but their *draws* are not: every field afterwards comes off the
+    /// same stream, so skipping the generation without skipping the randomness
+    /// changes the whole model.
+    ///
+    /// Consuming rather than computing is both simpler and much cheaper — the two
+    /// such fields live on a grid nine times the fault's area, and building them
+    /// costs four transforms on it.
+    fn skip_gaussians(&mut self, count: usize) {
+        for _ in 0..count {
+            self.gaussian(1.0, 0.0);
+        }
+    }
 }
 
 /// A draw source that can produce independent streams for successive slip
