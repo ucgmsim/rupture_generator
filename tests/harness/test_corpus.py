@@ -10,14 +10,27 @@ on all six cases. That is the whole stochastic pipeline -- draws, spectrum, tape
 moment scaling, the eikonal solve and every perturbation drawn against them -- in four
 numbers.
 
-One divergence is still recorded rather than asserted, and it is not the port's:
+# Two bounds, and they say different things
+
+The assertions here are against `ENGINEERING_RULES.md`'s **physical** bounds -- slip
+1%, onset 0.05 s -- rather than the SRF's text precision, which is a property of the
+file format and cannot settle an argument about whether a change matters. That is four
+orders of magnitude looser than it was, and it is what makes refactoring possible.
+
+`TestTheDriftLedger` is what stops the loosening being a surrender. It records what the
+port diverges by *today* and fails when that moves by more than an order of magnitude,
+so a refactor either leaves the fields where they were or says in its commit message
+what it changed. A red there is the gate asking a question; a red in `TestSlipAgrees`
+is the gate saying the rupture is different enough to matter.
+
+`../../teeth.sh` is the evidence the loosening did not cost the teeth: it puts each of
+`DEFECTS.md` 14, 16, 17 and 18 back into the library and checks both this file and the
+Rust contracts go red. All four are caught, narrowest margin 14x.
+
+One divergence is recorded rather than asserted, and it is not the port's:
 `TestTheGeometryDivergence` measures genslip's flat-earth error in the plane header,
 which it recomputes from a length, a width and a dip rather than reading the positions
 it was given.
-
-A recorded divergence carries the measured number and an envelope around it, so it
-fails when the divergence *changes*. The envelopes are not tolerances anyone argued
-for -- they are fences around measurements.
 
 # What this found
 
@@ -129,9 +142,57 @@ def compared() -> dict:
 
 
 def relative(mine: np.ndarray, theirs: np.ndarray) -> float:
-    """Largest absolute difference, over the reference's own largest magnitude."""
+    """Largest absolute difference, over the reference's own largest magnitude.
+
+    Scale-relative rather than element-relative, deliberately. A field that crosses
+    zero has cells where any absolute drift is an unbounded *relative* error, and a
+    per-element norm reports that as a catastrophe.
+    """
     scale = max(float(np.abs(theirs).max()), 1e-30)
     return float(np.abs(mine - theirs).max()) / scale
+
+
+# `ENGINEERING_RULES.md`'s definition of "the same rupture": bounds inside which two
+# ruptures make no difference to a broadband simulation.
+ACCEPTABLE = dict(slip=1.0e-2, onset_s=5.0e-2, rake_deg=1.0)
+
+# What the port actually diverges by today, worst over all six cases.
+#
+# **Two signals, and they mean different things.** `ACCEPTABLE` failing says *you
+# changed the science, and owe an argument*. This failing says *you moved something;
+# say what in the commit message and re-record the number*. Re-recording is a one-line
+# change, not a defeat -- it is the drift ledger of `ENGINEERING_RULES.md` rule 4 made
+# mechanical, and a year of commits sitting at 1e-6 is the evidence that the bounds
+# above are loose enough to work inside.
+#
+# Without the second signal the first is nearly vacuous: slip could drift four orders
+# of magnitude, from 2.6e-06 to 1e-02, and nothing would go red.
+# Rake is deliberately absent. Its worst difference is 0.4999 degrees against a
+# format that stores whole ones -- that is the quantum, not a drift, and it cannot
+# improve. `TestRakeAgrees` pins the real claim instead: the port's continuous value
+# rounds to the reference's stored integer on 100% of subfaults.
+MEASURED = dict(slip=2.7e-6, onset_s=5.4e-5)
+
+# How far a measurement may move before it needs re-recording. An order of magnitude,
+# because the alternative is a test that goes red on a compiler upgrade.
+LEDGER_HEADROOM = 10.0
+
+
+def divergence(compared: dict) -> dict:
+    """The worst divergence in each field, over every case.
+
+    Returned as one dict rather than asserted per case, because the ledger is a claim
+    about the port rather than about any one fault.
+    """
+    worst = dict(slip=0.0, onset_s=0.0)
+    for result in compared.values():
+        points = result["points"]
+        worst["slip"] = max(worst["slip"], relative(result["slip_cm"], points.slip_cm))
+        worst["onset_s"] = max(
+            worst["onset_s"],
+            float(np.abs(result["onset_s"] - points.onset_s).max()),
+        )
+    return worst
 
 
 class TestTheCorpusIsWellFormed:
@@ -248,12 +309,13 @@ class TestSlipAgrees:
     def test_slip_matches_to_the_format_s_precision(
         self, name: str, compared: dict
     ) -> None:
-        # 2.6e-06 is the worst of the four, and the SRF writes slip with six
-        # significant figures -- so this is agreement to the file's own resolution,
-        # not a tolerance. Every draw, the spectrum, the taper and the moment
-        # scaling are behind this one number.
+        # The bound is `ENGINEERING_RULES.md`'s 1% -- what makes no difference to a
+        # broadband simulation -- rather than the SRF's text precision, which is a
+        # property of the file format and cannot settle an argument about whether a
+        # change matters. The ledger below is what keeps that from being vacuous.
         result = compared[name]
-        assert relative(result["slip_cm"], result["points"].slip_cm) < 1e-5
+        worst = relative(result["slip_cm"], result["points"].slip_cm)
+        assert worst < ACCEPTABLE["slip"], f"{name}: slip diverges {worst:.3e}"
 
     @pytest.mark.parametrize("name", CASES)
     def test_slip_is_the_same_field_and_not_merely_the_same_size(
@@ -368,12 +430,13 @@ class TestOnsetAgrees:
     def test_onset_matches_to_the_format_s_precision(
         self, name: str, compared: dict
     ) -> None:
-        # The SRF writes `tinit` as `%10.4f`, so 1e-4 s is the file's resolution and
-        # the worst disagreement anywhere in the corpus is 5.3e-05 -- half a quantum,
-        # which is what rounding to that field costs and nothing more.
+        # 0.05 s is about 18 degrees of phase at 1 Hz, the top of the band these
+        # ruptures are used in; below it waveforms do not reorganise. The measured
+        # divergence is 5.3e-05 s, three orders inside it, and the ledger holds it
+        # there.
         result = compared[name]
         worst = float(np.abs(result["onset_s"] - result["points"].onset_s).max())
-        assert worst < 1e-4, f"{name}: worst onset difference {worst} s"
+        assert worst < ACCEPTABLE["onset_s"], f"{name}: onset diverges {worst} s"
 
     @pytest.mark.parametrize("name", CASES)
     def test_onset_is_the_same_field_and_not_merely_the_same_spread(
@@ -398,7 +461,7 @@ class TestOnsetAgrees:
         """
         result = compared["frankel_no_perturbation"]
         worst = float(np.abs(result["onset_s"] - result["points"].onset_s).max())
-        assert worst < 1e-4, f"pure travel times differ by {worst} s"
+        assert worst < ACCEPTABLE["onset_s"], f"pure travel times differ by {worst} s"
 
 
 class TestTheFrankelSpectrumIsShiftedNotStretched:
@@ -460,6 +523,89 @@ class TestTheFrankelSpectrumIsShiftedNotStretched:
             assert float(np.std(result["slip_cm"])) == pytest.approx(
                 float(np.std(result["points"].slip_cm)), rel=1e-4
             )
+
+
+class TestTheDriftLedger:
+    """What the port moves by today, so a change that moves it further has to say so.
+
+    `ENGINEERING_RULES.md` rule 4: every commit that can move a field records what it
+    actually moved. This is the assertion that makes the record mandatory rather than
+    a good intention -- a refactor that leaves a field where it was passes silently,
+    and one that does not goes red until its number is updated with a reason.
+
+    A red here is **not** a defect. It is the gate asking what you changed. Compare:
+    `TestSlipAgrees` going red says the rupture is different enough to matter.
+    """
+
+    def test_every_field_is_where_it_was_recorded(self, compared: dict) -> None:
+        worst = divergence(compared)
+        for field, recorded in MEASURED.items():
+            measured = worst[field]
+            assert measured <= recorded * LEDGER_HEADROOM, (
+                f"{field} now diverges by {measured:.3e}, recorded as {recorded:.3e}. "
+                f"If that was intended, update MEASURED and put the number in the "
+                f"commit message; if it was not, something moved that should not have."
+            )
+
+    def test_the_recorded_numbers_are_far_inside_what_is_acceptable(self) -> None:
+        """The claim that makes the bounds usable rather than merely permissive.
+
+        There has to be room between "what the port does" and "what would matter", or
+        the bounds are either unreachable or meaningless. Three orders of magnitude is
+        the room; for scale, the two defects the corpus found sat at 39x and 20x the
+        *far* side of it.
+        """
+        for field, recorded in MEASURED.items():
+            assert recorded * 100.0 < ACCEPTABLE[field], (
+                f"{field} is recorded at {recorded:.3e} against a bound of "
+                f"{ACCEPTABLE[field]:.3e} -- less than two orders of headroom"
+            )
+
+
+class TestTheDecomposition:
+    """Level, spread and shape, kept apart -- the statistic that found 17 and 18.
+
+    A single worst-case difference says only "something moved", which is the least
+    useful thing a comparison can say. Split into three it says what *kind* of thing:
+
+    | | mean | sigma | correlation |
+    | --- | --- | --- | --- |
+    | `DEFECTS.md` 18, as found | 0.98 | **1.63** | 0.993 |
+    | `DEFECTS.md` 17, as found | ~1 | ~1 | **0.92-0.997** |
+
+    Both read as "nearly right" under a worst-case norm. Under this one, the first is
+    an affine transform in the wrong place and the second is a registration error --
+    two different searches, each a few lines wide.
+    """
+
+    @pytest.mark.parametrize("name", CASES)
+    @pytest.mark.parametrize("field", ["slip_cm", "onset_s", "rake_deg"])
+    def test_level_spread_and_shape_all_agree(
+        self, name: str, field: str, compared: dict
+    ) -> None:
+        result = compared[name]
+        mine = np.asarray(result[field], dtype=np.float64)
+        theirs = np.asarray(getattr(result["points"], field), dtype=np.float64)
+
+        # The SRF stores rake as whole degrees. Comparing a continuous field against a
+        # quantised one measures the format, not the port -- it costs 0.9998 of
+        # correlation on a 15-degree spread, which reads as a divergence and is not
+        # one. Round first, and `TestRakeAgrees` asserts the rounding is exact.
+        if field == "rake_deg":
+            mine = np.round(mine)
+
+        # Onset is measured from the earliest subfault, so its mean is a difference of
+        # two arbitrary origins and a ratio of means says nothing about it.
+        if field != "onset_s" and abs(theirs.mean()) > 1e-9:
+            ratio = float(mine.mean() / theirs.mean())
+            assert abs(ratio - 1.0) < 1e-3, f"{name} {field}: mean ratio {ratio:.6f}"
+
+        if theirs.std() > 1e-9:
+            ratio = float(mine.std() / theirs.std())
+            assert abs(ratio - 1.0) < 1e-3, f"{name} {field}: sigma ratio {ratio:.6f}"
+
+        correlation = float(np.corrcoef(mine, theirs)[0, 1])
+        assert correlation > 1.0 - 1e-6, f"{name} {field}: correlation {correlation:.7f}"
 
 
 class TestTheGeometryDivergence:

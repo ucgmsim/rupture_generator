@@ -193,16 +193,23 @@ export GENSLIP_BINARY=...             # only needed to REBUILD the corpus
 ./gate.sh
 ```
 
-What the comparison says today, on all six cases:
+What the comparison says today, on all six cases — measured against the bound each is
+asserted at, so the headroom is visible:
 
-| | |
-| --- | --- |
-| slip | **2.6e-06 relative**, correlation 1.0000000 |
-| rake | **100% of subfaults exact** — the SRF stores whole degrees, so the format is the floor |
-| onset | **5.3e-05 s** worst, against a `%10.4f` field — half a quantum, the floor again |
-| slip-rate pulse lengths | **100%** exact on three cases, 99.83% on `subduction` |
-| slip-rate samples | 4.2e-05 relative where the lengths match |
-| plane centre | genslip's flat-earth error, 43 m crustal to 1.9 km subduction. Not ours: it recomputes what the port is given |
+| | measured | asserted at | why that bound |
+| --- | --- | --- | --- |
+| slip | **2.6e-06** | 1e-02 relative | below a broadband simulation's sensitivity |
+| onset | **5.3e-05 s** | 5e-02 s | ~18 degrees of phase at 1 Hz |
+| rake | **100% exact** after rounding | the format's own quantum | the SRF stores whole degrees |
+| slip-rate pulse lengths | **100%** exact on three cases, 99.83% on `subduction` | | |
+| slip-rate samples | 4.2e-05 relative where the lengths match | | |
+| plane centre | genslip's flat-earth error, 43 m crustal to 1.9 km subduction | recorded, not asserted | not ours: it recomputes what the port is given |
+
+Three orders of headroom, and the drift ledger keeps it honest: a refactor either
+leaves those measurements where they are or records in its commit message what it
+moved. `./teeth.sh` is the evidence the headroom did not cost anything — it puts each
+of `DEFECTS.md` 14, 16, 17 and 18 back into the library and checks both suites go red.
+All four are caught, narrowest margin 14x.
 
 **Four traps that cost real time. Do not re-learn them.**
 
