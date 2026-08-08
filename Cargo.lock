@@ -67,16 +67,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eikonal"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2197734f66cf6b00e304833d69fd05d672e3cfacf9a940ac41172c9ed1a27357"
-dependencies = [
- "ndarray",
- "thiserror",
-]
-
-[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -108,10 +98,8 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 name = "genslip"
 version = "0.1.0"
 dependencies = [
- "eikonal",
  "genslip-oracle",
  "geographiclib-rs",
- "ndarray",
  "num-complex",
  "proptest",
  "rand 0.10.2",

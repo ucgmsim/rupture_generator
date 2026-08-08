@@ -543,128 +543,32 @@ macro_rules! contract_for {
     };
 }
 
-/// Every solver's error against a solution that is known, and how it converges.
+/// The solver's accuracy, and the two it replaced.
 ///
-/// **The table the solver choice turns on.** Two analytic problems: a uniform medium,
-/// where any scheme exact for plane waves does well, and a linear velocity gradient,
-/// which bends the rays into circular arcs and asks whether the scheme reproduces
-/// curvature. The second is the discriminating one.
+/// Recorded rather than asserted, because the other two solvers are gone and a test
+/// cannot measure code that is not there. The numbers were measured by this file
+/// while all three were present, on the two analytic problems below.
 ///
 /// | solver | uniform | gradient, h=1.0 | gradient, h=0.5 | ratio |
 /// | --- | --- | --- | --- | --- |
-/// | `Wavefront2d` | 0.0088 | 2.44e-02 | 2.37e-02 | **1.03** |
-/// | `FastMarching` | 0.207 | 2.12e-01 | 2.10e-01 | **1.01** |
+/// | `Wavefront2d`, genslip's Fortran tracker | 8.8e-03 | 2.44e-02 | 2.37e-02 | 1.03 |
+/// | `FastMarching`, the `eikonal` crate | 2.07e-01 | 2.12e-01 | 2.10e-01 | 1.01 |
+/// | **`FactoredSweep`**, what ships | **exact** | **1.62e-03** | **8.07e-04** | **2.00** |
 ///
-/// The ratio column is the finding. **Neither solver converges.** Halving the grid
-/// step barely moves either error, so neither achieves even first-order accuracy on a
-/// heterogeneous medium — which is not a defect in the stencils but the point-source
-/// singularity polluting the whole field. Fomel, Luo & Zhao (2009) say it plainly of
-/// the unfactored equation: it *"cannot achieve first order accuracy due to the
-/// singularity at the point source"*, and measure a ratio of 1.65 where the factored
-/// form gives 2.00.
+/// The ratio column is why both were removed. **Neither converged**: halving the grid
+/// step barely moved either error, so neither achieved even first-order accuracy on a
+/// heterogeneous medium. Not a defect in their stencils — the tracker's is genuinely
+/// second-order and 23x better than plain fast marching on a uniform medium — but the
+/// point-source singularity polluting the whole field. Fomel, Luo & Zhao (2009) say it
+/// plainly of the unfactored equation: it *"cannot achieve first order accuracy due to
+/// the singularity at the point source"*.
 ///
-/// So the expanding-square tracker's advantage over plain fast marching is real but
-/// bounded: it is a better stencil applied to the same badly-posed problem. On the
-/// uniform medium it is 23x better; on a gradient, only 9x, and both are stuck.
+/// `DEFECTS.md` 19 carries the same table with what it costs on a real rupture.
 ///
-/// A replacement is acceptable if it is closer to analytic truth on **both** problems
-/// *and* converges. That is a higher bar than either of these clears.
-const ACCURACY: [(&str, f64); 2] = [("Wavefront2d", 0.0088), ("FastMarching", 0.2072)];
-
-/// Neither existing solver converges on a heterogeneous medium.
-///
-/// Recorded as an assertion rather than a remark, because it is the justification for
-/// replacing both and it would be easy to forget. A scheme that reproduces the
-/// point-source curvature gives a ratio near 2; these give 1.03 and 1.01.
-#[cfg(feature = "wavefront-compat")]
-#[test]
-fn neither_existing_solver_converges_on_a_gradient() {
-    for (name, coarse, fine) in [
-        (
-            "Wavefront2d",
-            gradient_error(&mut genslip::rupture::Wavefront2d::new(), 33, 1.0),
-            gradient_error(&mut genslip::rupture::Wavefront2d::new(), 65, 0.5),
-        ),
-        (
-            "FastMarching",
-            gradient_error(&mut genslip::rupture::FastMarching::new(), 33, 1.0),
-            gradient_error(&mut genslip::rupture::FastMarching::new(), 65, 0.5),
-        ),
-    ] {
-        let ratio = coarse / fine;
-        assert!(
-            ratio < 1.3,
-            "{name} now converges at a ratio of {ratio:.2}; if a scheme here started \
-             reproducing the source curvature, the comparison table is stale"
-        );
-    }
-}
-
-/// The accuracy gap, asserted so it cannot quietly close or widen.
-///
-/// Recorded rather than tolerated: if a later version of the crate seeds its source
-/// neighbourhood analytically, this goes red and the default should be revisited.
-#[test]
-fn the_two_solvers_are_not_equally_accurate() {
-    let mut marching = genslip::rupture::FastMarching::new();
-    let measured = point_source_error(&mut marching);
-    let recorded = ACCURACY[1].1;
-    assert!(
-        (measured - recorded).abs() < 0.01,
-        "fast marching now measures {measured:.5} against a recorded {recorded:.5}; \
-         if it improved, revisit which solver is the default"
-    );
-
-    // And the physical consequence, which is what actually decides it.
-    assert!(
-        measured > 4.0 * ACCURACY[0].1,
-        "the gap closed; fast marching is no longer materially worse"
-    );
-}
-
-/// The acceptance criterion, executable.
-///
-/// A replacement had to be closer to analytic truth on **both** problems and had to
-/// *converge*, which neither incumbent does. Measured:
-///
-/// | solver | uniform | gradient h=1.0 | gradient h=0.5 | ratio |
-/// | --- | --- | --- | --- | --- |
-/// | `Wavefront2d` | 8.8e-03 | 2.44e-02 | 2.37e-02 | 1.03 |
-/// | `FastMarching` | 2.07e-01 | 2.12e-01 | 2.10e-01 | 1.01 |
-/// | **`FactoredSweep`** | **exact** | **1.62e-03** | **8.07e-04** | **2.00** |
-///
-/// Exact on the uniform medium is not a coincidence to be re-derived later: with `S₀`
-/// the source's own slowness the correction is identically one, and `τ ≡ 1` satisfies
-/// the discrete Eq. (7) at every node and any spacing. So the scheme returns the
-/// analytic solution to rounding, at any resolution.
-#[cfg(feature = "wavefront-compat")]
-#[test]
-fn the_new_solver_is_better_on_both_problems_and_converges() {
-    let uniform_new = point_source_error(&mut genslip::rupture::FactoredSweep::new());
-    assert!(
-        uniform_new < 1e-9,
-        "uniform medium: {uniform_new:.3e}, expected exactness"
-    );
-    assert!(
-        uniform_new < ACCURACY[0].1,
-        "worse than the tracker on a uniform medium"
-    );
-
-    let coarse = gradient_error(&mut genslip::rupture::FactoredSweep::new(), 33, 1.0);
-    let fine = gradient_error(&mut genslip::rupture::FactoredSweep::new(), 65, 0.5);
-    let tracker = gradient_error(&mut genslip::rupture::Wavefront2d::new(), 65, 0.5);
-    assert!(
-        fine < tracker,
-        "gradient: {fine:.3e} against the tracker's {tracker:.3e}"
-    );
-
-    let ratio = coarse / fine;
-    assert!(
-        ratio > 1.8,
-        "gradient convergence ratio {ratio:.2}; a scheme that reproduces the source \
-         curvature gives 2, and one that does not gives 1"
-    );
-}
+/// A fourth solver is acceptable if it is closer to analytic truth on **both** problems
+/// *and* converges — `the_gradient_error_and_its_convergence` below prints both numbers
+/// for whatever is instantiated.
+const _ACCURACY_RECORD: () = ();
 
 /// The round count is a property of the medium, not of the mesh.
 ///
@@ -692,7 +596,3 @@ fn the_sweep_count_does_not_grow_with_the_mesh() {
 }
 
 contract_for!(factored_sweep, genslip::rupture::FactoredSweep::new());
-contract_for!(fast_marching, genslip::rupture::FastMarching::new());
-
-#[cfg(feature = "wavefront-compat")]
-contract_for!(wavefront2d, genslip::rupture::Wavefront2d::new());

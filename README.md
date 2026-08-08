@@ -87,8 +87,10 @@ disagrees with `_core.pyi` and with the Rust it claims to be, and no gate can te
 because pytest imports the `.so` while clippy checks source that never reached it.
 Anything that changes `crates/core` needs a re-sync before pytest means anything.
 
-`--no-default-features` builds without FFTW and without the Fortran eikonal solver.
-It is the Stage 3 endpoint, checked continuously so it cannot rot.
+`--no-default-features` builds without FFTW. It is the Stage 3 endpoint, checked
+continuously so it cannot rot — and since the Fortran eikonal solver went it
+**generates ruptures** in that configuration rather than merely compiling, so the whole
+suite runs there.
 
 `genslip-oracle` needs an EMOD3D build. Point `EMOD3D_BUILD_DIR` at one, built
 without fast-math and without FP contraction:
@@ -119,9 +121,8 @@ of the port rather than as bit-equality with the C. Four files still link it
 The crate itself stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of
 port that has not been written, and per-function parity is how it will be built.
 
-`EMOD3D_BUILD_DIR` is still needed regardless, because `wavefront-compat` gates the
-only `EikonalSolver`. That is what makes replacing the solver the first Stage 3 item
-rather than the last.
+`EMOD3D_BUILD_DIR` is now needed **only** by `genslip-oracle`, which nothing the gate
+runs links. The library itself no longer touches an `EMOD3D` build at all.
 
 144 Rust tests and 258 Python tests pass in this configuration.
 
@@ -270,28 +271,18 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    flat-earth approximation (measured disagreement **944 m at 100 km**), and the
    remaining `SIMPLIFY` sites.
 
-   **The eikonal solver is the open one.** `wavefront-compat` gates the only usable
-   `EikonalSolver`, so until it is replaced `--no-default-features` compiles but
-   cannot generate a rupture, and `EMOD3D_BUILD_DIR` cannot leave the build. The
-   `eikonal` crate was tried and **rejected on a measurement**: it satisfies every
-   contract but its worst error against the analytic point-source solution is 0.207
-   relative and **0.234 s absolute**, against the tracker's 0.0088 and 0.011 s. The
-   gap is not a defect — the tracker computes an analytic solution near the source
-   and fast marching does not — but 0.234 s is **4.7x** the 0.05 s onset bound, so a
-   solver whose own discretisation error exceeds what counts as the same rupture
-   cannot replace one that is inside it. `crates/genslip/src/rupture/marching.rs`
-   keeps the adapter and the numbers; what would make it viable is seeding the
-   source's neighbourhood analytically, which the crate does not expose.
-   Four of the original nineteen were never work: three were mis-filed as bit-moving
-   when `sqrt(x*x)` is provably exactly `abs(x)`, and one had been taken and never
-   un-marked. `SIMPLIFICATIONS.md` has the audit and
-   `crates/genslip/tests/float_identities.rs` makes it executable.
+   **The eikonal solver is done**, and it is the one Stage 3 item that turned out to
+   be a correction rather than a swap. genslip's expanding-square tracker does not
+   converge: its worst error on a linear velocity gradient is 2.44e-02 at 1 km
+   spacing and 2.37e-02 at 0.5 km, so refining the fault does not improve its onset
+   times. Neither does the `eikonal` crate's fast marching, which was tried and
+   rejected on the same measurement. Both are now replaced by factored fast sweeping
+   (Zhao 2005; Fomel, Luo & Zhao 2009), which is *exact* on a uniform medium, 29x
+   closer on a gradient, and converges at the expected first order.
 
-   Both those numbers were measured *before* the change they adjudicate, which is the
-   only reason they mean anything. The eikonal swap is the exception to the whole
-   scheme: it changes the *discretisation* rather than the arithmetic, so it is judged
-   against analytic truth on a problem where truth is known, not against the solver it
-   replaces. `ENGINEERING_RULES.md` says why.
+   `DEFECTS.md` 19 carries the numbers and what the correction costs against
+   genslip's own output: onset moves 1.2% to 3.6%, correlations stay above 0.9989,
+   and slip and rake do not move at all.
 
 3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched). Last —
    and the one place `genslip-oracle` gets rewired, because 1,450 lines of new port

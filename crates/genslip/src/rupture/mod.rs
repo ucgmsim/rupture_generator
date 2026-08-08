@@ -14,39 +14,33 @@
 //! # The solver is swappable
 //!
 //! [`EikonalSolver`] is the trait, for the same reason [`crate::rng::DrawSource`] and
-//! [`crate::fft::Fft`] are traits: the choice is a deployment decision, not a
-//! property of the model.
+//! [`crate::fft::Fft`] are traits: the choice is a deployment decision, not a property
+//! of the model.
 //!
-//! `Wavefront2d` is genslip's — an expanding-square wavefront tracker (Afnimar &
-//! Koketsu, 2000), reached through the original Fortran. It exists to be compared
-//! against, and it is the Stage 1 default.
+//! [`FactoredSweep`] is the only implementation, and the third to hold that position.
+//! genslip's own — an expanding-square wavefront tracker (Afnimar & Koketsu, 2000)
+//! reached through the original Fortran — and the `eikonal` crate's fast marching both
+//! preceded it and both were removed on measurement: neither converges on a
+//! heterogeneous medium. `DEFECTS.md` 19 has the numbers, and
+//! `tests/eikonal_contract.rs` is the bar a fourth would have to clear.
 //!
-//! # Its edge requirement is the solver's problem, not the caller's
+//! # There is no padding, and that is the point
 //!
-//! `wfront2d` computes an analytic solution within a few cells of the source and
-//! switches to finite differences outside, so the source must sit at least
-//! `ring_radius + 1` cells from every edge. genslip meets that by growing the grid
-//! and offsetting the source — code smeared across `main` between the rupture-speed
-//! calculation and the solve.
+//! The tracker computed an analytic solution within a few cells of the source and
+//! finite-differenced outside, so the source had to sit clear of every edge. genslip
+//! meets that by growing the grid and replicating edge values into it — and the
+//! replication overwrites real data whenever it pads the low side, which was
+//! `DEFECTS.md` 1. The port reproduced all of it.
 //!
-//! Here it lives inside `Wavefront2d`, which pads on the way in and crops on the
-//! way out. A fast-marching solver has no such requirement and would simply not do
-//! it. Putting the padding in the caller would have made that swap a rewrite rather
-//! than a line.
+//! Factored sweeping has no near-source region: the singularity is removed
+//! analytically instead, so every cell is computed by the same update. The padding,
+//! the replication and the defect went together, exactly as this module's earlier
+//! text predicted they would.
 //!
 //! (orig. `genslip_v5.6.2.c:2995-3045`, `ruptime.c:get_rslow_stretch`, `wafront2d.f`)
 
-mod marching;
-pub use marching::FastMarching;
-
 mod sweeping;
 pub use sweeping::FactoredSweep;
-
-#[cfg(feature = "wavefront-compat")]
-mod wavefront;
-
-#[cfg(feature = "wavefront-compat")]
-pub use wavefront::Wavefront2d;
 
 use crate::rise_time::DepthRamp;
 use crate::taper::SlipField;

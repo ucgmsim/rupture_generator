@@ -13,7 +13,7 @@
 //! The last of those is the point. Replacing a wrong calculation with a right one
 //! moves every SRF plane header, and the useful question afterwards is whether it
 //! moved by the amount it should have. That number is measured here, before the swap.
-#![cfg(feature = "wavefront-compat")]
+#![cfg(feature = "fftw")]
 
 use genslip::geodesy::{Geodesy, LocalFlatEarth, Offset, Point, Wgs84Geodesic};
 use genslip_oracle::field as oracle;

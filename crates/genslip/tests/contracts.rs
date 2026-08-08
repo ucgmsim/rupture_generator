@@ -820,10 +820,3 @@ contract_for!(
     genslip::fft::FftwFft::new(),
     genslip::rupture::FactoredSweep::new()
 );
-
-#[cfg(feature = "wavefront-compat")]
-contract_for!(
-    fftw_and_wavefront,
-    genslip::fft::FftwFft::new(),
-    genslip::rupture::Wavefront2d::new()
-);
