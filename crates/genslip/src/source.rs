@@ -300,15 +300,14 @@ pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> Geome
 /// (orig. `genslip_v5.6.2.c:1412`)
 #[must_use]
 pub fn average_rise_time(moment_dyne_cm: f32, coefficient: f32) -> f32 {
-    // SIMPLIFY: `moment.cbrt()`. The original writes `exp(log(M0)/3.0)`, a
-    // transcendental pair where one call would do -- and `cbrt` is exact for
-    // arguments a cube root lands on, where the pair is not.
+    // `cbrt` rather than the original's `exp(log(M0)/3)`: one call instead of two, and
+    // exact where the pair is not -- it lands on 3 for 27, which the exp/log pair
+    // misses. `tests/float_identities.rs` pins that difference.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "the narrowing seam: C stores trise into a float"
     )]
-    let rise_time =
-        (f64::from(coefficient) * (1.0e-09 * (f64::from(moment_dyne_cm).ln() / 3.0).exp())) as f32;
+    let rise_time = (f64::from(coefficient) * 1.0e-09 * f64::from(moment_dyne_cm).cbrt()) as f32;
     rise_time
 }
 

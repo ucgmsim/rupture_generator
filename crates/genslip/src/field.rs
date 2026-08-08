@@ -43,7 +43,7 @@ use crate::rng::DrawSource;
 ///
 /// A local constant in the original, not the configurable `kord` — that one belongs
 /// to the separate band-pass applied to the roughness-correlated rupture-time field.
-const BAND_PASS_ORDER: f64 = 4.0;
+const BAND_PASS_ORDER: i32 = 4;
 
 /// Splits unit variance between the real and imaginary parts.
 ///
@@ -134,25 +134,20 @@ impl Spectrum2D {
         let scale = f64::from(scale);
         match self {
             Self::Somerville | Self::InputCorners => (scale / (1.0 + a_squared).sqrt()) as f32,
+            // von Karman. The exponent is halved because the amplitude is the square
+            // root of the power spectrum, and folding the two into one call also
+            // removes a narrowing the original had -- it stored the falloff into a
+            // float before taking its root.
             Self::Mai | Self::Suzuki | Self::MaiSomerville => {
-                // Two narrowings, matching the original's two assignments: the
-                // falloff is stored into a float before the division happens.
-                //
-                // SIMPLIFY: `(1.0 + a).powf(VON_KARMAN_EXPONENT / 2.0)` -- the
-                // exponentiation and the square root fold into one call, which also
-                // removes the intermediate narrowing. Written this way because the
-                // original stores the falloff before taking its root.
-                let falloff = (Self::VON_KARMAN_EXPONENT * (1.0 + a).ln()).exp() as f32;
-                (scale / f64::from(falloff).sqrt()) as f32
+                (scale / (1.0 + a).powf(Self::VON_KARMAN_EXPONENT / 2.0)) as f32
             }
             Self::Frankel => {
                 if a < 1.0 {
                     scale as f32
                 } else {
-                    // SIMPLIFY: `scale / a`. The exponent is exactly -1, since
-                    // FRANKEL_EXPONENT is 2.0 and it is halved here, so the whole
-                    // exp/log pair is a reciprocal written the long way.
-                    (scale * (-0.5 * Self::FRANKEL_EXPONENT * a.ln()).exp()) as f32
+                    // A reciprocal. The original spells it `exp(-0.5*beta2*log(a))`
+                    // with `beta2 = 2`, so the exponent is exactly -1.
+                    (scale / a.powf(Self::FRANKEL_EXPONENT / 2.0)) as f32
                 }
             }
         }
@@ -203,20 +198,22 @@ impl WavelengthBand {
     /// As [`divisor`](Self::divisor), but at a caller-chosen roll-off order.
     ///
     /// [`band_pass`] takes its order from configuration; the generators do not.
-    fn divisor_at_order(self, k2: f32, order: f64) -> f64 {
+    fn divisor_at_order(self, k2: f32, order: i32) -> f64 {
         // Both products are single precision before they reach the logarithm: the
         // original multiplies two floats and the widening happens at the call. The
         // rounding differs if the operands are widened first.
         let high = f64::from(k2 * self.min_squared);
         let low = f64::from(k2 * self.max_squared);
-        // SIMPLIFY: `high.powi(order)` and `1.0 / low.powi(order)`. The order is
-        // always an integer -- 4 in the generators, `kord` in `band_pass`, itself an
-        // int getpar -- so both exp/log pairs are integer powers written the long
-        // way, a transcendental pair each where three multiplies would do. Written
-        // this way because the original does, and because `powi` and `exp(n*ln(x))`
-        // disagree in the last bit somewhere in the domain.
-        let high_cut = 1.0 + (order * high.ln()).exp();
-        let low_cut = 1.0 + (-order * low.ln()).exp();
+        // Integer powers: the order is 4 in the generators and `kord` -- an integer
+        // getpar -- in `band_pass`. Three multiplies each rather than a pair of
+        // transcendental calls.
+        //
+        // `powi` keeps the DC behaviour the original relies on. At the origin `low`
+        // is zero, so `1/low.powi(order)` is infinity and the gain is `1/inf = 0`:
+        // the band-pass removes the mean through IEEE arithmetic rather than a guard,
+        // which is `DEFECTS.md` 4 and is pinned by `contracts.rs`.
+        let high_cut = 1.0 + high.powi(order);
+        let low_cut = 1.0 + 1.0 / low.powi(order);
         high_cut * low_cut
     }
 }
@@ -320,7 +317,6 @@ pub fn correlated_field<S: DrawSource>(
 pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: WavelengthBand, order: i32) {
     let strike_count = spectrum.strike_count();
     let dip_count = spectrum.dip_count();
-    let order = f64::from(order);
 
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);
@@ -364,6 +360,10 @@ pub fn self_affine_field<S: DrawSource>(
     )]
     let falloff = (f64::from(hurst_exponent) + 1.0) as f32;
 
+    // Hoisted: it depends only on the Hurst exponent, and the original recomputed it
+    // at every grid point.
+    let exponent = -0.5 * f64::from(falloff);
+
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);
         for strike in 0..strike_count {
@@ -383,16 +383,11 @@ pub fn self_affine_field<S: DrawSource>(
                     reason = "the narrowing seam: C stores each of these into a float"
                 )]
                 let gain = (1.0 / band.divisor(k2)) as f32;
-                // SIMPLIFY: `f64::from(k2).powf(-0.5 * falloff)`, with the exponent
-                // hoisted out of both loops -- it depends only on `hurst_exponent`
-                // and is recomputed at every grid point.
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "the narrowing seam: C stores the product into a float"
                 )]
-                let amplitude = (f64::from(gain)
-                    * (-0.5 * f64::from(falloff) * f64::from(k2).ln()).exp())
-                    as f32;
+                let amplitude = (f64::from(gain) * f64::from(k2).powf(exponent)) as f32;
                 amplitude
             };
 
@@ -475,11 +470,10 @@ pub fn shift_phase(
     let strike_argument = 2.0 * std::f64::consts::PI * strike_shift;
     let dip_argument = 2.0 * std::f64::consts::PI * dip_shift;
 
-    // SIMPLIFY: `spectrum[(0, 0)].norm()`, which is a hypot and cannot overflow the
-    // way squaring both parts can.
-    let dc_magnitude = (spectrum[(0, 0)].re * spectrum[(0, 0)].re
-        + spectrum[(0, 0)].im * spectrum[(0, 0)].im)
-        .sqrt();
+    // A hypotenuse, which cannot overflow the way squaring both parts can. The
+    // magnitude is what makes a negative mean come back positive -- `DEFECTS.md` 3,
+    // pinned in `contracts.rs` -- and that is unchanged.
+    let dc_magnitude = spectrum[(0, 0)].norm();
 
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);

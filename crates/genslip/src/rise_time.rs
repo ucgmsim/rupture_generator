@@ -254,13 +254,11 @@ fn apply_slip_exponent(field: &mut SlipField, exponent: f32) {
     }
     for value in field.as_mut_slice() {
         if *value > 0.0 {
-            // SIMPLIFY: `value.powf(exponent)`. The original spells it
-            // `exp(e * log(x))`, a transcendental pair where one call would do.
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "the narrowing seam: C stores the result into a float"
             )]
-            let raised = (f64::from(exponent) * f64::from(*value).ln()).exp() as f32;
+            let raised = f64::from(*value).powf(f64::from(exponent)) as f32;
             *value = raised;
         }
     }
