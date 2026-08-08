@@ -171,7 +171,7 @@ ACCEPTABLE = dict(slip=1.0e-2, onset_s=5.0e-2, rake_deg=1.0)
 # format that stores whole ones -- that is the quantum, not a drift, and it cannot
 # improve. `TestRakeAgrees` pins the real claim instead: the port's continuous value
 # rounds to the reference's stored integer on 100% of subfaults.
-MEASURED = dict(slip=2.7e-6, onset_s=5.4e-5)
+MEASURED = dict(slip=2.4e-6, onset_s=5.4e-5)
 
 # How far a measurement may move before it needs re-recording. An order of magnitude,
 # because the alternative is a test that goes red on a compiler upgrade.

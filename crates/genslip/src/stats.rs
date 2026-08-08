@@ -35,32 +35,29 @@ pub fn mean_and_sigma(spectrum: &Spectrum) -> MeanAndSigma {
         clippy::cast_precision_loss,
         reason = "grid point counts are far below 2^24"
     )]
-    let count = values.len() as f32;
+    let count = values.len() as f64;
 
-    // SIMPLIFY: accumulate in f64, or sum pairwise. This is a single-precision sum
-    // over every grid point -- on a large fault that is ~10^5 terms, and a
-    // left-to-right f32 fold loses several significant digits to accumulated
-    // rounding. Changing it would be strictly *more* accurate, which is why it is a
-    // simplification worth making rather than merely a tidy-up. Written this way
-    // because the original accumulates through a `float *`.
-    let mut total = 0.0_f32;
-    for value in values {
-        total += value.re;
-    }
+    // Accumulated in `f64`. The original folds through a `float` over every grid
+    // point -- on a large fault ~10^5 terms, where a single-precision left-to-right
+    // sum loses several significant digits. Widening is strictly more accurate, and
+    // both results narrow to `f32` at the end because that is what the field is.
+    let total: f64 = values.iter().map(|value| f64::from(value.re)).sum();
     let mean = total / count;
 
-    // The second pass is the numerically stable form and should stay two-pass; only
-    // the accumulator precision is worth changing.
-    let mut sum_of_squares = 0.0_f32;
-    for value in values {
-        sum_of_squares += (value.re - mean) * (value.re - mean);
-    }
+    // Two passes deliberately: it is the numerically stable form, and one-pass or
+    // Welford would trade accuracy for a speed that nothing here needs.
+    let sum_of_squares: f64 = values
+        .iter()
+        .map(|value| (f64::from(value.re) - mean).powi(2))
+        .sum();
 
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C's sqrt returns double and is stored to a float"
+        reason = "the field is f32; the accumulation is not"
     )]
-    let sigma = f64::from(sum_of_squares / count).sqrt() as f32;
-
-    MeanAndSigma { mean, sigma }
+    let summary = MeanAndSigma {
+        mean: mean as f32,
+        sigma: (sum_of_squares / count).sqrt() as f32,
+    };
+    summary
 }

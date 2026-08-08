@@ -1,465 +1,269 @@
-//! The rake and perturbation fields reproduce genslip's, stage for stage.
+//! What the correlated fields are for, rather than what their samples are.
 //!
-//! Same shape of test as `slip_pipeline.rs`, and for the same reason: these blocks
-//! are inline in `main`, so the reference is built from oracle calls made in the
-//! order `main` makes them.
+//! Three fields are drawn against the slip field once it exists: rake, the
+//! rupture-time perturbation, and the rise-time one. Each is generated
+//! independently, blended with a stored spectrum of the processed slip, and brought
+//! back to the fault. The mechanism is one elementwise map and one affine
+//! renormalisation, and both are exact — so this file asserts algebra where algebra
+//! holds and calibration where it does not.
 //!
-//! What is new here is the correlation step. `tsfac1` and `rtime1` are blended with
-//! the slip spectrum before the inverse transform, which is what makes rupture time
-//! and rise time vary with slip. That blend happens against a *reloaded* slip field —
-//! one that has been truncated, tapered, put back on a padded grid and transformed
-//! again — so getting the reference right means reproducing that reload too.
+//! # It used to be a parity file, and widening an accumulator is what retired it
+//!
+//! Every assertion here was `to_bits()` equality against genslip's `f32` folds. When
+//! `stats::mean_and_sigma` and the two spread rescalings moved to `f64`
+//! accumulation — strictly more accurate, and the change that made moment
+//! conservation worth asserting — this file went red for a reason that was not a
+//! defect.
+//!
+//! That is the situation `ENGINEERING_RULES.md` exists for. Under bit-parity the
+//! answer would have been to abandon the improvement; under a scientific gate it is
+//! to replace the assertion with the property it was standing in for.
+
 #![cfg(feature = "fftw")]
 
-use genslip::fft::FftwFft;
-use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
+mod common;
+
+use common::fixture;
+use common::stats;
+use genslip::fft::{Fft, FftwFft};
+use genslip::field::Spectrum2D;
+use genslip::grid::Spectrum;
 use genslip::rng::GenslipLcg;
 use genslip::slip::{
-    GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing, correlated_perturbation,
-    generate_normalised, rake_field, reload_for_correlation, truncate_negative_slip,
+    GridExtents, NormalisedSlip, PerturbationSpec, SubfaultSpacing, correlated_perturbation,
+    generate_normalised, rake_field, reload_for_correlation,
 };
 use genslip::stats::mean_and_sigma;
-use genslip::taper::{EdgeTapers, SlipField, taper_edges};
-use genslip_oracle::{Complex, field as oracle};
-use proptest::prelude::*;
-
-const CASES: [GridExtents; 4] = [
-    GridExtents {
-        fault_strike: 2,
-        fault_dip: 2,
-        padded_strike: 4,
-        padded_dip: 4,
-    },
-    GridExtents {
-        fault_strike: 10,
-        fault_dip: 6,
-        padded_strike: 12,
-        padded_dip: 8,
-    },
-    GridExtents {
-        fault_strike: 32,
-        fault_dip: 12,
-        padded_strike: 36,
-        padded_dip: 14,
-    },
-    GridExtents {
-        fault_strike: 24,
-        fault_dip: 24,
-        padded_strike: 28,
-        padded_dip: 28,
-    },
-];
+use num_complex::Complex32;
 
 const SPACING: SubfaultSpacing = SubfaultSpacing {
-    strike_km: 2.0,
-    dip_km: 1.5,
+    strike_km: 1.0,
+    dip_km: 1.0,
 };
-const CORRELATION: CorrelationLengths = CorrelationLengths {
-    strike: 12.0,
-    dip: 6.0,
-};
-const MIN_WAVELENGTH: f32 = 1.5;
-const MAX_WAVELENGTH: f32 = 80.0;
 
-fn spec() -> SpectrumSpec {
-    SpectrumSpec {
-        shape: Spectrum2D::Mai,
-        correlation: CORRELATION,
-        band: WavelengthBand::new(MIN_WAVELENGTH, MAX_WAVELENGTH),
-        coefficient_of_variation: 0.75,
-        phase_shift: (0.0, 0.0),
-    }
+fn extents() -> GridExtents {
+    fixture::fault().extents
 }
 
-/// Steps shared by every field: a padded grid of ones, forward-transformed.
-fn unit_grid(extents: GridExtents) -> Vec<Complex> {
-    let mut grid = vec![Complex { re: 1.0, im: 0.0 }; extents.padded_strike * extents.padded_dip];
-    oracle::transform_2d(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        -1,
-        SPACING.strike_km,
-        SPACING.dip_km,
-    );
-    grid
+fn spectrum() -> genslip::slip::SpectrumSpec {
+    let mut spec = fixture::spectrum_spec();
+    spec.shape = Spectrum2D::Mai;
+    spec.correlation = fixture::corner_lengths();
+    spec
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "mirrors the port's casts exactly"
-)]
-fn steps(extents: GridExtents) -> (f32, f32) {
-    (
-        1.0 / (extents.padded_strike as f32 * SPACING.strike_km),
-        1.0 / (extents.padded_dip as f32 * SPACING.dip_km),
-    )
+/// The slip field and the padded statistics the reload maps back onto.
+///
+/// Takes the source by reference and leaves it *advanced*, because the fields drawn
+/// afterwards must come from the stream position the pipeline leaves them at. Seeding
+/// each field separately instead makes the supposedly independent rake field the same
+/// deviates as slip, correlated at exactly -1 — which looks like a defect and is an
+/// artefact of the test.
+fn slip_stage<F: Fft>(source: &mut GenslipLcg, fft: &mut F) -> NormalisedSlip {
+    generate_normalised(source, fft, extents(), SPACING, spectrum())
 }
 
-/// The fault's corner of a padded grid, real parts only.
-fn corner(grid: &[Complex], extents: GridExtents) -> Vec<f32> {
-    let mut field = Vec::with_capacity(extents.fault_strike * extents.fault_dip);
-    for dip in 0..extents.fault_dip {
-        for strike in 0..extents.fault_strike {
-            field.push(grid[strike + dip * extents.padded_strike].re);
-        }
-    }
-    field
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "mirrors the port's casts exactly"
-)]
-fn remove_mean(field: &mut [f32]) {
-    let count = field.len() as f32;
-    let mut total = 0.0_f32;
-    for value in field.iter() {
-        total += *value;
-    }
-    let mean = total / count;
-    for value in field.iter_mut() {
-        *value -= mean;
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    reason = "mirrors the port's casts and narrowing seams exactly"
-)]
-fn population_sigma(field: &[f32]) -> f32 {
-    let count = field.len() as f32;
-    let mut sum_of_squares = 0.0_f32;
-    for value in field {
-        sum_of_squares += *value * *value;
-    }
-    f64::from(sum_of_squares / count).sqrt() as f32
-}
-
-/// A normalised, truncated, tapered slip field plus the padded statistics the
-/// reload needs — the state `main` has reached before it generates anything else.
-fn slip_stage(extents: GridExtents, seed: i64) -> (SlipField, genslip::stats::MeanAndSigma) {
-    let mut source = GenslipLcg::new(seed);
-    let mut fft = FftwFft::new();
-
-    // The port's own generator, already pinned by slip_pipeline.rs. Its padded
-    // statistics are measured the way `main` measures them: on the padded grid
-    // right after the inverse transform.
-    let mut grid = unit_grid(extents);
-    let (strike_step, dip_step) = steps(extents);
-    let mut oracle_seed = seed;
-    oracle::correlated_field(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        strike_step,
-        dip_step,
-        CORRELATION.strike,
-        CORRELATION.dip,
-        &mut oracle_seed,
-        Spectrum2D::Mai as i32,
-        MAX_WAVELENGTH,
-        MIN_WAVELENGTH,
-    );
-    oracle::transform_2d(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        1,
-        strike_step,
-        dip_step,
-    );
-    let (mean, sigma) =
-        oracle::mean_and_sigma(&mut grid, extents.padded_strike, extents.padded_dip);
-    let original = genslip::stats::MeanAndSigma { mean, sigma };
-
-    let mut slip = generate_normalised(&mut source, &mut fft, extents, SPACING, spec()).field;
-    truncate_negative_slip(&mut slip);
-    taper_edges(
-        &mut slip,
-        &EdgeTapers {
-            sides: 0.02,
-            top: 0.0,
-            bottom: 0.0,
-        },
-    );
-
-    (slip, original)
-}
-
-/// `main`'s tsfac1 block, rebuilt from oracle calls.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "mirrors the port's narrowing seams exactly; that is the point"
-)]
-fn reference_perturbation(
-    extents: GridExtents,
-    slip: &SlipField,
-    original: genslip::stats::MeanAndSigma,
-    seed: i64,
-    correlation: f32,
-    sigma: f32,
-) -> Vec<f32> {
-    let (strike_step, dip_step) = steps(extents);
-    let points = extents.padded_strike * extents.padded_dip;
-
-    // :1982 -- the reload. Zero-fill, drop the fault in, measure over the WHOLE
-    // padded grid, map back onto the original mean and deviation, transform.
-    let mut reference = vec![Complex::default(); points];
-    for dip in 0..extents.fault_dip {
-        for strike in 0..extents.fault_strike {
-            reference[strike + dip * extents.padded_strike].re = slip[(strike, dip)];
-        }
-    }
-    let (padded_mean, padded_sigma) =
-        oracle::mean_and_sigma(&mut reference, extents.padded_strike, extents.padded_dip);
-    let factor = original.sigma / padded_sigma;
-    for value in &mut reference {
-        value.re = factor * (value.re - padded_mean) + original.mean;
-    }
-    oracle::transform_2d(
-        &mut reference,
-        extents.padded_strike,
-        extents.padded_dip,
-        -1,
-        SPACING.strike_km,
-        SPACING.dip_km,
-    );
-
-    // :2100 -- the perturbation's own field.
-    let mut grid = unit_grid(extents);
-    let mut oracle_seed = seed;
-    oracle::correlated_field(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        strike_step,
-        dip_step,
-        CORRELATION.strike,
-        CORRELATION.dip,
-        &mut oracle_seed,
-        Spectrum2D::Mai as i32,
-        MAX_WAVELENGTH,
-        MIN_WAVELENGTH,
-    );
-
-    // :2116 -- the blend, in the wavenumber domain.
-    let independent = (1.0 - f64::from(correlation * correlation)).sqrt() as f32;
-    for (value, other) in grid.iter_mut().zip(&reference) {
-        value.re = correlation * other.re + independent * value.re;
-        value.im = correlation * other.im + independent * value.im;
-    }
-
-    // :2123 -- back to the fault, then centre and rescale.
-    oracle::transform_2d(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        1,
-        strike_step,
-        dip_step,
-    );
-    let mut field = corner(&grid, extents);
-    remove_mean(&mut field);
-    let factor = sigma / population_sigma(&field);
-    for value in &mut field {
-        *value *= factor;
-    }
-    field
-}
-
-fn assert_fields_equal(produced: &SlipField, expected: &[f32], extents: GridExtents, label: &str) {
-    for (offset, (got, want)) in produced.as_slice().iter().zip(expected).enumerate() {
-        assert_eq!(
-            got.to_bits(),
-            want.to_bits(),
-            "{label}: mismatch at (strike {}, dip {}): {got} vs {want}",
-            offset % extents.fault_strike,
-            offset / extents.fault_strike,
-        );
-    }
-}
-
-#[test]
-fn correlated_perturbations_match_across_every_shape() {
-    for extents in CASES {
-        for (correlation, sigma) in [(0.8_f32, 1.0_f32), (0.9, 0.75), (0.0, 2.0), (1.0, 0.5)] {
-            let seed = 20_260_807;
-            let (slip, original) = slip_stage(extents, seed);
-
-            let expected =
-                reference_perturbation(extents, &slip, original, seed + 1, correlation, sigma);
-
-            let mut source = GenslipLcg::new(seed + 1);
-            let mut fft = FftwFft::new();
-            let reference_spectrum =
-                reload_for_correlation(&slip, &mut fft, extents, SPACING, original);
-            let produced = correlated_perturbation(
-                &mut source,
-                &mut fft,
-                &reference_spectrum,
-                extents,
-                SPACING,
-                spec(),
-                PerturbationSpec { correlation, sigma },
-            );
-
-            assert_fields_equal(
-                &produced,
-                &expected,
-                extents,
-                &format!(
-                    "perturbation rho={correlation} sigma={sigma} on {}x{}",
-                    extents.fault_strike, extents.fault_dip
-                ),
-            );
-        }
-    }
-}
-
-/// `main`'s rake block, rebuilt from oracle calls.
-fn reference_rake(
-    extents: GridExtents,
-    seed: i64,
-    base_rake: &[f32],
-    sigma_degrees: f32,
-) -> Vec<f32> {
-    let (strike_step, dip_step) = steps(extents);
-    let mut grid = unit_grid(extents);
-    let mut oracle_seed = seed;
-    oracle::correlated_field(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        strike_step,
-        dip_step,
-        CORRELATION.strike,
-        CORRELATION.dip,
-        &mut oracle_seed,
-        Spectrum2D::Mai as i32,
-        MAX_WAVELENGTH,
-        MIN_WAVELENGTH,
-    );
-    oracle::transform_2d(
-        &mut grid,
-        extents.padded_strike,
-        extents.padded_dip,
-        1,
-        strike_step,
-        dip_step,
-    );
-
-    let mut field = corner(&grid, extents);
-    remove_mean(&mut field);
-    let factor = sigma_degrees / population_sigma(&field);
-    for (value, base) in field.iter_mut().zip(base_rake) {
-        *value = factor * *value + *base;
-    }
-    field
-}
-
-#[test]
-fn rake_fields_match_across_every_shape() {
-    for extents in CASES {
-        let count = extents.fault_strike * extents.fault_dip;
-        // A base rake that varies, so adding it cannot be confused with a constant.
-        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-        let base: Vec<f32> = (0..count)
-            .map(|i| 175.0 + (i as f32 * 0.05).sin())
-            .collect();
-
-        let expected = reference_rake(extents, 4242, &base, 15.0);
-
-        let mut source = GenslipLcg::new(4242);
-        let mut fft = FftwFft::new();
-        let produced = rake_field(&mut source, &mut fft, extents, SPACING, spec(), &base, 15.0);
-
-        assert_fields_equal(
-            &produced,
-            &expected,
-            extents,
-            &format!("rake {}x{}", extents.fault_strike, extents.fault_dip),
-        );
-    }
-}
-
+/// The reload restores the statistics the padded grid had before the fault work.
+///
+/// What the reload is *for*: the processed field — truncated, tapered, scaled — is
+/// put back onto a padded grid and mapped affinely onto the mean and deviation the
+/// generated field had, so every field correlated against it lands on the same scale
+/// as the slip it blends with. Without it the perturbations would be correlated with
+/// a differently-scaled field and their configured sigmas would mean nothing.
 #[test]
 fn the_reload_restores_the_original_padded_statistics() {
-    // Not a parity claim: a statement about what the reload is FOR. It maps the
-    // processed field back onto the mean and deviation the padded grid had before
-    // any fault-domain processing, which is what keeps the correlated fields on the
-    // same scale as the slip they blend with.
-    let extents = CASES[2];
-    let (slip, original) = slip_stage(extents, 909);
-
     let mut fft = FftwFft::new();
-    let mut padded = genslip::grid::Spectrum::zeros(extents.padded_strike, extents.padded_dip);
-    for dip in 0..extents.fault_dip {
-        for strike in 0..extents.fault_strike {
-            padded[(strike, dip)] = num_complex::Complex32::new(slip[(strike, dip)], 0.0);
-        }
-    }
-    let before = mean_and_sigma(&padded);
+    let mut source = GenslipLcg::new(909);
+    let generated = slip_stage(&mut source, &mut fft);
+    let extents = extents();
 
-    let reloaded = reload_for_correlation(&slip, &mut fft, extents, SPACING, original);
+    let reloaded = reload_for_correlation(
+        &generated.field,
+        &mut fft,
+        extents,
+        SPACING,
+        generated.padded,
+    );
 
     // The reload happens before the transform, so undo the transform's DC scaling to
     // read the mean back: the DC term of an unnormalised transform is the sum.
     #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
     let points = (extents.padded_strike * extents.padded_dip) as f32;
-    let restored_mean = reloaded[(0, 0)].re / (points * SPACING.strike_km * SPACING.dip_km);
+    let restored = reloaded[(0, 0)].re / (points * SPACING.strike_km * SPACING.dip_km);
 
     assert!(
-        (restored_mean - original.mean).abs() < original.sigma * 1e-4,
-        "reload gave mean {restored_mean}, expected {} (padded field had {})",
-        original.mean,
-        before.mean
+        (restored - generated.padded.mean).abs() < generated.padded.sigma * 1e-4,
+        "reload gave mean {restored}, expected {}",
+        generated.padded.mean
     );
 }
 
-proptest! {
-    #[test]
-    fn perturbations_match_for_arbitrary_correlations(
-        seed in any::<i32>(),
-        fault_strike in 1usize..20,
-        fault_dip in 1usize..20,
-        correlation in 0.0f32..1.0,
-        sigma in 0.01f32..5.0,
-    ) {
-        let extents = GridExtents {
-            fault_strike,
-            fault_dip,
-            padded_strike: 2 * (fault_strike.div_ceil(2) + 1),
-            padded_dip: 2 * (fault_dip.div_ceil(2) + 1),
-        };
-        let seed = i64::from(seed);
-        let (slip, original) = slip_stage(extents, seed);
+/// A perturbation has the spread it was configured with, and no mean.
+///
+/// The calibration claim: `PerturbationSpec::sigma` is what the field's population
+/// deviation comes out as, so the seconds it is later multiplied by mean what they
+/// say. `DEFECTS.md` 14 is the same claim for rake, in different units, and it is
+/// what happens when nothing asserts this.
+#[test]
+fn a_perturbation_is_centred_and_has_the_configured_spread() {
+    let mut fft = FftwFft::new();
+    let mut source = GenslipLcg::new(4242);
+    let generated = slip_stage(&mut source, &mut fft);
+    let extents = extents();
+    let reference = reload_for_correlation(
+        &generated.field,
+        &mut fft,
+        extents,
+        SPACING,
+        generated.padded,
+    );
 
-        let expected =
-            reference_perturbation(extents, &slip, original, seed + 1, correlation, sigma);
-
-        let mut source = GenslipLcg::new(seed + 1);
-        let mut fft = FftwFft::new();
-        let reference_spectrum =
-            reload_for_correlation(&slip, &mut fft, extents, SPACING, original);
-        let produced = correlated_perturbation(
-            &mut source, &mut fft, &reference_spectrum, extents, SPACING, spec(),
-            PerturbationSpec { correlation, sigma },
+    for sigma in [0.25_f32, 1.0, 3.5] {
+        let mut continued = source;
+        let field = correlated_perturbation(
+            &mut continued,
+            &mut fft,
+            &reference,
+            extents,
+            SPACING,
+            spectrum(),
+            PerturbationSpec {
+                correlation: 0.8,
+                sigma,
+            },
         );
 
-        for (offset, (got, want)) in produced.as_slice().iter().zip(&expected).enumerate() {
-            prop_assert_eq!(got.to_bits(), want.to_bits(), "at {}", offset);
-        }
+        let values = stats::widen(field.as_slice());
+        assert!(
+            stats::mean(&values).abs() < f64::from(sigma) * 1e-4,
+            "sigma {sigma}: mean {} is not zero",
+            stats::mean(&values)
+        );
+        let spread = stats::population_sigma(&values);
+        assert!(
+            (spread - f64::from(sigma)).abs() < f64::from(sigma) * 1e-4,
+            "configured {sigma}, realised {spread}"
+        );
     }
 }
 
-// Deliberately not asserted:
-//
-// - That the realised correlation between slip and the perturbation equals the
-//   requested rho. It will not, exactly: rho sets the correlation of the SPECTRA on
-//   the padded grid, and the field is then cropped to the fault, centred and
-//   rescaled. That is a Stage 2 claim with a measured band -- and it is what
-//   check_cor_r was written to answer.
-// - That a rho of 1 makes the perturbation a scaled copy of slip. It nearly does,
-//   but the crop and the re-centring break the exact relation.
+/// A perturbation correlated at rho really is, to the fault's effective resolution.
+///
+/// `correlate_with` sets the correlation of the *spectra* exactly; the field is then
+/// cropped to the fault, centred and rescaled, so the realised spatial correlation is
+/// near rho rather than equal to it. Asserted loosely on purpose — the exact claim
+/// lives in `contracts.rs`, on the elementwise map, where it holds to 1e-6 and needs
+/// no realisations at all. This is the end-to-end sanity check that the exact
+/// relation survived the crop.
+#[test]
+fn the_realised_correlation_tracks_the_requested_one() {
+    let mut fft = FftwFft::new();
+    let mut source = GenslipLcg::new(31);
+    let generated = slip_stage(&mut source, &mut fft);
+    let extents = extents();
+    let reference = reload_for_correlation(
+        &generated.field,
+        &mut fft,
+        extents,
+        SPACING,
+        generated.padded,
+    );
+    let slip = stats::widen(generated.field.as_slice());
+
+    let mut realised = |rho: f32| {
+        let mut continued = source;
+        let field = correlated_perturbation(
+            &mut continued,
+            &mut fft,
+            &reference,
+            extents,
+            SPACING,
+            spectrum(),
+            PerturbationSpec {
+                correlation: rho,
+                sigma: 1.0,
+            },
+        );
+        stats::pearson(&stats::widen(field.as_slice()), &slip)
+    };
+
+    // Monotone in rho, and the ends behave: uncorrelated is near zero, fully
+    // correlated is near one. That ordering is the part a wiring error breaks.
+    let (none, some, full) = (realised(0.0), realised(0.8), realised(1.0));
+    assert!(none.abs() < 0.3, "rho of zero gave a correlation of {none}");
+    assert!(full > 0.95, "rho of one gave a correlation of {full}");
+    assert!(
+        none < some && some < full,
+        "correlation is not monotone in rho: {none}, {some}, {full}"
+    );
+}
+
+/// The rake field is the base rake plus a spread in degrees, and nothing else.
+///
+/// Rake is the one field whose perturbation is *not* correlated with slip — genslip
+/// draws it independently — so a rewrite that routed it through the reload would
+/// change the model while leaving every summary statistic here intact except this one.
+#[test]
+fn the_rake_field_is_independent_of_slip() {
+    let mut fft = FftwFft::new();
+    let mut source = GenslipLcg::new(5150);
+    let generated = slip_stage(&mut source, &mut fft);
+    let extents = extents();
+    let grid = fixture::fault();
+
+    let rake = rake_field(
+        &mut source,
+        &mut fft,
+        extents,
+        SPACING,
+        spectrum(),
+        &grid.base_rake_deg,
+        15.0,
+    );
+
+    let deviation: Vec<f64> = rake
+        .as_slice()
+        .iter()
+        .zip(&grid.base_rake_deg)
+        .map(|(value, base)| f64::from(value - base))
+        .collect();
+
+    let spread = stats::population_sigma(&deviation);
+    assert!(
+        (spread - 15.0).abs() < 1e-2,
+        "rake spread {spread} degrees, configured 15"
+    );
+
+    // Independent of slip, unlike the two timing perturbations. A weak bound: what
+    // would break this is routing rake through the reload, which would put it above
+    // 0.8, not a realisation that happened to correlate.
+    let with_slip = stats::pearson(&deviation, &stats::widen(generated.field.as_slice()));
+    assert!(
+        with_slip.abs() < 0.4,
+        "rake correlates with slip at {with_slip}; it is drawn independently"
+    );
+}
+
+/// The whole padded grid keeps the statistics it was mapped onto.
+#[test]
+fn the_reloaded_grid_keeps_the_original_deviation() {
+    let mut fft = FftwFft::new();
+    let mut source = GenslipLcg::new(909);
+    let generated = slip_stage(&mut source, &mut fft);
+    let extents = extents();
+
+    let mut padded = Spectrum::zeros(extents.padded_strike, extents.padded_dip);
+    for dip in 0..extents.fault_dip {
+        for strike in 0..extents.fault_strike {
+            padded[(strike, dip)] = Complex32::new(generated.field[(strike, dip)], 0.0);
+        }
+    }
+    // Before the reload the padded grid is the fault in a sea of zeros, so its
+    // statistics are not the generated field's -- which is what the reload fixes.
+    let before = mean_and_sigma(&padded);
+    assert!(
+        (before.sigma - generated.padded.sigma).abs() > generated.padded.sigma * 0.05,
+        "the zero-padded grid already had the original deviation; the reload would \
+         then be doing nothing"
+    );
+}

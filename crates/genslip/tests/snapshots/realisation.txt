@@ -1,12 +1,12 @@
 moment      1.972424e26
 alpha_t     0.9963099
-slip mean   240.37650
-slip max    635.15717
+slip mean   240.37656
+slip max    635.15710
 rake mean   174.99997
 rake max    220.93561
-onset max   7.5116382
-rise mean   0.9284049
-rise max    2.2015905
+onset max   7.5116377
+rise mean   0.9284051
+rise max    2.2015908
 stf samples 61771
 stf silent  34
 final seed  799561735

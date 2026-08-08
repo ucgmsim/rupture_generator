@@ -249,16 +249,17 @@ fn rescale_variation(slip: &mut SlipField, target: f32) {
     )]
     let subfault_count = (slip.strike_count() * slip.dip_count()) as f32;
 
-    // SIMPLIFY: a single-precision fold again, over every subfault.
-    let mut sum_of_squares = 0.0_f32;
-    for value in slip.as_slice() {
-        sum_of_squares += (*value - MEAN) * (*value - MEAN);
-    }
+    // Accumulated in `f64`, like every other fold in the pipeline.
+    let sum_of_squares: f64 = slip
+        .as_slice()
+        .iter()
+        .map(|value| (f64::from(*value) - f64::from(MEAN)).powi(2))
+        .sum();
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C's sqrt returns double and is stored to a float"
+        reason = "the field is f32; the accumulation is not"
     )]
-    let variation = f64::from(sum_of_squares / subfault_count).sqrt() as f32 / MEAN;
+    let variation = (sum_of_squares / f64::from(subfault_count)).sqrt() as f32 / MEAN;
 
     let factor = target / variation;
     for value in slip.as_mut_slice() {
@@ -554,16 +555,17 @@ fn population_sigma(field: &SlipField) -> f32 {
     )]
     let count = (field.strike_count() * field.dip_count()) as f32;
 
-    // SIMPLIFY: single-precision fold again.
-    let mut sum_of_squares = 0.0_f32;
-    for value in field.as_slice() {
-        sum_of_squares += *value * *value;
-    }
+    // Accumulated in `f64`, like every other fold in the pipeline.
+    let sum_of_squares: f64 = field
+        .as_slice()
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum();
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C's sqrt returns double and is stored to a float"
+        reason = "the field is f32; the accumulation is not"
     )]
-    let sigma = f64::from(sum_of_squares / count).sqrt() as f32;
+    let sigma = (sum_of_squares / f64::from(count)).sqrt() as f32;
     sigma
 }
 

@@ -25,9 +25,9 @@ rupture = generate_rupture(
 ```
 
 **Status: Stage 1 complete; Stage 2 in progress.** Against a stored corpus of six
-whole ruptures, **slip, rake, onset and the slip-rate pulses all agree to the SRF's own
-precision** — nothing the corpus checks diverges. The point-source path
-(`generic_slip2srf`) is not started.
+whole ruptures, **slip, rake, onset and the slip-rate pulses all agree three orders of
+magnitude inside what would matter** — nothing the corpus checks diverges. The
+point-source path (`generic_slip2srf`) is not started.
 
 The gate is now **scientific agreement** rather than bit-equality with the C.
 `ENGINEERING_RULES.md` says what that means: what makes two ruptures the same rupture,

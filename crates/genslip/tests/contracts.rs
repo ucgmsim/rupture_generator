@@ -545,6 +545,57 @@ fn the_delay_is_uniform<E: EikonalSolver>(solver: &mut E) {
     }
 }
 
+/// A phase shift translates the field, and a whole-grid shift is the identity.
+///
+/// `shift_phase` multiplies by `exp(-2*pi*i*(dx*kx + dy*ky))`, which is a *spatial
+/// translation* — the property the name does not say. Shifting by the grid's full
+/// extent must therefore return the field unchanged, and that is a claim no parity
+/// test made: it checked the samples against the C without checking what they mean.
+#[test]
+fn a_phase_shift_is_a_translation() {
+    let (strike_count, dip_count) = (16, 8);
+    let step = genslip::field::WavenumberStep {
+        strike: 1.0 / 16.0,
+        dip: 1.0 / 8.0,
+    };
+
+    let seeded = || {
+        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+        genslip::field::correlated_field(
+            &mut spectrum,
+            &mut GenslipLcg::new(4242),
+            Spectrum2D::Mai,
+            step,
+            CorrelationLengths {
+                strike: 6.0,
+                dip: 4.0,
+            },
+            genslip::field::WavelengthBand::new(1.5, 80.0),
+            2.0,
+        );
+        spectrum
+    };
+
+    // A shift of one full period in each direction: every phase factor is exp(-2*pi*i)
+    // = 1, so the field must come back. The DC term is exempt -- it round-trips as a
+    // magnitude, which is `a_phase_shift_flips_a_negative_mean`.
+    let original = seeded();
+    let mut shifted = seeded();
+    genslip::field::shift_phase(&mut shifted, step, 16.0, 8.0);
+
+    let scale = original
+        .as_slice()
+        .iter()
+        .fold(0.0_f32, |worst, value| worst.max(value.norm()));
+    for index in 1..original.as_slice().len() {
+        let (before, after) = (original.as_slice()[index], shifted.as_slice()[index]);
+        assert!(
+            (after - before).norm() < scale * 1e-5,
+            "a whole-period shift moved index {index}: {before} to {after}"
+        );
+    }
+}
+
 /// Tapering only ever reduces, and reduces the edge it was pointed at.
 #[test]
 fn the_taper_is_a_contraction() {
@@ -578,6 +629,59 @@ fn the_taper_is_a_contraction() {
         "a top taper damped the deep edge: {} vs {}",
         row(0),
         row(dip_count - 1)
+    );
+}
+
+/// The scaled field carries the moment it was asked for, to the bound its accumulator
+/// sets.
+///
+/// **This is a self-consistency check, not a conservation law**, and saying so is the
+/// point. `scale_slip` divides by exactly this sum, so it passes for any area and any
+/// rigidity — a wrong subfault area cancels itself out. What it *can* see is a
+/// subfault the scaling missed or double-counted, and how well it can see that is a
+/// property of the accumulator rather than of the physics:
+///
+/// | fold | bound | smallest visible error |
+/// | --- | --- | --- |
+/// | `f32` | 6e-05 relative at 1e5 subfaults | about six missing subfaults |
+/// | `f64` | ~1e-09 | one subfault, at 3000x the bound |
+///
+/// So widening the accumulator is what made this assertion worth writing. Recomputed
+/// in `f64` here deliberately: recomputing with the same `f32` fold the library used
+/// would cancel the accumulation error exactly and assert nothing at all.
+fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver>(
+    fft: &mut F,
+    solver: &mut E,
+) {
+    let model = rupture(fft, solver, fixture::SEED, true);
+    let grid = fixture::fault();
+    let (_, rigidity) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
+
+    let area_cm2 = f64::from(grid.spacing.strike_km) * f64::from(grid.spacing.dip_km) * 1.0e10;
+    let recomputed: f64 = model
+        .slip
+        .slip
+        .as_slice()
+        .iter()
+        .zip(rigidity.as_slice())
+        .map(|(slip_cm, mu)| area_cm2 * f64::from(*mu) * f64::from(*slip_cm))
+        .sum();
+
+    let target = f64::from(model.moment_dyne_cm);
+    let relative = (recomputed - target).abs() / target;
+
+    // The residual is the f32 storage of each scaled value, not the fold: about one
+    // unit of roundoff per subfault, growing as its square root.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "subfault counts are far below 2^52"
+    )]
+    let subfaults = model.slip.slip.as_slice().len() as f64;
+    let bound = 4.0 * f64::from(f32::EPSILON) * subfaults.sqrt();
+    assert!(
+        relative < bound,
+        "the scaled field carries {recomputed:.6e} against a target of {target:.6e}, \
+         {relative:.3e} relative and past a bound of {bound:.3e}"
     );
 }
 
@@ -675,6 +779,14 @@ macro_rules! contract_for {
             #[test]
             fn the_spectrum_is_conjugate_symmetric() {
                 the_spectrum_is_hermitian(&mut $fft);
+            }
+
+            #[test]
+            fn the_moment_survives_the_scaling() {
+                super::the_scaled_field_carries_the_moment_it_was_asked_for(
+                    &mut $fft,
+                    &mut $solver,
+                );
             }
 
             #[test]

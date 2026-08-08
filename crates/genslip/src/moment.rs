@@ -103,47 +103,52 @@ pub fn scale_slip(
     let area = subfault.area_cm2();
     let unscaled = |strike: usize, dip: usize| field[(strike, dip + dip_offset)];
 
-    // SIMPLIFY: both of these accumulate in f32 over every subfault -- on a large
-    // fault that is ~10^5 terms and a left-to-right f32 fold loses several digits.
-    // Accumulating in f64, or summing pairwise, would be strictly more accurate.
-    // Written this way because the original accumulates through a `float`.
-    let moment_sum = || {
-        let mut sum = 0.0_f32;
-        for dip in 0..dip_count {
-            for strike in 0..strike_count {
-                sum += area * rigidity[strike + dip * strike_count] * unscaled(strike, dip);
-            }
-        }
-        sum
+    // Accumulated in `f64`. The original folds through a `float` over every subfault,
+    // and on a 10^5-subfault fault that costs enough precision to matter: the moment
+    // the model asks for and the moment the scaled field carries then disagree by
+    // about 6e-5 relative, which is six missing subfaults' worth. In `f64` a single
+    // missing subfault is visible. `the_scaled_field_carries_the_moment_it_was_asked
+    // _for` is the test that became possible.
+    let moment_sum = || -> f64 {
+        (0..dip_count)
+            .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
+            .map(|(strike, dip)| {
+                f64::from(area)
+                    * f64::from(rigidity[strike + dip * strike_count])
+                    * f64::from(unscaled(strike, dip))
+            })
+            .sum()
     };
 
     #[expect(
         clippy::cast_precision_loss,
         reason = "subfault counts are far below 2^24"
     )]
-    let subfault_count = (strike_count * dip_count) as f32;
+    let subfault_count = (strike_count * dip_count) as f64;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the scale factor is applied to an f32 field"
+    )]
     let factor = match scaling {
-        SlipScaling::Moment { dyne_cm } => dyne_cm / moment_sum(),
+        SlipScaling::Moment { dyne_cm } => (f64::from(dyne_cm) / moment_sum()) as f32,
         SlipScaling::AverageSlip { centimetres } => {
-            let mut sum = 0.0_f32;
-            for dip in 0..dip_count {
-                for strike in 0..strike_count {
-                    sum += unscaled(strike, dip);
-                }
-            }
-            centimetres * subfault_count / sum
+            let sum: f64 = (0..dip_count)
+                .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
+                .map(|(strike, dip)| f64::from(unscaled(strike, dip)))
+                .sum();
+            (f64::from(centimetres) * subfault_count / sum) as f32
         }
     };
 
     let mut slip = SlipField::zeros(strike_count, dip_count);
-    let mut total = 0.0_f32;
+    let mut total = 0.0_f64;
     let mut maximum = 0.0_f32;
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             let scaled = factor * unscaled(strike, dip);
             slip[(strike, dip)] = scaled;
-            total += scaled;
+            total += f64::from(scaled);
             if scaled > maximum {
                 maximum = scaled;
             }
@@ -154,15 +159,18 @@ pub fn scale_slip(
     // the original recomputes it from the *unscaled* field, which makes the reported
     // moment that of the field before scaling rather than after -- reproduced here,
     // and flagged because it looks like a defect.
-    let moment_dyne_cm = match scaling {
-        SlipScaling::Moment { dyne_cm } => dyne_cm,
-        SlipScaling::AverageSlip { .. } => moment_sum(),
-    };
-
-    ScaledSlip {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the reported summaries are f32; the accumulation is not"
+    )]
+    let summary = ScaledSlip {
         slip,
-        average_cm: total / subfault_count,
+        average_cm: (total / subfault_count) as f32,
         maximum_cm: maximum,
-        moment_dyne_cm,
-    }
+        moment_dyne_cm: match scaling {
+            SlipScaling::Moment { dyne_cm } => dyne_cm,
+            SlipScaling::AverageSlip { .. } => moment_sum() as f32,
+        },
+    };
+    summary
 }
