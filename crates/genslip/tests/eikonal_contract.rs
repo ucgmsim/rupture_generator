@@ -60,6 +60,55 @@ fn heterogeneous(strike_count: usize, dip_count: usize) -> SpeedGrid {
     SpeedGrid::new(strike_count, dip_count, values)
 }
 
+/// Speed at the surface, and its increase per kilometre of depth.
+///
+/// A crustal-looking profile: 2.0 km/s at the top rising to 3.5 km/s at 25 km.
+const GRADIENT_SURFACE_KM_S: f64 = 2.0;
+const GRADIENT_PER_KM: f64 = 0.06;
+
+/// A medium whose speed rises linearly with depth — and has a closed-form solution.
+///
+/// This is the *discriminating* accuracy test. A uniform medium says only that a
+/// scheme is exact where the answer is trivial; a linear gradient bends the rays into
+/// circular arcs and still has an analytic first-arrival time, so it separates schemes
+/// that reproduce curvature from schemes that assume plane waves.
+fn linear_gradient(strike_count: usize, dip_count: usize, spacing_km: f64) -> SpeedGrid {
+    let values = (0..strike_count * dip_count)
+        .map(|index| {
+            #[expect(clippy::cast_precision_loss, reason = "small test indices")]
+            let depth_km = (index / strike_count) as f64 * spacing_km;
+            #[expect(clippy::cast_possible_truncation, reason = "the grid is f32")]
+            let speed = (GRADIENT_SURFACE_KM_S + GRADIENT_PER_KM * depth_km) as f32;
+            speed
+        })
+        .collect();
+    SpeedGrid::new(strike_count, dip_count, values)
+}
+
+/// First-arrival time in a constant-gradient medium, exactly.
+///
+/// For `v(z) = v₀ + g·z` the rays are circular arcs and
+///
+/// ```text
+///     T = (1/g) · arccosh(1 + g²·d² / (2·v₁·v₂))
+/// ```
+///
+/// with `d` the straight-line distance and `v₁`, `v₂` the speeds at the two endpoints.
+/// Note it depends on the endpoints' *depths* only through their speeds, not on the
+/// path — which is what makes it usable as a per-cell reference.
+fn gradient_arrival_s(strike: usize, dip: usize, hypocentre: Hypocentre, spacing_km: f64) -> f64 {
+    let speed_at = |dip: usize| {
+        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
+        let depth = dip as f64 * spacing_km;
+        GRADIENT_SURFACE_KM_S + GRADIENT_PER_KM * depth
+    };
+    let distance = straight_line_km(strike, dip, hypocentre, spacing_km);
+    let cosh = 1.0
+        + GRADIENT_PER_KM.powi(2) * distance * distance
+            / (2.0 * speed_at(hypocentre.dip) * speed_at(dip));
+    cosh.acosh() / GRADIENT_PER_KM
+}
+
 /// Distance from the source in kilometres, straight line.
 fn straight_line_km(strike: usize, dip: usize, hypocentre: Hypocentre, spacing_km: f64) -> f64 {
     #[expect(clippy::cast_precision_loss, reason = "small test indices")]
@@ -173,6 +222,31 @@ fn point_source_error<E: EikonalSolver>(solver: &mut E) -> f64 {
                  envelope of {envelope:.5}"
             );
             worst = worst.max(relative);
+        }
+    }
+    worst
+}
+
+/// Worst error against the analytic solution for a linear velocity gradient.
+///
+/// The measurement that separates the schemes. A uniform medium rewards any scheme
+/// that is exact for plane waves; a gradient bends the rays and asks whether the
+/// scheme reproduces curvature.
+fn gradient_error<E: EikonalSolver>(solver: &mut E, cells: usize, spacing: f64) -> f64 {
+    let hypocentre = Hypocentre {
+        strike: cells / 2,
+        dip: cells / 2,
+    };
+    let times = solver.solve(&linear_gradient(cells, cells, spacing), hypocentre, spacing);
+
+    let mut worst = 0.0_f64;
+    for dip in 0..cells {
+        for strike in 0..cells {
+            if (strike, dip) == (hypocentre.strike, hypocentre.dip) {
+                continue;
+            }
+            let exact = gradient_arrival_s(strike, dip, hypocentre, spacing);
+            worst = worst.max((times.time(strike, dip) - exact).abs() / exact);
         }
     }
     worst
@@ -411,6 +485,24 @@ macro_rules! contract_for {
                 super::refining_the_grid_converges(&mut $solver);
             }
 
+            /// The discriminating accuracy measurement, and the convergence order.
+            ///
+            /// A scheme that reproduces curvature converges at first order here —
+            /// the error halves with `h`. One that does not converges more slowly,
+            /// because the point-source singularity pollutes it. Reported rather
+            /// than bounded, because this test exists to *compare* solvers.
+            #[test]
+            fn the_gradient_error_and_its_convergence() {
+                let coarse = super::gradient_error(&mut $solver, 33, 1.0);
+                let fine = super::gradient_error(&mut $solver, 65, 0.5);
+                println!(
+                    "{}: linear gradient, worst relative error {coarse:.5e} at h=1.0, \
+                     {fine:.5e} at h=0.5, ratio {:.2}",
+                    stringify!($name),
+                    coarse / fine
+                );
+            }
+
             #[test]
             fn arrival_is_bounded_both_ways() {
                 super::arrival_is_between_the_straight_line_and_the_lattice_path(&mut $solver);
@@ -439,28 +531,62 @@ macro_rules! contract_for {
     };
 }
 
-/// Worst error against the analytic point-source solution, per solver, measured on a
-/// 65x65 uniform grid at 0.5 km and 2.5 km/s.
+/// Every solver's error against a solution that is known, and how it converges.
 ///
-/// **This is the table the solver choice turns on**, and it is the reason
-/// `FastMarching` is not the default. Both are first-order schemes; they are not
-/// equally accurate.
+/// **The table the solver choice turns on.** Two analytic problems: a uniform medium,
+/// where any scheme exact for plane waves does well, and a linear velocity gradient,
+/// which bends the rays into circular arcs and asks whether the scheme reproduces
+/// curvature. The second is the discriminating one.
 ///
-/// | solver | worst relative | worst absolute |
-/// | --- | --- | --- |
-/// | `Wavefront2d` | 0.0088 | 0.011 s |
-/// | `FastMarching` | 0.207 | **0.234 s** |
+/// | solver | uniform | gradient, h=1.0 | gradient, h=0.5 | ratio |
+/// | --- | --- | --- | --- | --- |
+/// | `Wavefront2d` | 0.0088 | 2.44e-02 | 2.37e-02 | **1.03** |
+/// | `FastMarching` | 0.207 | 2.12e-01 | 2.10e-01 | **1.01** |
 ///
-/// The gap is not a defect in either. Fast marching computes every cell with the same
-/// upwind update; the expanding-square tracker computes an *analytic* solution within
-/// `nsring` cells of the source and finite-differences outside, which is worth a
-/// factor of fourteen. The crate's 0.106 beyond five cells matches the published
-/// figure for first-order Godunov fast marching exactly, so it is doing what it says.
+/// The ratio column is the finding. **Neither solver converges.** Halving the grid
+/// step barely moves either error, so neither achieves even first-order accuracy on a
+/// heterogeneous medium — which is not a defect in the stencils but the point-source
+/// singularity polluting the whole field. Fomel, Luo & Zhao (2009) say it plainly of
+/// the unfactored equation: it *"cannot achieve first order accuracy due to the
+/// singularity at the point source"*, and measure a ratio of 1.65 where the factored
+/// form gives 2.00.
 ///
-/// What rules it out is the physics, not the ranking: 0.234 s of discretisation error
-/// is **4.7x** `ENGINEERING_RULES.md`'s 0.05 s onset bound. A replacement has to be
-/// better than the thing it replaces by that standard, and this one is not.
+/// So the expanding-square tracker's advantage over plain fast marching is real but
+/// bounded: it is a better stencil applied to the same badly-posed problem. On the
+/// uniform medium it is 23x better; on a gradient, only 9x, and both are stuck.
+///
+/// A replacement is acceptable if it is closer to analytic truth on **both** problems
+/// *and* converges. That is a higher bar than either of these clears.
 const ACCURACY: [(&str, f64); 2] = [("Wavefront2d", 0.0088), ("FastMarching", 0.2072)];
+
+/// Neither existing solver converges on a heterogeneous medium.
+///
+/// Recorded as an assertion rather than a remark, because it is the justification for
+/// replacing both and it would be easy to forget. A scheme that reproduces the
+/// point-source curvature gives a ratio near 2; these give 1.03 and 1.01.
+#[cfg(feature = "wavefront-compat")]
+#[test]
+fn neither_existing_solver_converges_on_a_gradient() {
+    for (name, coarse, fine) in [
+        (
+            "Wavefront2d",
+            gradient_error(&mut genslip::rupture::Wavefront2d::new(), 33, 1.0),
+            gradient_error(&mut genslip::rupture::Wavefront2d::new(), 65, 0.5),
+        ),
+        (
+            "FastMarching",
+            gradient_error(&mut genslip::rupture::FastMarching::new(), 33, 1.0),
+            gradient_error(&mut genslip::rupture::FastMarching::new(), 65, 0.5),
+        ),
+    ] {
+        let ratio = coarse / fine;
+        assert!(
+            ratio < 1.3,
+            "{name} now converges at a ratio of {ratio:.2}; if a scheme here started \
+             reproducing the source curvature, the comparison table is stale"
+        );
+    }
+}
 
 /// The accuracy gap, asserted so it cannot quietly close or widen.
 ///
