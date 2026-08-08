@@ -4,9 +4,9 @@ slip mean   240.37656
 slip max    635.15710
 rake mean   174.99997
 rake max    220.93561
-onset max   7.7319889
-rise mean   0.9284051
-rise max    2.2015908
+onset max   7.7319894
+rise mean   0.9284047
+rise max    2.2015901
 stf samples 61771
 stf silent  34
 final seed  799561735

@@ -19,7 +19,6 @@
 //!
 //! What remains here is the part the corpus cannot isolate: that the skip matches the
 //! *generator it stands in for*, on shapes the corpus does not contain.
-#![cfg(feature = "fftw")]
 
 mod common;
 

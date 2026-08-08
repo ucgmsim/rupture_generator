@@ -31,7 +31,6 @@
 //! at both ends — and `the_fitted_band_is_actually_flat` asserts that restriction is
 //! doing its job. Fitting where a factor is negligible is not the same as pretending
 //! it is absent.
-#![cfg(feature = "fftw")]
 
 mod common;
 
@@ -364,7 +363,7 @@ fn the_realised_power_matches_the_prescribed_amplitude() {
 fn the_mean_rise_time_is_what_the_moment_implies() {
     let model = genslip::realisation::generate(
         &mut GenslipLcg::new(fixture::SEED),
-        &mut genslip::fft::FftwFft::new(),
+        &mut genslip::fft::RustFft::new(),
         &mut genslip::rupture::FactoredSweep::new(),
         &fixture::fault(),
         &fixture::velocity_model(),

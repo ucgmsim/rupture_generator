@@ -36,7 +36,6 @@
 //! Every contract takes its FFT and its solver as parameters, so replacing either is
 //! a configuration change rather than a test rewrite. `contract_for!` at the bottom
 //! instantiates them; a second instantiation is one line.
-#![cfg(feature = "fftw")]
 
 mod common;
 
@@ -816,7 +815,7 @@ macro_rules! contract_for {
 // contract that ran only against something else would be checking a rupture nobody
 // generates. `teeth.sh` mutates the default solver for the same reason.
 contract_for!(
-    fftw_and_sweeping,
-    genslip::fft::FftwFft::new(),
+    sweeping,
+    genslip::fft::RustFft::new(),
     genslip::rupture::FactoredSweep::new()
 );

@@ -39,8 +39,6 @@
 //! rather than WGS84, geodetic and geocentric latitude mixed, and `π/180` truncated to
 //! `0.017453293`.
 
-#![cfg(feature = "fftw")]
-
 use genslip::geodesy::{Geodesy, Offset, Point, Wgs84Geodesic};
 use proptest::prelude::*;
 

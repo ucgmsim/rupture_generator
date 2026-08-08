@@ -11,15 +11,15 @@
 //! That decomposition is the same whichever library does the 1-D work, so it lives
 //! in [`transform_2d`] and the trait is only [`Fft`], a 1-D engine.
 //!
-//! * [`FftwFft`] calls FFTW, which is what genslip calls. It exists to be compared
-//!   against the original and is the Stage 1 default.
-//! * [`RustFft`] uses `rustfft`, needs no C library, and is where this is going.
+//! [`RustFft`] is the only engine. It replaced FFTW, which the port called because
+//! genslip does; the two agreed to 7.06e-08 relative — about an `f32` ulp — and
+//! `rustfft` measured 10% to 38% faster. Both numbers were recorded before the
+//! alternative was deleted, in `tests/fft_contract.rs` and `tests/timing.rs`.
 //!
-//! **The two are not bit-identical and cannot be.** Different algorithms round
-//! differently, so swapping engines moves the last bits of every field. What the
-//! tests establish is that both satisfy the same contract, and *how large* the
-//! difference is — measured now, so the Stage 3 swap has a baseline to be judged
-//! against rather than an argument to have afterwards.
+//! **They were never bit-identical and could not be** — different algorithms round
+//! differently, so changing engines moved the last bits of every field. What made the
+//! change decidable rather than arguable was having the size of that move written down
+//! first: on the corpus it turned out to be invisible, slip unchanged to five figures.
 //!
 //! # Normalisation is not the transform's business
 //!
@@ -34,12 +34,8 @@
 //!
 //! (orig. `fft2d_fftw`, slip.c:873)
 
-#[cfg(feature = "fftw")]
-mod fftw;
 mod rust;
 
-#[cfg(feature = "fftw")]
-pub use fftw::FftwFft;
 pub use rust::RustFft;
 
 use num_complex::Complex32;

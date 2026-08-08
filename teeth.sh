@@ -103,7 +103,7 @@ s = s.replace(old, old + """
         };""")
 p.write_text(s)
 MUTATION
-check "17 hypocentre a cell off" fftw_and_sweeping::rupture_starts onset
+check "17 hypocentre a cell off" sweeping::rupture_starts onset
 
 # DEFECTS.md 16. The `|slip| > MINSLIP` guard lives in genslip's SRF loader rather
 # than in its generator, so a faithful port of the generator does not have it.

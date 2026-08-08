@@ -1,6 +1,10 @@
 #!/bin/sh
 # Every gate, in the order that fails fastest. Errors and warnings both count --
 # `cargo test` alone will happily pass while `--all-targets` does not compile.
+#
+# There is no --no-default-features stage any more, and no features to drop: FFTW and
+# the Fortran eikonal solver were the two compatibility backends and both are gone.
+# The default build IS the shipping build.
 set -eu
 cd "$(dirname "$0")"
 
@@ -17,10 +21,6 @@ echo "== test, release =="
 # Debug and release must agree with each other. A disagreement means the port
 # depends on optimisation-level float behaviour, which is a real bug class.
 cargo test --workspace --release
-
-echo "== test, without FFTW =="
-# The Stage 3 endpoint, checked continuously so it cannot rot.
-cargo test -p genslip --no-default-features
 
 echo "== pytest =="
 .venv/bin/python -m pytest tests/ -q

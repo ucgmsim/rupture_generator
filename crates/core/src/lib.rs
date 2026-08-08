@@ -18,8 +18,9 @@
 //! large one, all of it in Rust with no Python objects touched. Releasing the GIL
 //! lets a caller run several faults at once from a thread pool.
 //!
-//! **With one caveat**, and it is the reason `RustFft` is the destination: FFTW's
-//! planner is process-global mutable state. `FftwFft` installs FFTW's own lock
+//! No caveat any more. It used to have one: FFTW's planner is process-global mutable
+//! state and aborts if two threads enter it at once, so `FftwFft` had to install
+//! FFTW's own lock. `RustFft` has no global state, and FFTW is gone.
 //! before planning, which makes this safe, but it serialises the planning of every
 //! fault in the process. `rustfft` needs no lock at all.
 
@@ -31,7 +32,7 @@
     reason = "PyO3 extracts PyReadonlyArray arguments by value"
 )]
 
-use genslip::fft::FftwFft;
+use genslip::fft::RustFft;
 use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
 use genslip::realisation::{self, RuptureModel};
 use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
@@ -762,7 +763,7 @@ fn generate_rupture(
     // Nothing below touches a Python object.
     let model = py.detach(|| {
         let mut draws = GenslipLcg::new(seed).realisation(realisation);
-        let mut fft = FftwFft::new();
+        let mut fft = RustFft::new();
         let mut solver = FactoredSweep::new();
         realisation::generate(
             &mut draws,

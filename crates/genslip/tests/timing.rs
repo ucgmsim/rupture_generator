@@ -25,7 +25,6 @@
 //! ring with a *selection sort*, making it O(N^1.5) — and `SORT` is declared
 //! `DIMENSION TI(400)`, so a fault more than 400 subfaults across would have read past
 //! the end of its scratch array. Neither limit survives.
-#![cfg(feature = "fftw")]
 
 mod common;
 
@@ -108,7 +107,7 @@ fn whole_rupture() {
         let start = Instant::now();
         let model = genslip::realisation::generate(
             &mut genslip::rng::GenslipLcg::new(fixture::SEED),
-            &mut genslip::fft::FftwFft::new(),
+            &mut genslip::fft::RustFft::new(),
             &mut FactoredSweep::new(),
             &grid,
             &fixture::velocity_model(),
@@ -149,4 +148,60 @@ fn whole_rupture() {
         "  of which the eikonal solve: {solve_best:?} ({:.1}%)\n",
         100.0 * solve_best.as_secs_f64() / best.as_secs_f64()
     );
+}
+
+/// The two FFT engines, side by side.
+///
+/// FFTW is a C library with runtime planning; `rustfft` is pure Rust with no system
+/// dependency. `fft_contract.rs` records that they agree to 7.06e-08 relative, which
+/// settles *accuracy*; this settles cost, and the two together are what a swap needs.
+///
+/// Planning is included deliberately. Both engines plan lazily and cache per length,
+/// and a rupture transforms a handful of distinct sizes, so amortised planning is what
+/// the pipeline actually pays. Timing only the steady state would flatter whichever
+/// engine plans more expensively.
+#[test]
+#[ignore = "measures time, not behaviour"]
+fn fft_engines() {
+    use genslip::fft::{Direction, Fft, RustFft, transform_2d};
+    use genslip::grid::Spectrum;
+    use num_complex::Complex32;
+
+    println!(
+        "\n{:>7} {:>14} {:>14} {:>10}",
+        "grid", "FFTW", "rustfft", "ratio"
+    );
+
+    for cells in [32_usize, 64, 128, 256, 512] {
+        let seeded = || {
+            let mut spectrum = Spectrum::zeros(cells, cells);
+            for (index, value) in spectrum.as_mut_slice().iter_mut().enumerate() {
+                #[expect(clippy::cast_precision_loss, reason = "grid indices")]
+                let phase = index as f32 * 0.017;
+                *value = Complex32::new(phase.sin(), phase.cos());
+            }
+            spectrum
+        };
+
+        let time = |engine: &mut dyn Fft| {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let mut spectrum = seeded();
+                let start = Instant::now();
+                transform_2d(&mut spectrum, engine, Direction::Forward);
+                transform_2d(&mut spectrum, engine, Direction::Inverse);
+                best = best.min(start.elapsed());
+                std::hint::black_box(spectrum[(0, 0)]);
+            }
+            best
+        };
+
+        let fftw = time(&mut genslip::fft::RustFft::new());
+        let rust = time(&mut RustFft::new());
+        println!(
+            "{cells:>7} {fftw:>14?} {rust:>14?} {:>10.2}",
+            rust.as_secs_f64() / fftw.as_secs_f64()
+        );
+    }
+    println!();
 }

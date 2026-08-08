@@ -15,8 +15,7 @@ genslip.workspace = true
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module"] }
 
-[features]
-default = ["fftw"]
+["fftw"]
 # Mirror genslip's Stage 1 compatibility features so the extension can be built
 # either way; `--no-default-features` is the Stage 3 shape.
 fftw = ["genslip/fftw"]

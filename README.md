@@ -74,8 +74,7 @@ uv sync --extra test --group dev   # builds the compiled extensions
 
 Runs clippy at `-D warnings` across all five crates, `cargo fmt --check`, the Rust
 suite in **debug and release** (they must agree with each other — a disagreement
-means the port depends on optimisation-level float behaviour), the suite again with
-`--no-default-features`, and pytest.
+means the port depends on optimisation-level float behaviour), and pytest.
 
 **Both extras are needed.** A bare `uv sync` drops the `test` extra and the `dev`
 group, taking pytest with them, and `gate.sh`'s last stage then fails on a missing
@@ -87,10 +86,10 @@ disagrees with `_core.pyi` and with the Rust it claims to be, and no gate can te
 because pytest imports the `.so` while clippy checks source that never reached it.
 Anything that changes `crates/core` needs a re-sync before pytest means anything.
 
-`--no-default-features` builds without FFTW. It is the Stage 3 endpoint, checked
-continuously so it cannot rot — and since the Fortran eikonal solver went it
-**generates ruptures** in that configuration rather than merely compiling, so the whole
-suite runs there.
+There are no cargo features left. FFTW and the Fortran eikonal solver were the two
+compatibility backends, both are gone, and the crate has **no system dependencies** —
+`rustfft` and a fast-sweeping solver do the same jobs in pure Rust, more accurately in
+the solver's case and slightly faster in the transform's.
 
 `genslip-oracle` needs an EMOD3D build. Point `EMOD3D_BUILD_DIR` at one, built
 without fast-math and without FP contraction:

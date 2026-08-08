@@ -19,13 +19,11 @@
 //! answer would have been to abandon the improvement; under a scientific gate it is
 //! to replace the assertion with the property it was standing in for.
 
-#![cfg(feature = "fftw")]
-
 mod common;
 
 use common::fixture;
 use common::stats;
-use genslip::fft::{Fft, FftwFft};
+use genslip::fft::{Fft, RustFft};
 use genslip::field::Spectrum2D;
 use genslip::grid::Spectrum;
 use genslip::rng::GenslipLcg;
@@ -72,7 +70,7 @@ fn slip_stage<F: Fft>(source: &mut GenslipLcg, fft: &mut F) -> NormalisedSlip {
 /// a differently-scaled field and their configured sigmas would mean nothing.
 #[test]
 fn the_reload_restores_the_original_padded_statistics() {
-    let mut fft = FftwFft::new();
+    let mut fft = RustFft::new();
     let mut source = GenslipLcg::new(909);
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();
@@ -106,7 +104,7 @@ fn the_reload_restores_the_original_padded_statistics() {
 /// what happens when nothing asserts this.
 #[test]
 fn a_perturbation_is_centred_and_has_the_configured_spread() {
-    let mut fft = FftwFft::new();
+    let mut fft = RustFft::new();
     let mut source = GenslipLcg::new(4242);
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();
@@ -157,7 +155,7 @@ fn a_perturbation_is_centred_and_has_the_configured_spread() {
 /// relation survived the crop.
 #[test]
 fn the_realised_correlation_tracks_the_requested_one() {
-    let mut fft = FftwFft::new();
+    let mut fft = RustFft::new();
     let mut source = GenslipLcg::new(31);
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();
@@ -205,7 +203,7 @@ fn the_realised_correlation_tracks_the_requested_one() {
 /// change the model while leaving every summary statistic here intact except this one.
 #[test]
 fn the_rake_field_is_independent_of_slip() {
-    let mut fft = FftwFft::new();
+    let mut fft = RustFft::new();
     let mut source = GenslipLcg::new(5150);
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();
@@ -247,7 +245,7 @@ fn the_rake_field_is_independent_of_slip() {
 /// The whole padded grid keeps the statistics it was mapped onto.
 #[test]
 fn the_reloaded_grid_keeps_the_original_deviation() {
-    let mut fft = FftwFft::new();
+    let mut fft = RustFft::new();
     let mut source = GenslipLcg::new(909);
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();

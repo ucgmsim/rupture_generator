@@ -5,7 +5,8 @@
 //! its forward rather than a scaled one. So substituting it changes no convention,
 //! only the rounding.
 //!
-//! It will not be bit-identical to [`super::FftwFft`], and no test asks it to be.
+//! It was not bit-identical to the FFTW engine it replaced, and no test asked it
+//! to be: they agreed to 7.06e-08 relative, which is about an f32 ulp.
 //! What `fft_contract.rs` asks is that both satisfy the same properties, and it
 //! measures how far apart they are so the Stage 3 swap has a number to be judged
 //! against.
