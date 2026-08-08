@@ -17,170 +17,17 @@
 //! indistinguishable from a silently broken one.
 #![cfg(all(feature = "fftw", feature = "wavefront-compat"))]
 
+mod common;
+
+use common::fixture;
 use genslip::fft::FftwFft;
-use genslip::field::{Spectrum2D, WavelengthBand};
-use genslip::realisation::{FaultGrid, SlipSpec, SourceSpec, TimingSpec, generate};
-use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
+use genslip::realisation::generate;
 use genslip::rng::{GenslipLcg, Realisations as _};
-use genslip::rupture::{Hypocentre, SpeedProfile, Wavefront2d};
-use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use genslip::slip_rate::BetaProfile;
-use genslip::source::{CornerRelation, Layer, MagnitudeScale, VelocityModel};
-use genslip::taper::EdgeTapers;
-
-/// A fault small enough to run in milliseconds and large enough that every depth
-/// ramp has subfaults on both sides of it.
-fn fault() -> FaultGrid {
-    let (strike_count, dip_count) = (24, 14);
-    FaultGrid {
-        extents: GridExtents {
-            fault_strike: strike_count,
-            fault_dip: dip_count,
-            padded_strike: 28,
-            padded_dip: 16,
-        },
-        spacing: SubfaultSpacing {
-            strike_km: 1.0,
-            dip_km: 1.0,
-        },
-        // 0.5 km to 20.5 km: through the shallow rise-time ramp at 6.5 and the deep
-        // one at 17.5.
-        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-        depth_km: (0..dip_count).map(|dip| 0.5 + dip as f32 * 1.5).collect(),
-        base_rake_deg: vec![175.0; strike_count * dip_count],
-        velocity_fraction: vec![0.8; strike_count * dip_count],
-    }
-}
-
-fn velocity_model() -> VelocityModel {
-    VelocityModel::new(vec![
-        Layer {
-            bottom_depth_km: 1.0,
-            shear_speed_km_s: 1.8,
-            density_g_cm3: 2.1,
-        },
-        Layer {
-            bottom_depth_km: 5.0,
-            shear_speed_km_s: 2.6,
-            density_g_cm3: 2.4,
-        },
-        Layer {
-            bottom_depth_km: 12.0,
-            shear_speed_km_s: 3.2,
-            density_g_cm3: 2.6,
-        },
-        Layer {
-            bottom_depth_km: 30.0,
-            shear_speed_km_s: 3.6,
-            density_g_cm3: 2.7,
-        },
-    ])
-}
-
-fn source_spec() -> SourceSpec {
-    SourceSpec {
-        magnitude: 6.8,
-        magnitude_scale: MagnitudeScale::Moment,
-        corners: CornerRelation::Mai {
-            strike_offset: 2.50,
-            dip_offset: 1.50,
-            circular: false,
-        },
-        modified_corners: false,
-        rise_time_coefficient: 1.6,
-        average_dip_deg: 60.0,
-        average_rake_deg: 175.0,
-    }
-}
-
-fn slip_spec() -> SlipSpec {
-    SlipSpec {
-        spectrum: SpectrumSpec {
-            shape: Spectrum2D::Mai,
-            // Overwritten by the magnitude relation inside `generate`.
-            correlation: genslip::field::CorrelationLengths {
-                strike: 1.0,
-                dip: 1.0,
-            },
-            band: WavelengthBand::new(1.5, 80.0),
-            coefficient_of_variation: 0.75,
-            phase_shift: (0.0, 0.0),
-        },
-        tapers: EdgeTapers {
-            sides: 0.02,
-            top: 0.0,
-            bottom: 0.0,
-        },
-        truncate_negative: true,
-        water_level: 0.0,
-        // genslip's `rake_sigma` default, in degrees. Deliberately not the 0.75
-        // above: that is the slip field's coefficient of variation, dimensionless,
-        // and confusing the two is `DEFECTS.md` 14.
-        rake_sigma_deg: 15.0,
-    }
-}
-
-fn timing_spec() -> TimingSpec {
-    let shallow = DepthRamp {
-        centre_km: 6.5,
-        half_width_km: 1.5,
-    };
-    let deep = DepthRamp {
-        centre_km: 17.5,
-        half_width_km: 2.5,
-    };
-    TimingSpec {
-        rupture_time: PerturbationSpec {
-            correlation: 0.8,
-            sigma: 1.0,
-        },
-        rupture_time_scale: -0.35,
-        rupture_delay_s: 0.0,
-        rise_time: RiseTimeSpec {
-            perturbation: PerturbationSpec {
-                correlation: 0.9,
-                sigma: 0.75,
-            },
-            shallow_blend: DepthRamp {
-                centre_km: 2.0,
-                half_width_km: 1.0,
-            },
-            slip_exponent: 0.5,
-        },
-        rise_time_stretch: RiseTimeStretch {
-            shallow,
-            shallow_factor: 2.0,
-            deep,
-            deep_factor: 2.0,
-        },
-        rise_time_weighting: Weighting::Uniform,
-        speed_profile: SpeedProfile {
-            shallow,
-            shallow_factor: 0.6,
-            deep,
-            deep_factor: 0.6,
-        },
-        beta: BetaProfile {
-            shallow_ramp: DepthRamp {
-                centre_km: 2.0,
-                half_width_km: 1.0,
-            },
-            shallow: 0.5,
-            mid_ramp: DepthRamp {
-                centre_km: 6.5,
-                half_width_km: 1.5,
-            },
-            mid: 0.13,
-            deep: 0.13,
-        },
-        sample_interval_s: 0.005,
-        max_samples: 100_000,
-    }
-}
+use genslip::rupture::Wavefront2d;
+use genslip::source::MagnitudeScale;
 
 /// Summary statistics, formatted so a diff points at which one moved.
 fn summarise(seed: i64, realisation: u64) -> String {
-    let grid = fault();
     let mut draws = GenslipLcg::new(seed).realisation(realisation);
     let mut fft = FftwFft::new();
     let mut solver = Wavefront2d::new();
@@ -189,12 +36,12 @@ fn summarise(seed: i64, realisation: u64) -> String {
         &mut draws,
         &mut fft,
         &mut solver,
-        &grid,
-        &velocity_model(),
-        source_spec(),
-        slip_spec(),
-        timing_spec(),
-        Hypocentre { strike: 12, dip: 8 },
+        &fixture::fault(),
+        &fixture::velocity_model(),
+        fixture::source_spec(),
+        fixture::slip_spec(),
+        fixture::timing_spec(),
+        fixture::hypocentre(),
     );
 
     let peak = |values: &[f32]| values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -243,7 +90,7 @@ const SNAPSHOT: &str = include_str!("snapshots/realisation.txt");
 
 #[test]
 fn the_whole_model_matches_its_snapshot() {
-    let produced = summarise(20_260_807, 0);
+    let produced = summarise(fixture::SEED, 0);
 
     if std::env::var_os("UPDATE_SNAPSHOT").is_some() {
         std::fs::write(
@@ -285,7 +132,6 @@ fn the_moment_survives_the_pipeline() {
     // The one physical invariant that should hold end to end: the scaled slip field
     // carries the moment the magnitude implies. Held loosely, because the moment sum
     // is a single-precision fold over every subfault.
-    let grid = fault();
     let mut draws = GenslipLcg::new(909);
     let mut fft = FftwFft::new();
     let mut solver = Wavefront2d::new();
@@ -293,15 +139,16 @@ fn the_moment_survives_the_pipeline() {
         &mut draws,
         &mut fft,
         &mut solver,
-        &grid,
-        &velocity_model(),
-        source_spec(),
-        slip_spec(),
-        timing_spec(),
-        Hypocentre { strike: 12, dip: 8 },
+        &fixture::fault(),
+        &fixture::velocity_model(),
+        fixture::source_spec(),
+        fixture::slip_spec(),
+        fixture::timing_spec(),
+        fixture::hypocentre(),
     );
 
-    let expected = genslip::source::seismic_moment(source_spec().magnitude, MagnitudeScale::Moment);
+    let expected =
+        genslip::source::seismic_moment(fixture::source_spec().magnitude, MagnitudeScale::Moment);
     assert!(
         (model.moment_dyne_cm - expected).abs() < expected * 1e-6,
         "moment {} vs {expected}",
