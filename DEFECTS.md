@@ -385,7 +385,56 @@ correlated with slip at `tsfac1_scor = 0.8`. It was a symptom, and the
 `frankel_no_perturbation` twin is what said so before the cause was known: same fault,
 `tsfac_main = 0`, onset already exact.
 
-### Nothing open
+### 20: `cos` drops a subfault whose rise time is one sample — **open**
+
+**Ours, and found by the moment rate function.** Not a corpus case: no corpus case uses
+`stype=cos`, and the corpus compares fields rather than sums.
+
+A raised cosine is `1 - cos(2πt/T)`, which is exactly **zero at `t = 0`**. Sampled at
+`dt`, a pulse whose duration is the one-sample floor has a single sample, at `t = 0`, of
+value zero — and a two-sample one is zero at both ends. `normalise` then sees an integral
+of zero and returns an empty pulse:
+
+```rust
+if integral <= 0.0 {
+    return SlipRate::empty();       // slip_rate.rs:711
+}
+```
+
+So the subfault gets `nt1 = 0` and no samples, exactly as if it had not slipped. It did:
+
+| | slip | rise time | `oliu_p2` gives | `cos` gives |
+| --- | --- | --- | --- | --- |
+| subfault 47 | **318 cm** | 0.005 s | 3 samples | none |
+| subfault 62 | **269 cm** | 0.005 s | 3 samples | none |
+| subfault 124 | **209 cm** | 0.005 s | 3 samples | none |
+
+Three of the largest-slipping subfaults on a 16x10 M6.8 fixture, carrying **0.996%** of
+the moment. The SRF header would still count them, so the moment in the header exceeds
+the moment in the pulses by a percent — and nothing downstream can tell, because a
+subfault with `nt1 = 0` is indistinguishable from one that did not slip.
+
+**The guard is not wrong; it is silent.** genslip divides by that integral without
+checking, so the C produces `inf` or `NaN` for the same input — loud, and a wave
+propagation code would refuse it. The port replaced a loud failure with a quiet one,
+which is the trade `README.md` warns about in the other direction: *"when the original is
+silent, make it loud"*.
+
+**What it is not.** It is not the `MINSLIP` guard of #16, which is about subfaults that
+genuinely do not slip and is correct. It is not confined to `cos`: any shape that is zero
+at `t = 0` is exposed, which is `cos` alone of the eleven — `esg2006` and `seki` are
+non-zero there, and the rest rise from zero over more than one sample.
+
+**Undecided, deliberately.** The fix is a choice between refusing a duration that cannot
+be represented at the configured `dt` — which is the honest reading, since a rise time of
+one sample is a rise time the format cannot express — and lengthening the pulse to the
+minimum the shape needs, which invents a duration nobody asked for. Both change output,
+so neither belongs in a commit about something else.
+
+`tests/test_moment.py::TestCosDropsSubfaultsItCannotRepresent` pins the size of it, so
+the number cannot move without saying so.
+
+### Nothing else open
 
 Every field the corpus checks — slip, rake, onset, the slip-rate pulses — agrees to the
 SRF's own text precision on all six cases. The only divergence still recorded is
