@@ -1,0 +1,32 @@
+# A two-segment fault, in the shape `rupture-generator mesh` reads.
+#
+# The two planes have different dips and different bottom depths, which is ordinary and
+# which a design that fused them into one grid could not have expressed. They are
+# connected because the second plane's top edge *begins* where the first one's ends --
+# there is no second copy of that corner to disagree with the first.
+
+schema_version = 1
+title = "Kaikoura, two segments"
+
+# The frame the mesh is built in. Positions below are longitude and latitude; this is
+# what they are projected into, and every quantity the mesh derives is exact in it.
+# NZTM2000 covers New Zealand; a fault elsewhere wants the projection for elsewhere.
+crs = "EPSG:2193"
+
+[[surfaces]]
+type = "fault"
+name = "kaikoura"
+origin = { longitude_deg = 173.00, latitude_deg = -42.60 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.40, latitude_deg = -42.40 }
+dip_deg = 70.0
+bottom_depth_km = 15.0
+discretisation = { subfault_size_km = 1.0 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.90, latitude_deg = -42.10 }
+dip_deg = 55.0
+bottom_depth_km = 12.0
+discretisation = { subfault_size_km = 1.0 }

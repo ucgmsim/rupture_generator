@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/genslip", "crates/srf", "crates/core"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+genslip = { path = "crates/genslip" }
+srf = { path = "crates/srf" }
+
+[workspace.lints.clippy]
+# Clippy at zero is a gate, not an aspiration. Lints are `warn`, never `deny`; a
+# suppression is a targeted #[allow] with the reason written beside it. CI runs
+# clippy with -D warnings.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

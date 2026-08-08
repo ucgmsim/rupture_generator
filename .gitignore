@@ -8,3 +8,17 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Rust
+target/
+
+# The compiled extensions. Build them with `uv sync --extra test --group dev`.
+# A committed binary goes stale silently: it disagrees with `_core.pyi` and with
+# the Rust it claims to be, and no gate can tell -- pytest imports the .so and
+# passes while clippy checks source that never reached it.
+*.so
+*.pyd
+*.dylib
+
+# Hypothesis
+.hypothesis/
