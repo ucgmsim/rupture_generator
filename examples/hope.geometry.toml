@@ -1,0 +1,30 @@
+# A bent fault: two planes, one continuous surface.
+#
+# The trace turns 25 degrees, and the dip, dip direction and down-dip width are the same
+# either side of the bend -- so the two planes share their whole edge and the generator
+# runs on one grid whose strike varies along it. That is genslip's `bent` corpus case.
+#
+# `examples/kaikoura.geometry.toml` is the other kind: its planes differ in dip and in
+# depth, so they are two *segments* and `generate` refuses to fuse them by name.
+
+schema_version = 1
+title = "A bent fault, one surface"
+crs = "EPSG:2193"
+
+[[surfaces]]
+type = "fault"
+name = "hope"
+origin = { longitude_deg = 172.00, latitude_deg = -42.60 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.30, latitude_deg = -42.50 }
+dip_deg = 75.0
+bottom_depth_km = 14.0
+discretisation = { subfault_size_km = 1.0 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.55, latitude_deg = -42.32 }
+dip_deg = 75.0
+bottom_depth_km = 14.0
+discretisation = { subfault_size_km = 1.0 }

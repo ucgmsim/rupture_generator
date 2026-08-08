@@ -433,12 +433,66 @@ fn reach_km(depth_span_km: f64, dip_deg: f64) -> f64 {
     depth_span_km / dip_deg.to_radians().tan()
 }
 
+/// The sharpest bend a conforming trace may have, in degrees of deflection.
+///
+/// The shared column at a bend is stepped down the bisector and stretched by
+/// `1 / cos(half the deflection)`, which runs away as the deflection approaches 180. At
+/// 120 degrees the stretch is exactly 2, so the two cells flanking the bend would be
+/// twice the size of every other cell -- past which calling the grid uniform stops being
+/// defensible.
+const SHARPEST_BEND_DEG: f64 = 120.0;
+
+/// Whether two planes meeting at a vertex form one continuous surface.
+///
+/// They do when they hang the same way: the same dip, the same side, and the same depth
+/// range. Then their surfaces intersect along a line below the shared vertex, and one
+/// column of nodes can lie in both.
+///
+/// They do not when any of those differ -- which is a fault with a *segment boundary*
+/// rather than a bend, and is two surfaces that happen to touch along their top edge.
+#[expect(
+    clippy::float_cmp,
+    reason = "these are values a person wrote down, and the question is whether they \
+              wrote the same one. A near miss is a typo, and reading it as a segment \
+              boundary -- two surfaces that merely touch -- is the safe answer: it \
+              places each plane where its own numbers say, rather than somewhere \
+              between them."
+)]
+fn conforming(near: &Plane, far: &Plane) -> bool {
+    near.dip_deg == far.dip_deg
+        && near.dip_direction == far.dip_direction
+        && near.bottom_depth_km == far.bottom_depth_km
+}
+
+/// The down-dip azimuth and step stretch at a trace vertex.
+///
+/// At the ends, and where two planes do not conform, this is just the owning plane's own
+/// quarter turn. At a bend between two that *do*, it is the **bisector** of the two
+/// bearings, stretched by `1 / cos(half the deflection)`.
+///
+/// That stretch is what makes the shared column real. The bisector's projection onto
+/// either plane's own down-dip direction is `cos(half the deflection)`, so undoing it
+/// puts the point in *both* planes at once -- which is what "one surface" means, and
+/// what `tests/mesh.rs::a_bend_shares_its_column_exactly` asserts. Without it the two
+/// planes diverge below the vertex: measured at **1.285 km** on the `hope` example, a
+/// 20-degree bend on a 14 km-deep fault.
+fn step_at_bend(incoming_deg: f64, outgoing_deg: f64, quarter_turn: f64) -> Result<(f64, f64)> {
+    let deflection_deg = normalise_bearing(outgoing_deg - incoming_deg + 180.0) - 180.0;
+    if deflection_deg.abs() >= SHARPEST_BEND_DEG {
+        return Err(Error::TraceDoublesBack { deflection_deg });
+    }
+    let stretch = 1.0 / (0.5 * deflection_deg.to_radians()).cos();
+    Ok((incoming_deg + 0.5 * deflection_deg + quarter_turn, stretch))
+}
+
 fn build_fault(fault: &Fault) -> Result<Mesh> {
     if fault.top_depth_km < 0.0 {
         return Err(Error::AboveSurface {
             depth_km: fault.top_depth_km,
         });
     }
+
+    let planes: Vec<&Plane> = fault.planes().collect();
 
     // The trace: `origin`, then every plane's far end. One more point than there are
     // planes, which is what makes a plane's near end the previous plane's far end.
@@ -447,8 +501,24 @@ fn build_fault(fault: &Fault) -> Result<Mesh> {
     // fault scale. See `Projected::offset_from`.
     let origin = fault.origin;
     let trace: Vec<Projected> = std::iter::once(origin)
-        .chain(fault.planes().map(|plane| plane.end))
+        .chain(planes.iter().map(|plane| plane.end))
         .map(|point| point.offset_from(origin))
+        .collect();
+
+    for (index, plane) in planes.iter().enumerate() {
+        require_dip(plane.dip_deg)?;
+        Error::require_positive(
+            "bottom_depth_km - top_depth_km",
+            plane.bottom_depth_km - fault.top_depth_km,
+        )?;
+        Error::require_positive(
+            "trace segment length",
+            trace[index].distance_km(trace[index + 1]),
+        )?;
+    }
+
+    let bearings: Vec<f64> = (0..planes.len())
+        .map(|index| trace[index].bearing_deg(trace[index + 1]))
         .collect();
 
     // Top vertices come first and are shared: the vertex between two planes is one
@@ -457,26 +527,62 @@ fn build_fault(fault: &Fault) -> Result<Mesh> {
         .iter()
         .map(|point| point.at_depth(fault.top_depth_km))
         .collect();
-    let mut faces = Vec::with_capacity(fault.plane_count());
+    let mut faces = Vec::with_capacity(planes.len());
 
-    for (index, plane) in fault.planes().enumerate() {
-        require_dip(plane.dip_deg)?;
-        let depth_span_km = plane.bottom_depth_km - fault.top_depth_km;
-        Error::require_positive("bottom_depth_km - top_depth_km", depth_span_km)?;
+    // The bottom vertex at each trace point, for each plane that reaches it. A vertex
+    // where two conforming planes meet is placed once and used twice; anywhere else the
+    // two planes get their own, because they genuinely are in different places.
+    let mut bottom: Vec<[Option<usize>; 2]> = vec![[None, None]; trace.len()];
 
-        let (near, far) = (trace[index], trace[index + 1]);
-        Error::require_positive("trace segment length", near.distance_km(far))?;
+    for (index, plane) in planes.iter().enumerate() {
+        let quarter_turn = plane.dip_direction.quarter_turn();
+        let reach = reach_km(plane.bottom_depth_km - fault.top_depth_km, plane.dip_deg);
 
-        // Both top corners step down dip by the same vector, which is what makes the
-        // face a parallelogram and the bilinear refinement of it exact.
-        let azimuth = near.bearing_deg(far) + plane.dip_direction.quarter_turn();
-        let reach = reach_km(depth_span_km, plane.dip_deg);
-        let step = |point: Projected| point.along(azimuth, reach).at_depth(plane.bottom_depth_km);
+        for (vertex, side) in [(index, 1_usize), (index + 1, 0_usize)] {
+            if bottom[vertex][side].is_some() {
+                continue;
+            }
+            // Does a conforming neighbour share this vertex?
+            let neighbour = if vertex == index && index > 0 {
+                Some(index - 1)
+            } else if vertex == index + 1 && index + 1 < planes.len() {
+                Some(index + 1)
+            } else {
+                None
+            };
+            let shared = neighbour.filter(|other| conforming(plane, planes[*other]));
 
-        let bottom_near = vertices.len();
-        vertices.push(step(near));
-        vertices.push(step(far));
-        faces.push([index, index + 1, bottom_near + 1, bottom_near]);
+            let (azimuth, stretch) = match shared {
+                Some(other) => {
+                    let (incoming, outgoing) = if other < index {
+                        (bearings[other], bearings[index])
+                    } else {
+                        (bearings[index], bearings[other])
+                    };
+                    step_at_bend(incoming, outgoing, quarter_turn)?
+                }
+                None => (bearings[index] + quarter_turn, 1.0),
+            };
+
+            vertices.push(
+                trace[vertex]
+                    .along(azimuth, reach * stretch)
+                    .at_depth(plane.bottom_depth_km),
+            );
+            let placed = vertices.len() - 1;
+            bottom[vertex][side] = Some(placed);
+            if shared.is_some() {
+                // One vertex, both sides of the seam.
+                bottom[vertex][1 - side] = Some(placed);
+            }
+        }
+
+        faces.push([
+            index,
+            index + 1,
+            bottom[index + 1][0].expect("placed above"),
+            bottom[index][1].expect("placed above"),
+        ]);
     }
 
     Ok(Mesh {

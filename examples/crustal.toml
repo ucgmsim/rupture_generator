@@ -1,0 +1,53 @@
+# A crustal M6.2, in the shape `rupture-generator generate` reads.
+#
+# Every field here carries the same name and unit as the argument it feeds in the
+# compiled core -- `tests/test_config_completeness.py` checks that mechanically, in both
+# directions, so a knob the generator has is always reachable and a key here is never
+# read and dropped.
+
+schema_version = 1
+title = "Crustal M6.2"
+
+# Where the rupture starts, in the plane's own coordinates: along strike from the i = 0
+# end, and down dip from the top edge. Arc lengths rather than cell indices, so they mean
+# the same thing whatever the plane is cut into.
+[hypocentre]
+strike_km = 12.0
+dip_km = 6.0
+
+# Shallow to deep. `bottom_depth_km` is the depth to the *bottom* of each layer, and a
+# subfault below the last one takes that layer's properties rather than an extrapolation.
+[velocity_model]
+bottom_depth_km  = [1.0, 5.0, 12.0, 1000.0]
+shear_speed_km_s = [1.8, 3.2, 3.5, 4.6]
+density_g_cm3    = [2.1, 2.5, 2.7, 3.2]
+
+[source]
+type = "finite"
+magnitude = 6.2
+model = "mai"
+average_dip_deg = 70.0
+average_rake_deg = 175.0
+
+[slip]
+model = "mai"
+# Dimensionless: the slip field's spread. `rake_sigma_deg` below is the rake field's and
+# is in degrees -- handing one to the other is DEFECTS.md 14, a factor of twenty on every
+# fault, which is why they never appear as bare numbers in the same expression.
+coefficient_of_variation = 0.75
+rake_sigma_deg = 15.0
+
+[timing]
+rupture_time_scale = -0.35
+rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
+shallow_ramp      = { centre_km = 6.5,  half_width_km = 1.5 }
+deep_ramp         = { centre_km = 17.5, half_width_km = 2.5 }
+beta_shallow_ramp = { centre_km = 2.0,  half_width_km = 1.0 }
+beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
+
+[random]
+# `pcg` is PCG64-DXSM. `genslip_lcg` reproduces genslip v5.6.2 bit for bit and is the
+# default, so a config that says nothing keeps producing what it always has.
+engine = "pcg"
+seed = 1234
+realisation = 0

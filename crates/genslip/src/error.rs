@@ -109,6 +109,16 @@ pub enum Error {
         needed: usize,
     },
 
+    /// A fault trace turns back on itself.
+    ///
+    /// Two conforming planes meeting at a bend share a column of nodes, placed down the
+    /// bisector of their bearings. At 180 degrees there is no bisector and no surface --
+    /// the two half-planes coincide -- and the stretch that places the column runs away
+    /// long before that. A deflection this sharp is a digitising error rather than a
+    /// fault.
+    #[error("the trace turns {deflection_deg} degrees, which doubles back on itself")]
+    TraceDoublesBack { deflection_deg: f64 },
+
     /// A fault surface would reach above the ground.
     ///
     /// Depth is measured downwards, so a negative one is in the air. Reached by a top
