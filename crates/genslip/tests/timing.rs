@@ -115,7 +115,8 @@ fn whole_rupture() {
             fixture::slip_spec(),
             fixture::timing_spec(),
             fixture::hypocentre(),
-        );
+        )
+        .expect("the fixture geometry is valid");
         best = best.min(start.elapsed());
         std::hint::black_box(model.moment_dyne_cm);
     }

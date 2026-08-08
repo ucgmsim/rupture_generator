@@ -4,6 +4,7 @@
 //! rupture has to carry, the wavenumber corners its slip spectrum turns over at, how
 //! long the average subfault slips for, and the elastic properties at each depth.
 
+use crate::error::{Error, Result};
 use crate::taper::SlipField;
 
 /// Natural log of ten, the base of every magnitude relation here.
@@ -208,7 +209,7 @@ pub fn correlation_lengths(
 ///
 /// Both factors are 1 for a vertical strike-slip fault, so `alpha_t` is 1 and nothing
 /// changes — which is the calibration point.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryCorrection {
     /// `alpha_t` itself, in `[1/(1+c), 1]`.
     pub alpha_t: f32,
@@ -230,27 +231,53 @@ pub struct GeometryCorrection {
 /// frequencies for every non-strike-slip fault.
 const ALPHA_COEFFICIENT: f32 = 0.1;
 
+/// Where the dip factor stops falling: at or below this the fault is flat enough that
+/// the correction is fully on. (`genslip_v5.6.2.c:1421`)
+const DIP_FACTOR_PLATEAU_DEG: f32 = 45.0;
+/// A vertical fault. The dip factor is zero here and the correction does nothing.
+const VERTICAL_DIP_DEG: f32 = 90.0;
+/// Pure reverse, where the rake factor peaks. (`genslip_v5.6.2.c:1432`)
+const REVERSE_RAKE_DEG: f32 = 90.0;
+
 /// Compute the dip and rake correction.
 ///
 /// `average_rake_deg` is averaged over the fault before being wrapped into
 /// `[-180, 180]`, so a fault straddling the wrap gives a mean that is not the mean of
 /// the angles. Reproduced.
 ///
+/// # Errors
+///
+/// [`Error::DipOutOfRange`] if `average_dip_deg` is outside 0–90.
+///
+/// **The original returns a factor of zero instead**, which is not an error value: it
+/// is a rupture whose rise time and rupture speed are silently uncorrected, and
+/// nothing downstream can tell it apart from a vertical fault. A dip of 120° is not a
+/// fault plane, so this says so. See `error.rs`.
+///
+/// The *rake* has no such branch and needs none — it is wrapped into `[-180, 180]`
+/// first, so every input lands in range by construction.
+///
 /// (orig. `genslip_v5.6.2.c:1416-1444`)
-#[must_use]
-pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> GeometryCorrection {
+pub fn geometry_correction(
+    average_dip_deg: f32,
+    average_rake_deg: f32,
+) -> Result<GeometryCorrection> {
+    if !(0.0..=VERTICAL_DIP_DEG).contains(&average_dip_deg) {
+        return Err(Error::DipOutOfRange {
+            degrees: f64::from(average_dip_deg),
+        });
+    }
+
+    // One at or below the plateau, falling linearly to zero at vertical.
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores fD and fR into floats"
+        reason = "the narrowing seam: C stores fD into a float"
     )]
-    let dip_factor = if (45.0..=90.0).contains(&average_dip_deg) && average_dip_deg > 45.0 {
-        (1.0 - (f64::from(average_dip_deg) - 45.0) / 45.0) as f32
-    } else if (0.0..=45.0).contains(&average_dip_deg) {
-        1.0
+    let dip_factor = if average_dip_deg > DIP_FACTOR_PLATEAU_DEG {
+        (1.0 - (f64::from(average_dip_deg) - f64::from(DIP_FACTOR_PLATEAU_DEG))
+            / f64::from(VERTICAL_DIP_DEG - DIP_FACTOR_PLATEAU_DEG)) as f32
     } else {
-        // A dip outside 0..90 is not a fault this program describes; the original
-        // leaves the factor at zero rather than refusing, and so does this.
-        0.0
+        1.0
     };
 
     let mut rake = average_rake_deg;
@@ -270,8 +297,11 @@ pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> Geome
         reason = "the narrowing seam: C stores fR into a float"
     )]
     let rake_factor = if (0.0..=180.0).contains(&rake) {
-        (1.0 - (f64::from(rake) - 90.0).abs() / 90.0) as f32
+        (1.0 - (f64::from(rake) - f64::from(REVERSE_RAKE_DEG)).abs() / f64::from(REVERSE_RAKE_DEG))
+            as f32
     } else {
+        // Only reachable for a negative rake -- normal faulting -- where the original
+        // gives zero and means it: the correction is for reverse-slip geometries.
         0.0
     };
 
@@ -281,11 +311,11 @@ pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> Geome
     )]
     let alpha_t = (1.0 / (1.0 + f64::from(dip_factor * rake_factor * ALPHA_COEFFICIENT))) as f32;
 
-    GeometryCorrection {
+    Ok(GeometryCorrection {
         alpha_t,
         dip_factor,
         rake_factor,
-    }
+    })
 }
 
 /// Average rise time in seconds, from moment.
@@ -299,17 +329,23 @@ pub fn geometry_correction(average_dip_deg: f32, average_rake_deg: f32) -> Geome
 ///
 /// (orig. `genslip_v5.6.2.c:1412`)
 #[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the narrowing seam: C stores trise into a float. Gone at stage 2b."
+)]
 pub fn average_rise_time(moment_dyne_cm: f32, coefficient: f32) -> f32 {
     // `cbrt` rather than the original's `exp(log(M0)/3)`: one call instead of two, and
     // exact where the pair is not -- it lands on 3 for 27, which the exp/log pair
     // misses. `tests/float_identities.rs` pins that difference.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores trise into a float"
-    )]
-    let rise_time = (f64::from(coefficient) * 1.0e-09 * f64::from(moment_dyne_cm).cbrt()) as f32;
-    rise_time
+    (f64::from(coefficient) * RISE_TIME_MOMENT_SCALE * f64::from(moment_dyne_cm).cbrt()) as f32
 }
+
+/// The coefficient in `trise = c * this * M0^(1/3)`, Graves & Pitarka (2010).
+///
+/// Carries the units: `M0` is in dyne-cm and `trise` in seconds, so the `1e-9` is
+/// what makes a magnitude-7 moment give a rise time of order a second rather than of
+/// order `1e9`.
+const RISE_TIME_MOMENT_SCALE: f64 = 1.0e-09;
 
 /// One layer of a one-dimensional velocity model.
 #[derive(Clone, Copy, Debug)]

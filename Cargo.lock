@@ -105,6 +105,7 @@ dependencies = [
  "rand_distr",
  "rand_pcg",
  "rustfft",
+ "thiserror",
 ]
 
 [[package]]

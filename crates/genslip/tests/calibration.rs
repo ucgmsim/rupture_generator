@@ -371,7 +371,8 @@ fn the_mean_rise_time_is_what_the_moment_implies() {
         fixture::slip_spec(),
         fixture::timing_spec(),
         fixture::hypocentre(),
-    );
+    )
+    .expect("the fixture geometry is valid");
 
     // Computed from the published relation, NOT by calling `average_rise_time`.
     // Calling it made this test a tautology: scaling that function by 1.15 scaled the

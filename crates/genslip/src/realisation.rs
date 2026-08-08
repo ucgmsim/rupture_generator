@@ -35,6 +35,7 @@
 //!
 //! (orig. `genslip_v5.6.2.c:1654-3202`)
 
+use crate::error::{Error, Result};
 use crate::fft::Fft;
 use crate::moment::{self, ScaledSlip, SlipScaling, SubfaultSize};
 use crate::rise_time::{self, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weighting};
@@ -169,15 +170,16 @@ pub struct RuptureModel {
 /// `source` is the draw stream, already positioned at this realisation — see
 /// [`crate::rng::Realisations`].
 ///
-/// # Panics
+/// # Errors
 ///
-/// If the fault grid's per-subfault arrays disagree with its extents.
+/// Anything [`check`] rejects about the geometry, plus [`Error::DipOutOfRange`] for a
+/// source that is not a fault plane. See [`crate::error`].
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is a distinct group; collapsing them would rebuild the \
-              21-field god object ENGINEERING_RULES.md rule 7 exists to keep out"
+              21-field god object ENGINEERING_RULES.md rule 7 exists to keep out. \
+              Stage 3 replaces the first three with a context type."
 )]
-#[must_use]
 pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     draws: &mut S,
     fft: &mut F,
@@ -188,23 +190,13 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     slip_spec: SlipSpec,
     timing: TimingSpec,
     hypocentre: Hypocentre,
-) -> RuptureModel {
+) -> Result<RuptureModel> {
+    check(grid, hypocentre)?;
     let extents = grid.extents;
     let (strike_count, dip_count) = (extents.fault_strike, extents.fault_dip);
     let subfaults = strike_count * dip_count;
-    assert_eq!(grid.depth_km.len(), dip_count, "one depth per dip row");
-    assert_eq!(
-        grid.base_rake_deg.len(),
-        subfaults,
-        "one base rake per subfault"
-    );
-    assert_eq!(
-        grid.velocity_fraction.len(),
-        subfaults,
-        "one velocity fraction per subfault"
-    );
 
-    let (scaling, spectrum) = derive(spec, slip_spec.spectrum);
+    let (scaling, spectrum) = derive(spec, slip_spec.spectrum)?;
     let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
 
     // --- slip -------------------------------------------------------------------
@@ -293,7 +285,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         timing.rise_time,
     );
 
-    assemble(
+    Ok(assemble(
         &Fields {
             slip: scaled,
             rake_deg,
@@ -306,7 +298,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         scaling,
         solver,
         hypocentre,
-    )
+    ))
 }
 
 /// What a point source is, over and above its geometry.
@@ -361,11 +353,11 @@ pub struct PointSourceSpec {
 /// gets the slip that carries the moment rather than the slip a single rigidity
 /// lookup at the centroid implies.
 ///
-/// # Panics
+/// # Errors
 ///
-/// If the fault grid's per-subfault arrays disagree with its extents, or if
-/// `rise_time_s` is not strictly positive.
-#[must_use]
+/// Anything [`check`] rejects about the geometry, [`Error::NotPositive`] for a
+/// non-positive rise time, and [`Error::DipOutOfRange`] for a source that is not a
+/// fault plane.
 pub fn point_source<E: EikonalSolver>(
     solver: &mut E,
     grid: &FaultGrid,
@@ -373,26 +365,13 @@ pub fn point_source<E: EikonalSolver>(
     spec: PointSourceSpec,
     timing: TimingSpec,
     hypocentre: Hypocentre,
-) -> RuptureModel {
+) -> Result<RuptureModel> {
+    check(grid, hypocentre)?;
+    Error::require_positive("rise_time_s", f64::from(spec.rise_time_s))?;
     let (strike_count, dip_count) = (grid.extents.fault_strike, grid.extents.fault_dip);
     let subfaults = strike_count * dip_count;
-    assert_eq!(grid.depth_km.len(), dip_count, "one depth per dip row");
-    assert_eq!(
-        grid.base_rake_deg.len(),
-        subfaults,
-        "one base rake per subfault"
-    );
-    assert_eq!(
-        grid.velocity_fraction.len(),
-        subfaults,
-        "one velocity fraction per subfault"
-    );
-    assert!(
-        spec.rise_time_s > 0.0,
-        "the average rise time must be positive"
-    );
 
-    let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg);
+    let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg)?;
     let scaling = Scaling {
         moment_dyne_cm: source::seismic_moment(spec.magnitude, spec.magnitude_scale),
         alpha_t: correction.alpha_t,
@@ -423,7 +402,7 @@ pub fn point_source<E: EikonalSolver>(
         },
     );
 
-    assemble(
+    Ok(assemble(
         &Fields {
             slip,
             rake_deg: SlipField::from_values(strike_count, dip_count, grid.base_rake_deg.clone()),
@@ -439,7 +418,7 @@ pub fn point_source<E: EikonalSolver>(
         scaling,
         solver,
         hypocentre,
-    )
+    ))
 }
 
 /// Resolve a magnitude into a moment, a correction and an average rise time, and fill
@@ -447,9 +426,9 @@ pub fn point_source<E: EikonalSolver>(
 ///
 /// The spectrum comes back separately because it is the one output nothing downstream
 /// of the draws reads: [`assemble`] takes the [`Scaling`] and never sees it.
-fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> (Scaling, SpectrumSpec) {
+fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> Result<(Scaling, SpectrumSpec)> {
     let moment_dyne_cm = source::seismic_moment(spec.magnitude, spec.magnitude_scale);
-    let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg);
+    let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg)?;
     let corners = source::correlation_lengths(spec.magnitude, spec.corners, spec.modified_corners);
 
     spectrum.correlation = crate::field::CorrelationLengths {
@@ -457,7 +436,7 @@ fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> (Scaling, SpectrumSpe
         dip: corners.dip_km,
     };
 
-    (
+    Ok((
         Scaling {
             moment_dyne_cm,
             alpha_t: correction.alpha_t,
@@ -469,7 +448,64 @@ fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> (Scaling, SpectrumSpe
             ) * correction.alpha_t,
         },
         spectrum,
-    )
+    ))
+}
+
+/// Check the fault grid and the hypocentre agree with each other.
+///
+/// The one place a caller's geometry is validated. Everything below this point
+/// asserts instead, because by then the extents came from a `FaultGrid` that has
+/// already been through here — see [`crate::error`].
+///
+/// # Errors
+///
+/// [`Error::Extent`] for a zero extent, [`Error::FaultLargerThanPadding`] if the
+/// fault does not fit its padding, [`Error::Shape`] if a per-subfault array is the
+/// wrong length, and [`Error::HypocentreOffFault`] if the rupture starts off the
+/// fault.
+fn check(grid: &FaultGrid, hypocentre: Hypocentre) -> Result<()> {
+    let extents = grid.extents;
+    let (strike_count, dip_count) = (extents.fault_strike, extents.fault_dip);
+    let subfaults = strike_count * dip_count;
+
+    if strike_count == 0 || dip_count == 0 {
+        return Err(Error::Extent {
+            what: "fault",
+            strike_count,
+            dip_count,
+            constraint: "non-zero",
+        });
+    }
+    if !extents.padded_strike.is_multiple_of(2) || !extents.padded_dip.is_multiple_of(2) {
+        return Err(Error::Extent {
+            what: "padded",
+            strike_count: extents.padded_strike,
+            dip_count: extents.padded_dip,
+            constraint: "even",
+        });
+    }
+    if strike_count > extents.padded_strike || dip_count > extents.padded_dip {
+        return Err(Error::FaultLargerThanPadding {
+            fault_strike: strike_count,
+            fault_dip: dip_count,
+            padded_strike: extents.padded_strike,
+            padded_dip: extents.padded_dip,
+        });
+    }
+
+    Error::require_len("depth_km", grid.depth_km.len(), dip_count)?;
+    Error::require_len("base_rake_deg", grid.base_rake_deg.len(), subfaults)?;
+    Error::require_len("velocity_fraction", grid.velocity_fraction.len(), subfaults)?;
+
+    if hypocentre.strike >= strike_count || hypocentre.dip >= dip_count {
+        return Err(Error::HypocentreOffFault {
+            strike: hypocentre.strike,
+            dip: hypocentre.dip,
+            strike_count,
+            dip_count,
+        });
+    }
+    Ok(())
 }
 
 /// The four fields a rupture is assembled from.

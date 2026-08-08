@@ -63,7 +63,7 @@ fn origin() -> Hypocentre {
 }
 
 fn generate(grid: &FaultGrid) -> genslip::realisation::RuptureModel {
-    point_source(
+    valid(point_source(
         &mut FactoredSweep::new(),
         grid,
         &fixture::velocity_model(),
@@ -73,7 +73,19 @@ fn generate(grid: &FaultGrid) -> genslip::realisation::RuptureModel {
             strike: grid.extents.fault_strike / 2,
             dip: grid.extents.fault_dip / 2,
         },
-    )
+    ))
+}
+
+/// Unwrap a rupture the fixture guarantees is valid.
+///
+/// The fixtures here are all well-formed geometries, so an error is a bug in this
+/// file rather than a case worth handling. `Error`'s own contract is exercised where
+/// it belongs, in `errors.rs`.
+#[track_caller]
+fn valid(
+    model: genslip::Result<genslip::realisation::RuptureModel>,
+) -> genslip::realisation::RuptureModel {
+    model.expect("the fixture geometry is valid")
 }
 
 /// The moment is what the magnitude says, and the slip is what the moment says.
@@ -84,14 +96,14 @@ fn generate(grid: &FaultGrid) -> genslip::realisation::RuptureModel {
 #[test]
 fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
     let grid = a_point();
-    let model = point_source(
+    let model = valid(point_source(
         &mut FactoredSweep::new(),
         &grid,
         &fixture::velocity_model(),
         spec(),
         fixture::timing_spec(),
         origin(),
-    );
+    ));
 
     // The layer containing 7 km: vs 3.2 km/s, density 2.6 g/cm^3.
     let shear_speed_cm_s = 3.2 * 1.0e5;
@@ -117,14 +129,14 @@ fn one_subfault_ruptures_at_the_delay() {
     let mut timing = fixture::timing_spec();
     for delay_s in [0.0_f32, 2.5] {
         timing.rupture_delay_s = delay_s;
-        let model = point_source(
+        let model = valid(point_source(
             &mut FactoredSweep::new(),
             &a_point(),
             &fixture::velocity_model(),
             spec(),
             timing,
             origin(),
-        );
+        ));
         assert!(
             (model.onset_s.time(0, 0) - f64::from(delay_s)).abs() < 1e-12,
             "a single subfault with a {delay_s} s delay ruptured at {}",
@@ -145,14 +157,14 @@ fn one_subfault_rises_in_the_time_it_was_given() {
     for depth_km in [0.5_f32, 5.0, 7.0, 20.0, 40.0] {
         let mut grid = a_point();
         grid.depth_km = vec![depth_km];
-        let model = point_source(
+        let model = valid(point_source(
             &mut FactoredSweep::new(),
             &grid,
             &fixture::velocity_model(),
             spec(),
             fixture::timing_spec(),
             origin(),
-        );
+        ));
         let rise = model.rise_time_s[(0, 0)];
         assert!(
             (rise - RISE_TIME_S).abs() <= 1e-6 * RISE_TIME_S,
@@ -302,14 +314,14 @@ fn every_shape_makes_it_through_the_pipeline() {
         SlipRateShape::Delta,
     ] {
         timing.slip_rate_shape = shape;
-        let model = point_source(
+        let model = valid(point_source(
             &mut FactoredSweep::new(),
             &grid,
             &fixture::velocity_model(),
             spec(),
             timing,
             Hypocentre { strike: 2, dip: 1 },
-        );
+        ));
 
         let moment: f64 = model
             .slip_rate
@@ -357,14 +369,14 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
     let onset_of = |shape| {
         let mut timing = timing;
         timing.slip_rate_shape = shape;
-        point_source(
+        valid(point_source(
             &mut FactoredSweep::new(),
             &grid,
             &fixture::velocity_model(),
             spec(),
             timing,
             Hypocentre { strike: 2, dip: 1 },
-        )
+        ))
         .onset_s
         .time(0, 0)
     };

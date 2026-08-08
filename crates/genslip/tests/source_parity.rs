@@ -266,7 +266,7 @@ fn the_geometry_correction_matches() {
         for rake in [
             -180.0_f32, -90.0, 0.0, 45.0, 90.0, 135.0, 180.0, 270.0, -450.0,
         ] {
-            let produced = geometry_correction(dip, rake);
+            let produced = geometry_correction(dip, rake).expect("dip is in range");
             let (alpha, fd, fr) = reference_alpha_t(dip, rake);
             assert_eq!(
                 produced.alpha_t.to_bits(),
@@ -284,11 +284,11 @@ fn a_vertical_strike_slip_fault_is_the_calibration_point() {
     // alpha_t is 1 there, so rise time and rupture speed are unchanged -- which is
     // what "calibrated on strike-slip" means. Every other geometry shortens the
     // pulse and speeds the rupture.
-    let vertical = geometry_correction(90.0, 0.0);
+    let vertical = geometry_correction(90.0, 0.0).expect("dip is in range");
     assert_eq!(vertical.alpha_t, 1.0);
     assert_eq!(vertical.dip_factor, 0.0);
 
-    let reverse = geometry_correction(30.0, 90.0);
+    let reverse = geometry_correction(30.0, 90.0).expect("dip is in range");
     assert!(reverse.alpha_t < 1.0, "alpha_t is {}", reverse.alpha_t);
     assert!(reverse.alpha_t > 0.9, "alpha_t is {}", reverse.alpha_t);
 }
@@ -337,22 +337,56 @@ proptest! {
         );
     }
 
+    /// On a real fault plane the two agree bit for bit, at any rake including the
+    /// ones that need wrapping.
+    ///
+    /// The dip range is 0..=90 now, where it used to run -10..100. That is not the
+    /// test being weakened -- it is the range being *stated*. Outside it the two no
+    /// longer agree, deliberately, and
+    /// `a_dip_that_is_not_a_fault_plane_is_refused_where_the_original_returns_zero`
+    /// asserts the disagreement rather than leaving it to a shrunk counterexample.
     #[test]
-    fn the_geometry_correction_matches_for_any_geometry(
-        dip in -10.0f32..100.0,
+    fn the_geometry_correction_matches_for_any_fault_plane(
+        dip in 0.0f32..=90.0,
         rake in -540.0f32..540.0,
     ) {
-        let produced = geometry_correction(dip, rake);
+        let produced = geometry_correction(dip, rake).expect("0..=90 is a fault plane");
         let (alpha, fd, fr) = reference_alpha_t(dip, rake);
         prop_assert_eq!(produced.alpha_t.to_bits(), alpha.to_bits());
         prop_assert_eq!(produced.dip_factor.to_bits(), fd.to_bits());
         prop_assert_eq!(produced.rake_factor.to_bits(), fr.to_bits());
     }
 
+    /// Outside 0..=90 the original returns a factor of **zero**, and the port refuses.
+    ///
+    /// This is the whole of the behaviour change, asserted as a positive claim on
+    /// both sides: the reference really does answer, it really does answer zero, and
+    /// zero really is indistinguishable from a vertical fault -- `alpha_t` comes back
+    /// at exactly 1.0, the calibration point, for a dip of 120 degrees.
+    ///
+    /// A rupture generated that way is not flagged, not NaN and not obviously wrong.
+    /// It is a fault whose rise time and rupture speed were never corrected, and the
+    /// only signal was a factor that happens to equal the one a vertical strike-slip
+    /// fault gets. `error.rs` says why that is the shape worth removing.
+    #[test]
+    fn a_dip_that_is_not_a_fault_plane_is_refused_where_the_original_returns_zero(
+        dip in prop_oneof![-90.0f32..-0.001, 90.001f32..270.0],
+        rake in -180.0f32..180.0,
+    ) {
+        prop_assert_eq!(
+            geometry_correction(dip, rake),
+            Err(genslip::Error::DipOutOfRange { degrees: f64::from(dip) })
+        );
+
+        let (alpha, fd, _) = reference_alpha_t(dip, rake);
+        prop_assert_eq!(fd.to_bits(), 0.0f32.to_bits(), "the original refused after all");
+        prop_assert_eq!(alpha.to_bits(), 1.0f32.to_bits(), "which reads as a vertical fault");
+    }
+
     #[test]
     fn alpha_t_stays_within_its_bounds(dip in 0.0f32..90.0, rake in 0.0f32..180.0) {
         // 1/(1 + f_D*f_R*c) with both factors in [0, 1] and c = 0.1.
-        let alpha = geometry_correction(dip, rake).alpha_t;
+        let alpha = geometry_correction(dip, rake).expect("dip is in range").alpha_t;
         prop_assert!(alpha <= 1.0 && alpha >= 1.0 / 1.1 - 1e-6, "alpha_t = {}", alpha);
     }
 }

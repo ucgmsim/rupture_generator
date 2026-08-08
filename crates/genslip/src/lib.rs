@@ -8,7 +8,14 @@
 //! and what a failing test in each class obliges you to do. Read it before changing a
 //! kernel. `PORTING_RULES.md` describes the bit-parity regime that got the port here
 //! and is now archaeology.
+//!
+//! # Failure
+//!
+//! The entry points return [`error::Result`]. Everything below them asserts, because
+//! by then the values came from this crate rather than from a caller — see
+//! [`error`] for where that line is and why it is drawn there.
 
+pub mod error;
 pub mod fft;
 pub mod field;
 pub mod geodesy;
@@ -23,3 +30,5 @@ pub mod slip_rate;
 pub mod source;
 pub mod stats;
 pub mod taper;
+
+pub use error::{Error, Result};

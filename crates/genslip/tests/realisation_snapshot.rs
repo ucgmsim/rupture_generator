@@ -41,7 +41,8 @@ fn summarise(seed: i64, realisation: u64) -> String {
         fixture::slip_spec(),
         fixture::timing_spec(),
         fixture::hypocentre(),
-    );
+    )
+    .expect("the fixture geometry is valid");
 
     let peak = |values: &[f32]| values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     #[expect(clippy::cast_precision_loss, reason = "small subfault counts")]
@@ -144,7 +145,8 @@ fn the_moment_survives_the_pipeline() {
         fixture::slip_spec(),
         fixture::timing_spec(),
         fixture::hypocentre(),
-    );
+    )
+    .expect("the fixture geometry is valid");
 
     let expected =
         genslip::source::seismic_moment(fixture::source_spec().magnitude, MagnitudeScale::Moment);

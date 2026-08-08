@@ -76,6 +76,7 @@ fn rupture<F: Fft, E: EikonalSolver>(
         timing,
         fixture::hypocentre(),
     )
+    .expect("the fixture geometry is valid")
 }
 
 /// The travel-time field alone, with no perturbation on top.

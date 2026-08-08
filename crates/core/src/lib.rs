@@ -46,6 +46,21 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+/// Every way the library can refuse, as one `ValueError`.
+///
+/// `genslip::Error`'s `Display` already names the input and the constraint it broke,
+/// so there is nothing to add here and nothing to keep in step: a new variant reaches
+/// Python with its own message the day it is written. This replaced two hand-written
+/// hypocentre checks that duplicated the library's own, word for word and one
+/// refactor away from disagreeing with it.
+struct Refused(genslip::Error);
+
+impl From<Refused> for PyErr {
+    fn from(Refused(error): Refused) -> Self {
+        PyValueError::new_err(error.to_string())
+    }
+}
+
 /// Which relation maps magnitude onto the slip spectrum's wavenumber corners.
 ///
 /// The offsets and exponents live on the Python side, so this only names the family.
@@ -1016,36 +1031,30 @@ fn generate_rupture(
     hypocentre_strike: usize,
     hypocentre_dip: usize,
 ) -> PyResult<GeneratedRupture> {
-    let extents = grid.inner.extents;
-    if hypocentre_strike >= extents.fault_strike || hypocentre_dip >= extents.fault_dip {
-        return Err(PyValueError::new_err(format!(
-            "hypocentre ({hypocentre_strike}, {hypocentre_dip}) is outside a {}x{} fault",
-            extents.fault_strike, extents.fault_dip
-        )));
-    }
-
     let sample_interval_s = timing.inner.sample_interval_s;
 
     // Nothing below touches a Python object.
-    let model = py.detach(|| {
-        let mut draws = GenslipLcg::new(seed).realisation(realisation);
-        let mut fft = RustFft::new();
-        let mut solver = FactoredSweep::new();
-        realisation::generate(
-            &mut draws,
-            &mut fft,
-            &mut solver,
-            &grid.inner,
-            &velocity_model.inner,
-            source.inner,
-            slip.inner,
-            timing.inner,
-            Hypocentre {
-                strike: hypocentre_strike,
-                dip: hypocentre_dip,
-            },
-        )
-    });
+    let model = py
+        .detach(|| {
+            let mut draws = GenslipLcg::new(seed).realisation(realisation);
+            let mut fft = RustFft::new();
+            let mut solver = FactoredSweep::new();
+            realisation::generate(
+                &mut draws,
+                &mut fft,
+                &mut solver,
+                &grid.inner,
+                &velocity_model.inner,
+                source.inner,
+                slip.inner,
+                timing.inner,
+                Hypocentre {
+                    strike: hypocentre_strike,
+                    dip: hypocentre_dip,
+                },
+            )
+        })
+        .map_err(Refused)?;
 
     Ok(GeneratedRupture::from_model(&model, sample_interval_s))
 }
@@ -1078,30 +1087,24 @@ fn generate_point_source(
     hypocentre_strike: usize,
     hypocentre_dip: usize,
 ) -> PyResult<GeneratedRupture> {
-    let extents = grid.inner.extents;
-    if hypocentre_strike >= extents.fault_strike || hypocentre_dip >= extents.fault_dip {
-        return Err(PyValueError::new_err(format!(
-            "hypocentre ({hypocentre_strike}, {hypocentre_dip}) is outside a {}x{} fault",
-            extents.fault_strike, extents.fault_dip
-        )));
-    }
-
     let sample_interval_s = timing.inner.sample_interval_s;
 
     // Nothing below touches a Python object.
-    let model = py.detach(|| {
-        realisation::point_source(
-            &mut FactoredSweep::new(),
-            &grid.inner,
-            &velocity_model.inner,
-            point_source.inner,
-            timing.inner,
-            Hypocentre {
-                strike: hypocentre_strike,
-                dip: hypocentre_dip,
-            },
-        )
-    });
+    let model = py
+        .detach(|| {
+            realisation::point_source(
+                &mut FactoredSweep::new(),
+                &grid.inner,
+                &velocity_model.inner,
+                point_source.inner,
+                timing.inner,
+                Hypocentre {
+                    strike: hypocentre_strike,
+                    dip: hypocentre_dip,
+                },
+            )
+        })
+        .map_err(Refused)?;
 
     Ok(GeneratedRupture::from_model(&model, sample_interval_s))
 }
