@@ -35,6 +35,10 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["hypothesis>=6.151.0", "pytest>=8", "pytest-cov>=5"]
+# The viewer. Optional because `rerun-sdk` pulls pyarrow and pillow, and neither
+# `mesh` nor `generate` needs a display -- `scripts/view.py` guards the import and
+# says how to install it.
+vis = ["rerun-sdk>=0.26"]
 
 [project.scripts]
 rupture-generator = "rupture_generator.scripts.cli:app"

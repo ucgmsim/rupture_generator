@@ -20,6 +20,7 @@ Each subcommand lives in its own module and is attached here, which is
 import typer
 
 from rupture_generator.scripts import generate_cli, mesh_cli
+from rupture_generator.scripts import view as view_cli
 
 app = typer.Typer(
     help="Generate kinematic rupture models.",
@@ -42,6 +43,7 @@ def main() -> None:
 # `rupture-generator mesh build` is a word nobody needs to type.
 app.command("mesh")(mesh_cli.mesh)
 app.command("generate")(generate_cli.generate)
+app.command("view")(view_cli.view)
 
 
 if __name__ == "__main__":

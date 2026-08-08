@@ -1,7 +1,25 @@
 # rupture-generator
 
-Kinematic rupture model generation: a Rust port of `genslip v5.6.2`, exposed to
-Python.
+Kinematic rupture model generation: a Rust port of `genslip v5.6.2`, with a command
+line, a self-describing output format, and a viewer.
+
+```sh
+uv sync --extra test --extra vis --group dev
+
+rupture-generator mesh     examples/hope.geometry.toml  mesh.h5
+rupture-generator generate examples/crustal.toml        mesh.h5  rupture.h5
+rupture-generator view     rupture.h5
+```
+
+Three steps, and the boundary between them is a file, because their inputs have
+different lifetimes. A **geometry** is digitised once and reused across every
+realisation run on it. A **source config** is what varies. A **rupture** is the output.
+
+`rupture.h5` can equally be `.zarr`, `.srf`, or `.srf.h5` for SW4 — the format is
+inferred from the extension. The native one is an `xr.DataTree` that carries the mesh it
+was generated on and the config that produced it, which an SRF has never been able to do.
+
+The library is still a library:
 
 ```python
 import numpy as np
@@ -23,6 +41,31 @@ rupture = generate_rupture(
     seed=1234, hypocentre_strike=12, hypocentre_dip=8,
 )
 ```
+
+## Where the fault is
+
+The generator has never known. `assemble.py` has said since it was written that subfault
+coordinates *"arrive from whoever discretised the fault, because that is the only place
+that knows how the mesh became a grid"* — and nothing supplied them. `mesh` does.
+
+**Geometry is specified in a projected Cartesian CRS** the modeller names, and the
+library never leaves it. That is what makes every quantity it derives an exact identity:
+areas sum to length times width, a plane's cells all report the plane's own dip. Working
+on the ellipsoid instead was tried and measured — cell areas **1.4e-2** low on a 60 km
+subduction interface, and a "uniform" mesh whose down-dip step varied by **6.5e-3**, the
+first of those larger than the slip bound. `genslip::geodesy` is deleted; see `PRUNED.md`.
+
+The conversion out happens once, in `rupture_generator/mesh.py`, with `pyproj` — and it
+adds the **grid convergence angle** to strike, because grid north is not true north. In
+NZTM that reaches **5.04°**, five times the one-degree rake bound.
+
+A fault whose trace *bends* is one rupture: its planes are fused into a single grid whose
+strike varies along it, which is genslip's `bent` case. A fault whose dip, dip direction
+or width changes between planes is two surfaces that touch, and is refused by name. The
+test is geometric — the planes' shared column of nodes either coincides or it does not.
+
+`MESH.md` and `FORMAT.md` document the two file formats, including how to read them with
+plain `xarray` and `pyproj`.
 
 **Status: Stage 1 complete; Stage 2 in progress.** Against a stored corpus of six
 whole ruptures, **slip, rake, onset and the slip-rate pulses all agree three orders of
@@ -54,11 +97,18 @@ wrong. **A second reading of the source by the same reader is not a reference.**
 ## Layout
 
 ```
-crates/genslip/          the port: physics, no I/O, no PyO3
+crates/genslip/          the port: physics and geometry, no I/O, no PyO3
 crates/srf/              the Standard Rupture Format, reader and writer
 crates/core/             the PyO3 boundary
-rupture_generator/       the Python package: srf.py, assemble.py
+rupture_generator/       the Python package
+  config/                what a fault and an earthquake look like written down
+  formats/               the mesh and rupture files, HDF5 or Zarr
+  scripts/               the three subcommands
+  mesh.py                the one seam that leaves the projected frame
+  moment.py              the moment rate function
+  srf.py, assemble.py    the SRF, and turning a rupture into one
 tests/harness/           genslip's getpar vocabulary, for driving the reference
+examples/                two geometries and a config, all of which a test runs
 ```
 
 The configuration **is** the compiled core's types. Nothing in the library speaks
@@ -75,7 +125,7 @@ model's kilometres per second.
 ## Gates
 
 ```sh
-uv sync --extra test --group dev   # builds the compiled extensions
+uv sync --extra test --extra vis --group dev   # builds the compiled extensions
 ./gate.sh
 ```
 
@@ -142,9 +192,9 @@ of the ten slip-rate shapes agree to **1e-6 relative**, which is the resolution 
 SRF text format rather than a tolerance; `brune` differs by the ratio of two time
 constants, and that ratio is asserted so the choice is hard to undo by accident.
 
-180 Rust tests and 315 Python tests pass with no EMOD3D build present, and
-25 Python tests skip -- the thirteen that want `GENSLIP_BINARY` and the twelve that
-want `GENERIC_SLIP2SRF`.
+211 Rust tests and 784 Python tests pass with no EMOD3D build present, and
+27 Python tests skip -- the thirteen that want `GENSLIP_BINARY`, the twelve that want
+`GENERIC_SLIP2SRF`, and two that want a real model directory.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -186,6 +236,8 @@ needed to *rebuild* the corpus.
 | `DEFECTS.md` | Eighteen defects with a disposition each: ten in the original, three in this port's PyO3 boundary, five in its call sites. The last five were found by the corpus and are the argument for having one. Every "live, and reproduced" entry is now an **open decision** rather than a settled one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
+| `MESH.md` | **The mesh format.** Why nodes rather than cell centres, why a projected CRS rather than the ellipsoid, and how to read one with plain `xarray` |
+| `FORMAT.md` | **The rupture format.** What it carries beyond an SRF, and how the ragged pulses are stored |
 
 The two rules that cost the most to learn:
 
@@ -212,6 +264,30 @@ Two habits this list assumes, both learned expensively:
 
 ### Where this was left
 
+**The front end is built.** `mesh`, `generate` and `view` exist, with two documented file
+formats, a config schema checked against the core's own types, and 784 Python tests. What
+that work turned up, because each is a thing to know rather than a thing done:
+
+- **`DEFECTS.md` 20 is open.** `cos` silently drops any subfault whose rise time is the
+  one-sample floor — three subfaults slipping 318, 269 and 209 cm on the fixture,
+  carrying 1% of the moment, written to an SRF with `nt1 = 0` and indistinguishable from
+  subfaults that never slipped. Found by the moment-rate integral, which every other
+  shape closes to 1e-3. The fix is a choice between refusing an unrepresentable duration
+  and inventing a longer pulse, and both change output.
+- **Zarr does not preserve group order.** Eleven planes written `plane_0` to `plane_10`
+  come back as `plane_10, plane_8, plane_5, …`, and it varies between runs. HDF5 does
+  preserve insertion, so a reader trusting iteration order is green in one container and
+  silently permutes the fault in the other. Both file readers key on a stored index.
+- **`nzcvm`'s `forbid_extra_keys` has never worked.** mashumaro reads an inner class
+  called `Config`; that codebase spells it `Meta`, which is ignored in silence. This one
+  spells it `Config`, and `TestMisspellingsAreErrors` is parametrised over sections
+  because a subclass adding a `Discriminator` has to inherit the settings rather than
+  replace them.
+- **`README.md`'s first trap still catches people.** A test comparing `rise_time_s`
+  between an SRF and the native file failed by a factor of two. The SRF has no rise
+  column — `srf_parser.rs:178` derives one as `nt1 * dt` — which is exactly what the trap
+  says. Compare pulse lengths.
+
 **Stage 1 is done for the finite-fault path.** The Stage 0 fixture corpus, rupture
 onset and the Frankel spectrum all closed in the last three commits, and nothing the
 corpus checks diverges any more. `tests/harness/mapping.py` maps every `getpar` name
@@ -222,7 +298,7 @@ binary.
 To get going:
 
 ```sh
-uv sync --extra test --group dev      # both extras: a bare `uv sync` drops pytest
+uv sync --extra test --extra vis --group dev   # a bare `uv sync` drops pytest
 export EMOD3D_BUILD_DIR=...           # an EMOD3D build, flags under "Gates" above
 export GENSLIP_BINARY=...             # only needed to REBUILD the corpus
 ./gate.sh
