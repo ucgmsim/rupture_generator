@@ -193,6 +193,60 @@ mod builders {
 contract_for!(genslip_lcg, builders::genslip);
 contract_for!(pcg, builders::pcg);
 
+/// What the compatibility generator promises beyond the shared contract.
+///
+/// These are not properties every draw source has — they are properties `GenslipLcg`
+/// has *because* it reproduces genslip's, and the pipeline depends on both. They
+/// moved here when the bit-parity suite went, restated against the port rather than
+/// against the C, because what the pipeline needs is the relationship rather than the
+/// provenance.
+mod the_compatibility_generator {
+    use super::{DrawSource, GenslipLcg};
+
+    /// One normal costs exactly twelve uniforms.
+    ///
+    /// genslip's `gaus_rand` is Irwin–Hall: twelve uniforms summed, minus six. The
+    /// *count* is the part that matters downstream — a generator producing the right
+    /// numbers while consuming the wrong quantity of stream desynchronises every
+    /// field after it, and the output still looks like plausible noise. Values alone
+    /// cannot catch that, so the position is asserted.
+    #[test]
+    fn a_gaussian_costs_exactly_twelve_uniforms() {
+        let mut after_gaussian = GenslipLcg::new(12_345);
+        after_gaussian.gaussian(1.0, 0.0);
+
+        let mut after_twelve = GenslipLcg::new(12_345);
+        for _ in 0..12 {
+            after_twelve.uniform();
+        }
+
+        assert_eq!(
+            GenslipLcg::seed(after_gaussian),
+            GenslipLcg::seed(after_twelve),
+            "a normal did not advance the stream by twelve uniforms"
+        );
+    }
+
+    /// Skipping ahead lands exactly where drawing and discarding would.
+    ///
+    /// The realisation loop reaches realisation `n` by burning `10n` draws rather
+    /// than generating the realisations before it, so the shortcut has to be
+    /// indistinguishable from the long way. `Realisations::realisation` rests on
+    /// this, and `realisations_are_positional` above rests on that.
+    #[test]
+    fn discarding_lands_where_drawing_lands() {
+        let mut skipped = GenslipLcg::new(7);
+        skipped.discard(10 * 43);
+
+        let mut drawn = GenslipLcg::new(7);
+        for _ in 0..(10 * 43) {
+            drawn.uniform();
+        }
+
+        assert_eq!(GenslipLcg::seed(skipped), GenslipLcg::seed(drawn));
+    }
+}
+
 // Deliberately not asserted:
 //
 // - Normality. Irwin-Hall with n=12 is bounded on [-6, 6] and has no tails beyond

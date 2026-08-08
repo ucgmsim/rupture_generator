@@ -24,11 +24,16 @@ rupture = generate_rupture(
 )
 ```
 
-**Status: Stage 1 complete for the finite-fault path, and checked end to end.**
-Every kernel is bit-identical to the C per function, verified against the real library
-linked through `genslip-oracle`. Against a stored corpus of six whole ruptures, **slip,
-rake, onset and the slip-rate pulses all agree to the SRF's own precision** — nothing
-the corpus checks diverges. The point-source path (`generic_slip2srf`) is not started.
+**Status: Stage 1 complete; Stage 2 in progress.** Against a stored corpus of six
+whole ruptures, **slip, rake, onset and the slip-rate pulses all agree to the SRF's own
+precision** — nothing the corpus checks diverges. The point-source path
+(`generic_slip2srf`) is not started.
+
+The gate is now **scientific agreement** rather than bit-equality with the C.
+`ENGINEERING_RULES.md` says what that means: what makes two ruptures the same rupture,
+and what a failing test in each class obliges you to do. The per-function parity suite
+that got the port here has been retired — it had done its job, and leaving it in place
+made every cleanup an argument.
 
 The end-to-end check earned its keep immediately: it found five defects the
 per-function suite structurally could not (`DEFECTS.md` 14-18). The last two are the
@@ -42,7 +47,7 @@ wrong. **A second reading of the source by the same reader is not a reference.**
 
 ```
 crates/genslip/          the port: physics, no I/O, no PyO3
-crates/genslip-oracle/   dev-only FFI to libgenrandv5.6.a -- the referee
+crates/genslip-oracle/   dev-only FFI to libgenrandv5.6.a -- unwired; see below
 crates/srf/              the Standard Rupture Format, reader and writer
 crates/core/             the PyO3 boundary
 rupture_generator/       the Python package: srf.py, assemble.py, geometry.py
@@ -105,8 +110,20 @@ Two things that are not obvious:
   `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
   `-ffp-contract=off` do take, which are the two that decide float results.
 
-Parity is checked against exactly this: 138 Rust tests pass with contraction off,
-and 258 Python tests alongside them.
+**`genslip-oracle` is no longer wired into anything the gate runs.** The eight
+per-function parity files that used it are gone; what survives of them is in
+`contracts.rs`, `slip_rate_contract.rs` and `rng_contract.rs`, restated as properties
+of the port rather than as bit-equality with the C. Four files still link it
+(`slip_pipeline`, `correlated_fields`, `skipped_fields`, `geodesy`) and are next.
+
+The crate itself stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of
+port that has not been written, and per-function parity is how it will be built.
+
+`EMOD3D_BUILD_DIR` is still needed regardless, because `wavefront-compat` gates the
+only `EikonalSolver`. That is what makes replacing the solver the first Stage 3 item
+rather than the last.
+
+144 Rust tests and 258 Python tests pass in this configuration.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -131,7 +148,7 @@ needed to *rebuild* the corpus.
 | --- | --- |
 | `ENGINEERING_RULES.md` | **How the crate is written, and what makes a change acceptable.** Start here. Carries the definition of "the same rupture", the tolerance policy, and what a failing test in each class obliges you to do |
 | `PORTING_RULES.md` | **Expired.** How the port *was* written under bit-parity. Archaeology: read it to understand a strange expression, not to decide whether to change one |
-| `DEFECTS.md` | Eighteen defects, each with a disposition and the test that pins it: ten in the original, three in this port's PyO3 boundary, five in its call sites. The last five were found by the corpus and are the argument for having one |
+| `DEFECTS.md` | Eighteen defects with a disposition each: ten in the original, three in this port's PyO3 boundary, five in its call sites. The last five were found by the corpus and are the argument for having one. Every "live, and reproduced" entry is now an **open decision** rather than a settled one |
 | `PRUNED.md` | What was deleted and why it was safe. Including two fields whose *draws* are consumed but whose values are not |
 | `SIMPLIFICATIONS.md` | Expressions reproduced the long way, split into provably-free and bit-moving |
 

@@ -379,6 +379,7 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
 /// and exactly. Testing it with a correlation coefficient would cost several
 /// realisations and have about a millionth of the power: a rho of 0.8 implemented as
 /// 0.5 is a 1e6 margin here and under one standard error there.
+#[test]
 fn correlation_is_exact() {
     for rho in [0.0_f32, 0.3, 0.8, 1.0] {
         let mut target = Spectrum::zeros(4, 4);
@@ -400,7 +401,152 @@ fn correlation_is_exact() {
     }
 }
 
+/// The band-pass removes the mean, and does it through IEEE infinity.
+///
+/// `kfilter` has no `k2 > 0` guard. At the origin `ln(0)` is `-inf`, so the high cut
+/// is `1 + exp(-inf) = 1`, the low cut is `1 + exp(+inf) = inf`, and the gain is
+/// `1/inf = 0`. It zeroes DC by relying on infinity arithmetic rather than by saying
+/// so — `DEFECTS.md` 4, reproduced. Pinned as a statement about the *effect*, so a
+/// rewrite with an explicit guard has to decide deliberately rather than by accident.
+#[test]
+fn the_band_pass_removes_the_mean() {
+    let mut spectrum = Spectrum::zeros(8, 8);
+    for value in spectrum.as_mut_slice() {
+        *value = Complex32::new(5.0, 0.0);
+    }
+
+    genslip::field::band_pass(
+        &mut spectrum,
+        genslip::field::WavenumberStep {
+            strike: 0.04,
+            dip: 0.06,
+        },
+        genslip::field::WavelengthBand::new(0.5, 60.0),
+        4,
+    );
+
+    assert_eq!(spectrum[(0, 0)].re.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(spectrum[(0, 0)].im.to_bits(), 0.0_f32.to_bits());
+}
+
+/// A negative mean comes back positive from a phase shift that should be the identity.
+///
+/// At the origin both wavenumbers are zero, so the phase factor is exactly 1 and the
+/// DC term is already unchanged — but it is *saved and restored as a magnitude*, so a
+/// negative mean has its sign flipped by an operation that does nothing else.
+/// `DEFECTS.md` 3, reproduced, and now an open decision under
+/// `ENGINEERING_RULES.md` rule 10.
+#[test]
+fn a_phase_shift_flips_a_negative_mean() {
+    let mut spectrum = Spectrum::zeros(4, 4);
+    spectrum[(0, 0)] = Complex32::new(-7.5, 0.0);
+
+    genslip::field::shift_phase(
+        &mut spectrum,
+        genslip::field::WavenumberStep {
+            strike: 0.05,
+            dip: 0.07,
+        },
+        0.0,
+        0.0,
+    );
+
+    assert_eq!(
+        spectrum[(0, 0)].re.to_bits(),
+        7.5_f32.to_bits(),
+        "the magnitude round trip stopped flipping the sign"
+    );
+}
+
+/// Only the segment holding the hypocentre is re-zeroed; the rest keep their offsets.
+///
+/// This is what lets a multi-segment rupture propagate between planes rather than
+/// restarting in each. The two differ by exactly the constant the hosting segment
+/// removed, and a rewrite that re-zeroed every segment would produce a plausible
+/// rupture that starts over at each join.
+fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
+    let hypocentre = fixture::hypocentre();
+    let travel = travel_times(solver, hypocentre);
+    let grid = fixture::fault();
+
+    // A uniform perturbation, so the earliest arrival is displaced by a known amount
+    // and the two branches cannot coincide. With a zero perturbation both minima land
+    // on the source cell at zero and the test says nothing -- which is the shape a
+    // vacuous contract takes.
+    let shift_s = -0.4_f32;
+    let perturbation = SlipField::from_values(
+        grid.extents.fault_strike,
+        grid.extents.fault_dip,
+        vec![1.0; grid.extents.fault_strike * grid.extents.fault_dip],
+    );
+
+    let adjustment = |contains_hypocentre| genslip::rupture::OnsetAdjustment {
+        perturbation_scale: shift_s,
+        delay_s: 0.0,
+        contains_hypocentre,
+    };
+    let hosting = genslip::rupture::onset_times(&travel, &perturbation, adjustment(true));
+    let following = genslip::rupture::onset_times(&travel, &perturbation, adjustment(false));
+
+    let earliest = |times: &TravelTimes| {
+        times
+            .as_slice()
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+    };
+    assert!(
+        earliest(&hosting).abs() < 1e-6,
+        "the hosting segment starts at {}, not zero",
+        earliest(&hosting)
+    );
+
+    let offset = earliest(&following);
+    assert!(
+        (offset - f64::from(shift_s)).abs() < 1e-6,
+        "the following segment starts at {offset}; it should still carry the {shift_s} \
+         the perturbation put there"
+    );
+    for (unshifted, shifted) in following.as_slice().iter().zip(hosting.as_slice()) {
+        assert!(
+            (unshifted - offset - shifted).abs() < 1e-6,
+            "the segments differ by {} rather than the constant {offset}",
+            unshifted - shifted
+        );
+    }
+}
+
+/// A rupture delay moves every subfault by the same amount.
+fn the_delay_is_uniform<E: EikonalSolver>(solver: &mut E) {
+    let travel = travel_times(solver, fixture::hypocentre());
+    let grid = fixture::fault();
+    let perturbation = SlipField::zeros(grid.extents.fault_strike, grid.extents.fault_dip);
+
+    let with_delay = |delay_s| {
+        genslip::rupture::onset_times(
+            &travel,
+            &perturbation,
+            genslip::rupture::OnsetAdjustment {
+                perturbation_scale: 0.0,
+                delay_s,
+                contains_hypocentre: true,
+            },
+        )
+    };
+    let base = with_delay(0.0);
+    let delayed = with_delay(2.5);
+
+    for (early, late) in base.as_slice().iter().zip(delayed.as_slice()) {
+        assert!(
+            (late - early - 2.5).abs() < 1e-6,
+            "a 2.5 s delay moved a subfault by {}",
+            late - early
+        );
+    }
+}
+
 /// Tapering only ever reduces, and reduces the edge it was pointed at.
+#[test]
 fn the_taper_is_a_contraction() {
     let (strike_count, dip_count) = (24, 14);
     let original =
@@ -532,11 +678,6 @@ macro_rules! contract_for {
             }
 
             #[test]
-            fn tapering_only_reduces() {
-                the_taper_is_a_contraction();
-            }
-
-            #[test]
             fn no_slip_is_negative() {
                 truncation_leaves_no_negative_slip(&mut $fft, &mut $solver);
             }
@@ -544,6 +685,16 @@ macro_rules! contract_for {
             #[test]
             fn the_randomness_is_accounted_for() {
                 the_draw_count(&mut $fft, &mut $solver);
+            }
+
+            #[test]
+            fn only_the_hosting_segment_is_rezeroed() {
+                super::only_the_hosting_segment_is_rezeroed(&mut $solver);
+            }
+
+            #[test]
+            fn a_delay_moves_every_subfault_equally() {
+                the_delay_is_uniform(&mut $solver);
             }
         }
     };
@@ -554,8 +705,3 @@ contract_for!(
     genslip::fft::FftwFft::new(),
     genslip::rupture::Wavefront2d::new()
 );
-
-#[test]
-fn correlating_two_spectra_is_exact() {
-    correlation_is_exact();
-}
