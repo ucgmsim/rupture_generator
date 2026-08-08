@@ -176,7 +176,17 @@ BETTER_THAN_THE_REFERENCE = {"onset_s"}
 # format that stores whole ones -- that is the quantum, not a drift, and it cannot
 # improve. `TestRakeAgrees` pins the real claim instead: the port's continuous value
 # rounds to the reference's stored integer on 100% of subfaults.
-MEASURED = dict(slip=2.4e-6, onset_s=5.6e-1)
+# Re-recorded when the crate moved to `f64` throughout. Slip **improved**, from
+# 2.4e-06 to 1.9e-06: the port stopped rounding where genslip rounds, so what is left
+# is genslip's own single-precision error rather than the difference between two
+# roundings that happened to be made at the same places.
+#
+# The slip-rate pulses moved the other way, 5.6e-05 to 7.9e-05, for exactly the same
+# reason and it is not a regression. A pulse is normalised by a fold over its samples,
+# so genslip accumulates more error there than it does in a single scaled slip value,
+# and the port is now measuring that instead of tracking it. `TestThePulses` holds the
+# claim that matters; this line holds only what a rerun should reproduce.
+MEASURED = dict(slip=1.9e-6, onset_s=5.6e-1)
 
 # How far a measurement may move before it needs re-recording. An order of magnitude,
 # because the alternative is a test that goes red on a compiler upgrade.

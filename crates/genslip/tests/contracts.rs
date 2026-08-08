@@ -52,7 +52,7 @@ use genslip::rupture::{EikonalSolver, Hypocentre, TravelTimes};
 use genslip::slip::{SpectrumSpec, generate_normalised};
 use genslip::slip_rate::MIN_SLIP_CM;
 use genslip::taper::{EdgeTapers, taper_edges};
-use num_complex::Complex32;
+use num_complex::Complex64;
 
 /// Generate the fixture rupture, optionally with the timing perturbation switched off.
 fn rupture<F: Fft, E: EikonalSolver>(
@@ -73,7 +73,7 @@ fn rupture<F: Fft, E: EikonalSolver>(
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        timing,
+        &timing,
         fixture::hypocentre(),
     )
     .expect("the fixture geometry is valid")
@@ -95,7 +95,7 @@ fn travel_times<E: EikonalSolver>(solver: &mut E, hypocentre: Hypocentre) -> Tra
         &grid.depth_km,
         fixture::timing_spec().speed_profile,
     );
-    solver.solve(&speed, hypocentre, f64::from(grid.spacing.strike_km))
+    solver.solve(&speed, hypocentre, grid.spacing.strike_km)
 }
 
 // ---------------------------------------------------------------------------------
@@ -143,7 +143,7 @@ fn the_hypocentre<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
         "the earliest subfault is not the hypocentre: {at_hypocentre} vs {earliest}"
     );
     assert!(
-        (at_hypocentre - f64::from(fixture::timing_spec().rupture_delay_s)).abs() < 1e-12,
+        (at_hypocentre - fixture::timing_spec().rupture_delay_s).abs() < 1e-12,
         "onset at the hypocentre is {at_hypocentre}, not the configured delay"
     );
 }
@@ -196,21 +196,21 @@ fn the_rake_field<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
         .flat()
         .iter()
         .zip(&grid.base_rake_deg)
-        .map(|(rake, base)| f64::from(rake - base))
+        .map(|(rake, base)| rake - base)
         .collect();
     let spread = stats::population_sigma(&deviation);
 
     // The rescale is a single-precision fold over every subfault, so the bound is the
     // fold's, not a chosen number.
-    let tolerance = f64::from(spec.rake_sigma_deg) * f32_sum_relative(deviation.len()) * 10.0;
+    let tolerance = spec.rake_sigma_deg * f32_sum_relative(deviation.len()) * 10.0;
     assert!(
-        (spread - f64::from(spec.rake_sigma_deg)).abs() < tolerance.max(1e-3),
+        (spread - spec.rake_sigma_deg).abs() < tolerance.max(1e-3),
         "rake spread {spread} degrees, configured {}",
         spec.rake_sigma_deg
     );
 
     // And it is not the slip field's spread, which is what it was.
-    let slip_variation = f64::from(spec.spectrum.coefficient_of_variation);
+    let slip_variation = spec.spectrum.coefficient_of_variation;
     assert!(
         (spread - slip_variation).abs() > 1.0,
         "rake spread {spread} is indistinguishable from the slip CoV {slip_variation}"
@@ -296,7 +296,7 @@ fn the_slip_field<F: Fft>(fft: &mut F) {
         } else {
             // Stretched: the spread is what was asked for.
             let spread = stats::population_sigma(&field);
-            let wanted = f64::from(spec.coefficient_of_variation);
+            let wanted = spec.coefficient_of_variation;
             assert!(
                 (spread - wanted).abs() < 1e-3,
                 "{shape:?}: spread {spread}, configured {wanted}"
@@ -329,9 +329,9 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
     // *value* -- which is what conjugate symmetry is about. Comparing raw bits would
     // report the self-conjugate points as broken, so zeros are canonicalised first.
     // Everything else stays bitwise, because the symmetry is imposed by copying.
-    let canonical = |value: f32| {
+    let canonical = |value: f64| {
         if value == 0.0 {
-            0.0_f32.to_bits()
+            0.0_f64.to_bits()
         } else {
             value.to_bits()
         }
@@ -367,7 +367,7 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
     ] {
         assert_eq!(
             spectrum[point].im.to_bits(),
-            0.0_f32.to_bits(),
+            0.0_f64.to_bits(),
             "self-conjugate point [dip, strike] = {point:?} carries an imaginary part"
         );
     }
@@ -381,12 +381,12 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
 /// 0.5 is a 1e6 margin here and under one standard error there.
 #[test]
 fn correlation_is_exact() {
-    for rho in [0.0_f32, 0.3, 0.8, 1.0] {
+    for rho in [0.0_f64, 0.3, 0.8, 1.0] {
         let mut target = genslip::grid::spectrum(4, 4);
         let mut reference = genslip::grid::spectrum(4, 4);
         for index in 0..16 {
-            target.flat_mut()[index] = Complex32::new(0.0, 1.0);
-            reference.flat_mut()[index] = Complex32::new(1.0, 0.0);
+            target.flat_mut()[index] = Complex64::new(0.0, 1.0);
+            reference.flat_mut()[index] = Complex64::new(1.0, 0.0);
         }
 
         genslip::field::correlate_with(&mut target, &reference, rho);
@@ -412,7 +412,7 @@ fn correlation_is_exact() {
 fn the_band_pass_removes_the_mean() {
     let mut spectrum = genslip::grid::spectrum(8, 8);
     for value in spectrum.flat_mut() {
-        *value = Complex32::new(5.0, 0.0);
+        *value = Complex64::new(5.0, 0.0);
     }
 
     genslip::field::band_pass(
@@ -425,8 +425,8 @@ fn the_band_pass_removes_the_mean() {
         4,
     );
 
-    assert_eq!(spectrum[[0, 0]].re.to_bits(), 0.0_f32.to_bits());
-    assert_eq!(spectrum[[0, 0]].im.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(spectrum[[0, 0]].re.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(spectrum[[0, 0]].im.to_bits(), 0.0_f64.to_bits());
 }
 
 /// A negative mean comes back positive from a phase shift that should be the identity.
@@ -439,7 +439,7 @@ fn the_band_pass_removes_the_mean() {
 #[test]
 fn a_phase_shift_flips_a_negative_mean() {
     let mut spectrum = genslip::grid::spectrum(4, 4);
-    spectrum[[0, 0]] = Complex32::new(-7.5, 0.0);
+    spectrum[[0, 0]] = Complex64::new(-7.5, 0.0);
 
     genslip::field::shift_phase(
         &mut spectrum,
@@ -453,7 +453,7 @@ fn a_phase_shift_flips_a_negative_mean() {
 
     assert_eq!(
         spectrum[[0, 0]].re.to_bits(),
-        7.5_f32.to_bits(),
+        7.5_f64.to_bits(),
         "the magnitude round trip stopped flipping the sign"
     );
 }
@@ -473,7 +473,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
     // and the two branches cannot coincide. With a zero perturbation both minima land
     // on the source cell at zero and the test says nothing -- which is the shape a
     // vacuous contract takes.
-    let shift_s = -0.4_f32;
+    let shift_s = -0.4_f64;
     let perturbation = genslip::grid::from_values(
         grid.extents.fault_strike,
         grid.extents.fault_dip,
@@ -497,7 +497,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
 
     let offset = earliest(&following);
     assert!(
-        (offset - f64::from(shift_s)).abs() < 1e-6,
+        (offset - shift_s).abs() < 1e-6,
         "the following segment starts at {offset}; it should still carry the {shift_s} \
          the perturbation put there"
     );
@@ -580,7 +580,7 @@ fn a_phase_shift_is_a_translation() {
     let scale = original
         .flat()
         .iter()
-        .fold(0.0_f32, |worst, value| worst.max(value.norm()));
+        .fold(0.0_f64, |worst, value| worst.max(value.norm()));
     for index in 1..original.flat().len() {
         let (before, after) = (original.flat()[index], shifted.flat()[index]);
         assert!(
@@ -609,7 +609,7 @@ fn the_taper_is_a_contraction() {
 
     for (after, before) in tapered.flat().iter().zip(original.flat()) {
         assert!(
-            after.abs() <= before.abs() + f32::EPSILON,
+            after.abs() <= before.abs() + f64::EPSILON,
             "the taper amplified {before} to {after}"
         );
         assert!(*after > 0.0, "the taper zeroed a subfault outright");
@@ -637,11 +637,11 @@ fn the_taper_is_a_contraction() {
 ///
 /// | fold | bound | smallest visible error |
 /// | --- | --- | --- |
-/// | `f32` | 6e-05 relative at 1e5 subfaults | about six missing subfaults |
+/// | `f64` | 6e-05 relative at 1e5 subfaults | about six missing subfaults |
 /// | `f64` | ~1e-09 | one subfault, at 3000x the bound |
 ///
 /// So widening the accumulator is what made this assertion worth writing. Recomputed
-/// in `f64` here deliberately: recomputing with the same `f32` fold the library used
+/// in `f64` here deliberately: recomputing with the same `f64` fold the library used
 /// would cancel the accumulation error exactly and assert nothing at all.
 fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver>(
     fft: &mut F,
@@ -651,27 +651,23 @@ fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver
     let grid = fixture::fault();
     let (_, rigidity) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
 
-    let area_cm2 = f64::from(grid.spacing.strike_km) * f64::from(grid.spacing.dip_km) * 1.0e10;
+    let area_cm2 = grid.spacing.strike_km * grid.spacing.dip_km * 1.0e10;
     let recomputed: f64 = model
         .slip
         .slip
         .flat()
         .iter()
         .zip(rigidity.flat())
-        .map(|(slip_cm, mu)| area_cm2 * f64::from(*mu) * f64::from(*slip_cm))
+        .map(|(slip_cm, mu)| area_cm2 * *mu * *slip_cm)
         .sum();
 
-    let target = f64::from(model.moment_dyne_cm);
+    let target = model.moment_dyne_cm;
     let relative = (recomputed - target).abs() / target;
 
-    // The residual is the f32 storage of each scaled value, not the fold: about one
+    // The residual is the f64 storage of each scaled value, not the fold: about one
     // unit of roundoff per subfault, growing as its square root.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^52"
-    )]
-    let subfaults = model.slip.slip.flat().len() as f64;
-    let bound = 4.0 * f64::from(f32::EPSILON) * subfaults.sqrt();
+    let subfaults = model.slip.slip.flat().len();
+    let bound = 4.0 * f64::EPSILON * genslip::units::exact(subfaults).sqrt();
     assert!(
         relative < bound,
         "the scaled field carries {recomputed:.6e} against a target of {target:.6e}, \
@@ -713,7 +709,7 @@ fn the_draw_count<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         fixture::hypocentre(),
     );
 

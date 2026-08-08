@@ -9,12 +9,13 @@
 //! so a single factor `M0_target / M0_unscaled` gives the field its magnitude.
 
 use crate::grid::{FaultAxes, SlipField};
+use crate::units;
 
 /// Subfault dimensions, in kilometres.
 #[derive(Clone, Copy, Debug)]
 pub struct SubfaultSize {
-    pub strike_km: f32,
-    pub dip_km: f32,
+    pub strike_km: f64,
+    pub dip_km: f64,
 }
 
 impl SubfaultSize {
@@ -22,14 +23,10 @@ impl SubfaultSize {
     ///
     /// The kilometre product is formed in single precision and only then widened for
     /// the unit conversion, matching where the original rounds.
-    fn area_cm2(self) -> f32 {
+    fn area_cm2(self) -> f64 {
         const CM2_PER_KM2: f64 = 1.0e+10;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the narrowing seam: C stores the product into a float"
-        )]
-        let area = (f64::from(self.strike_km * self.dip_km) * CM2_PER_KM2) as f32;
-        area
+
+        self.strike_km * self.dip_km * CM2_PER_KM2
     }
 }
 
@@ -40,10 +37,10 @@ pub enum SlipScaling {
     ///
     /// The usual path. genslip selects it with a negative `target_savg`, which is
     /// the configured default.
-    Moment { dyne_cm: f32 },
+    Moment { dyne_cm: f64 },
     /// Scale so the mean slip is this many centimetres, and report the moment that
     /// results.
-    AverageSlip { centimetres: f32 },
+    AverageSlip { centimetres: f64 },
 }
 
 /// A slip field in physical units, with the summary statistics its callers need.
@@ -52,16 +49,16 @@ pub struct ScaledSlip {
     /// Slip in centimetres, on the fault's own extent.
     pub slip: SlipField,
     /// Mean slip over the fault, in centimetres.
-    pub average_cm: f32,
+    pub average_cm: f64,
     /// Largest slip on the fault, in centimetres.
     ///
     /// Floored at zero: the running maximum starts there, so a field that is
     /// negative everywhere reports zero rather than its least-negative value. That
     /// is reproduced from the original, and matters only before negative slip is
     /// truncated away.
-    pub maximum_cm: f32,
+    pub maximum_cm: f64,
     /// Seismic moment of the scaled field, in dyne-cm.
-    pub moment_dyne_cm: f32,
+    pub moment_dyne_cm: f64,
 }
 
 /// Scale a slip field to a target moment or average slip.
@@ -82,7 +79,7 @@ pub fn scale_slip(
     field: &SlipField,
     dip_offset: usize,
     dip_count: usize,
-    rigidity: &[f32],
+    rigidity: &[f64],
     subfault: SubfaultSize,
     scaling: SlipScaling,
 ) -> ScaledSlip {
@@ -113,42 +110,32 @@ pub fn scale_slip(
         (0..dip_count)
             .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
             .map(|(strike, dip)| {
-                f64::from(area)
-                    * f64::from(rigidity[strike + dip * strike_count])
-                    * f64::from(unscaled(strike, dip))
+                area * rigidity[strike + dip * strike_count] * unscaled(strike, dip)
             })
             .sum()
     };
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (strike_count * dip_count) as f64;
+    let subfault_count = units::exact(strike_count * dip_count);
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the scale factor is applied to an f32 field"
-    )]
     let factor = match scaling {
-        SlipScaling::Moment { dyne_cm } => (f64::from(dyne_cm) / moment_sum()) as f32,
+        SlipScaling::Moment { dyne_cm } => dyne_cm / moment_sum(),
         SlipScaling::AverageSlip { centimetres } => {
             let sum: f64 = (0..dip_count)
                 .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
-                .map(|(strike, dip)| f64::from(unscaled(strike, dip)))
+                .map(|(strike, dip)| unscaled(strike, dip))
                 .sum();
-            (f64::from(centimetres) * subfault_count / sum) as f32
+            centimetres * subfault_count / sum
         }
     };
 
     let mut slip = crate::grid::zeros(strike_count, dip_count);
     let mut total = 0.0_f64;
-    let mut maximum = 0.0_f32;
+    let mut maximum = 0.0_f64;
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             let scaled = factor * unscaled(strike, dip);
             slip[[dip, strike]] = scaled;
-            total += f64::from(scaled);
+            total += scaled;
             if scaled > maximum {
                 maximum = scaled;
             }
@@ -159,18 +146,14 @@ pub fn scale_slip(
     // the original recomputes it from the *unscaled* field, which makes the reported
     // moment that of the field before scaling rather than after -- reproduced here,
     // and flagged because it looks like a defect.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the reported summaries are f32; the accumulation is not"
-    )]
-    let summary = ScaledSlip {
+
+    ScaledSlip {
         slip,
-        average_cm: (total / subfault_count) as f32,
+        average_cm: (total / subfault_count),
         maximum_cm: maximum,
         moment_dyne_cm: match scaling {
             SlipScaling::Moment { dyne_cm } => dyne_cm,
-            SlipScaling::AverageSlip { .. } => moment_sum() as f32,
+            SlipScaling::AverageSlip { .. } => moment_sum(),
         },
-    };
-    summary
+    }
 }

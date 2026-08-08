@@ -8,15 +8,21 @@
 //! differently.
 
 // The reference functions below transcribe the C's expressions deliberately, so
-// they carry its shapes: comparison chains rather than range tests, and exact float
-// equality where the claim IS exactness.
+// they carry its shapes: comparison chains rather than range tests.
+//
+// `cast_possible_truncation` used to be here too and is gone: the crate computes in
+// `f64` now, so there is no narrowing left in either the port or the transcription.
 #![expect(
     clippy::manual_range_contains,
     clippy::float_cmp,
-    clippy::cast_possible_truncation,
-    reason = "these mirror the original's arithmetic and assert it exactly"
+    reason = "these mirror the original's own comparison chains, and assert exactness \
+              where exactness IS the claim -- a circular average makes the two corner \
+              lengths the same number, not merely close"
 )]
 
+mod common;
+
+use common::tolerance::{agree, transcendental_spelling};
 use genslip::source::{
     CornerRelation, Layer, MagnitudeScale, VelocityModel, average_rise_time, correlation_lengths,
     geometry_correction, seismic_moment,
@@ -26,28 +32,24 @@ use proptest::prelude::*;
 const LN_10: f64 = std::f64::consts::LN_10;
 
 /// `main:1250`.
-#[expect(clippy::cast_possible_truncation, reason = "mirrors the port's seams")]
-fn reference_moment(magnitude: f32, coefficient: f64) -> f32 {
-    (LN_10 * 1.5 * (f64::from(magnitude) + coefficient)).exp() as f32
+fn reference_moment(magnitude: f64, coefficient: f64) -> f64 {
+    (LN_10 * 1.5 * (magnitude + coefficient)).exp()
 }
 
 /// `main:1330` and its siblings.
-#[expect(clippy::cast_possible_truncation, reason = "mirrors the port's seams")]
-fn reference_power_law(magnitude: f32, exponent: f64, offset: f64) -> f32 {
-    (LN_10 * (exponent * f64::from(magnitude) - offset)).exp() as f32
+fn reference_power_law(magnitude: f64, exponent: f64, offset: f64) -> f64 {
+    (LN_10 * (exponent * magnitude - offset)).exp()
 }
 
 /// `main:1412`.
-#[expect(clippy::cast_possible_truncation, reason = "mirrors the port's seams")]
-fn reference_rise_time(moment: f32, coefficient: f32) -> f32 {
-    (f64::from(coefficient) * (1.0e-09 * (f64::from(moment).ln() / 3.0).exp())) as f32
+fn reference_rise_time(moment: f64, coefficient: f64) -> f64 {
+    coefficient * (1.0e-09 * (moment.ln() / 3.0).exp())
 }
 
 /// `main:1418-1441`.
-#[expect(clippy::cast_possible_truncation, reason = "mirrors the port's seams")]
-fn reference_alpha_t(dip: f32, rake: f32) -> (f32, f32, f32) {
+fn reference_alpha_t(dip: f64, rake: f64) -> (f64, f64, f64) {
     let fd = if dip <= 90.0 && dip > 45.0 {
-        (1.0 - (f64::from(dip) - 45.0) / 45.0) as f32
+        1.0 - (dip - 45.0) / 45.0
     } else if dip <= 45.0 && dip >= 0.0 {
         1.0
     } else {
@@ -63,19 +65,19 @@ fn reference_alpha_t(dip: f32, rake: f32) -> (f32, f32, f32) {
     }
 
     let fr = if wrapped <= 180.0 && wrapped >= 0.0 {
-        let offset = f64::from(wrapped) - 90.0;
-        (1.0 - (offset * offset).sqrt() / 90.0) as f32
+        let offset = wrapped - 90.0;
+        1.0 - (offset * offset).sqrt() / 90.0
     } else {
         0.0
     };
 
-    let alpha = (1.0 / (1.0 + f64::from(fd * fr * 0.1))) as f32;
+    let alpha = 1.0 / (1.0 + (fd * fr * 0.1));
     (alpha, fd, fr)
 }
 
 #[test]
 fn moments_match_on_both_magnitude_scales() {
-    for magnitude in [4.0_f32, 5.5, 6.3, 7.1, 8.2] {
+    for magnitude in [4.0_f64, 5.5, 6.3, 7.1, 8.2] {
         assert_eq!(
             seismic_moment(magnitude, MagnitudeScale::Moment).to_bits(),
             reference_moment(magnitude, 10.73).to_bits(),
@@ -93,7 +95,7 @@ fn moments_match_on_both_magnitude_scales() {
 fn correlation_lengths_match_for_every_relation() {
     const TWO_PI_DECADES: f64 = 0.79818;
 
-    for magnitude in [5.0_f32, 6.3, 7.5, 8.4] {
+    for magnitude in [5.0_f64, 6.3, 7.5, 8.4] {
         let mai = correlation_lengths(
             magnitude,
             CornerRelation::Mai {
@@ -105,18 +107,17 @@ fn correlation_lengths_match_for_every_relation() {
         );
         assert_eq!(
             mai.strike_km.to_bits(),
-            reference_power_law(magnitude, 0.5, f64::from(2.50_f32)).to_bits()
+            reference_power_law(magnitude, 0.5, 2.50_f64).to_bits()
         );
         assert_eq!(
             mai.dip_km.to_bits(),
-            reference_power_law(magnitude, 0.3333, f64::from(1.50_f32)).to_bits()
+            reference_power_law(magnitude, 0.3333, 1.50_f64).to_bits()
         );
 
         // Two separate subtractions, as the original writes them: `(a - b) - c` is
         // not `a - (b + c)`.
-        let reference_somerville = |offset: f64| {
-            (LN_10 * (0.5 * f64::from(magnitude) - offset - TWO_PI_DECADES)).exp() as f32
-        };
+        let reference_somerville =
+            |offset: f64| (LN_10 * (0.5 * magnitude - offset - TWO_PI_DECADES)).exp();
         let somerville = correlation_lengths(
             magnitude,
             CornerRelation::Somerville { circular: false },
@@ -144,7 +145,7 @@ fn correlation_lengths_match_for_every_relation() {
         let clamped = magnitude.min(6.3);
         assert_eq!(
             suzuki.dip_km.to_bits(),
-            reference_power_law(clamped, 0.5, f64::from(1.69_f32)).to_bits(),
+            reference_power_law(clamped, 0.5, 1.69_f64).to_bits(),
             "Suzuki dip corner at M{magnitude}"
         );
 
@@ -197,7 +198,7 @@ fn frankel_takes_mai_s_corners_because_one_branch_serves_both() {
         )
     };
 
-    for magnitude in [4.0_f32, 5.0, 6.3, 7.5, 8.5] {
+    for magnitude in [4.0_f64, 5.0, 6.3, 7.5, 8.5] {
         let (mai, somerville) = relations(magnitude);
         let strike_ratio = mai.strike_km / somerville.strike_km;
         assert!(
@@ -225,7 +226,7 @@ fn frankel_takes_mai_s_corners_because_one_branch_serves_both() {
 
 #[test]
 fn circular_relations_give_equal_corners() {
-    for magnitude in [5.0_f32, 7.5] {
+    for magnitude in [5.0_f64, 7.5] {
         let mai = correlation_lengths(
             magnitude,
             CornerRelation::Mai {
@@ -248,13 +249,26 @@ fn circular_relations_give_equal_corners() {
 
 #[test]
 fn rise_times_match() {
-    for magnitude in [5.0_f32, 6.3, 7.5, 8.2] {
+    // The one relation here where the port and the transcription use *different
+    // formulas*: `cbrt` against the original's `exp(ln(M0)/3)`. Same function, two
+    // evaluations, so they agree to a few ulps rather than to the bit.
+    //
+    // They agreed to the bit until this crate moved to `f64`, and that was an
+    // artefact: the store to `float` rounded the difference away. `float_identities`
+    // has asserted `cbrt != exp(ln x / 3)` at full width the whole time, and the two
+    // statements only met when the narrowing went.
+    for magnitude in [5.0_f64, 6.3, 7.5, 8.2] {
         let moment = seismic_moment(magnitude, MagnitudeScale::Moment);
-        for coefficient in [1.6_f32, 2.3, 3.75] {
-            assert_eq!(
-                average_rise_time(moment, coefficient).to_bits(),
-                reference_rise_time(moment, coefficient).to_bits(),
-                "M{magnitude}, coefficient {coefficient}"
+        for coefficient in [1.6_f64, 2.3, 3.75] {
+            let produced = average_rise_time(moment, coefficient);
+            let expected = reference_rise_time(moment, coefficient);
+            assert!(
+                agree(
+                    produced,
+                    expected,
+                    transcendental_spelling(moment, 1.0 / 3.0)
+                ),
+                "M{magnitude}, coefficient {coefficient}: {produced} vs {expected}"
             );
         }
     }
@@ -262,9 +276,9 @@ fn rise_times_match() {
 
 #[test]
 fn the_geometry_correction_matches() {
-    for dip in [90.0_f32, 75.0, 60.0, 45.0, 30.0, 10.0] {
+    for dip in [90.0_f64, 75.0, 60.0, 45.0, 30.0, 10.0] {
         for rake in [
-            -180.0_f32, -90.0, 0.0, 45.0, 90.0, 135.0, 180.0, 270.0, -450.0,
+            -180.0_f64, -90.0, 0.0, 45.0, 90.0, 135.0, 180.0, 270.0, -450.0,
         ] {
             let produced = geometry_correction(dip, rake).expect("dip is in range");
             let (alpha, fd, fr) = reference_alpha_t(dip, rake);
@@ -321,7 +335,7 @@ fn the_velocity_model_clamps_below_its_deepest_layer() {
     assert_eq!(model.layer_at(1000.0).shear_speed_km_s, 3.4);
 
     // Rigidity is rho*vs^2 in CMS units.
-    let expected = (f64::from(3.4_f32 * 3.4 * 2.7) * 1.0e+10) as f32;
+    let expected = (3.4_f64 * 3.4 * 2.7) * 1.0e+10;
     assert_eq!(
         model.layer_at(20.0).rigidity().to_bits(),
         expected.to_bits()
@@ -330,7 +344,7 @@ fn the_velocity_model_clamps_below_its_deepest_layer() {
 
 proptest! {
     #[test]
-    fn moments_match_for_any_magnitude(magnitude in 3.0f32..9.5) {
+    fn moments_match_for_any_magnitude(magnitude in 3.0f64..9.5) {
         prop_assert_eq!(
             seismic_moment(magnitude, MagnitudeScale::Moment).to_bits(),
             reference_moment(magnitude, 10.73).to_bits()
@@ -347,8 +361,8 @@ proptest! {
     /// asserts the disagreement rather than leaving it to a shrunk counterexample.
     #[test]
     fn the_geometry_correction_matches_for_any_fault_plane(
-        dip in 0.0f32..=90.0,
-        rake in -540.0f32..540.0,
+        dip in 0.0f64..=90.0,
+        rake in -540.0f64..540.0,
     ) {
         let produced = geometry_correction(dip, rake).expect("0..=90 is a fault plane");
         let (alpha, fd, fr) = reference_alpha_t(dip, rake);
@@ -370,21 +384,21 @@ proptest! {
     /// fault gets. `error.rs` says why that is the shape worth removing.
     #[test]
     fn a_dip_that_is_not_a_fault_plane_is_refused_where_the_original_returns_zero(
-        dip in prop_oneof![-90.0f32..-0.001, 90.001f32..270.0],
-        rake in -180.0f32..180.0,
+        dip in prop_oneof![-90.0f64..-0.001, 90.001f64..270.0],
+        rake in -180.0f64..180.0,
     ) {
         prop_assert_eq!(
             geometry_correction(dip, rake),
-            Err(genslip::Error::DipOutOfRange { degrees: f64::from(dip) })
+            Err(genslip::Error::DipOutOfRange { degrees: dip })
         );
 
         let (alpha, fd, _) = reference_alpha_t(dip, rake);
-        prop_assert_eq!(fd.to_bits(), 0.0f32.to_bits(), "the original refused after all");
-        prop_assert_eq!(alpha.to_bits(), 1.0f32.to_bits(), "which reads as a vertical fault");
+        prop_assert_eq!(fd.to_bits(), 0.0f64.to_bits(), "the original refused after all");
+        prop_assert_eq!(alpha.to_bits(), 1.0f64.to_bits(), "which reads as a vertical fault");
     }
 
     #[test]
-    fn alpha_t_stays_within_its_bounds(dip in 0.0f32..90.0, rake in 0.0f32..180.0) {
+    fn alpha_t_stays_within_its_bounds(dip in 0.0f64..90.0, rake in 0.0f64..180.0) {
         // 1/(1 + f_D*f_R*c) with both factors in [0, 1] and c = 0.1.
         let alpha = geometry_correction(dip, rake).expect("dip is in range").alpha_t;
         prop_assert!(alpha <= 1.0 && alpha >= 1.0 / 1.1 - 1e-6, "alpha_t = {}", alpha);

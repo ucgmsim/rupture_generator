@@ -12,7 +12,7 @@
 //! in [`transform_2d`] and the trait is only [`Fft`], a 1-D engine.
 //!
 //! [`RustFft`] is the only engine. It replaced FFTW, which the port called because
-//! genslip does; the two agreed to 7.06e-08 relative — about an `f32` ulp — and
+//! genslip does; the two agreed to 7.06e-08 relative — about an `f64` ulp — and
 //! `rustfft` measured 10% to 38% faster. Both numbers were recorded before the
 //! alternative was deleted — the accuracy one in `tests/fft_contract.rs`, the speed
 //! one here, because a test that times a deleted engine turns into a test that times
@@ -40,7 +40,7 @@ mod rust;
 
 pub use rust::RustFft;
 
-use num_complex::Complex32;
+use num_complex::Complex64;
 
 use crate::grid::{FaultAxes, FaultAxesMut, Spectrum};
 
@@ -63,7 +63,7 @@ pub enum Direction {
 /// what both FFTW and `rustfft` do by default, and what the callers here assume.
 pub trait Fft {
     /// Transform `buffer` in place.
-    fn transform(&mut self, buffer: &mut [Complex32], direction: Direction);
+    fn transform(&mut self, buffer: &mut [Complex64], direction: Direction);
 }
 
 /// Transform a grid in place, along strike and then down dip.
@@ -115,7 +115,7 @@ pub fn transform_2d<F: Fft + ?Sized>(spectrum: &mut Spectrum, fft: &mut F, direc
     }
 
     // Down dip: transpose, run contiguous rows, transpose back.
-    let mut scratch = vec![Complex32::default(); strike_count * dip_count];
+    let mut scratch = vec![Complex64::default(); strike_count * dip_count];
     transpose_into(spectrum.flat(), &mut scratch, dip_count, strike_count);
     for strike in 0..strike_count {
         let start = strike * dip_count;
@@ -129,7 +129,7 @@ pub fn transform_2d<F: Fft + ?Sized>(spectrum: &mut Spectrum, fft: &mut F, direc
 /// Both the read and the write side of a block have to stay resident at once, so the
 /// working set is `2 * TILE² * 8` bytes — 16 KiB at 32, comfortably inside a 32 KiB
 /// L1. Larger tiles start evicting the block being read; smaller ones stop amortising
-/// the cache line, which holds 4 `Complex32`.
+/// the cache line, which holds 4 `Complex64`.
 const TILE: usize = 32;
 
 /// Transpose `source` (`rows` × `columns`, row-major) into `target`, in blocks.
@@ -138,7 +138,7 @@ const TILE: usize = 32;
 /// way it is written, and walking a whole row of one against a whole column of the
 /// other touches a fresh cache line on every element. Confining both to a tile means
 /// each line is touched once and reused `TILE` times.
-fn transpose_into(source: &[Complex32], target: &mut [Complex32], rows: usize, columns: usize) {
+fn transpose_into(source: &[Complex64], target: &mut [Complex64], rows: usize, columns: usize) {
     debug_assert_eq!(source.len(), rows * columns);
     debug_assert_eq!(target.len(), rows * columns);
 
@@ -157,13 +157,13 @@ fn transpose_into(source: &[Complex32], target: &mut [Complex32], rows: usize, c
 ///
 /// Separated from [`transform_2d`] deliberately, though the original fuses it into
 /// the second pass's writeback. It costs nothing to separate: `factor * value`
-/// rounded to `f32` is the same whether the value was stored first or not, because
-/// either way it is one `f32` multiply of the same two `f32` operands. And it keeps
+/// rounded to `f64` is the same whether the value was stored first or not, because
+/// either way it is one `f64` multiply of the same two `f64` operands. And it keeps
 /// a genslip convention out of a function whose job is the transform.
 ///
 /// The factor callers pass is the product of the sample spacings of the domain the
 /// transform started in.
-pub fn scale(spectrum: &mut Spectrum, factor: f32) {
+pub fn scale(spectrum: &mut Spectrum, factor: f64) {
     for value in spectrum.flat_mut() {
         *value *= factor;
     }
@@ -174,6 +174,6 @@ pub fn scale(spectrum: &mut Spectrum, factor: f32) {
 ///
 /// Formed in single precision, as the original forms it.
 #[must_use]
-pub fn spacing_product(first: f32, second: f32) -> f32 {
+pub fn spacing_product(first: f64, second: f64) -> f64 {
     first * second
 }

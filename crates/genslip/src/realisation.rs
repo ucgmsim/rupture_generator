@@ -46,6 +46,7 @@ use crate::slip::{self, GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpa
 use crate::slip_rate::{self, BetaProfile, SlipRate, SlipRateShape};
 use crate::source::{self, CornerRelation, MagnitudeScale, VelocityModel};
 use crate::taper::EdgeTapers;
+use crate::units;
 
 /// The discretised fault: extents, spacing, and what varies down dip.
 ///
@@ -58,25 +59,25 @@ pub struct FaultGrid {
     pub spacing: SubfaultSpacing,
     /// One depth per dip row, in km. genslip reads depth per row too — from the first
     /// subfault of each — which is exact for a planar segment.
-    pub depth_km: Vec<f32>,
+    pub depth_km: Vec<f64>,
     /// One rake per subfault, in degrees, before the rake field perturbs it.
-    pub base_rake_deg: Vec<f32>,
+    pub base_rake_deg: Vec<f64>,
     /// Rupture speed as a fraction of shear-wave speed, per subfault.
-    pub velocity_fraction: Vec<f32>,
+    pub velocity_fraction: Vec<f64>,
 }
 
 /// What the earthquake is, before any field is drawn.
 #[derive(Clone, Copy, Debug)]
 pub struct SourceSpec {
-    pub magnitude: f32,
+    pub magnitude: f64,
     pub magnitude_scale: MagnitudeScale,
     pub corners: CornerRelation,
     pub modified_corners: bool,
     /// Coefficient in `trise = c * 1e-9 * Mo^(1/3)`.
-    pub rise_time_coefficient: f32,
+    pub rise_time_coefficient: f64,
     /// Average dip and rake, for the geometry correction.
-    pub average_dip_deg: f32,
-    pub average_rake_deg: f32,
+    pub average_dip_deg: f64,
+    pub average_rake_deg: f64,
 }
 
 /// How the slip and rake fields are shaped and trimmed.
@@ -91,7 +92,7 @@ pub struct SlipSpec {
     /// Clip negative slip to zero. Configured on.
     pub truncate_negative: bool,
     /// Minimum slip as a fraction of the mean. Non-positive disables.
-    pub water_level: f32,
+    pub water_level: f64,
     /// Standard deviation of the rake field, in **degrees**, about each subfault's
     /// base rake. (orig. `genslip_v5.6.2.c:2068`)
     ///
@@ -99,7 +100,7 @@ pub struct SlipSpec {
     /// and is dimensionless. Handing that to `rake_field` is what `DEFECTS.md` 14
     /// was: every rake came out with a spread of 0.75 degrees where the original
     /// gives 15, a factor of twenty, on every fault regardless of geometry.
-    pub rake_sigma_deg: f32,
+    pub rake_sigma_deg: f64,
 }
 
 /// How rupture time and rise time relate to slip.
@@ -109,9 +110,9 @@ pub struct TimingSpec {
     pub rupture_time: PerturbationSpec,
     /// Amplitude applied to that perturbation, in seconds. Negative, so patches
     /// that slip more rupture earlier.
-    pub rupture_time_scale: f32,
+    pub rupture_time_scale: f64,
     /// Constant offset added to every onset time.
-    pub rupture_delay_s: f32,
+    pub rupture_delay_s: f64,
     /// How rise time is built.
     pub rise_time: RiseTimeSpec,
     /// How rise time stretches with depth.
@@ -126,7 +127,7 @@ pub struct TimingSpec {
     /// [`SlipRateShape::OliuP2`]; the others carry their own.
     pub beta: BetaProfile,
     /// Sample interval of the slip-rate functions, in seconds.
-    pub sample_interval_s: f32,
+    pub sample_interval_s: f64,
     /// Cap on samples per pulse.
     pub max_samples: usize,
 }
@@ -139,12 +140,12 @@ pub struct TimingSpec {
 #[derive(Clone, Copy, Debug)]
 pub struct Scaling {
     /// Seismic moment, in dyne-cm.
-    pub moment_dyne_cm: f32,
+    pub moment_dyne_cm: f64,
     /// The dip-and-rake geometry correction.
-    pub alpha_t: f32,
+    pub alpha_t: f64,
     /// Fault-wide average rise time, in seconds, before the depth ramp redistributes
     /// it. Already multiplied by `alpha_t` where that applies.
-    pub average_rise_time_s: f32,
+    pub average_rise_time_s: f64,
 }
 
 /// A generated rupture model.
@@ -161,9 +162,9 @@ pub struct RuptureModel {
     /// One slip-rate pulse per subfault, along-strike index fastest.
     pub slip_rate: Vec<SlipRate>,
     /// The seismic moment the field was scaled to, in dyne-cm.
-    pub moment_dyne_cm: f32,
+    pub moment_dyne_cm: f64,
     /// The dip-and-rake correction that was applied.
-    pub alpha_t: f32,
+    pub alpha_t: f64,
 }
 
 /// Generate one rupture model.
@@ -189,7 +190,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     velocity_model: &VelocityModel,
     spec: SourceSpec,
     slip_spec: SlipSpec,
-    timing: TimingSpec,
+    timing: &TimingSpec,
     hypocentre: Hypocentre,
 ) -> Result<RuptureModel> {
     check(grid, hypocentre)?;
@@ -209,8 +210,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     }
     crate::taper::taper_edges(&mut slip, &slip_spec.tapers);
     if slip_spec.water_level > 0.0 {
-        #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
-        let mean = slip.flat().iter().sum::<f32>() / subfaults as f32;
+        let mean = slip.flat().iter().sum::<f64>() / units::exact(subfaults);
         slip::apply_water_level(&mut slip, mean, slip_spec.water_level);
     }
 
@@ -309,11 +309,11 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
 /// rise time. A point source is told its rise time.
 #[derive(Clone, Copy, Debug)]
 pub struct PointSourceSpec {
-    pub magnitude: f32,
+    pub magnitude: f64,
     pub magnitude_scale: MagnitudeScale,
     /// Average dip and rake, for the same geometry correction a finite fault gets.
-    pub average_dip_deg: f32,
-    pub average_rake_deg: f32,
+    pub average_dip_deg: f64,
+    pub average_rake_deg: f64,
     /// Fault-wide average rise time, in seconds — `generic_slip2srf`'s `risetime`.
     ///
     /// The *average*, which the depth ramp then redistributes around. The original
@@ -321,7 +321,7 @@ pub struct PointSourceSpec {
     /// and the fault-wide average comes out above what was asked for. Redistributing
     /// is what the finite-fault path does and what makes a one-subfault source come
     /// out at exactly this number.
-    pub rise_time_s: f32,
+    pub rise_time_s: f64,
 }
 
 /// Generate a point source: the same rupture model, with nothing drawn.
@@ -364,11 +364,11 @@ pub fn point_source<E: EikonalSolver>(
     grid: &FaultGrid,
     velocity_model: &VelocityModel,
     spec: PointSourceSpec,
-    timing: TimingSpec,
+    timing: &TimingSpec,
     hypocentre: Hypocentre,
 ) -> Result<RuptureModel> {
     check(grid, hypocentre)?;
-    Error::require_positive("rise_time_s", f64::from(spec.rise_time_s))?;
+    Error::require_positive("rise_time_s", spec.rise_time_s)?;
     let (strike_count, dip_count) = (grid.extents.fault_strike, grid.extents.fault_dip);
     let subfaults = strike_count * dip_count;
 
@@ -538,7 +538,7 @@ fn assemble<E: EikonalSolver>(
     fields: &Fields,
     grid: &FaultGrid,
     shear_speed: &SlipField,
-    timing: TimingSpec,
+    timing: &TimingSpec,
     scaling: Scaling,
     solver: &mut E,
     hypocentre: Hypocentre,
@@ -584,7 +584,7 @@ fn assemble<E: EikonalSolver>(
         &grid.depth_km,
         timing.speed_profile,
     );
-    let travel = solver.solve(&speed, hypocentre, f64::from(grid.spacing.strike_km));
+    let travel = solver.solve(&speed, hypocentre, grid.spacing.strike_km);
     let mut onset_s = rupture::onset_times(
         &travel,
         rupture_perturbation,
@@ -650,6 +650,6 @@ fn assemble<E: EikonalSolver>(
 ///
 /// The properties this pulls out are constant along strike for a planar segment, and
 /// the original reads them the same way.
-fn column_of(field: &SlipField) -> Vec<f32> {
+fn column_of(field: &SlipField) -> Vec<f64> {
     (0..field.dip_count()).map(|dip| field[[dip, 0]]).collect()
 }

@@ -26,15 +26,16 @@
 //! the same randomness.
 //!
 //! **The amplitudes are computed in double precision and narrowed to single.** The
-//! grid is `f32`, but every `exp`, `log` and `sqrt` below runs in `f64` and rounds
+//! grid is `f64`, but every `exp`, `log` and `sqrt` below runs in `f64` and rounds
 //! once on the way out. This is not incidental: it is what the original does, since
 //! C's `exp`/`log`/`sqrt` take and return `double` and their results are narrowed
-//! only where they are stored. Computing the same expressions in `f32` throughout
+//! only where they are stored. Computing the same expressions in `f64` throughout
 //! gives different last bits.
 //!
 //! (orig. slip.c:1482 and slip.c:1585)
 
-use num_complex::Complex32;
+use crate::units;
+use num_complex::Complex64;
 
 use crate::grid::{FaultAxes, FaultAxesMut, Spectrum, impose_hermitian_symmetry};
 use crate::rng::DrawSource;
@@ -50,7 +51,7 @@ const BAND_PASS_ORDER: i32 = 4;
 /// Each part gets a standard normal scaled by `1/sqrt(2)`, so the complex deviate
 /// has unit total variance. The four self-conjugate points are then divided back
 /// out, because those must be real and so carry the whole variance in one component.
-const QUADRATURE_NORM: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const QUADRATURE_NORM: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
 /// Which spectral shape a correlated field takes.
 ///
@@ -121,33 +122,27 @@ impl Spectrum2D {
     /// `scale` is folded in here rather than applied by the caller because the
     /// original divides by the square root *after* multiplying, and the rounding
     /// differs if that order changes.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores each of these into a float"
-    )]
-    fn amplitude(self, a: f32, scale: f32) -> f32 {
+    fn amplitude(self, a: f64, scale: f64) -> f64 {
         // `a` stays single precision until it meets a double. In C the square is
         // float*float and only *then* widens for the addition, which rounds once
         // more than squaring in double would. Widening first shifts the last bit.
-        let a_squared = f64::from(a * a);
-        let a = f64::from(a);
-        let scale = f64::from(scale);
+        let a_squared = a * a;
         match self {
-            Self::Somerville | Self::InputCorners => (scale / (1.0 + a_squared).sqrt()) as f32,
+            Self::Somerville | Self::InputCorners => scale / (1.0 + a_squared).sqrt(),
             // von Karman. The exponent is halved because the amplitude is the square
             // root of the power spectrum, and folding the two into one call also
             // removes a narrowing the original had -- it stored the falloff into a
             // float before taking its root.
             Self::Mai | Self::Suzuki | Self::MaiSomerville => {
-                (scale / (1.0 + a).powf(Self::VON_KARMAN_EXPONENT / 2.0)) as f32
+                scale / (1.0 + a).powf(Self::VON_KARMAN_EXPONENT / 2.0)
             }
             Self::Frankel => {
                 if a < 1.0 {
-                    scale as f32
+                    scale
                 } else {
                     // A reciprocal. The original spells it `exp(-0.5*beta2*log(a))`
                     // with `beta2 = 2`, so the exponent is exactly -1.
-                    (scale / a.powf(Self::FRANKEL_EXPONENT / 2.0)) as f32
+                    scale / a.powf(Self::FRANKEL_EXPONENT / 2.0)
                 }
             }
         }
@@ -161,8 +156,8 @@ impl Spectrum2D {
 /// spacing can represent and longer than the fault itself.
 #[derive(Clone, Copy, Debug)]
 pub struct WavelengthBand {
-    min_squared: f32,
-    max_squared: f32,
+    min_squared: f64,
+    max_squared: f64,
 }
 
 impl WavelengthBand {
@@ -174,7 +169,7 @@ impl WavelengthBand {
     /// zero or negative limit yields an infinite or NaN amplitude across the whole
     /// grid rather than an obviously wrong one.
     #[must_use]
-    pub fn new(min_wavelength_km: f32, max_wavelength_km: f32) -> Self {
+    pub fn new(min_wavelength_km: f64, max_wavelength_km: f64) -> Self {
         assert!(
             min_wavelength_km > 0.0 && max_wavelength_km > 0.0,
             "wavelength limits must be positive, got {min_wavelength_km} and {max_wavelength_km}"
@@ -191,19 +186,19 @@ impl WavelengthBand {
     /// single division the original does.
     ///
     /// At `k2 == 0` both logarithms diverge; callers handle the origin separately.
-    fn divisor(self, k2: f32) -> f64 {
+    fn divisor(self, k2: f64) -> f64 {
         self.divisor_at_order(k2, BAND_PASS_ORDER)
     }
 
     /// As [`divisor`](Self::divisor), but at a caller-chosen roll-off order.
     ///
     /// [`band_pass`] takes its order from configuration; the generators do not.
-    fn divisor_at_order(self, k2: f32, order: i32) -> f64 {
+    fn divisor_at_order(self, k2: f64, order: i32) -> f64 {
         // Both products are single precision before they reach the logarithm: the
         // original multiplies two floats and the widening happens at the call. The
         // rounding differs if the operands are widened first.
-        let high = f64::from(k2 * self.min_squared);
-        let low = f64::from(k2 * self.max_squared);
+        let high = k2 * self.min_squared;
+        let low = k2 * self.max_squared;
         // Integer powers: the order is 4 in the generators and `kord` -- an integer
         // getpar -- in `band_pass`. Three multiplies each rather than a pair of
         // transcendental calls.
@@ -221,30 +216,26 @@ impl WavelengthBand {
 /// Wavenumber sample spacing of a grid, in radians per kilometre.
 #[derive(Clone, Copy, Debug)]
 pub struct WavenumberStep {
-    pub strike: f32,
-    pub dip: f32,
+    pub strike: f64,
+    pub dip: f64,
 }
 
 /// Correlation lengths of the slip field, in kilometres.
 #[derive(Clone, Copy, Debug)]
 pub struct CorrelationLengths {
-    pub strike: f32,
-    pub dip: f32,
+    pub strike: f64,
+    pub dip: f64,
 }
 
 /// Signed wavenumber of grid index `index` in an extent of `count` samples.
 ///
 /// Indices past the midpoint represent negative wavenumbers, as in any discrete
 /// transform.
-fn wavenumber(index: usize, count: usize, step: f32) -> f32 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "grid extents are far below 2^24"
-    )]
+fn wavenumber(index: usize, count: usize, step: f64) -> f64 {
     let signed = if index <= count / 2 {
-        index as f32
+        units::exact(index)
     } else {
-        index as f32 - count as f32
+        units::exact(index) - units::exact(count)
     };
     signed * step
 }
@@ -263,7 +254,7 @@ pub fn correlated_field<S: DrawSource>(
     step: WavenumberStep,
     correlation: CorrelationLengths,
     band: WavelengthBand,
-    amplitude_scale: f32,
+    amplitude_scale: f64,
 ) {
     let strike_count = spectrum.strike_count();
     let dip_count = spectrum.dip_count();
@@ -282,11 +273,7 @@ pub fn correlated_field<S: DrawSource>(
 
             let k2 = kx * kx + ky * ky;
             if k2 > 0.0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the narrowing seam: C stores the quotient into a float"
-                )]
-                let banded = (f64::from(amplitude) / band.divisor(k2)) as f32;
+                let banded = amplitude / band.divisor(k2);
                 amplitude = banded;
             }
 
@@ -324,11 +311,7 @@ pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: Wavelength
             let kx = wavenumber(strike, strike_count, step.strike);
             let k2 = kx * kx + ky * ky;
 
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the narrowing seam: C stores the gain into a float"
-            )]
-            let gain = (1.0 / band.divisor_at_order(k2, order)) as f32;
+            let gain = 1.0 / band.divisor_at_order(k2, order);
             spectrum[[dip, strike]] *= gain;
         }
     }
@@ -347,22 +330,18 @@ pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: Wavelength
 pub fn self_affine_field<S: DrawSource>(
     spectrum: &mut Spectrum,
     source: &mut S,
-    hurst_exponent: f32,
+    hurst_exponent: f64,
     step: WavenumberStep,
     band: WavelengthBand,
 ) {
     let strike_count = spectrum.strike_count();
     let dip_count = spectrum.dip_count();
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores the sum into a float"
-    )]
-    let falloff = (f64::from(hurst_exponent) + 1.0) as f32;
+    let falloff = hurst_exponent + 1.0;
 
     // Hoisted: it depends only on the Hurst exponent, and the original recomputed it
     // at every grid point.
-    let exponent = -0.5 * f64::from(falloff);
+    let exponent = -0.5 * falloff;
 
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);
@@ -378,17 +357,9 @@ pub fn self_affine_field<S: DrawSource>(
                 0.0
             } else {
                 let k2 = kx * kx + ky * ky;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the narrowing seam: C stores each of these into a float"
-                )]
-                let gain = (1.0 / band.divisor(k2)) as f32;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the narrowing seam: C stores the product into a float"
-                )]
-                let amplitude = (f64::from(gain) * f64::from(k2).powf(exponent)) as f32;
-                amplitude
+                let gain = 1.0 / band.divisor(k2);
+
+                gain * k2.powf(exponent)
             };
 
             spectrum[[dip, strike]] = deviate * amplitude;
@@ -399,33 +370,25 @@ pub fn self_affine_field<S: DrawSource>(
     // field has no mean, and the power law diverges there. The other three points
     // keep their real part unscaled -- unlike the correlated field, this one does
     // not restore the quadrature variance.
-    spectrum[[0, 0]] = Complex32::default();
+    spectrum[[0, 0]] = Complex64::default();
     make_corners_real(spectrum, |value| value);
     impose_hermitian_symmetry(spectrum);
 }
 
 /// One complex deviate with unit total variance.
-fn draw_unit_complex<S: DrawSource>(source: &mut S) -> Complex32 {
-    // `gaussian` returns f64 and the product with the f32 norm happens in f64,
+fn draw_unit_complex<S: DrawSource>(source: &mut S) -> Complex64 {
+    // `gaussian` returns f64 and the product with the f64 norm happens in f64,
     // narrowing once on store -- the original's `fnorm*gaus_rand(...)` into a float.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores each deviate into a float"
-    )]
-    let real = (f64::from(QUADRATURE_NORM) * source.gaussian(1.0, 0.0)) as f32;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores each deviate into a float"
-    )]
-    let imaginary = (f64::from(QUADRATURE_NORM) * source.gaussian(1.0, 0.0)) as f32;
-    Complex32::new(real, imaginary)
+    let real = QUADRATURE_NORM * source.gaussian(1.0, 0.0);
+    let imaginary = QUADRATURE_NORM * source.gaussian(1.0, 0.0);
+    Complex64::new(real, imaginary)
 }
 
 /// Force the four self-conjugate points to be real.
 ///
 /// DC and the three Nyquist corners map to themselves under conjugation, so they
 /// cannot carry an imaginary part in a real-valued field.
-fn make_corners_real(spectrum: &mut Spectrum, rescale: impl Fn(f32) -> f32) {
+fn make_corners_real(spectrum: &mut Spectrum, rescale: impl Fn(f64) -> f64) {
     let strike_nyquist = spectrum.strike_count() / 2;
     let dip_nyquist = spectrum.dip_count() / 2;
 
@@ -437,7 +400,7 @@ fn make_corners_real(spectrum: &mut Spectrum, rescale: impl Fn(f32) -> f32) {
         [dip_nyquist, 0],
         [dip_nyquist, strike_nyquist],
     ] {
-        spectrum[corner] = Complex32::new(rescale(spectrum[corner].re), 0.0);
+        spectrum[corner] = Complex64::new(rescale(spectrum[corner].re), 0.0);
     }
 }
 
@@ -479,10 +442,10 @@ pub fn shift_phase(
 
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);
-        let dip_phase = phase_factor(dip_argument * f64::from(ky));
+        let dip_phase = phase_factor(dip_argument * ky);
         for strike in 0..strike_count {
             let kx = wavenumber(strike, strike_count, step.strike);
-            let strike_phase = phase_factor(strike_argument * f64::from(kx));
+            let strike_phase = phase_factor(strike_argument * kx);
 
             // Two separate multiplications rather than one combined factor, so the
             // rounding matches: the original applies the along-strike rotation,
@@ -492,7 +455,7 @@ pub fn shift_phase(
         }
     }
 
-    spectrum[[0, 0]] = Complex32::new(dc_magnitude, 0.0);
+    spectrum[[0, 0]] = Complex64::new(dc_magnitude, 0.0);
     // Unlike the generators, only the imaginary parts of the remaining three
     // self-conjugate points are cleared; their real parts keep whatever the rotation
     // gave them.
@@ -503,20 +466,15 @@ pub fn shift_phase(
         [dip_nyquist, 0],
         [dip_nyquist, strike_nyquist],
     ] {
-        spectrum[corner] = Complex32::new(spectrum[corner].re, 0.0);
+        spectrum[corner] = Complex64::new(spectrum[corner].re, 0.0);
     }
 
     impose_hermitian_symmetry(spectrum);
 }
 
 /// `exp(-i * argument)`, narrowed to single precision as the original stores it.
-fn phase_factor(argument: f64) -> Complex32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores each part into a float"
-    )]
-    let factor = Complex32::new(argument.cos() as f32, -argument.sin() as f32);
-    factor
+fn phase_factor(argument: f64) -> Complex64 {
+    Complex64::new(argument.cos(), -argument.sin())
 }
 
 /// Blend a field with a reference at a target correlation, in the wavenumber domain.
@@ -538,18 +496,14 @@ fn phase_factor(argument: f64) -> Complex32 {
 /// If the two grids have different extents.
 ///
 /// (orig. `genslip_v5.6.2.c:2116-2121`)
-pub fn correlate_with(target: &mut Spectrum, reference: &Spectrum, correlation: f32) {
+pub fn correlate_with(target: &mut Spectrum, reference: &Spectrum, correlation: f64) {
     assert_eq!(
         (target.strike_count(), target.dip_count()),
         (reference.strike_count(), reference.dip_count()),
         "cannot correlate grids of different extents"
     );
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores the root into a float"
-    )]
-    let independent = (1.0 - f64::from(correlation * correlation)).sqrt() as f32;
+    let independent = (1.0 - correlation * correlation).sqrt();
 
     for (value, other) in target.flat_mut().iter_mut().zip(reference.flat().iter()) {
         *value = *other * correlation + *value * independent;

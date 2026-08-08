@@ -52,9 +52,9 @@ impl DrawSource for Pcg {
         self.generator.random::<f64>().mul_add(2.0, -1.0)
     }
 
-    fn gaussian(&mut self, sigma: f32, mean: f32) -> f64 {
+    fn gaussian(&mut self, sigma: f64, mean: f64) -> f64 {
         let deviate: f64 = self.generator.sample(StandardNormal);
-        deviate.mul_add(f64::from(sigma), f64::from(mean))
+        deviate.mul_add(sigma, mean)
     }
 }
 

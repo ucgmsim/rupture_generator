@@ -30,7 +30,8 @@
 //! (orig. `genslip_v5.6.2.c:1697-1860`)
 
 use crate::grid::{FaultAxes, FaultAxesMut, SlipField, Spectrum};
-use num_complex::Complex32;
+use crate::units;
+use num_complex::Complex64;
 
 use crate::fft::{self, Direction, Fft};
 use crate::field::{
@@ -42,8 +43,8 @@ use crate::rng::DrawSource;
 /// Sample spacing of the fault grid, in kilometres.
 #[derive(Clone, Copy, Debug)]
 pub struct SubfaultSpacing {
-    pub strike_km: f32,
-    pub dip_km: f32,
+    pub strike_km: f64,
+    pub dip_km: f64,
 }
 
 /// How large the fault is, in subfaults, and how large the padded grid around it is.
@@ -62,15 +63,10 @@ impl GridExtents {
     /// Wavenumber step of the padded grid, in cycles per kilometre.
     #[must_use]
     fn wavenumber_step(self, spacing: SubfaultSpacing) -> WavenumberStep {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "subfault counts are far below 2^24"
-        )]
-        let step = WavenumberStep {
-            strike: 1.0 / (self.padded_strike as f32 * spacing.strike_km),
-            dip: 1.0 / (self.padded_dip as f32 * spacing.dip_km),
-        };
-        step
+        WavenumberStep {
+            strike: 1.0 / (units::exact(self.padded_strike) * spacing.strike_km),
+            dip: 1.0 / (units::exact(self.padded_dip) * spacing.dip_km),
+        }
     }
 }
 
@@ -84,7 +80,7 @@ pub struct SpectrumSpec {
     ///
     /// genslip forces this negative for the Frankel spectrum, which rescales the
     /// field by subtracting its minimum instead.
-    pub coefficient_of_variation: f32,
+    pub coefficient_of_variation: f64,
     /// Translation of the field on the fault, in fault lengths. Usually zero.
     pub phase_shift: (f64, f64),
 }
@@ -134,7 +130,7 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     // clearer and is what the port's signature allows, but the round trip is what
     // the original does and it is the value the scale must match.
     for value in spectrum.flat_mut() {
-        *value = Complex32::new(1.0, 0.0);
+        *value = Complex64::new(1.0, 0.0);
     }
     fft::transform_2d(&mut spectrum, fft, Direction::Forward);
     fft::scale(
@@ -166,7 +162,7 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     let padded = crate::stats::mean_and_sigma(&spectrum);
 
     let mut slip = crate::grid::zeros(extents.fault_strike, extents.fault_dip);
-    let mut total = 0.0_f32;
+    let mut total = 0.0_f64;
     for dip in 0..extents.fault_dip {
         for strike in 0..extents.fault_strike {
             let value = spectrum[[dip, strike]].re;
@@ -193,7 +189,7 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
     // order is part of the answer.
     let from_minimum = spectrum_spec.shape.normalises_from_its_minimum();
     if from_minimum {
-        let minimum = slip.flat().iter().copied().fold(f32::INFINITY, f32::min);
+        let minimum = slip.flat().iter().copied().fold(f64::INFINITY, f64::min);
         total = 0.0;
         for value in slip.flat_mut() {
             *value -= minimum;
@@ -201,11 +197,7 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
         }
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (extents.fault_strike * extents.fault_dip) as f32;
+    let subfault_count = units::exact(extents.fault_strike * extents.fault_dip);
     let mean = total / subfault_count;
     for value in slip.flat_mut() {
         *value /= mean;
@@ -230,31 +222,23 @@ pub fn generate_normalised<S: DrawSource, F: Fft>(
 ///
 /// A non-positive target leaves the field alone: the spectrum already determines the
 /// variation, and this only stretches it to a configured value.
-fn rescale_variation(slip: &mut SlipField, target: f32) {
+fn rescale_variation(slip: &mut SlipField, target: f64) {
     /// The mean is exactly 1 here by construction, so it is not recomputed.
-    const MEAN: f32 = 1.0;
+    const MEAN: f64 = 1.0;
 
     if target <= 0.0 {
         return;
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (slip.strike_count() * slip.dip_count()) as f32;
+    let subfault_count = units::exact(slip.strike_count() * slip.dip_count());
 
     // Accumulated in `f64`, like every other fold in the pipeline.
     let sum_of_squares: f64 = slip
         .flat()
         .iter()
-        .map(|value| (f64::from(*value) - f64::from(MEAN)).powi(2))
+        .map(|value| (*value - MEAN).powi(2))
         .sum();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the field is f32; the accumulation is not"
-    )]
-    let variation = (sum_of_squares / f64::from(subfault_count)).sqrt() as f32 / MEAN;
+    let variation = (sum_of_squares / subfault_count).sqrt() / MEAN;
 
     let factor = target / variation;
     for value in slip.flat_mut() {
@@ -270,8 +254,8 @@ fn rescale_variation(slip: &mut SlipField, target: f32) {
 /// reported because it says how much the clipping distorted the spectrum the
 /// generator was asked for: a large value means the requested variation was not
 /// really achievable.
-pub fn truncate_negative_slip(slip: &mut SlipField) -> f32 {
-    let mut clipped = 0.0_f32;
+pub fn truncate_negative_slip(slip: &mut SlipField) -> f64 {
+    let mut clipped = 0.0_f64;
     for value in slip.flat_mut() {
         if *value < 0.0 {
             clipped += 1.0;
@@ -279,11 +263,7 @@ pub fn truncate_negative_slip(slip: &mut SlipField) -> f32 {
         }
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (slip.strike_count() * slip.dip_count()) as f32;
+    let subfault_count = units::exact(slip.strike_count() * slip.dip_count());
     clipped / subfault_count
 }
 
@@ -291,7 +271,7 @@ pub fn truncate_negative_slip(slip: &mut SlipField) -> f32 {
 ///
 /// Fills in near-zero patches, which would otherwise contribute nothing to the
 /// radiated field. Off by default.
-pub fn apply_water_level(slip: &mut SlipField, mean: f32, fraction: f32) {
+pub fn apply_water_level(slip: &mut SlipField, mean: f64, fraction: f64) {
     if fraction <= 0.0 {
         return;
     }
@@ -309,12 +289,12 @@ pub fn apply_water_level(slip: &mut SlipField, mean: f32, fraction: f32) {
 #[derive(Clone, Copy, Debug)]
 pub struct PerturbationSpec {
     /// Correlation with the slip spectrum, 0 (independent) to 1 (a scaled copy).
-    pub correlation: f32,
+    pub correlation: f64,
     /// Standard deviation of the resulting zero-mean field.
     ///
     /// Negative is treated as zero, which is how genslip disables a perturbation
     /// without removing it from the draw sequence.
-    pub sigma: f32,
+    pub sigma: f64,
 }
 
 /// Rebuild the wavenumber-domain slip field that the perturbations correlate against.
@@ -348,14 +328,14 @@ pub fn reload_for_correlation<F: Fft>(
     let mut spectrum = crate::grid::spectrum(extents.padded_strike, extents.padded_dip);
     for dip in 0..slip.dip_count() {
         for strike in 0..slip.strike_count() {
-            spectrum[[dip, strike]] = Complex32::new(slip[[dip, strike]], 0.0);
+            spectrum[[dip, strike]] = Complex64::new(slip[[dip, strike]], 0.0);
         }
     }
 
     let padded = crate::stats::mean_and_sigma(&spectrum);
     let factor = original.sigma / padded.sigma;
     for value in spectrum.flat_mut() {
-        *value = Complex32::new(factor * (value.re - padded.mean) + original.mean, value.im);
+        *value = Complex64::new(factor * (value.re - padded.mean) + original.mean, value.im);
     }
 
     fft::transform_2d(&mut spectrum, fft, Direction::Forward);
@@ -385,7 +365,7 @@ pub fn correlated_field_on_fault<S: DrawSource, F: Fft>(
     extents: GridExtents,
     spacing: SubfaultSpacing,
     spectrum_spec: SpectrumSpec,
-    correlation: f32,
+    correlation: f64,
 ) -> SlipField {
     let mut spectrum = unit_spectrum(fft, extents, spacing);
     let step = extents.wavenumber_step(spacing);
@@ -459,8 +439,8 @@ pub fn rake_field<S: DrawSource, F: Fft>(
     extents: GridExtents,
     spacing: SubfaultSpacing,
     spectrum_spec: SpectrumSpec,
-    base_rake: &[f32],
-    sigma_degrees: f32,
+    base_rake: &[f64],
+    sigma_degrees: f64,
 ) -> SlipField {
     assert_eq!(
         base_rake.len(),
@@ -503,7 +483,7 @@ pub fn rake_field<S: DrawSource, F: Fft>(
 fn unit_spectrum<F: Fft>(fft: &mut F, extents: GridExtents, spacing: SubfaultSpacing) -> Spectrum {
     let mut spectrum = crate::grid::spectrum(extents.padded_strike, extents.padded_dip);
     for value in spectrum.flat_mut() {
-        *value = Complex32::new(1.0, 0.0);
+        *value = Complex64::new(1.0, 0.0);
     }
     fft::transform_2d(&mut spectrum, fft, Direction::Forward);
     fft::scale(
@@ -526,13 +506,9 @@ fn extract_corner(spectrum: &Spectrum, extents: GridExtents) -> SlipField {
 
 /// Subtract the field's mean, leaving it centred on zero.
 fn remove_mean(field: &mut SlipField) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let count = (field.strike_count() * field.dip_count()) as f32;
+    let count = units::exact(field.strike_count() * field.dip_count());
 
-    let mut total = 0.0_f32;
+    let mut total = 0.0_f64;
     for value in field.flat() {
         total += *value;
     }
@@ -543,29 +519,17 @@ fn remove_mean(field: &mut SlipField) {
 }
 
 /// Population standard deviation of a zero-mean field.
-fn population_sigma(field: &SlipField) -> f32 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let count = (field.strike_count() * field.dip_count()) as f32;
+fn population_sigma(field: &SlipField) -> f64 {
+    let count = units::exact(field.strike_count() * field.dip_count());
 
     // Accumulated in `f64`, like every other fold in the pipeline.
-    let sum_of_squares: f64 = field
-        .flat()
-        .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the field is f32; the accumulation is not"
-    )]
-    let sigma = (sum_of_squares / f64::from(count)).sqrt() as f32;
-    sigma
+    let sum_of_squares: f64 = field.flat().iter().map(|value| *value * *value).sum();
+
+    (sum_of_squares / count).sqrt()
 }
 
 /// Scale a zero-mean field so its standard deviation is `sigma`.
-fn rescale_to_sigma(field: &mut SlipField, sigma: f32) {
+fn rescale_to_sigma(field: &mut SlipField, sigma: f64) {
     let factor = sigma / population_sigma(field);
     for value in field.flat_mut() {
         *value *= factor;

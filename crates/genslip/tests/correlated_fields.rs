@@ -9,7 +9,7 @@
 //!
 //! # It used to be a parity file, and widening an accumulator is what retired it
 //!
-//! Every assertion here was `to_bits()` equality against genslip's `f32` folds. When
+//! Every assertion here was `to_bits()` equality against genslip's `f64` folds. When
 //! `stats::mean_and_sigma` and the two spread rescalings moved to `f64`
 //! accumulation — strictly more accurate, and the change that made moment
 //! conservation worth asserting — this file went red for a reason that was not a
@@ -32,7 +32,7 @@ use genslip::slip::{
     generate_normalised, rake_field, reload_for_correlation,
 };
 use genslip::stats::mean_and_sigma;
-use num_complex::Complex32;
+use num_complex::Complex64;
 
 const SPACING: SubfaultSpacing = SubfaultSpacing {
     strike_km: 1.0,
@@ -85,8 +85,7 @@ fn the_reload_restores_the_original_padded_statistics() {
 
     // The reload happens before the transform, so undo the transform's DC scaling to
     // read the mean back: the DC term of an unnormalised transform is the sum.
-    #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
-    let points = (extents.padded_strike * extents.padded_dip) as f32;
+    let points = genslip::units::exact(extents.padded_strike * extents.padded_dip);
     let restored = reloaded[[0, 0]].re / (points * SPACING.strike_km * SPACING.dip_km);
 
     assert!(
@@ -116,7 +115,7 @@ fn a_perturbation_is_centred_and_has_the_configured_spread() {
         generated.padded,
     );
 
-    for sigma in [0.25_f32, 1.0, 3.5] {
+    for sigma in [0.25_f64, 1.0, 3.5] {
         let mut continued = source;
         let field = correlated_perturbation(
             &mut continued,
@@ -133,13 +132,13 @@ fn a_perturbation_is_centred_and_has_the_configured_spread() {
 
         let values = stats::widen(field.flat());
         assert!(
-            stats::mean(&values).abs() < f64::from(sigma) * 1e-4,
+            stats::mean(&values).abs() < sigma * 1e-4,
             "sigma {sigma}: mean {} is not zero",
             stats::mean(&values)
         );
         let spread = stats::population_sigma(&values);
         assert!(
-            (spread - f64::from(sigma)).abs() < f64::from(sigma) * 1e-4,
+            (spread - sigma).abs() < sigma * 1e-4,
             "configured {sigma}, realised {spread}"
         );
     }
@@ -168,7 +167,7 @@ fn the_realised_correlation_tracks_the_requested_one() {
     );
     let slip = stats::widen(generated.field.flat());
 
-    let mut realised = |rho: f32| {
+    let mut realised = |rho: f64| {
         let mut continued = source;
         let field = correlated_perturbation(
             &mut continued,
@@ -223,7 +222,7 @@ fn the_rake_field_is_independent_of_slip() {
         .flat()
         .iter()
         .zip(&grid.base_rake_deg)
-        .map(|(value, base)| f64::from(value - base))
+        .map(|(value, base)| value - base)
         .collect();
 
     let spread = stats::population_sigma(&deviation);
@@ -253,7 +252,7 @@ fn the_reloaded_grid_keeps_the_original_deviation() {
     let mut padded = genslip::grid::spectrum(extents.padded_strike, extents.padded_dip);
     for dip in 0..extents.fault_dip {
         for strike in 0..extents.fault_strike {
-            padded[[dip, strike]] = Complex32::new(generated.field[[dip, strike]], 0.0);
+            padded[[dip, strike]] = Complex64::new(generated.field[[dip, strike]], 0.0);
         }
     }
     // Before the reload the padded grid is the fault in a sea of zeros, so its

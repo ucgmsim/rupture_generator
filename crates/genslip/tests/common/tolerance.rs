@@ -11,7 +11,20 @@
 /// Not `f32::EPSILON`, which is `2^-23` — the *gap* between representable numbers
 /// rather than the worst rounding error, which is half of it. Getting this wrong
 /// doubles every bound below.
+///
+/// **The crate computes in `f64` now, and this is still the constant most bounds are
+/// built from.** That is not an oversight. Every comparison against genslip is a
+/// comparison against numbers genslip computed in `float` and wrote as six
+/// significant figures, so the *reference* sets the resolution, not the port. A bound
+/// derived from [`U_F64`] would be asserting that the C is more precise than it is.
 pub const U_F32: f64 = 5.960_464_477_539_063e-8;
+
+/// Unit roundoff for `f64`: half an ulp at 1.0, `2^-53`.
+///
+/// For claims about the port against *itself* — two spellings of one formula, a
+/// refactor that should have moved nothing — where the reference is this crate rather
+/// than genslip and its resolution is the one that binds.
+pub const U_F64: f64 = 1.110_223_024_625_157e-16;
 
 /// Standard deviations allowed on any single statistical assertion.
 ///
@@ -52,8 +65,7 @@ pub mod acceptable {
 /// condition number and this bound says nothing.
 #[must_use]
 pub fn f32_sum_relative(count: usize) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "counts are far below 2^53")]
-    let n = count as f64;
+    let n = genslip::units::exact(count);
     3.0 * U_F32 * n.sqrt()
 }
 
@@ -69,8 +81,7 @@ pub fn f32_sum_relative(count: usize) -> f64 {
 /// "different arithmetic" from "different rupture" with room to spare.
 #[must_use]
 pub fn engine_drift(points: usize) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "grid sizes are small")]
-    let n = (points.max(2)) as f64;
+    let n = genslip::units::exact(points.max(2));
     8.0 * U_F32 * n.log2()
 }
 
@@ -82,8 +93,7 @@ pub fn engine_drift(points: usize) -> f64 {
 /// wrong sample in a thousand of a smooth pulse is caught.
 #[must_use]
 pub fn pulse_round_trip(samples: usize) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "pulse lengths are small")]
-    let n = samples as f64;
+    let n = genslip::units::exact(samples);
     4.0 * U_F32 * (n.sqrt() + 2.0)
 }
 
@@ -108,8 +118,7 @@ pub fn wilson_hilferty_band(degrees_of_freedom: usize, z: f64) -> (f64, f64) {
         degrees_of_freedom > 0,
         "a band needs at least one degree of freedom"
     );
-    #[expect(clippy::cast_precision_loss, reason = "dof counts are small")]
-    let nu = degrees_of_freedom as f64;
+    let nu = genslip::units::exact(degrees_of_freedom);
     let centre = 1.0 - 2.0 / (9.0 * nu);
     let spread = (2.0 / (9.0 * nu)).sqrt();
     (centre - z * spread, centre + z * spread)
@@ -130,4 +139,66 @@ pub fn log_spectrum_slope_error(sum_squared_deviation: f64) -> f64 {
         "a slope needs spread in the regressor"
     );
     (std::f64::consts::PI * std::f64::consts::PI / 6.0 / sum_squared_deviation).sqrt()
+}
+
+/// How far `exp(k * ln x)` may differ from the direct power of `x`.
+///
+/// The port writes `cbrt` where the original writes `exp(ln(M0)/3)`, and `powf` where
+/// it writes `exp(n*ln(x))`. Same function, two evaluations — but the gap is **not** a
+/// couple of ulps, and assuming it was is how the first attempt at this bound failed.
+///
+/// `ln(x)` is computed to within `u` *relative*, so its absolute error is
+/// `|ln x| * u`. Scaling by `k` and exponentiating turns that straight back into a
+/// relative error of `k * |ln x| * u` on the result. On a seismic moment of 1e26,
+/// `|ln x|` is about 60, so at `k = 1/3` the two spellings differ by around
+/// `20u ≈ 2e-15` — twenty times what a naive ulp count predicts, and exactly what is
+/// measured. The `+ 1` covers the final `exp`'s own rounding.
+///
+/// The factor of 16 is headroom for what happens *after*. In the rise-time field the
+/// power law is not the last step: the field is renormalised by its own mean over
+/// every subfault, which neither cancels the difference nor bounds it more tightly,
+/// so the value that reaches the comparison has been carried through two more stages.
+/// Sixteen is the smallest power of two that covers the worst of them.
+///
+/// **They used to agree to the bit, and that was an artefact.** While the port
+/// computed in `f32`, every one of these was narrowed to `float` on the way out and
+/// the store rounded the difference away. `float_identities.rs` asserted the same
+/// pairs were *not* equal at full width the whole time; the parity tests asserted
+/// they were. Both were right about their own width, and only the move to `f64` made
+/// the two statements meet.
+///
+/// **Detection floor**: about 4e-14 relative on a magnitude-7.5 moment, and 7e-15 on
+/// a unit-scale field value. Eight orders below what an `f32` could express, so it
+/// cannot hide a wrong constant — which is the only thing a transcription of the same
+/// formula was ever able to catch.
+/// A zero argument or a zero exponent means no logarithm was taken, so there is no
+/// amplification to allow for — `ln(0)` is `-inf` and would otherwise make the bound
+/// `NaN`, which fails every comparison including the ones that should pass.
+#[must_use]
+pub fn transcendental_spelling(argument: f64, exponent: f64) -> f64 {
+    let amplification = if argument == 0.0 || exponent == 0.0 {
+        0.0
+    } else {
+        exponent.abs() * argument.abs().ln().abs()
+    };
+    16.0 * U_F64 * (amplification + 1.0)
+}
+
+/// Whether two values agree, counting two NaNs as agreeing.
+///
+/// **Not a convenience.** A rise-time field on a 1x1 fault is NaN on both sides, and
+/// for the same reason: `rescale_about_unit_mean` divides by the field's own
+/// coefficient of variation, which is zero when there is one subfault, so the
+/// prescribed spread is undefined. The port and the C degenerate identically, which
+/// is a real property of the transcription and worth asserting — but `NaN == NaN` is
+/// false and `(NaN - NaN).abs() <= bound` is false, so saying it takes this.
+///
+/// It says *"both defined and close, or both undefined"*. A NaN on one side only is a
+/// failure, which is the case that matters.
+#[must_use]
+pub fn agree(got: f64, want: f64, bound: f64) -> bool {
+    if got.is_nan() || want.is_nan() {
+        return got.is_nan() && want.is_nan();
+    }
+    (got - want).abs() <= bound * want.abs().max(1.0)
 }

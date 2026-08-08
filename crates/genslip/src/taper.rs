@@ -9,16 +9,17 @@
 //! domain.
 
 use crate::grid::{FaultAxes, SlipField};
+use crate::units;
 
 /// How far each edge taper reaches, as a fraction of the fault's extent.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EdgeTapers {
     /// Both along-strike ends. One value, so the taper is symmetric by construction.
-    pub sides: f32,
+    pub sides: f64,
     /// The up-dip (shallow) edge.
-    pub top: f32,
+    pub top: f64,
     /// The down-dip (deep) edge.
-    pub bottom: f32,
+    pub bottom: f64,
 }
 
 /// Convert an edge fraction into a width in subfaults.
@@ -28,23 +29,11 @@ pub struct EdgeTapers {
 /// the two side ramps cross, which the arithmetic below tolerates without any
 /// special case. Whether that is *sensible* is the caller's problem, and the
 /// configured values are 0.02 and 0.0.
-fn taper_width(fraction: f32, extent: usize) -> usize {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let width = fraction * extent as f32 + 0.5;
-    if width < 0.0 {
-        0
-    } else {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "guarded non-negative immediately above; C truncates toward zero"
-        )]
-        let width = width as usize;
-        width
-    }
+fn taper_width(fraction: f64, extent: usize) -> usize {
+    // `+ 0.5` then truncate is round-half-away-from-zero, which is the original's
+    // rounding; `units::truncated` floors at zero and handles NaN, so the explicit
+    // negative branch this used to carry is gone with it.
+    units::truncated(fraction * units::exact(extent) + 0.5)
 }
 
 /// The along-strike damping factor at `strike`, for a side taper `width` wide.
@@ -63,16 +52,12 @@ fn taper_width(fraction: f32, extent: usize) -> usize {
 /// 0.02 never reaches, but which is reachable and so is reproduced rather than
 /// tidied into an `else`. Writing it as `else if` is wrong, and only shows up on a
 /// narrow fault with a wide taper.
-fn side_damping(strike: usize, count: usize, width: usize) -> f32 {
+fn side_damping(strike: usize, count: usize, width: usize) -> f64 {
     if width == 0 {
         return 1.0;
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let ramp = |numerator: usize| numerator as f32 / width as f32;
+    let ramp = |numerator: usize| units::exact(numerator) / units::exact(width);
 
     let mut damping = 1.0;
     if strike < width {
@@ -120,11 +105,7 @@ pub fn taper_edges(slip: &mut SlipField, tapers: &EdgeTapers) {
         tapers.bottom
     );
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let dip_ramp = |index: usize, width: usize| (index + 1) as f32 / width as f32;
+    let dip_ramp = |index: usize, width: usize| units::exact(index + 1) / units::exact(width);
 
     // The up-dip band: both ramps.
     for dip in 0..top_width {

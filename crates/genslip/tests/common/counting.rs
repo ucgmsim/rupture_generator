@@ -109,7 +109,7 @@ impl<S: DrawSource> DrawSource for CountingSource<S> {
         self.inner.uniform()
     }
 
-    fn gaussian(&mut self, sigma: f32, mean: f32) -> f64 {
+    fn gaussian(&mut self, sigma: f64, mean: f64) -> f64 {
         self.gaussians += 1;
         self.inner.gaussian(sigma, mean)
     }

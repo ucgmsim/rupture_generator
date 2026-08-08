@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 801cdaf09d7c6fe69bb1fe4f30f6d896944b8ca78bb6c9d6858d4b01e0cdad50 # shrinks to dip = 90.289856, rake = 0.0
+cc 04d4aa791835910596c48132d7719e37230d83e06996a9cf424cbfa8bd45ebd2 # shrinks to dip = 54.152139120282804, rake = 10.895295715928137

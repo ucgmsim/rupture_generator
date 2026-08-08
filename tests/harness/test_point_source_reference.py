@@ -153,16 +153,16 @@ def port_pulse(shape: SlipRateShape, duration_s: float) -> np.ndarray:
         2,
         0.5,
         0.5,
-        depth_km=np.array([DEPTH_KM], dtype=np.float32),
-        base_rake_deg=np.array([175.0], dtype=np.float32),
-        velocity_fraction=np.array([0.8], dtype=np.float32),
+        depth_km=np.array([DEPTH_KM], dtype=np.float64),
+        base_rake_deg=np.array([175.0], dtype=np.float64),
+        velocity_fraction=np.array([0.8], dtype=np.float64),
     )
     rupture = generate_point_source(
         grid,
         VelocityModel1D(
-            np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-            np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-            np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+            np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+            np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+            np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
         ),
         PointSourceSpec(5.2, duration_s, average_dip_deg=60.0, average_rake_deg=175.0),
         TimingSpec(

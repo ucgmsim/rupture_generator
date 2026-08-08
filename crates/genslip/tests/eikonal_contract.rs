@@ -40,7 +40,7 @@ use genslip::grid::FaultAxes;
 use genslip::rupture::{EikonalSolver, Hypocentre, SpeedGrid, TravelTimes};
 
 /// A uniform medium, where the analytic solution is `distance / speed`.
-fn uniform(strike_count: usize, dip_count: usize, speed_km_s: f32) -> SpeedGrid {
+fn uniform(strike_count: usize, dip_count: usize, speed_km_s: f64) -> SpeedGrid {
     genslip::grid::from_values(
         strike_count,
         dip_count,
@@ -53,7 +53,7 @@ fn heterogeneous(strike_count: usize, dip_count: usize) -> SpeedGrid {
     let values = (0..strike_count * dip_count)
         .map(|index| {
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-            let (strike, dip) = ((index % strike_count) as f32, (index / strike_count) as f32);
+            let (strike, dip) = ((index % strike_count) as f64, (index / strike_count) as f64);
             // 1.6 to about 3.4 km/s: the range a shallow rupture-speed taper spans.
             2.0 + 0.7 * (dip * 0.3).tanh() + 0.3 * (strike * 0.4).sin()
         })
@@ -78,9 +78,7 @@ fn linear_gradient(strike_count: usize, dip_count: usize, spacing_km: f64) -> Sp
         .map(|index| {
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
             let depth_km = (index / strike_count) as f64 * spacing_km;
-            #[expect(clippy::cast_possible_truncation, reason = "the grid is f32")]
-            let speed = (GRADIENT_SURFACE_KM_S + GRADIENT_PER_KM * depth_km) as f32;
-            speed
+            GRADIENT_SURFACE_KM_S + GRADIENT_PER_KM * depth_km
         })
         .collect();
     genslip::grid::from_values(strike_count, dip_count, values)
@@ -99,8 +97,7 @@ fn linear_gradient(strike_count: usize, dip_count: usize, spacing_km: f64) -> Sp
 /// path — which is what makes it usable as a per-cell reference.
 fn gradient_arrival_s(strike: usize, dip: usize, hypocentre: Hypocentre, spacing_km: f64) -> f64 {
     let speed_at = |dip: usize| {
-        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-        let depth = dip as f64 * spacing_km;
+        let depth = genslip::units::exact(dip) * spacing_km;
         GRADIENT_SURFACE_KM_S + GRADIENT_PER_KM * depth
     };
     let distance = straight_line_km(strike, dip, hypocentre, spacing_km);
@@ -112,10 +109,9 @@ fn gradient_arrival_s(strike: usize, dip: usize, hypocentre: Hypocentre, spacing
 
 /// Distance from the source in kilometres, straight line.
 fn straight_line_km(strike: usize, dip: usize, hypocentre: Hypocentre, spacing_km: f64) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "small test indices")]
     let (across, down) = (
-        strike as f64 - hypocentre.strike as f64,
-        dip as f64 - hypocentre.dip as f64,
+        genslip::units::exact(strike) - genslip::units::exact(hypocentre.strike),
+        genslip::units::exact(dip) - genslip::units::exact(hypocentre.dip),
     );
     spacing_km * (across * across + down * down).sqrt()
 }
@@ -130,7 +126,7 @@ fn extremes(speed: &SpeedGrid) -> (f64, f64) {
     let mut fastest = 0.0_f64;
     for dip in 0..speed.dip_count() {
         for strike in 0..speed.strike_count() {
-            let value = f64::from(speed[[dip, strike]]);
+            let value = speed[[dip, strike]];
             slowest = slowest.min(value);
             fastest = fastest.max(value);
         }
@@ -150,7 +146,7 @@ fn extremes(speed: &SpeedGrid) -> (f64, f64) {
 /// rather than a bound — and a scheme that fails it is not upwind.
 fn axis_rays_are_exact<E: EikonalSolver>(solver: &mut E) {
     let (strike_count, dip_count) = (65, 65);
-    let (speed, spacing) = (2.5_f32, 0.5_f64);
+    let (speed, spacing) = (2.5_f64, 0.5_f64);
     let hypocentre = Hypocentre {
         strike: strike_count / 2,
         dip: dip_count / 2,
@@ -161,16 +157,15 @@ fn axis_rays_are_exact<E: EikonalSolver>(solver: &mut E) {
         spacing,
     );
 
-    // Compared against true analytic slowness, at a tolerance that admits an `f32`
-    // inversion. `Wavefront2d` inverts the speed in `f32` before widening, so its
+    // Compared against true analytic slowness, at a tolerance that admits an `f64`
+    // inversion. `Wavefront2d` inverts the speed in `f64` before widening, so its
     // slowness differs from `1/v` in the eighth digit; `FastMarching` builds its cost
     // field in `f64` and does not. Asserting bit-exactness would be asserting which
     // width a solver inverts in, which is not a property of the scheme.
-    let slowness = 1.0 / f64::from(speed);
+    let slowness = 1.0 / speed;
 
     for offset in 1..strike_count / 2 {
-        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-        let exact = offset as f64 * spacing * slowness;
+        let exact = genslip::units::exact(offset) * spacing * slowness;
         for cell in [
             times[[hypocentre.dip, hypocentre.strike + offset]],
             times[[hypocentre.dip, hypocentre.strike - offset]],
@@ -195,7 +190,7 @@ fn axis_rays_are_exact<E: EikonalSolver>(solver: &mut E) {
 /// Returns the worst relative error, so the swap has a number to be judged against.
 fn point_source_error<E: EikonalSolver>(solver: &mut E) -> f64 {
     let (strike_count, dip_count) = (65, 65);
-    let (speed, spacing) = (2.5_f32, 0.5_f64);
+    let (speed, spacing) = (2.5_f64, 0.5_f64);
     let hypocentre = Hypocentre {
         strike: strike_count / 2,
         dip: dip_count / 2,
@@ -213,7 +208,7 @@ fn point_source_error<E: EikonalSolver>(solver: &mut E) -> f64 {
             if distance == 0.0 {
                 continue;
             }
-            let exact = distance / f64::from(speed);
+            let exact = distance / speed;
             let relative = (times[[dip, strike]] - exact).abs() / exact;
             let cells = distance / spacing;
             let envelope = (2.0 + cells).ln() / cells;

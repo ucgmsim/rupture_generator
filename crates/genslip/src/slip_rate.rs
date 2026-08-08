@@ -26,16 +26,17 @@
 //! (orig. `gslip_sliprate_subs.c` and `load_slip_srf_dd5_vsden`; the alias family is
 //! `generic_slip2srf/slip.c`)
 
-// The original writes `3.141592654` where this uses `PI`, and in `f32` the two are the
-// same number: they first differ at the tenth digit, an `f32` carries about seven, and
+// The original writes `3.141592654` where this uses `PI`, and in `f64` the two are the
+// same number: they first differ at the tenth digit, an `f64` carries about seven, and
 // both round to `0x40490fdb`. The pulse generator's `pi` is a `float`, so the
 // substitution is free — and the corpus agrees, no slip-rate sample moved.
 //
 // What makes it free is the *width*, not the digit count. The same literal at double
 // width is 4.6e-10 away from pi and is a different `f64`; genslip's other truncated
-// constant, `rperd = 0.017453293`, is likewise exact as an `f32` and wrong as an
+// constant, `rperd = 0.017453293`, is likewise exact as an `f64` and wrong as an
 // `f64`, which is where it did real damage. `float_identities.rs` asserts all four.
-use std::f32::consts::PI;
+use crate::units;
+use std::f64::consts::PI;
 
 use crate::grid::{FaultAxes, SlipField};
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
@@ -49,11 +50,11 @@ use crate::rise_time::{DepthRamp, RiseTimeStretch};
 pub struct BetaProfile {
     /// Ramp from `shallow` to `mid`.
     pub shallow_ramp: DepthRamp,
-    pub shallow: f32,
+    pub shallow: f64,
     /// Ramp from `mid` to `deep`.
     pub mid_ramp: DepthRamp,
-    pub mid: f32,
-    pub deep: f32,
+    pub mid: f64,
+    pub deep: f64,
 }
 
 impl BetaProfile {
@@ -63,7 +64,7 @@ impl BetaProfile {
     ///
     /// The original writes this one differently: it precomputes a gradient
     /// `(v_far - v_near)/width` and multiplies by the offset, `(a/c)*b` where every
-    /// other site writes `(a*b)/c`. Equal in exact arithmetic and not in `f32`, which
+    /// other site writes `(a*b)/c`. Equal in exact arithmetic and not in `f64`, which
     /// is why the two spellings stayed separate under bit-parity.
     ///
     /// The size of the difference was measured before unifying, and it is zero here:
@@ -76,7 +77,7 @@ impl BetaProfile {
     /// a last-bit one for any other, and the corpus confirms it — no slip-rate sample
     /// moved.
     #[must_use]
-    pub fn beta_at(self, depth_km: f32) -> f32 {
+    pub fn beta_at(self, depth_km: f64) -> f64 {
         if depth_km <= self.shallow_ramp.shallow_km() {
             self.shallow
         } else if depth_km < self.shallow_ramp.deep_km() {
@@ -105,7 +106,7 @@ impl BetaProfile {
 ///
 /// (orig. `genslip_v5.6.2.c:2884-2904`)
 #[must_use]
-pub fn beta_field(strike_count: usize, depth_km: &[f32], profile: BetaProfile) -> SlipField {
+pub fn beta_field(strike_count: usize, depth_km: &[f64], profile: BetaProfile) -> SlipField {
     let dip_count = depth_km.len();
     let mut field = crate::grid::zeros(strike_count, dip_count);
     for dip in 0..dip_count {
@@ -136,11 +137,11 @@ pub fn beta_field(strike_count: usize, depth_km: &[f32], profile: BetaProfile) -
 #[must_use]
 pub fn rise_times(
     normalised: &SlipField,
-    depth_km: &[f32],
+    depth_km: &[f64],
     stretch: RiseTimeStretch,
-    average_s: f32,
-    normalisation: f32,
-    sample_interval_s: f32,
+    average_s: f64,
+    normalisation: f64,
+    sample_interval_s: f64,
 ) -> SlipField {
     assert_eq!(
         depth_km.len(),
@@ -180,7 +181,7 @@ pub fn rise_times(
 /// A slip-rate function: samples at a fixed interval, integrating to the slip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlipRate {
-    values: Vec<f32>,
+    values: Vec<f64>,
 }
 
 /// The slip below which the original emits no slip-rate function at all.
@@ -189,7 +190,7 @@ pub struct SlipRate {
 /// `|slip|` in the SRF loader (`gslip_srf_subs.c:1496`), *outside* the pulse
 /// generator — so a subfault that does not slip gets `nt1 = 0` and a null `stf1`
 /// rather than a short pulse of nothing.
-pub const MIN_SLIP_CM: f32 = 1.0e-02;
+pub const MIN_SLIP_CM: f64 = 1.0e-02;
 
 impl SlipRate {
     /// A subfault that does not slip: no samples at all.
@@ -203,7 +204,7 @@ impl SlipRate {
 
     /// The samples, in cm/s if slip was in cm.
     #[must_use]
-    pub fn as_slice(&self) -> &[f32] {
+    pub fn as_slice(&self) -> &[f64] {
         &self.values
     }
 
@@ -248,10 +249,10 @@ impl SlipRate {
 /// (orig. `gen_OliuP_stf`, `gslip_sliprate_subs.c`)
 #[must_use]
 pub fn oliu_p(
-    slip: f32,
-    duration_s: f32,
-    beta: f32,
-    sample_interval_s: f32,
+    slip: f64,
+    duration_s: f64,
+    beta: f64,
+    sample_interval_s: f64,
     max_samples: usize,
 ) -> SlipRate {
     assert!(
@@ -263,13 +264,7 @@ pub fn oliu_p(
     let peak_end = 2.0 * rise_end;
     let decay_span = duration_s - rise_end;
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "C truncates toward zero; the value is a small non-negative count"
-    )]
-    let mut count = ((duration_s / sample_interval_s + 0.5) as i32).max(0) as usize;
-    count = count.min(max_samples);
+    let count = units::samples(duration_s, sample_interval_s).min(max_samples);
 
     if count == 0 {
         return SlipRate { values: Vec::new() };
@@ -281,30 +276,22 @@ pub fn oliu_p(
         values = vec![0.0, 1.0, 0.0];
         values.truncate(max_samples.max(1));
     } else {
-        values = vec![0.0_f32; count];
+        values = vec![0.0_f64; count];
         for (index, value) in values.iter_mut().enumerate().skip(1) {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "sample counts are far below 2^24"
-            )]
-            let time = index as f32 * sample_interval_s;
+            let time = units::exact(index) * sample_interval_s;
 
             // Each `alpha` is a double expression stored into a float, as the
             // original stores it -- `cos` and `sin` take and return double.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the narrowing seam: C stores alpha into a float"
-            )]
             let amplitude = if time < rise_end {
                 let arg = PI * time / rise_end;
-                (0.7 - 0.7 * f64::from(arg).cos() + 0.6 * f64::from(0.5 * arg).sin()) as f32
+                0.7 - 0.7 * arg.cos() + 0.6 * (0.5 * arg).sin()
             } else if time < peak_end {
                 let rising = PI * time / rise_end;
                 let decaying = PI * (time - rise_end) / decay_span;
-                (1.0 - 0.7 * f64::from(rising).cos() + 0.3 * f64::from(decaying).cos()) as f32
+                1.0 - 0.7 * rising.cos() + 0.3 * decaying.cos()
             } else if time < duration_s {
                 let decaying = PI * (time - rise_end) / decay_span;
-                (0.3 + 0.3 * f64::from(decaying).cos()) as f32
+                0.3 + 0.3 * decaying.cos()
             } else {
                 0.0
             };
@@ -371,13 +358,13 @@ pub enum SlipRateShape {
     /// `ucsb` puts it. The C parses `b` off the end of the option string.
     UcsbT {
         /// `b`. One reproduces `ucsb` exactly.
-        stretch: f32,
+        stretch: f64,
     },
     /// `stype=ucsb-varT1`. `beta` per subfault, from the input file's thirteenth
     /// column. The C defaults it to 0.13 when the column is absent, which is `Ucsb`.
     UcsbVarT1 {
         /// `beta`, the fraction of the duration spent rising.
-        tau1_ratio: f32,
+        tau1_ratio: f64,
     },
     /// `stype=brune`. `(t/T)·exp(-t/T)`, the classic ω⁻² source pulse.
     ///
@@ -445,10 +432,10 @@ impl SlipRateShape {
     #[must_use]
     pub fn pulse(
         self,
-        slip_cm: f32,
-        duration_s: f32,
-        shape_parameter: f32,
-        sample_interval_s: f32,
+        slip_cm: f64,
+        duration_s: f64,
+        shape_parameter: f64,
+        sample_interval_s: f64,
         max_samples: usize,
     ) -> SlipRate {
         assert!(
@@ -457,7 +444,7 @@ impl SlipRateShape {
         );
 
         // The four that are `oliu_p` with the breakpoints moved.
-        let liu = |duration_s: f32, beta: f32| {
+        let liu = |duration_s: f64, beta: f64| {
             oliu_p(slip_cm, duration_s, beta, sample_interval_s, max_samples)
         };
         match self {
@@ -529,7 +516,7 @@ impl SlipRateShape {
     /// Kept separate from [`pulse`](Self::pulse) because it is a fact about the
     /// *arrival*, not about the samples, and the two are stored in different places.
     #[must_use]
-    pub fn onset_shift_s(self, duration_s: f32) -> f32 {
+    pub fn onset_shift_s(self, duration_s: f64) -> f64 {
         match self {
             Self::Seki => -0.25 * duration_s,
             _ => 0.0,
@@ -541,7 +528,7 @@ impl SlipRateShape {
 ///
 /// Written `0.13` four times in `generic_slip2srf/slip.c`, and once more as
 /// `0.5 * 0.13` in `ucsb2` where the duration doubles.
-const UCSB_BETA: f32 = 0.13;
+const UCSB_BETA: f64 = 0.13;
 
 /// How many time constants of Brune's exponential tail are kept.
 ///
@@ -549,10 +536,10 @@ const UCSB_BETA: f32 = 0.13;
 /// the slip has happened — times three. What is discarded is `(1+x)·e⁻ˣ` of the
 /// total at `x = 14.2`, about one part in 10⁵; normalising folds that back in, so
 /// the truncation costs accuracy in the *shape*'s tail rather than in the moment.
-const BRUNE_TAIL: f32 = 3.0 * 1.745 * std::f32::consts::E;
+const BRUNE_TAIL: f64 = 3.0 * 1.745 * std::f64::consts::E;
 
 /// How much of `seki`'s `sech²` is kept, in units of the duration.
-const SEKI_TAIL: f32 = 1.5;
+const SEKI_TAIL: f64 = 1.5;
 
 /// Sample `amplitude` over `[0, extent_s)` and normalise so the integral is `slip_cm`.
 ///
@@ -565,29 +552,20 @@ const SEKI_TAIL: f32 = 1.5;
 /// where the original also does this, by returning `nstf + 1` after computing `nstf`
 /// samples.
 fn sampled(
-    slip_cm: f32,
-    extent_s: f32,
-    sample_interval_s: f32,
+    slip_cm: f64,
+    extent_s: f64,
+    sample_interval_s: f64,
     max_samples: usize,
-    amplitude: impl Fn(f32) -> f32,
+    amplitude: impl Fn(f64) -> f64,
 ) -> SlipRate {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a small non-negative sample count, truncated as the C truncates it"
-    )]
-    let count = (((extent_s / sample_interval_s + 0.5) as i32).max(0) as usize).min(max_samples);
+    let count = units::samples(extent_s, sample_interval_s).min(max_samples);
     if count == 0 {
         return SlipRate::empty();
     }
 
-    let mut values = vec![0.0_f32; (count + 1).min(max_samples).max(count)];
+    let mut values = vec![0.0_f64; (count + 1).min(max_samples).max(count)];
     for (index, value) in values.iter_mut().enumerate().take(count) {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "sample counts are far below 2^24"
-        )]
-        let time = index as f32 * sample_interval_s;
+        let time = units::exact(index) * sample_interval_s;
         *value = amplitude(time);
     }
     normalise(values, slip_cm, sample_interval_s)
@@ -605,52 +583,29 @@ fn sampled(
 ///
 /// (orig. `gen_2tri_stf`, `slip.c:37-112`)
 fn two_triangles(
-    slip_cm: f32,
-    duration_s: f32,
-    tail: f32,
-    sample_interval_s: f32,
+    slip_cm: f64,
+    duration_s: f64,
+    tail: f64,
+    sample_interval_s: f64,
     max_samples: usize,
 ) -> SlipRate {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "small non-negative sample counts, truncated as the C truncates them"
-    )]
-    let samples = |seconds: f32| ((seconds / sample_interval_s + 0.5) as i32).max(0) as usize;
+    let samples = |seconds: f64| units::samples(seconds, sample_interval_s);
 
     let peak = samples(0.1 * duration_s).max(2);
     let end = samples(duration_s).max(4);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
-        reason = "the C's `it2 = (2 - beta)*it0`, a float product truncated to int"
-    )]
-    let shoulder = (((2.0 - tail) * peak as f32) as i32).max(0) as usize;
+    let shoulder = units::truncated((2.0 - tail) * units::exact(peak));
     let shoulder = shoulder.clamp(peak, end);
 
     let length = (end + 1).min(max_samples);
     if length == 0 {
         return SlipRate::empty();
     }
-    let mut values = vec![0.0_f32; length];
+    let mut values = vec![0.0_f64; length];
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "sample counts are far below 2^24"
-    )]
-    let step = 1.0 / peak as f32;
+    let step = 1.0 / units::exact(peak);
     for (index, value) in values.iter_mut().enumerate().take(end.min(length)) {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "sample counts are far below 2^24"
-        )]
-        let position = index as f32;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "sample counts are far below 2^24"
-        )]
-        let (peak_at, shoulder_at) = (peak as f32, shoulder as f32);
+        let position = units::exact(index);
+        let (peak_at, shoulder_at) = (units::exact(peak), units::exact(shoulder));
         *value = if index < peak {
             // Rising, zero to one.
             position * step
@@ -659,11 +614,7 @@ fn two_triangles(
             (2.0 * peak_at - position) * step
         } else {
             // The tail, `tail` to zero.
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "sample counts are far below 2^24"
-            )]
-            let span = (end - shoulder) as f32;
+            let span = units::exact(end - shoulder);
             tail + (shoulder_at - position) * tail / span
         };
     }
@@ -674,8 +625,8 @@ fn two_triangles(
 ///
 /// The same three values [`oliu_p`] falls back to when a pulse is too short to
 /// resolve, which is what a delta function is.
-fn impulse(slip_cm: f32, sample_interval_s: f32, max_samples: usize) -> SlipRate {
-    let mut values = vec![0.0_f32, 1.0, 0.0];
+fn impulse(slip_cm: f64, sample_interval_s: f64, max_samples: usize) -> SlipRate {
+    let mut values = vec![0.0_f64, 1.0, 0.0];
     values.truncate(max_samples.max(1));
     normalise(values, slip_cm, sample_interval_s)
 }
@@ -686,25 +637,21 @@ fn impulse(slip_cm: f32, sample_interval_s: f32, max_samples: usize) -> SlipRate
 /// subfault contributes nothing rather than contributing garbage. Shared so that
 /// "conserves slip" is one line of code rather than a property each shape has to
 /// remember to have.
-fn normalise(mut values: Vec<f32>, slip_cm: f32, sample_interval_s: f32) -> SlipRate {
+fn normalise(mut values: Vec<f64>, slip_cm: f64, sample_interval_s: f64) -> SlipRate {
     // Accumulated in `f64`, where the original folds through a `float`. The fold runs
     // over every sample of the pulse and the samples span orders of magnitude --
     // `brune`'s tail is 1e-6 of its peak -- so a single-precision accumulator loses
-    // the tail entirely. Measured on a 20 s `brune` at 5 ms: the `f32` fold put the
+    // the tail entirely. Measured on a 20 s `brune` at 5 ms: the `f64` fold put the
     // integral 1.3e-04 off the slip, against a 5.8e-05 round-trip bound. In `f64` it
     // lands inside the bound for every shape at every duration tested.
     let mut integral = 0.0_f64;
     for value in &values {
-        integral += f64::from(sample_interval_s) * f64::from(*value);
+        integral += sample_interval_s * *value;
     }
     if integral <= 0.0 {
         return SlipRate::empty();
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: the scale is applied to `f32` samples"
-    )]
-    let scale = (f64::from(slip_cm) / integral) as f32;
+    let scale = slip_cm / integral;
     for value in &mut values {
         *value *= scale;
     }
@@ -726,7 +673,7 @@ fn normalise(mut values: Vec<f32>, slip_cm: f32, sample_interval_s: f32) -> Slip
 pub fn shape_parameter_field(
     shape: SlipRateShape,
     strike_count: usize,
-    depth_km: &[f32],
+    depth_km: &[f64],
     profile: BetaProfile,
 ) -> SlipField {
     match shape {
@@ -762,13 +709,13 @@ const URS_RAMP: DepthRamp = DepthRamp {
     half_width_km: 1.0,
 };
 /// `betadeep` (`slip.c:44`): the tail height below the ramp.
-const URS_DEEP_TAIL: f32 = 0.2;
+const URS_DEEP_TAIL: f64 = 0.2;
 /// `betashal` (`slip.c:45`): the tail height above it. A shallow subfault releases
 /// more of its slip late.
-const URS_SHALLOW_TAIL: f32 = 0.5;
+const URS_SHALLOW_TAIL: f64 = 0.5;
 /// `betashal - betadeep` (`slip.c:44-45`): how much taller it is above the ramp.
 ///
 /// The C spells this as a precomputed gradient, `(betadeep - betashal)/(dmax - dmin)`,
 /// multiplied by `(dmax - z)`. That is [`DepthRamp::scaled_from_deep`] with the sign
 /// folded into the scale, which is how every other ramp in this crate is written.
-const URS_TAIL_RANGE: f32 = 0.3;
+const URS_TAIL_RANGE: f64 = 0.3;

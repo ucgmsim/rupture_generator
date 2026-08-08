@@ -66,6 +66,7 @@
 
 use crate::grid::FaultAxes;
 use crate::rupture::{EikonalSolver, Hypocentre, SpeedGrid, TravelTimes};
+use crate::units;
 
 /// Rounds of four sweeps before giving up on convergence.
 ///
@@ -117,10 +118,9 @@ fn known_factor(
     spacing_km: f64,
     source_slowness: f64,
 ) -> Known {
-    #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
     let (across, down) = (
-        strike as f64 - hypocentre.strike as f64,
-        dip as f64 - hypocentre.dip as f64,
+        units::exact(strike) - units::exact(hypocentre.strike),
+        units::exact(dip) - units::exact(hypocentre.dip),
     );
     let radius = spacing_km * (across * across + down * down).sqrt();
     if radius == 0.0 {
@@ -151,7 +151,7 @@ impl EikonalSolver for FactoredSweep {
             hypocentre.dip
         );
 
-        let slowness = |strike: usize, dip: usize| 1.0 / f64::from(speed[[dip, strike]]);
+        let slowness = |strike: usize, dip: usize| 1.0 / speed[[dip, strike]];
         let source_slowness = slowness(hypocentre.strike, hypocentre.dip);
         let at = |strike: usize, dip: usize| strike + dip * strike_count;
 

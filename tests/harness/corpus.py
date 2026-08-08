@@ -115,18 +115,18 @@ CORPUS = Path(__file__).resolve().parent.parent / "corpus"
 # Four crustal layers, shared by every crustal case so a difference between them is a
 # difference in the fault rather than in the medium.
 CRUSTAL_LAYERS = (
-    np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-    np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-    np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+    np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+    np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+    np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
 )
 
 # A deeper, faster column for the subduction case: its top edge is below the crustal
 # model's second layer, so reusing that one would put the whole fault in one layer and
 # make the depth-dependent rigidity constant.
 SUBDUCTION_LAYERS = (
-    np.array([3.0, 10.0, 25.0, 45.0, 80.0], dtype=np.float32),
-    np.array([2.0, 2.9, 3.5, 3.9, 4.3], dtype=np.float32),
-    np.array([2.2, 2.5, 2.8, 3.0, 3.3], dtype=np.float32),
+    np.array([3.0, 10.0, 25.0, 45.0, 80.0], dtype=np.float64),
+    np.array([2.0, 2.9, 3.5, 3.9, 4.3], dtype=np.float64),
+    np.array([2.2, 2.5, 2.8, 3.0, 3.3], dtype=np.float64),
 )
 
 

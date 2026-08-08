@@ -31,9 +31,9 @@ TOP_DEPTH_KM = 1.0
 SEED = 20260807
 
 # Four crustal layers, as the arrays both sides are handed.
-BOTTOM_DEPTH_KM = np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32)
-SHEAR_SPEED_KM_S = np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32)
-DENSITY_G_CM3 = np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32)
+BOTTOM_DEPTH_KM = np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64)
+SHEAR_SPEED_KM_S = np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64)
+DENSITY_G_CM3 = np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64)
 
 genslip = pytest.mark.skipif(
     not os.environ.get("GENSLIP_BINARY"),

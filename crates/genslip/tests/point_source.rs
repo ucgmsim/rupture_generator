@@ -35,8 +35,8 @@ use genslip::slip_rate::SlipRateShape;
 use genslip::source::MagnitudeScale;
 
 /// A magnitude small enough that a point source is the right model for it.
-const MAGNITUDE: f32 = 5.2;
-const RISE_TIME_S: f32 = 0.35;
+const MAGNITUDE: f64 = 5.2;
+const RISE_TIME_S: f64 = 0.35;
 
 fn spec() -> PointSourceSpec {
     PointSourceSpec {
@@ -69,7 +69,7 @@ fn generate(grid: &FaultGrid) -> genslip::realisation::RuptureModel {
         grid,
         &fixture::velocity_model(),
         spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         Hypocentre {
             strike: grid.extents.fault_strike / 2,
             dip: grid.extents.fault_dip / 2,
@@ -92,7 +92,7 @@ fn valid(
 /// The moment is what the magnitude says, and the slip is what the moment says.
 ///
 /// `M0 = μ A s` at one subfault, so `s = M0/(μA)` with nothing left over. Asserted to
-/// `f32` rounding rather than to a tolerance, because this is arithmetic rather than
+/// `f64` rounding rather than to a tolerance, because this is arithmetic rather than
 /// a model: any gap is a unit error or a missing rigidity, not a discretisation.
 #[test]
 fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
@@ -102,7 +102,7 @@ fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
         &grid,
         &fixture::velocity_model(),
         spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         origin(),
     ));
 
@@ -110,9 +110,9 @@ fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
     let shear_speed_cm_s = 3.2 * 1.0e5;
     let rigidity = 2.6 * shear_speed_cm_s * shear_speed_cm_s;
     let area_cm2 = (0.5 * 1.0e5) * (0.5 * 1.0e5);
-    let expected = f64::from(model.moment_dyne_cm) / (rigidity * area_cm2);
+    let expected = model.moment_dyne_cm / (rigidity * area_cm2);
 
-    let slip = f64::from(model.slip.slip[[0, 0]]);
+    let slip = model.slip.slip[[0, 0]];
     assert!(
         (slip - expected).abs() <= 1e-5 * expected,
         "one subfault slipped {slip} cm where the moment implies {expected}"
@@ -128,18 +128,18 @@ fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
 #[test]
 fn one_subfault_ruptures_at_the_delay() {
     let mut timing = fixture::timing_spec();
-    for delay_s in [0.0_f32, 2.5] {
+    for delay_s in [0.0_f64, 2.5] {
         timing.rupture_delay_s = delay_s;
         let model = valid(point_source(
             &mut FactoredSweep::new(),
             &a_point(),
             &fixture::velocity_model(),
             spec(),
-            timing,
+            &timing,
             origin(),
         ));
         assert!(
-            (model.onset_s[[0, 0]] - f64::from(delay_s)).abs() < 1e-12,
+            (model.onset_s[[0, 0]] - delay_s).abs() < 1e-12,
             "a single subfault with a {delay_s} s delay ruptured at {}",
             model.onset_s[[0, 0]]
         );
@@ -155,7 +155,7 @@ fn one_subfault_ruptures_at_the_delay() {
 /// answer would depend on where the point happened to be.
 #[test]
 fn one_subfault_rises_in_the_time_it_was_given() {
-    for depth_km in [0.5_f32, 5.0, 7.0, 20.0, 40.0] {
+    for depth_km in [0.5_f64, 5.0, 7.0, 20.0, 40.0] {
         let mut grid = a_point();
         grid.depth_km = vec![depth_km];
         let model = valid(point_source(
@@ -163,7 +163,7 @@ fn one_subfault_rises_in_the_time_it_was_given() {
             &grid,
             &fixture::velocity_model(),
             spec(),
-            fixture::timing_spec(),
+            &fixture::timing_spec(),
             origin(),
         ));
         let rise = model.rise_time_s[[0, 0]];
@@ -275,16 +275,15 @@ fn the_average_rise_time_is_the_one_asked_for() {
     let model = generate(&grid);
 
     let values = model.rise_time_s.flat();
-    #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
-    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let mean = values.iter().sum::<f64>() / genslip::units::exact(values.len());
     assert!(
         (mean - RISE_TIME_S).abs() <= 1e-4 * RISE_TIME_S,
         "the average rise time is {mean}, not the {RISE_TIME_S} asked for"
     );
 
     // And it genuinely varies, or the claim above is about a constant field.
-    let spread = values.iter().copied().fold(0.0_f32, f32::max)
-        - values.iter().copied().fold(f32::MAX, f32::min);
+    let spread = values.iter().copied().fold(0.0_f64, f64::max)
+        - values.iter().copied().fold(f64::MAX, f64::min);
     assert!(
         spread > 0.05 * RISE_TIME_S,
         "rise time is flat across depths from 0.5 to 12.5 km"
@@ -320,7 +319,7 @@ fn every_shape_makes_it_through_the_pipeline() {
             &grid,
             &fixture::velocity_model(),
             spec(),
-            timing,
+            &timing,
             Hypocentre { strike: 2, dip: 1 },
         ));
 
@@ -332,7 +331,7 @@ fn every_shape_makes_it_through_the_pipeline() {
                 let integral: f64 = pulse
                     .as_slice()
                     .iter()
-                    .map(|value| f64::from(*value) * f64::from(timing.sample_interval_s))
+                    .map(|value| *value * timing.sample_interval_s)
                     .sum();
                 assert!(!pulse.is_empty(), "{shape:?} left subfault {index} silent");
                 integral
@@ -342,13 +341,7 @@ fn every_shape_makes_it_through_the_pipeline() {
         // Every pulse integrates to its subfault's slip, and the slip is uniform, so
         // the summed integral is the summed slip. A shape that normalised wrongly
         // would show up here even though its own contract test passed.
-        let slip: f64 = model
-            .slip
-            .slip
-            .flat()
-            .iter()
-            .map(|value| f64::from(*value))
-            .sum();
+        let slip: f64 = model.slip.slip.flat().iter().copied().sum();
         assert!(
             (moment - slip).abs() <= 1e-4 * slip,
             "{shape:?}: the pulses carry {moment} cm of slip where the field has {slip}"
@@ -375,7 +368,7 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
             &grid,
             &fixture::velocity_model(),
             spec(),
-            timing,
+            &timing,
             Hypocentre { strike: 2, dip: 1 },
         ))
         .onset_s[[0, 0]]
@@ -389,7 +382,7 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
     );
     // A quarter of the rise time, which is what the shift is.
     assert!(
-        (plain - seki - 0.25 * f64::from(RISE_TIME_S)).abs() < 1e-3,
+        (plain - seki - 0.25 * RISE_TIME_S).abs() < 1e-3,
         "seki moved by {}, not a quarter of the {RISE_TIME_S} s rise time",
         plain - seki
     );

@@ -9,7 +9,7 @@
 //! | | |
 //! | --- | --- |
 //! | worst relative divergence, FFTW vs `rustfft` | **7.06e-08** |
-//! | for scale, an `f32` ulp | 6e-08 |
+//! | for scale, an `f64` ulp | 6e-08 |
 //! | corpus slip after the swap | unchanged to five figures |
 //!
 //! A number recorded in advance answers "was the move the size it should have been?".
@@ -26,7 +26,7 @@
 
 use genslip::fft::{Direction, Fft, RustFft, transform_2d};
 use genslip::grid::{FaultAxes, FaultAxesMut, Spectrum};
-use num_complex::Complex32;
+use num_complex::Complex64;
 
 const SHAPES: [(usize, usize); 5] = [(2, 2), (8, 16), (24, 10), (32, 24), (64, 8)];
 
@@ -34,10 +34,11 @@ fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
     let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
     for dip in 0..dip_count {
         for strike in 0..strike_count {
-            #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-            let value = Complex32::new(
-                (strike as f32 * 0.37).sin() + (dip as f32 * 0.11).cos(),
-                (strike as f32 * 0.19).cos() - (dip as f32 * 0.43).sin(),
+            let value = Complex64::new(
+                (genslip::units::exact(strike) * 0.37).sin()
+                    + (genslip::units::exact(dip) * 0.11).cos(),
+                (genslip::units::exact(strike) * 0.19).cos()
+                    - (genslip::units::exact(dip) * 0.43).sin(),
             );
             spectrum[[dip, strike]] = value;
         }
@@ -46,13 +47,13 @@ fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
 }
 
 /// Largest absolute difference between two grids, relative to the larger's peak.
-fn relative_divergence(left: &Spectrum, right: &Spectrum) -> f32 {
+fn relative_divergence(left: &Spectrum, right: &Spectrum) -> f64 {
     let peak = left
         .flat()
         .iter()
         .chain(right.flat())
         .map(|value| value.norm())
-        .fold(0.0_f32, f32::max);
+        .fold(0.0_f64, f64::max);
     if peak == 0.0 {
         return 0.0;
     }
@@ -60,7 +61,7 @@ fn relative_divergence(left: &Spectrum, right: &Spectrum) -> f32 {
         .iter()
         .zip(right.flat())
         .map(|(a, b)| (a - b).norm())
-        .fold(0.0_f32, f32::max)
+        .fold(0.0_f64, f64::max)
         / peak
 }
 
@@ -77,8 +78,7 @@ fn round_trip_has_gain_n<F: Fft>(engine: &mut F, label: &str) {
         transform_2d(&mut round_tripped, engine, Direction::Forward);
         transform_2d(&mut round_tripped, engine, Direction::Inverse);
 
-        #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
-        let gain = (strike_count * dip_count) as f32;
+        let gain = genslip::units::exact(strike_count * dip_count);
         let mut expected = original;
         for value in expected.flat_mut() {
             *value *= gain;
@@ -102,12 +102,11 @@ fn transform_is_linear<F: Fft>(engine: &mut F, label: &str) {
         let x = seeded(strike_count, dip_count);
         let mut y = seeded(strike_count, dip_count);
         for (index, value) in y.flat_mut().iter_mut().enumerate() {
-            #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-            let scale = (index as f32 * 0.05).cos();
+            let scale = (genslip::units::exact(index) * 0.05).cos();
             *value *= scale;
         }
 
-        let (a, b) = (2.5_f32, -0.75_f32);
+        let (a, b) = (2.5_f64, -0.75_f64);
 
         let mut combined = x.clone();
         for (value, other) in combined.flat_mut().iter_mut().zip(y.flat()) {
@@ -143,12 +142,11 @@ fn a_constant_becomes_a_spike<F: Fft>(engine: &mut F, label: &str) {
     for (strike_count, dip_count) in SHAPES {
         let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
         for value in spectrum.flat_mut() {
-            *value = Complex32::new(3.0, 0.0);
+            *value = Complex64::new(3.0, 0.0);
         }
         transform_2d(&mut spectrum, engine, Direction::Forward);
 
-        #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
-        let total = 3.0 * (strike_count * dip_count) as f32;
+        let total = 3.0 * genslip::units::exact(strike_count * dip_count);
         let peak = spectrum[[0, 0]];
         assert!(
             (peak.re - total).abs() < total * 1e-6 && peak.im.abs() < total * 1e-6,
@@ -183,7 +181,7 @@ fn a_real_field_transforms_hermitian<F: Fft>(engine: &mut F, label: &str) {
             .flat()
             .iter()
             .map(|value| value.norm())
-            .fold(0.0_f32, f32::max);
+            .fold(0.0_f64, f64::max);
 
         for dip in 0..dip_count {
             for strike in 0..strike_count {

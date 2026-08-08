@@ -48,18 +48,18 @@ def fault_grid(strike: int = STRIKE, dip: int = DIP) -> core.FaultGrid:
         padded(dip),
         1.0,
         1.0,
-        depth_km=np.array([0.5 + i * 2.0 for i in range(dip)], dtype=np.float32),
-        base_rake_deg=np.full(strike * dip, 175.0, dtype=np.float32),
-        velocity_fraction=np.full(strike * dip, 0.8, dtype=np.float32),
+        depth_km=np.array([0.5 + i * 2.0 for i in range(dip)], dtype=np.float64),
+        base_rake_deg=np.full(strike * dip, 175.0, dtype=np.float64),
+        velocity_fraction=np.full(strike * dip, 0.8, dtype=np.float64),
     )
 
 
 def velocity_model() -> core.VelocityModel1D:
     """A four-layer crustal model."""
     return core.VelocityModel1D(
-        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
     )
 
 
@@ -117,7 +117,7 @@ class TestArraysCrossTheBoundary:
         for name in ("slip_cm", "rake_deg", "onset_s", "rise_time_s"):
             values = getattr(rupture, name)
             assert values.shape == (STRIKE * DIP,), name
-            assert values.dtype == np.float32, name
+            assert values.dtype == np.float64, name
 
     def test_the_shape_is_reported_and_reshapes(self) -> None:
         rupture = generate()
@@ -184,9 +184,9 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float32),
-                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float32),
-                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float32),
+                depth_km=np.zeros(DIP, dtype=np.float64),
+                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
+                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
 
     def test_a_fault_larger_than_its_padding_is_refused(self) -> None:
@@ -198,9 +198,9 @@ class TestRefusesBadInput:
                 4,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float32),
-                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float32),
-                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float32),
+                depth_km=np.zeros(DIP, dtype=np.float64),
+                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
+                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
 
     def test_a_short_depth_array_is_refused(self) -> None:
@@ -212,9 +212,9 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP - 1, dtype=np.float32),
-                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float32),
-                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float32),
+                depth_km=np.zeros(DIP - 1, dtype=np.float64),
+                base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
+                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
 
     def test_a_short_per_subfault_array_is_refused(self) -> None:
@@ -226,9 +226,9 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float32),
-                base_rake_deg=np.zeros(3, dtype=np.float32),
-                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float32),
+                depth_km=np.zeros(DIP, dtype=np.float64),
+                base_rake_deg=np.zeros(3, dtype=np.float64),
+                velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
 
     def test_a_hypocentre_off_the_fault_is_refused(self) -> None:
@@ -248,17 +248,17 @@ class TestRefusesBadInput:
     def test_a_ragged_velocity_model_is_refused(self) -> None:
         with pytest.raises(ValueError, match="same length"):
             core.VelocityModel1D(
-                np.array([1.0, 5.0], dtype=np.float32),
-                np.array([1.8], dtype=np.float32),
-                np.array([2.1, 2.4], dtype=np.float32),
+                np.array([1.0, 5.0], dtype=np.float64),
+                np.array([1.8], dtype=np.float64),
+                np.array([2.1, 2.4], dtype=np.float64),
             )
 
     def test_an_empty_velocity_model_is_refused(self) -> None:
         with pytest.raises(ValueError, match="at least one layer"):
             core.VelocityModel1D(
-                np.array([], dtype=np.float32),
-                np.array([], dtype=np.float32),
-                np.array([], dtype=np.float32),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
             )
 
     def test_a_non_positive_wavelength_is_refused(self) -> None:
@@ -275,9 +275,9 @@ class TestTheVelocityModelReadsBack:
     """
 
     LAYERS = (
-        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
     )
 
     def test_the_arrays_come_back_unchanged(self) -> None:
@@ -288,7 +288,7 @@ class TestTheVelocityModelReadsBack:
             strict=True,
         ):
             assert np.array_equal(read_back, built_from)
-            assert read_back.dtype == np.float32
+            assert read_back.dtype == np.float64
 
     def test_a_model_round_trips_through_its_own_constructor(self) -> None:
         first = core.VelocityModel1D(*self.LAYERS)

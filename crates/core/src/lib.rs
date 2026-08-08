@@ -131,7 +131,7 @@ impl SlipRateShape {
 
     /// `stype=ucsb-T<stretch>`.
     #[staticmethod]
-    fn ucsb_t(stretch: f32) -> PyResult<Self> {
+    fn ucsb_t(stretch: f64) -> PyResult<Self> {
         if stretch <= 0.0 {
             return Err(PyValueError::new_err(
                 "the ucsb-T stretch must be strictly positive",
@@ -145,7 +145,7 @@ impl SlipRateShape {
     /// `stype=ucsb-varT1`. The C defaults `tau1_ratio` to 0.13, which is `ucsb`.
     #[staticmethod]
     #[pyo3(signature = (tau1_ratio = 0.13))]
-    fn ucsb_var_t1(tau1_ratio: f32) -> PyResult<Self> {
+    fn ucsb_var_t1(tau1_ratio: f64) -> PyResult<Self> {
         if !(0.0..=1.0).contains(&tau1_ratio) {
             return Err(PyValueError::new_err(
                 "tau1_ratio is a fraction of the duration and must be in [0, 1]",
@@ -211,7 +211,7 @@ impl SlipRateShape {
             let stretch = if suffix.is_empty() {
                 1.0
             } else {
-                suffix.parse::<f32>().map_err(|_| {
+                suffix.parse::<f64>().map_err(|_| {
                     PyValueError::new_err(format!(
                         "{stype:?}: the text after `ucsb-T` must be a number"
                     ))
@@ -236,11 +236,6 @@ impl SlipRateShape {
         }
     }
 
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "PyO3 requires a reference: a Python object cannot be moved out of the \
-                  interpreter"
-    )]
     fn __repr__(&self) -> String {
         format!("SlipRateShape({:?})", self.inner)
     }
@@ -270,25 +265,21 @@ impl RiseTimeWeighting {
 #[derive(Clone, Copy, Debug)]
 pub struct Ramp {
     #[pyo3(get)]
-    pub centre_km: f32,
+    pub centre_km: f64,
     #[pyo3(get)]
-    pub half_width_km: f32,
+    pub half_width_km: f64,
 }
 
 #[pymethods]
 impl Ramp {
     #[new]
-    const fn new(centre_km: f32, half_width_km: f32) -> Self {
+    const fn new(centre_km: f64, half_width_km: f64) -> Self {
         Self {
             centre_km,
             half_width_km,
         }
     }
 
-    #[expect(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "PyO3 methods take &self; the receiver is not ours to choose"
-    )]
     fn __repr__(&self) -> String {
         format!(
             "Ramp(centre_km={}, half_width_km={})",
@@ -331,11 +322,11 @@ impl FaultGrid {
         fault_dip: usize,
         padded_strike: usize,
         padded_dip: usize,
-        strike_km: f32,
-        dip_km: f32,
-        depth_km: PyReadonlyArray1<'_, f32>,
-        base_rake_deg: PyReadonlyArray1<'_, f32>,
-        velocity_fraction: PyReadonlyArray1<'_, f32>,
+        strike_km: f64,
+        dip_km: f64,
+        depth_km: PyReadonlyArray1<'_, f64>,
+        base_rake_deg: PyReadonlyArray1<'_, f64>,
+        velocity_fraction: PyReadonlyArray1<'_, f64>,
     ) -> PyResult<Self> {
         if fault_strike == 0 || fault_dip == 0 {
             return Err(PyValueError::new_err("a fault needs at least one subfault"));
@@ -422,9 +413,9 @@ impl VelocityModel1D {
     /// `bottom_depth_km` is the depth to the *bottom* of each layer.
     #[new]
     fn new(
-        bottom_depth_km: PyReadonlyArray1<'_, f32>,
-        shear_speed_km_s: PyReadonlyArray1<'_, f32>,
-        density_g_cm3: PyReadonlyArray1<'_, f32>,
+        bottom_depth_km: PyReadonlyArray1<'_, f64>,
+        shear_speed_km_s: PyReadonlyArray1<'_, f64>,
+        density_g_cm3: PyReadonlyArray1<'_, f64>,
     ) -> PyResult<Self> {
         let depths = bottom_depth_km.as_slice()?;
         let speeds = shear_speed_km_s.as_slice()?;
@@ -457,19 +448,19 @@ impl VelocityModel1D {
 
     /// Depth to the bottom of each layer, in kilometres.
     #[getter]
-    fn bottom_depth_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn bottom_depth_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.layer_field(py, |layer| layer.bottom_depth_km)
     }
 
     /// Shear-wave speed in each layer, in kilometres per second.
     #[getter]
-    fn shear_speed_km_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn shear_speed_km_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.layer_field(py, |layer| layer.shear_speed_km_s)
     }
 
     /// Density in each layer, in grams per cubic centimetre.
     #[getter]
-    fn density_g_cm3<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn density_g_cm3<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.layer_field(py, |layer| layer.density_g_cm3)
     }
 
@@ -489,8 +480,8 @@ impl VelocityModel1D {
     fn layer_field<'py>(
         &self,
         py: Python<'py>,
-        of: impl Fn(&Layer) -> f32,
-    ) -> Bound<'py, PyArray1<f32>> {
+        of: impl Fn(&Layer) -> f64,
+    ) -> Bound<'py, PyArray1<f64>> {
         self.inner
             .layers()
             .iter()
@@ -533,19 +524,19 @@ impl SourceSpec {
     ))]
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
     const fn new(
-        magnitude: f32,
+        magnitude: f64,
         model: SpectrumModel,
-        strike_offset: f32,
-        dip_offset: f32,
+        strike_offset: f64,
+        dip_offset: f64,
         use_moment_magnitude: bool,
         modified_corners: bool,
         circular_average: bool,
-        saturation_magnitude: f32,
-        strike_exponent: f32,
-        dip_exponent: f32,
-        rise_time_coefficient: f32,
-        average_dip_deg: f32,
-        average_rake_deg: f32,
+        saturation_magnitude: f64,
+        strike_exponent: f64,
+        dip_exponent: f64,
+        rise_time_coefficient: f64,
+        average_dip_deg: f64,
+        average_rake_deg: f64,
     ) -> Self {
         let corners = match model {
             SpectrumModel::Somerville => CornerRelation::Somerville {
@@ -625,10 +616,10 @@ impl PointSourceSpec {
         average_dip_deg, average_rake_deg, use_moment_magnitude = true,
     ))]
     fn new(
-        magnitude: f32,
-        rise_time_s: f32,
-        average_dip_deg: f32,
-        average_rake_deg: f32,
+        magnitude: f64,
+        rise_time_s: f64,
+        average_dip_deg: f64,
+        average_rake_deg: f64,
         use_moment_magnitude: bool,
     ) -> PyResult<Self> {
         if rise_time_s <= 0.0 {
@@ -680,17 +671,17 @@ impl SlipSpec {
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
     fn new(
         model: SpectrumModel,
-        coefficient_of_variation: f32,
-        rake_sigma_deg: f32,
-        min_wavelength_km: f32,
-        max_wavelength_km: f32,
+        coefficient_of_variation: f64,
+        rake_sigma_deg: f64,
+        min_wavelength_km: f64,
+        max_wavelength_km: f64,
         strike_shift: f64,
         dip_shift: f64,
-        side_taper: f32,
-        top_taper: f32,
-        bottom_taper: f32,
+        side_taper: f64,
+        top_taper: f64,
+        bottom_taper: f64,
         truncate_negative: bool,
-        water_level: f32,
+        water_level: f64,
     ) -> PyResult<Self> {
         if min_wavelength_km <= 0.0 || max_wavelength_km <= 0.0 {
             return Err(PyValueError::new_err(
@@ -776,30 +767,30 @@ impl TimingSpec {
     ))]
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
     const fn new(
-        rupture_time_correlation: f32,
-        rupture_time_sigma: f32,
-        rupture_time_scale: f32,
-        rupture_delay_s: f32,
-        rise_time_correlation: f32,
-        rise_time_sigma: f32,
+        rupture_time_correlation: f64,
+        rupture_time_sigma: f64,
+        rupture_time_scale: f64,
+        rupture_delay_s: f64,
+        rise_time_correlation: f64,
+        rise_time_sigma: f64,
         rise_time_blend: Ramp,
-        slip_exponent: f32,
+        slip_exponent: f64,
         shallow_ramp: Ramp,
-        shallow_rise_factor: f32,
+        shallow_rise_factor: f64,
         deep_ramp: Ramp,
-        deep_rise_factor: f32,
+        deep_rise_factor: f64,
         shallow_speed_ramp: Option<Ramp>,
         deep_speed_ramp: Option<Ramp>,
-        shallow_speed_factor: f32,
-        deep_speed_factor: f32,
+        shallow_speed_factor: f64,
+        deep_speed_factor: f64,
         weighting: RiseTimeWeighting,
         beta_shallow_ramp: Ramp,
-        beta_shallow: f32,
+        beta_shallow: f64,
         beta_mid_ramp: Ramp,
-        beta_mid: f32,
-        beta_deep: f32,
+        beta_mid: f64,
+        beta_deep: f64,
         slip_rate_shape: Option<SlipRateShape>,
-        sample_interval_s: f32,
+        sample_interval_s: f64,
         max_samples: usize,
     ) -> Self {
         // `Option::unwrap_or` is not const, and a match is clearer about the
@@ -871,25 +862,21 @@ impl TimingSpec {
 /// which is the layout `scipy.sparse.csr_array` wants.
 #[pyclass(module = "rupture_generator._core")]
 pub struct GeneratedRupture {
-    slip_cm: Vec<f32>,
-    rake_deg: Vec<f32>,
-    onset_s: Vec<f32>,
-    rise_time_s: Vec<f32>,
-    slip_rate: Vec<f32>,
+    slip_cm: Vec<f64>,
+    rake_deg: Vec<f64>,
+    onset_s: Vec<f64>,
+    rise_time_s: Vec<f64>,
+    slip_rate: Vec<f64>,
     slip_rate_offsets: Vec<u64>,
     strike_count: usize,
     dip_count: usize,
-    moment_dyne_cm: f32,
-    alpha_t: f32,
-    sample_interval_s: f32,
+    moment_dyne_cm: f64,
+    alpha_t: f64,
+    sample_interval_s: f64,
 }
 
 impl GeneratedRupture {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "onset times are seconds and the downstream format stores them as f32"
-    )]
-    fn from_model(model: &RuptureModel, sample_interval_s: f32) -> Self {
+    fn from_model(model: &RuptureModel, sample_interval_s: f64) -> Self {
         let mut slip_rate = Vec::new();
         let mut slip_rate_offsets = Vec::with_capacity(model.slip_rate.len() + 1);
         slip_rate_offsets.push(0);
@@ -901,12 +888,7 @@ impl GeneratedRupture {
         Self {
             slip_cm: model.slip.slip.flat().to_vec(),
             rake_deg: model.rake_deg.flat().to_vec(),
-            onset_s: model
-                .onset_s
-                .flat()
-                .iter()
-                .map(|time| *time as f32)
-                .collect(),
+            onset_s: model.onset_s.flat().to_vec(),
             rise_time_s: model.rise_time_s.flat().to_vec(),
             slip_rate,
             slip_rate_offsets,
@@ -923,31 +905,31 @@ impl GeneratedRupture {
 impl GeneratedRupture {
     /// Slip in centimetres, one per subfault.
     #[getter]
-    fn slip_cm<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn slip_cm<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.slip_cm.clone().into_pyarray(py)
     }
 
     /// Rake in degrees, one per subfault.
     #[getter]
-    fn rake_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn rake_deg<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.rake_deg.clone().into_pyarray(py)
     }
 
     /// Rupture onset in seconds, zero at the hypocentre.
     #[getter]
-    fn onset_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn onset_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.onset_s.clone().into_pyarray(py)
     }
 
     /// Rise time in seconds, one per subfault.
     #[getter]
-    fn rise_time_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn rise_time_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.rise_time_s.clone().into_pyarray(py)
     }
 
     /// Every slip-rate sample, concatenated. Index it with `slip_rate_offsets`.
     #[getter]
-    fn slip_rate<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+    fn slip_rate<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         self.slip_rate.clone().into_pyarray(py)
     }
 
@@ -960,19 +942,19 @@ impl GeneratedRupture {
 
     /// Sample interval of the slip-rate functions, in seconds.
     #[getter]
-    const fn sample_interval_s(&self) -> f32 {
+    const fn sample_interval_s(&self) -> f64 {
         self.sample_interval_s
     }
 
     /// Seismic moment in dyne-cm.
     #[getter]
-    const fn moment_dyne_cm(&self) -> f32 {
+    const fn moment_dyne_cm(&self) -> f64 {
         self.moment_dyne_cm
     }
 
     /// The dip-and-rake correction that was applied to rise time and rupture speed.
     #[getter]
-    const fn alpha_t(&self) -> f32 {
+    const fn alpha_t(&self) -> f64 {
         self.alpha_t
     }
 
@@ -983,7 +965,7 @@ impl GeneratedRupture {
     }
 
     /// Slip reshaped to `(dip, strike)`, which is C order for this layout.
-    fn slip_grid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    fn slip_grid<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let values = ndarray_from(&self.slip_cm, self.strike_count, self.dip_count)?;
         Ok(values.into_pyarray(py))
     }
@@ -997,10 +979,10 @@ impl GeneratedRupture {
 }
 
 fn ndarray_from(
-    values: &[f32],
+    values: &[f64],
     strike_count: usize,
     dip_count: usize,
-) -> PyResult<numpy::ndarray::Array2<f32>> {
+) -> PyResult<numpy::ndarray::Array2<f64>> {
     numpy::ndarray::Array2::from_shape_vec((dip_count, strike_count), values.to_vec())
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
@@ -1048,7 +1030,7 @@ fn generate_rupture(
                 &velocity_model.inner,
                 source.inner,
                 slip.inner,
-                timing.inner,
+                &timing.inner,
                 Hypocentre {
                     strike: hypocentre_strike,
                     dip: hypocentre_dip,
@@ -1098,7 +1080,7 @@ fn generate_point_source(
                 &grid.inner,
                 &velocity_model.inner,
                 point_source.inner,
-                timing.inner,
+                &timing.inner,
                 Hypocentre {
                     strike: hypocentre_strike,
                     dip: hypocentre_dip,

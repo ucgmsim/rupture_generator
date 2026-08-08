@@ -6,24 +6,24 @@
 //! only the rounding.
 //!
 //! It was not bit-identical to the FFTW engine it replaced, and no test asked it
-//! to be: they agreed to 7.06e-08 relative, which is about an f32 ulp.
+//! to be: they agreed to 7.06e-08 relative, which is about an f64 ulp.
 //! What `fft_contract.rs` asks is that both satisfy the same properties, and it
 //! measures how far apart they are so the Stage 3 swap has a number to be judged
 //! against.
 
 use std::sync::Arc;
 
-use num_complex::Complex32;
+use num_complex::Complex64;
 use rustfft::FftPlanner;
 
 use super::{Direction, Fft};
 
 /// A planned transform of one length and direction.
 struct Plan {
-    fft: Arc<dyn rustfft::Fft<f32>>,
+    fft: Arc<dyn rustfft::Fft<f64>>,
     length: usize,
     direction: Direction,
-    scratch: Vec<Complex32>,
+    scratch: Vec<Complex64>,
 }
 
 /// `rustfft`, planning lazily and caching one plan per (length, direction).
@@ -31,7 +31,7 @@ struct Plan {
 /// Unlike FFTW, a `rustfft` plan is not tied to a buffer address, so this transforms
 /// the caller's slice in place with no copying.
 pub struct RustFft {
-    planner: FftPlanner<f32>,
+    planner: FftPlanner<f64>,
     plans: Vec<Plan>,
 }
 
@@ -58,7 +58,7 @@ impl RustFft {
             Direction::Forward => self.planner.plan_fft_forward(length),
             Direction::Inverse => self.planner.plan_fft_inverse(length),
         };
-        let scratch = vec![Complex32::default(); fft.get_inplace_scratch_len()];
+        let scratch = vec![Complex64::default(); fft.get_inplace_scratch_len()];
         self.plans.push(Plan {
             fft,
             length,
@@ -90,7 +90,7 @@ impl std::fmt::Debug for RustFft {
 }
 
 impl Fft for RustFft {
-    fn transform(&mut self, values: &mut [Complex32], direction: Direction) {
+    fn transform(&mut self, values: &mut [Complex64], direction: Direction) {
         let length = values.len();
         if length == 0 {
             return;

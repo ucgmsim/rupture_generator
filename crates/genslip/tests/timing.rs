@@ -37,7 +37,7 @@ fn speed_field(cells: usize) -> SpeedGrid {
     let values = (0..cells * cells)
         .map(|index| {
             #[expect(clippy::cast_precision_loss, reason = "grid indices")]
-            let (strike, dip) = ((index % cells) as f32, (index / cells) as f32);
+            let (strike, dip) = ((index % cells) as f64, (index / cells) as f64);
             2.0 + 0.7 * (dip * 0.05).tanh() + 0.3 * (strike * 0.02).sin()
         })
         .collect();
@@ -81,8 +81,9 @@ fn solver_scaling() {
         // steps from 2 to 3. Dividing it out is what isolates the per-cell cost, which
         // is the O(N) claim. (Refining the *mesh* at a fixed domain leaves the count
         // alone; `the_sweep_count_does_not_grow_with_the_mesh` asserts that.)
-        #[expect(clippy::cast_precision_loss, reason = "grid sizes are small")]
-        let per_cell_round = best.as_nanos() as f64 / (cells * cells * rounds) as f64;
+        #[expect(clippy::cast_precision_loss, reason = "nanosecond counts")]
+        let nanos = best.as_nanos() as f64;
+        let per_cell_round = nanos / genslip::units::exact(cells * cells * rounds);
         println!(
             "{cells:>7} {:>10} {:>12?} {rounds:>8} {per_cell_round:>16.1}",
             cells * cells,
@@ -113,7 +114,7 @@ fn whole_rupture() {
             &fixture::velocity_model(),
             fixture::source_spec(),
             fixture::slip_spec(),
-            fixture::timing_spec(),
+            &fixture::timing_spec(),
             fixture::hypocentre(),
         )
         .expect("the fixture geometry is valid");
@@ -172,7 +173,7 @@ fn whole_rupture() {
 fn fft_dip_pass() {
     use genslip::fft::{Direction, Fft, RustFft, transform_2d};
     use genslip::grid::{FaultAxes, FaultAxesMut, Spectrum};
-    use num_complex::Complex32;
+    use num_complex::Complex64;
 
     /// The dip pass as genslip writes it: one strided read and one strided write per
     /// column.
@@ -186,7 +187,7 @@ fn fft_dip_pass() {
                 direction,
             );
         }
-        let mut column = vec![Complex32::default(); dip_count];
+        let mut column = vec![Complex64::default(); dip_count];
         for strike in 0..strike_count {
             for (dip, value) in column.iter_mut().enumerate() {
                 *value = spectrum[[dip, strike]];
@@ -201,9 +202,8 @@ fn fft_dip_pass() {
     fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
         let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
         for (index, value) in spectrum.flat_mut().iter_mut().enumerate() {
-            #[expect(clippy::cast_precision_loss, reason = "grid indices")]
-            let phase = index as f32 * 0.017;
-            *value = Complex32::new(phase.sin(), phase.cos());
+            let phase = genslip::units::exact(index) * 0.017;
+            *value = Complex64::new(phase.sin(), phase.cos());
         }
         spectrum
     }

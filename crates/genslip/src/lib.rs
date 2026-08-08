@@ -30,5 +30,6 @@ pub mod slip_rate;
 pub mod source;
 pub mod stats;
 pub mod taper;
+pub mod units;
 
 pub use error::{Error, Result};

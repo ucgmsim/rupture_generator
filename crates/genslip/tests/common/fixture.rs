@@ -94,8 +94,9 @@ pub fn fault_of(
             strike_km: 1.0,
             dip_km: 1.0,
         },
-        #[expect(clippy::cast_precision_loss, reason = "small test indices")]
-        depth_km: (0..dip_count).map(|dip| 0.5 + dip as f32 * 1.5).collect(),
+        depth_km: (0..dip_count)
+            .map(|dip| 0.5 + genslip::units::exact(dip) * 1.5)
+            .collect(),
         base_rake_deg: vec![175.0; strike_count * dip_count],
         velocity_fraction: vec![0.8; strike_count * dip_count],
     }

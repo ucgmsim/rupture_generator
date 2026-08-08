@@ -84,7 +84,7 @@ pub fn shift_onsets(onset_s: &mut TravelTimes, shift_s: &SlipField) {
         "the onset and shift grids must cover the same fault"
     );
     for (time, shift) in onset_s.flat_mut().iter_mut().zip(shift_s.flat()) {
-        *time = (*time + f64::from(*shift)).max(0.0);
+        *time = (*time + *shift).max(0.0);
     }
 }
 
@@ -119,10 +119,10 @@ pub trait EikonalSolver {
 pub struct SpeedProfile {
     /// Ramp from `shallow_factor` up to 1 with increasing depth.
     pub shallow: DepthRamp,
-    pub shallow_factor: f32,
+    pub shallow_factor: f64,
     /// Ramp from 1 down to `deep_factor` with increasing depth.
     pub deep: DepthRamp,
-    pub deep_factor: f32,
+    pub deep_factor: f64,
 }
 
 impl SpeedProfile {
@@ -140,11 +140,11 @@ impl SpeedProfile {
     /// [`crate::rise_time::Weighting::BySlipAndRuptureSpeed`], and the configured
     /// weighting is uniform. Both are reproduced as they stand, separately, rather
     /// than unified onto whichever is right.
-    fn depth_factor(self, depth_km: f32) -> f32 {
+    fn depth_factor(self, depth_km: f64) -> f64 {
         // `DepthRamp::scaled_from_deep` and `scaled_from_shallow`, like every other
         // ramp in the program. The original ran this one in `double` throughout — the
         // literal `1.0 - shal_vr` makes it so, and only the two depth differences are
-        // single — rounding once at the store, where the helper works in `f32`
+        // single — rounding once at the store, where the helper works in `f64`
         // start to finish. That extra rounding is why it stayed written out under
         // bit-parity.
         //
@@ -187,7 +187,7 @@ impl SpeedProfile {
 pub fn speed_field(
     shear_speed_km_s: &SlipField,
     velocity_fraction: &SlipField,
-    depth_km: &[f32],
+    depth_km: &[f64],
     profile: SpeedProfile,
 ) -> SpeedGrid {
     let strike_count = shear_speed_km_s.strike_count();
@@ -223,9 +223,9 @@ pub struct OnsetAdjustment {
     /// genslip's `tsfac_main`, resolved from the moment as
     /// `tsfac_bzero + tsfac_slope * 1e-9 * Mo^(1/3)`. Negative, so patches that slip
     /// more rupture *earlier*.
-    pub perturbation_scale: f32,
+    pub perturbation_scale: f64,
     /// Constant offset added to every subfault, in seconds.
-    pub delay_s: f32,
+    pub delay_s: f64,
     /// Whether this segment contains the hypocentre.
     ///
     /// Only the segment that does gets shifted to start at zero. The others keep
@@ -261,13 +261,8 @@ pub fn onset_times(
         for strike in 0..strike_count {
             // The perturbation is applied in single precision, as the original
             // stores it into `psrc[].rupt`, a float.
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the narrowing seam: C stores the sum into a float"
-            )]
-            let narrowed = travel[[dip, strike]] as f32;
-            let time =
-                f64::from(narrowed + adjustment.perturbation_scale * perturbation[[dip, strike]]);
+            let narrowed = travel[[dip, strike]];
+            let time = narrowed + adjustment.perturbation_scale * perturbation[[dip, strike]];
             earliest = earliest.min(time);
             onset.push(time);
         }
@@ -282,12 +277,8 @@ pub fn onset_times(
     };
 
     for time in &mut onset {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the narrowing seam: C stores both into floats"
-        )]
-        let (narrowed, narrowed_shift) = (*time as f32, shift as f32);
-        *time = f64::from(narrowed - narrowed_shift + adjustment.delay_s);
+        let (narrowed, narrowed_shift) = ((*time), shift);
+        *time = narrowed - narrowed_shift + adjustment.delay_s;
     }
 
     crate::grid::from_values(strike_count, dip_count, onset)

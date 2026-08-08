@@ -194,7 +194,7 @@ mod the_derived_tolerances {
     use super::*;
 
     #[test]
-    fn the_f32_sum_bound_grows_as_the_square_root_of_the_count() {
+    fn the_f64_sum_bound_grows_as_the_square_root_of_the_count() {
         // Not linearly. The worst case does, but it assumes every rounding goes the
         // same way; the bound here models them as independent, which is why it is
         // usable at 1e5 terms where `(n-1)*u` is not.

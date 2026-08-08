@@ -49,9 +49,9 @@ pub trait DrawSource {
     /// A normal deviate with the given standard deviation and mean, advancing the
     /// stream.
     ///
-    /// `sigma` and `mean` are `f32` because that is what the fields carry; the
+    /// `sigma` and `mean` are `f64` because that is what the fields carry; the
     /// deviate is `f64`.
-    fn gaussian(&mut self, sigma: f32, mean: f32) -> f64;
+    fn gaussian(&mut self, sigma: f64, mean: f64) -> f64;
 
     /// Advance the stream by `count` normal deviates, discarding them.
     ///

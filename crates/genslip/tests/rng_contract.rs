@@ -72,13 +72,13 @@ fn uniforms_are_in_range<S: DrawSource>(source: &mut S) {
 /// Worth pinning because the fields use it: several perturbations are configured
 /// with a sigma that is zero or all but zero, and they must degenerate cleanly
 /// rather than to a value near the mean.
-fn zero_sigma_is_exactly_the_mean<S: DrawSource>(source: &mut S, mean: f32) {
+fn zero_sigma_is_exactly_the_mean<S: DrawSource>(source: &mut S, mean: f64) {
     for _ in 0..100 {
         #[expect(
             clippy::float_cmp,
             reason = "exactness is the claim: a zero sigma must not merely land near the mean"
         )]
-        let exact = source.gaussian(0.0, mean) == f64::from(mean);
+        let exact = source.gaussian(0.0, mean) == mean;
         assert!(exact);
     }
 }
@@ -88,23 +88,16 @@ fn zero_sigma_is_exactly_the_mean<S: DrawSource>(source: &mut S, mean: f32) {
 /// Deliberately loose. This is not a normality test — Irwin-Hall is not normal and
 /// would fail one — it checks that both sources are calibrated to the sigma and
 /// mean they are asked for, which is the property the physics actually consumes.
-fn normals_have_the_requested_moments<S: DrawSource>(source: &mut S, sigma: f32, mean: f32) {
+fn normals_have_the_requested_moments<S: DrawSource>(source: &mut S, sigma: f64, mean: f64) {
     let values: Vec<f64> = (0..SAMPLE).map(|_| source.gaussian(sigma, mean)).collect();
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "SAMPLE is small and exact in f64"
-    )]
-    let n = SAMPLE as f64;
+    let n = genslip::units::exact(SAMPLE);
     let sample_mean = values.iter().sum::<f64>() / n;
     let variance = values
         .iter()
         .map(|value| (value - sample_mean).powi(2))
         .sum::<f64>()
         / (n - 1.0);
-
-    let sigma = f64::from(sigma);
-    let mean = f64::from(mean);
 
     // The standard error of the mean is sigma/sqrt(n); five of them is a wide berth.
     let tolerance = 5.0 * sigma / n.sqrt();

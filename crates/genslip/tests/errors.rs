@@ -41,14 +41,14 @@ fn generated(
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         hypocentre,
     )
 }
 
 fn a_point_source(
     grid: &genslip::realisation::FaultGrid,
-    rise_time_s: f32,
+    rise_time_s: f64,
 ) -> genslip::Result<genslip::realisation::RuptureModel> {
     point_source(
         &mut FactoredSweep::new(),
@@ -61,7 +61,7 @@ fn a_point_source(
             average_rake_deg: 175.0,
             rise_time_s,
         },
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         Hypocentre { strike: 0, dip: 0 },
     )
 }
@@ -148,7 +148,7 @@ fn the_point_source_path_refuses_the_same_hypocentre() {
             average_rake_deg: 175.0,
             rise_time_s: 0.35,
         },
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         Hypocentre {
             strike: 999,
             dip: 0,
@@ -224,7 +224,7 @@ fn a_fault_larger_than_its_padding_is_refused() {
 #[test]
 fn a_rise_time_that_is_not_positive_is_refused() {
     let grid = fixture::fault();
-    for rise_time_s in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+    for rise_time_s in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
         assert!(
             matches!(
                 refusal(a_point_source(&grid, rise_time_s)),

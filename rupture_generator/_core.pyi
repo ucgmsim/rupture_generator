@@ -1,5 +1,10 @@
 """Type stubs for the compiled rupture generator.
 
+Every array here is **float64**. The core computes in double precision throughout;
+`rupture_generator.srf` stays float32 because an SRF writes six significant figures
+and that is the format's own resolution rather than a shortcut. `assemble.py` is
+where the two meet.
+
 Hand-written, and checked against the extension member by member by
 `tests/test_boundary.py`. A stub that drifts from what it describes is worse than
 none, because it reads as documentation.
@@ -9,9 +14,9 @@ import enum
 
 import numpy as np
 
-FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
+FloatArray = np.ndarray[tuple[int], np.dtype[np.float64]]
 IndexArray = np.ndarray[tuple[int], np.dtype[np.uint64]]
-Grid = np.ndarray[tuple[int, int], np.dtype[np.float32]]
+Grid = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 
 class SpectrumModel(enum.Enum):
     """Which relation maps magnitude onto the slip spectrum's corners."""

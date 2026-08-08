@@ -74,7 +74,7 @@ fn the_draw_count_does_not_depend_on_the_spectrum() {
     // very different band, and a very different Hurst exponent, must cost the same.
     let (strike_count, dip_count) = (32, 32);
 
-    let build = |hurst: f32, band: WavelengthBand| {
+    let build = |hurst: f64, band: WavelengthBand| {
         let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
         let mut source = CountingSource::new(GenslipLcg::new(5150));
         self_affine_field(&mut spectrum, &mut source, hurst, STEP, band);

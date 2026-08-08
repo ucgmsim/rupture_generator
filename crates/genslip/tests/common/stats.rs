@@ -15,17 +15,16 @@
 //! findable mistake under this one. `ENGINEERING_RULES.md` records the technique;
 //! this is it.
 
-/// Widen a field for comparison. Fields are `f32`; travel times are already `f64`.
+/// Widen a field for comparison. Fields are `f64`; travel times are already `f64`.
 #[must_use]
-pub fn widen(values: &[f32]) -> Vec<f64> {
-    values.iter().copied().map(f64::from).collect()
+pub fn widen(values: &[f64]) -> Vec<f64> {
+    values.to_vec()
 }
 
 #[must_use]
 pub fn mean(values: &[f64]) -> f64 {
     assert!(!values.is_empty(), "the mean of nothing is not a number");
-    #[expect(clippy::cast_precision_loss, reason = "test-sized fields")]
-    let count = values.len() as f64;
+    let count = genslip::units::exact(values.len());
     values.iter().sum::<f64>() / count
 }
 
@@ -33,8 +32,7 @@ pub fn mean(values: &[f64]) -> f64 {
 #[must_use]
 pub fn population_sigma(values: &[f64]) -> f64 {
     let centre = mean(values);
-    #[expect(clippy::cast_precision_loss, reason = "test-sized fields")]
-    let count = values.len() as f64;
+    let count = genslip::units::exact(values.len());
     (values.iter().map(|v| (v - centre).powi(2)).sum::<f64>() / count).sqrt()
 }
 

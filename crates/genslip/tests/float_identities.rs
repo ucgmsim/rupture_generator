@@ -17,7 +17,16 @@
 //! Every site these describe has now been taken. The tests stay because the *claims*
 //! outlive the sites: they are what says the four free rewrites owed no argument and
 //! the bit-moving ones did. The final tally was two more misfilings — see
-//! `a_ten_digit_pi_is_pi_in_single_precision`, and `SIMPLIFICATIONS.md` for the ramp.
+//! `a_ten_digit_constant_survives_f32_and_not_f64`, and `SIMPLIFICATIONS.md` for the
+//! ramp.
+//!
+//! # Why this file is still `f32` when the crate is not
+//!
+//! These are claims about **the original's** arithmetic, not the port's. genslip
+//! computes in `float`; whether `sqrt(x*x)` is exactly `|x|` there, and whether its
+//! truncated `3.141592654` is the same `f32` as pi, are facts about the program being
+//! ported and stay true whatever width this crate uses. Widening them would turn a
+//! record of why each rewrite was or was not free into a test of nothing.
 
 use proptest::prelude::*;
 

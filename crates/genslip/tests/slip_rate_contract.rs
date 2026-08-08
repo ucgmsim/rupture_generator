@@ -27,21 +27,17 @@ const MAX_SAMPLES: usize = 100_000;
 /// thousand of a smooth pulse.
 #[test]
 fn the_integral_is_the_slip() {
-    let slip = 250.0_f32;
-    let dt = 0.005_f32;
+    let slip = 250.0_f64;
+    let dt = 0.005_f64;
 
-    for beta in [0.5_f32, 0.13] {
-        for duration_s in [0.2_f32, 1.0, 4.0] {
+    for beta in [0.5_f64, 0.13] {
+        for duration_s in [0.2_f64, 1.0, 4.0] {
             let pulse = oliu_p(slip, duration_s, beta, dt, MAX_SAMPLES);
-            let integral: f64 = pulse
-                .as_slice()
-                .iter()
-                .map(|value| f64::from(*value) * f64::from(dt))
-                .sum();
+            let integral: f64 = pulse.as_slice().iter().map(|value| *value * dt).sum();
 
-            let bound = f64::from(slip) * pulse_round_trip(pulse.len());
+            let bound = slip * pulse_round_trip(pulse.len());
             assert!(
-                (integral - f64::from(slip)).abs() < bound,
+                (integral - slip).abs() < bound,
                 "beta {beta}, duration {duration_s}: integral {integral} against slip \
                  {slip}, past a bound of {bound}"
             );
@@ -67,8 +63,8 @@ fn the_pulse_starts_and_ends_at_zero() {
 /// pulse more impulsive. Nothing in a parity test says this.
 #[test]
 fn a_smaller_beta_gives_a_more_impulsive_pulse() {
-    let dt = 0.005_f32;
-    let peak_time = |beta: f32| {
+    let dt = 0.005_f64;
+    let peak_time = |beta: f64| {
         let pulse = oliu_p(150.0, 1.0, beta, dt, MAX_SAMPLES);
         let (index, _) = pulse
             .as_slice()
@@ -76,9 +72,7 @@ fn a_smaller_beta_gives_a_more_impulsive_pulse() {
             .enumerate()
             .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .expect("a non-empty pulse");
-        #[expect(clippy::cast_precision_loss, reason = "small sample indices")]
-        let time = index as f32 * dt;
-        time
+        genslip::units::exact(index) * dt
     };
 
     assert!(
@@ -119,12 +113,12 @@ fn a_pulse_of_about_one_sample_is_a_fixed_spike() {
 /// depth-dependent rise times.
 #[test]
 fn a_longer_pulse_is_a_gentler_one() {
-    let peak = |duration_s: f32| {
+    let peak = |duration_s: f64| {
         oliu_p(150.0, duration_s, 0.3, 0.005, MAX_SAMPLES)
             .as_slice()
             .iter()
             .copied()
-            .fold(0.0_f32, f32::max)
+            .fold(0.0_f64, f64::max)
     };
 
     let short = peak(0.5);
@@ -159,13 +153,13 @@ mod the_ucsb_family_is_oliu_p {
     use super::*;
 
     /// Slips and durations spanning the range a subfault sees, and then some.
-    const SLIPS: [f32; 4] = [0.5, 12.0, 250.0, 4000.0];
-    const DURATIONS: [f32; 5] = [0.09, 0.2, 1.0, 4.0, 30.0];
-    const DT: f32 = 0.005;
+    const SLIPS: [f64; 4] = [0.5, 12.0, 250.0, 4000.0];
+    const DURATIONS: [f64; 5] = [0.09, 0.2, 1.0, 4.0, 30.0];
+    const DT: f64 = 0.005;
 
     /// `pulse` is `expected` with one zero appended, and nothing else.
-    fn assert_alias(shape: SlipRateShape, slip: f32, duration_s: f32, expected_beta: f32) {
-        let pulse = shape.pulse(slip, duration_s, f32::NAN, DT, MAX_SAMPLES);
+    fn assert_alias(shape: SlipRateShape, slip: f64, duration_s: f64, expected_beta: f64) {
+        let pulse = shape.pulse(slip, duration_s, f64::NAN, DT, MAX_SAMPLES);
         let expected = oliu_p(slip, duration_s, expected_beta, DT, MAX_SAMPLES);
 
         // `beta` is passed as NaN deliberately: only `OliuP2` reads it, and a shape
@@ -194,7 +188,7 @@ mod the_ucsb_family_is_oliu_p {
         // `tau1 = 0.5*0.13*tau` puts `tau1` back at `0.13*t0`.
         for slip in SLIPS {
             for duration_s in DURATIONS {
-                let pulse = SlipRateShape::Ucsb2.pulse(slip, duration_s, f32::NAN, DT, MAX_SAMPLES);
+                let pulse = SlipRateShape::Ucsb2.pulse(slip, duration_s, f64::NAN, DT, MAX_SAMPLES);
                 let expected = oliu_p(slip, 2.0 * duration_s, 0.065, DT, MAX_SAMPLES);
                 assert_eq!(pulse.as_slice(), expected.as_slice());
             }
@@ -203,12 +197,12 @@ mod the_ucsb_family_is_oliu_p {
 
     #[test]
     fn ucsb_t_stretches_the_duration_and_leaves_the_peak() {
-        for stretch in [0.5_f32, 1.0, 2.0, 3.7] {
+        for stretch in [0.5_f64, 1.0, 2.0, 3.7] {
             for duration_s in DURATIONS {
                 let pulse = SlipRateShape::UcsbT { stretch }.pulse(
                     250.0,
                     duration_s,
-                    f32::NAN,
+                    f64::NAN,
                     DT,
                     MAX_SAMPLES,
                 );
@@ -225,20 +219,20 @@ mod the_ucsb_family_is_oliu_p {
         // makes one function rather than two correct.
         for duration_s in DURATIONS {
             let stretched =
-                SlipRateShape::UcsbT { stretch: 1.0 }.pulse(250.0, duration_s, f32::NAN, DT, 4096);
-            let plain = SlipRateShape::Ucsb.pulse(250.0, duration_s, f32::NAN, DT, 4096);
+                SlipRateShape::UcsbT { stretch: 1.0 }.pulse(250.0, duration_s, f64::NAN, DT, 4096);
+            let plain = SlipRateShape::Ucsb.pulse(250.0, duration_s, f64::NAN, DT, 4096);
             assert_eq!(stretched.as_slice(), plain.as_slice());
         }
     }
 
     #[test]
     fn var_t1_is_beta_straight_through_and_defaults_to_ucsb() {
-        for tau1_ratio in [0.05_f32, 0.13, 0.3, 0.5] {
+        for tau1_ratio in [0.05_f64, 0.13, 0.3, 0.5] {
             for duration_s in DURATIONS {
                 let pulse = SlipRateShape::UcsbVarT1 { tau1_ratio }.pulse(
                     250.0,
                     duration_s,
-                    f32::NAN,
+                    f64::NAN,
                     DT,
                     MAX_SAMPLES,
                 );
@@ -250,8 +244,8 @@ mod the_ucsb_family_is_oliu_p {
         // The C reads `tau1_ratio` from the input file's thirteenth column and
         // substitutes 0.13 when it is absent, which is `ucsb`.
         let defaulted =
-            SlipRateShape::UcsbVarT1 { tau1_ratio: 0.13 }.pulse(250.0, 1.0, f32::NAN, DT, 4096);
-        let ucsb = SlipRateShape::Ucsb.pulse(250.0, 1.0, f32::NAN, DT, 4096);
+            SlipRateShape::UcsbVarT1 { tau1_ratio: 0.13 }.pulse(250.0, 1.0, f64::NAN, DT, 4096);
+        let ucsb = SlipRateShape::Ucsb.pulse(250.0, 1.0, f64::NAN, DT, 4096);
         assert_eq!(defaulted.as_slice(), ucsb.as_slice());
     }
 
@@ -263,7 +257,7 @@ mod the_ucsb_family_is_oliu_p {
         let direct = oliu_p(250.0, 1.0, 0.4, DT, MAX_SAMPLES);
         assert_eq!(from_field.as_slice(), direct.as_slice());
 
-        let poisoned = SlipRateShape::OliuP2.pulse(250.0, 1.0, f32::NAN, DT, MAX_SAMPLES);
+        let poisoned = SlipRateShape::OliuP2.pulse(250.0, 1.0, f64::NAN, DT, MAX_SAMPLES);
         assert!(
             poisoned.as_slice().iter().any(|value| value.is_nan()),
             "OliuP2 ignored the beta it is supposed to read"
@@ -279,7 +273,7 @@ mod the_ucsb_family_is_oliu_p {
     #[test]
     fn the_extra_sample_the_c_does_not_write_is_a_zero() {
         for duration_s in DURATIONS {
-            let pulse = SlipRateShape::Ucsb.pulse(250.0, duration_s, f32::NAN, DT, MAX_SAMPLES);
+            let pulse = SlipRateShape::Ucsb.pulse(250.0, duration_s, f64::NAN, DT, MAX_SAMPLES);
             let samples = pulse.as_slice();
 
             #[expect(
@@ -307,7 +301,7 @@ mod the_ucsb_family_is_oliu_p {
 mod every_shape {
     use super::*;
 
-    const DT: f32 = 0.005;
+    const DT: f64 = 0.005;
 
     /// All eleven, at parameters that exercise each one's own branch.
     fn all() -> Vec<SlipRateShape> {
@@ -327,11 +321,7 @@ mod every_shape {
     }
 
     fn integral(pulse: &genslip::slip_rate::SlipRate) -> f64 {
-        pulse
-            .as_slice()
-            .iter()
-            .map(|value| f64::from(*value) * f64::from(DT))
-            .sum()
+        pulse.as_slice().iter().map(|value| *value * DT).sum()
     }
 
     /// The integral is the slip. The only thing all eleven promise, and the reason
@@ -339,16 +329,16 @@ mod every_shape {
     #[test]
     fn conserves_slip() {
         for shape in all() {
-            for slip in [0.5_f32, 250.0, 4000.0] {
-                for duration_s in [0.05_f32, 0.2, 1.0, 4.0, 20.0] {
+            for slip in [0.5_f64, 250.0, 4000.0] {
+                for duration_s in [0.05_f64, 0.2, 1.0, 4.0, 20.0] {
                     let pulse = shape.pulse(slip, duration_s, 0.35, DT, MAX_SAMPLES);
                     assert!(
                         !pulse.is_empty(),
                         "{shape:?} produced nothing at slip {slip}, duration {duration_s}"
                     );
-                    let bound = pulse_round_trip(pulse.len()) * f64::from(slip);
+                    let bound = pulse_round_trip(pulse.len()) * slip;
                     assert!(
-                        (integral(&pulse) - f64::from(slip)).abs() <= bound,
+                        (integral(&pulse) - slip).abs() <= bound,
                         "{shape:?} at duration {duration_s} integrates to {}, not {slip}",
                         integral(&pulse)
                     );
@@ -378,13 +368,13 @@ mod every_shape {
     /// duration-independent by definition and so excluded.
     #[test]
     fn a_longer_pulse_is_a_gentler_one() {
-        let peak = |shape: SlipRateShape, duration_s: f32| {
+        let peak = |shape: SlipRateShape, duration_s: f64| {
             shape
                 .pulse(250.0, duration_s, 0.35, DT, MAX_SAMPLES)
                 .as_slice()
                 .iter()
                 .copied()
-                .fold(0.0_f32, f32::max)
+                .fold(0.0_f64, f64::max)
         };
         for shape in all() {
             if shape == SlipRateShape::Delta {
@@ -434,22 +424,22 @@ mod every_shape {
 mod the_closed_form_shapes {
     use super::*;
 
-    const DT: f32 = 0.001;
+    const DT: f64 = 0.001;
 
-    fn samples(shape: SlipRateShape, duration_s: f32, parameter: f32) -> Vec<f32> {
+    fn samples(shape: SlipRateShape, duration_s: f64, parameter: f64) -> Vec<f64> {
         shape
             .pulse(100.0, duration_s, parameter, DT, MAX_SAMPLES)
             .as_slice()
             .to_vec()
     }
 
-    fn peak_at_s(values: &[f32]) -> f32 {
+    fn peak_at_s(values: &[f64]) -> f64 {
         #[expect(clippy::cast_precision_loss, reason = "sample indices are small")]
         let index = values
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.total_cmp(b.1))
-            .map_or(0, |(index, _)| index) as f32;
+            .map_or(0, |(index, _)| index) as f64;
         index * DT
     }
 
@@ -460,7 +450,7 @@ mod the_closed_form_shapes {
     /// than as something else.
     #[test]
     fn brune_peaks_at_one_time_constant() {
-        for duration_s in [0.05_f32, 0.2, 1.0] {
+        for duration_s in [0.05_f64, 0.2, 1.0] {
             let peak = peak_at_s(&samples(SlipRateShape::Brune, duration_s, 0.0));
             assert!(
                 (peak - duration_s).abs() <= 2.0 * DT,
@@ -496,7 +486,7 @@ mod the_closed_form_shapes {
     /// `esg2006`: a Gaussian centred at twice the duration and symmetric about it.
     #[test]
     fn esg2006_is_a_symmetric_gaussian() {
-        let duration_s = 0.25_f32;
+        let duration_s = 0.25_f64;
         let values = samples(SlipRateShape::Esg2006, duration_s, 0.0);
         let peak = peak_at_s(&values);
         assert!(
@@ -519,7 +509,7 @@ mod the_closed_form_shapes {
     /// `cos`: a full raised cosine, so it is zero at both ends and peaks in the middle.
     #[test]
     fn cos_is_a_full_raised_cosine() {
-        let duration_s = 0.4_f32;
+        let duration_s = 0.4_f64;
         let values = samples(SlipRateShape::Cos, duration_s, 0.0);
         assert_eq!(values.first(), Some(&0.0));
         let peak = peak_at_s(&values);
@@ -539,9 +529,9 @@ mod the_closed_form_shapes {
     /// early.
     #[test]
     fn seki_starts_abruptly_and_pays_for_it_with_an_onset_shift() {
-        let duration_s = 0.5_f32;
+        let duration_s = 0.5_f64;
         let values = samples(SlipRateShape::Seki, duration_s, 0.0);
-        let peak = values.iter().copied().fold(0.0_f32, f32::max);
+        let peak = values.iter().copied().fold(0.0_f64, f64::max);
         let ratio = values[0] / peak;
         assert!(
             (0.05..0.10).contains(&ratio),
@@ -564,7 +554,7 @@ mod the_closed_form_shapes {
             SlipRateShape::Delta,
         ] {
             assert!(
-                shape.onset_shift_s(duration_s).abs() < f32::EPSILON,
+                shape.onset_shift_s(duration_s).abs() < f64::EPSILON,
                 "{shape:?} moves the onset by {} and has no reason to",
                 shape.onset_shift_s(duration_s)
             );
@@ -574,8 +564,8 @@ mod the_closed_form_shapes {
     /// `urs`: a narrow spike then a long tail, with the tail's height the parameter.
     #[test]
     fn urs_is_a_spike_then_a_tail() {
-        let duration_s = 1.0_f32;
-        for tail in [0.2_f32, 0.35, 0.5] {
+        let duration_s = 1.0_f64;
+        for tail in [0.2_f64, 0.35, 0.5] {
             let values = samples(SlipRateShape::Urs, duration_s, tail);
             assert_eq!(values.first(), Some(&0.0));
 
@@ -591,7 +581,7 @@ mod the_closed_form_shapes {
             );
 
             // The shoulder where the second triangle starts sits at the tail's height.
-            let shoulder = (f32::from(2u8) - tail) * peak_at_s(&values) / DT;
+            let shoulder = (f64::from(2u8) - tail) * peak_at_s(&values) / DT;
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -635,11 +625,11 @@ mod the_closed_form_shapes {
             mid: 0.13,
             deep: 0.13,
         };
-        let depths = [0.0_f32, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
+        let depths = [0.0_f64, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
         let field = shape_parameter_field(SlipRateShape::Urs, 1, &depths, profile);
 
         // betashal above the ramp, betadeep below it, and the midpoint between.
-        let expected = [0.5_f32, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
+        let expected = [0.5_f64, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
         for (index, (depth, want)) in depths.iter().zip(expected).enumerate() {
             let got = field[[index, 0]];
             assert!(
@@ -655,15 +645,14 @@ mod the_closed_form_shapes {
     /// less impulsive release.
     #[test]
     fn a_taller_urs_tail_delays_the_slip() {
-        let centroid = |tail: f32| {
+        let centroid = |tail: f64| {
             let values = samples(SlipRateShape::Urs, 1.0, tail);
-            #[expect(clippy::cast_precision_loss, reason = "sample indices are small")]
-            let weighted: f32 = values
+            let weighted: f64 = values
                 .iter()
                 .enumerate()
-                .map(|(index, value)| index as f32 * value)
+                .map(|(index, value)| genslip::units::exact(index) * value)
                 .sum();
-            weighted / values.iter().sum::<f32>()
+            weighted / values.iter().sum::<f64>()
         };
         assert!(
             centroid(0.5) > centroid(0.2),
@@ -676,7 +665,7 @@ mod the_closed_form_shapes {
     /// An identity, so asserted as one -- it is why there is no eleventh generator.
     #[test]
     fn a_delta_is_the_spike_oliu_p_falls_back_to() {
-        for slip in [0.5_f32, 250.0, 4000.0] {
+        for slip in [0.5_f64, 250.0, 4000.0] {
             let delta = SlipRateShape::Delta.pulse(slip, 1.0, 0.0, DT, MAX_SAMPLES);
             // A duration of about one sample is what triggers `oliu_p`'s fallback.
             let fallback = oliu_p(slip, DT, 0.13, DT, MAX_SAMPLES);
@@ -689,7 +678,7 @@ mod the_closed_form_shapes {
     #[test]
     fn a_delta_is_the_same_pulse_at_every_duration() {
         let first = samples(SlipRateShape::Delta, 0.01, 0.0);
-        for duration_s in [0.5_f32, 5.0, 50.0] {
+        for duration_s in [0.5_f64, 5.0, 50.0] {
             assert_eq!(samples(SlipRateShape::Delta, duration_s, 0.0), first);
         }
     }

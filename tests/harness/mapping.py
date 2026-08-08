@@ -438,6 +438,11 @@ def fault_grid(
     """
     del parameters  # every field here comes from the geometry or from `derived`
 
+    # The GSF reader stays float32 because that is what genslip reads the file into,
+    # and both sides being handed the same numbers is the whole point of this module.
+    # The port computes in float64, so widening here is exact and loses nothing --
+    # the *values* are still the file's.
+
     fraction = _f32(DEFAULT_VELOCITY_FRACTION / derived.alpha_t)
     subfaults = strike_count * dip_count
     return FaultGrid(
@@ -447,9 +452,9 @@ def fault_grid(
         derived.padded_dip,
         geometry.mean_along_strike_km,
         geometry.mean_down_dip_km,
-        depth_km=geometry.depth_by_row_km(strike_count),
-        base_rake_deg=geometry.rake_deg.astype(np.float32),
-        velocity_fraction=np.full(subfaults, fraction, dtype=np.float32),
+        depth_km=geometry.depth_by_row_km(strike_count).astype(np.float64),
+        base_rake_deg=geometry.rake_deg.astype(np.float64),
+        velocity_fraction=np.full(subfaults, fraction, dtype=np.float64),
     )
 
 
@@ -477,9 +482,9 @@ def velocity_model(
         The port's second spec group.
     """
     return VelocityModel1D(
-        np.asarray(bottom_depth_km, dtype=np.float32),
-        np.asarray(shear_speed_km_s, dtype=np.float32),
-        np.asarray(density_g_cm3, dtype=np.float32),
+        np.asarray(bottom_depth_km, dtype=np.float64),
+        np.asarray(shear_speed_km_s, dtype=np.float64),
+        np.asarray(density_g_cm3, dtype=np.float64),
     )
 
 

@@ -37,13 +37,8 @@ impl MagnitudeScale {
 ///
 /// (orig. `genslip_v5.6.2.c:1250`)
 #[must_use]
-pub fn seismic_moment(magnitude: f32, scale: MagnitudeScale) -> f32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores the moment into a float"
-    )]
-    let moment = (LN_10 * 1.5 * (f64::from(magnitude) + scale.coefficient())).exp() as f32;
-    moment
+pub fn seismic_moment(magnitude: f64, scale: MagnitudeScale) -> f64 {
+    (LN_10 * 1.5 * (magnitude + scale.coefficient())).exp()
 }
 
 /// Which relation sets the wavenumber corners of the slip spectrum.
@@ -63,30 +58,30 @@ pub enum CornerRelation {
     Somerville { circular: bool },
     /// Mai & Beroza (2002). The down-dip corner scales as `10^(M/3)`, not `10^(M/2)`.
     Mai {
-        strike_offset: f32,
-        dip_offset: f32,
+        strike_offset: f64,
+        dip_offset: f64,
         circular: bool,
     },
     /// Suzuki: along strike as Mai, down dip clamped above a saturation magnitude.
     Suzuki {
-        strike_offset: f32,
-        dip_offset: f32,
-        saturation_magnitude: f32,
+        strike_offset: f64,
+        dip_offset: f64,
+        saturation_magnitude: f64,
     },
     /// Offsets and magnitude exponents supplied directly.
     Given {
-        strike_offset: f32,
-        dip_offset: f32,
-        strike_exponent: f32,
-        dip_exponent: f32,
+        strike_offset: f64,
+        dip_offset: f64,
+        strike_exponent: f64,
+        dip_exponent: f64,
     },
 }
 
 /// Correlation lengths of the slip field, in kilometres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CorrelationLengths {
-    pub strike_km: f32,
-    pub dip_km: f32,
+    pub strike_km: f64,
+    pub dip_km: f64,
 }
 
 /// `10^(exponent*magnitude - offset)`, evaluated as the original evaluates it.
@@ -95,13 +90,8 @@ pub struct CorrelationLengths {
 /// the difference is visible: Somerville's offsets are inline `double` literals,
 /// while Mai's and Suzuki's come from `float` getpar variables and are widened at
 /// the call. Callers convert accordingly.
-fn power_law(magnitude: f32, exponent: f64, offset: f64) -> f32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores each length into a float"
-    )]
-    let length = (LN_10 * (exponent * f64::from(magnitude) - offset)).exp() as f32;
-    length
+fn power_law(magnitude: f64, exponent: f64, offset: f64) -> f64 {
+    (LN_10 * (exponent * magnitude - offset)).exp()
 }
 
 /// The correlation lengths a magnitude implies.
@@ -113,7 +103,7 @@ fn power_law(magnitude: f32, exponent: f64, offset: f64) -> f32 {
 /// (orig. `genslip_v5.6.2.c:1303-1370`)
 #[must_use]
 pub fn correlation_lengths(
-    magnitude: f32,
+    magnitude: f64,
     relation: CornerRelation,
     modified_corners: bool,
 ) -> CorrelationLengths {
@@ -133,15 +123,8 @@ pub fn correlation_lengths(
             // The original subtracts the two offsets separately --
             // `0.5*mag - 1.72 - 0.79818` -- and `(a - b) - c` is not `a - (b + c)`
             // in floating point. Folding them would move every corner.
-            let somerville = |offset: f64| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the narrowing seam: C stores each length into a float"
-                )]
-                let length =
-                    (LN_10 * (0.5 * f64::from(magnitude) - offset - TWO_PI_DECADES)).exp() as f32;
-                length
-            };
+            let somerville =
+                |offset: f64| (LN_10 * (0.5 * magnitude - offset - TWO_PI_DECADES)).exp();
 
             if circular {
                 let length = somerville(1.825);
@@ -161,13 +144,13 @@ pub fn correlation_lengths(
             dip_offset,
             circular,
         } => {
-            let strike_km = power_law(magnitude, 0.5, f64::from(strike_offset));
+            let strike_km = power_law(magnitude, 0.5, strike_offset);
             // 0.3333, not 1/3. Reproduced: the difference is in the fourth decimal
             // of the exponent, which at M8 is a percent of the corner.
             let dip_km = if circular {
                 strike_km
             } else {
-                power_law(magnitude, 0.3333, f64::from(dip_offset))
+                power_law(magnitude, 0.3333, dip_offset)
             };
             CorrelationLengths { strike_km, dip_km }
         }
@@ -176,12 +159,8 @@ pub fn correlation_lengths(
             dip_offset,
             saturation_magnitude,
         } => CorrelationLengths {
-            strike_km: power_law(magnitude, 0.5, f64::from(strike_offset)),
-            dip_km: power_law(
-                magnitude.min(saturation_magnitude),
-                0.5,
-                f64::from(dip_offset),
-            ),
+            strike_km: power_law(magnitude, 0.5, strike_offset),
+            dip_km: power_law(magnitude.min(saturation_magnitude), 0.5, dip_offset),
         },
         CornerRelation::Given {
             strike_offset,
@@ -189,12 +168,8 @@ pub fn correlation_lengths(
             strike_exponent,
             dip_exponent,
         } => CorrelationLengths {
-            strike_km: power_law(
-                magnitude,
-                f64::from(strike_exponent),
-                f64::from(strike_offset),
-            ),
-            dip_km: power_law(magnitude, f64::from(dip_exponent), f64::from(dip_offset)),
+            strike_km: power_law(magnitude, strike_exponent, strike_offset),
+            dip_km: power_law(magnitude, dip_exponent, dip_offset),
         },
     }
 }
@@ -212,11 +187,11 @@ pub fn correlation_lengths(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryCorrection {
     /// `alpha_t` itself, in `[1/(1+c), 1]`.
-    pub alpha_t: f32,
+    pub alpha_t: f64,
     /// How far from vertical the fault dips, 0 at 90 degrees and 1 at or below 45.
-    pub dip_factor: f32,
+    pub dip_factor: f64,
     /// How close the rake is to pure reverse, 1 at 90 degrees and 0 at 0 or 180.
-    pub rake_factor: f32,
+    pub rake_factor: f64,
 }
 
 /// The coefficient in `alpha_t = 1/(1 + f_D*f_R*c)`.
@@ -229,15 +204,15 @@ pub struct GeometryCorrection {
 /// with a sentinel of `-99.0` meaning "use the default" — and when its deck reader
 /// was deleted, the sentinel went through literally and produced negative corner
 /// frequencies for every non-strike-slip fault.
-const ALPHA_COEFFICIENT: f32 = 0.1;
+const ALPHA_COEFFICIENT: f64 = 0.1;
 
 /// Where the dip factor stops falling: at or below this the fault is flat enough that
 /// the correction is fully on. (`genslip_v5.6.2.c:1421`)
-const DIP_FACTOR_PLATEAU_DEG: f32 = 45.0;
+const DIP_FACTOR_PLATEAU_DEG: f64 = 45.0;
 /// A vertical fault. The dip factor is zero here and the correction does nothing.
-const VERTICAL_DIP_DEG: f32 = 90.0;
+const VERTICAL_DIP_DEG: f64 = 90.0;
 /// Pure reverse, where the rake factor peaks. (`genslip_v5.6.2.c:1432`)
-const REVERSE_RAKE_DEG: f32 = 90.0;
+const REVERSE_RAKE_DEG: f64 = 90.0;
 
 /// Compute the dip and rake correction.
 ///
@@ -259,23 +234,19 @@ const REVERSE_RAKE_DEG: f32 = 90.0;
 ///
 /// (orig. `genslip_v5.6.2.c:1416-1444`)
 pub fn geometry_correction(
-    average_dip_deg: f32,
-    average_rake_deg: f32,
+    average_dip_deg: f64,
+    average_rake_deg: f64,
 ) -> Result<GeometryCorrection> {
     if !(0.0..=VERTICAL_DIP_DEG).contains(&average_dip_deg) {
         return Err(Error::DipOutOfRange {
-            degrees: f64::from(average_dip_deg),
+            degrees: average_dip_deg,
         });
     }
 
     // One at or below the plateau, falling linearly to zero at vertical.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores fD into a float"
-    )]
     let dip_factor = if average_dip_deg > DIP_FACTOR_PLATEAU_DEG {
-        (1.0 - (f64::from(average_dip_deg) - f64::from(DIP_FACTOR_PLATEAU_DEG))
-            / f64::from(VERTICAL_DIP_DEG - DIP_FACTOR_PLATEAU_DEG)) as f32
+        1.0 - (average_dip_deg - DIP_FACTOR_PLATEAU_DEG)
+            / (VERTICAL_DIP_DEG - DIP_FACTOR_PLATEAU_DEG)
     } else {
         1.0
     };
@@ -292,24 +263,15 @@ pub fn geometry_correction(
     // provably so rather than approximately: `sqrt(fl(x*x)) == |x|` exactly under
     // round-to-nearest wherever `x*x` neither overflows nor underflows, which on a
     // rake offset bounded by 90 it cannot. See `tests/float_identities.rs`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores fR into a float"
-    )]
     let rake_factor = if (0.0..=180.0).contains(&rake) {
-        (1.0 - (f64::from(rake) - f64::from(REVERSE_RAKE_DEG)).abs() / f64::from(REVERSE_RAKE_DEG))
-            as f32
+        1.0 - (rake - REVERSE_RAKE_DEG).abs() / REVERSE_RAKE_DEG
     } else {
         // Only reachable for a negative rake -- normal faulting -- where the original
         // gives zero and means it: the correction is for reverse-slip geometries.
         0.0
     };
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C stores alphaT into a float"
-    )]
-    let alpha_t = (1.0 / (1.0 + f64::from(dip_factor * rake_factor * ALPHA_COEFFICIENT))) as f32;
+    let alpha_t = 1.0 / (1.0 + dip_factor * rake_factor * ALPHA_COEFFICIENT);
 
     Ok(GeometryCorrection {
         alpha_t,
@@ -329,15 +291,11 @@ pub fn geometry_correction(
 ///
 /// (orig. `genslip_v5.6.2.c:1412`)
 #[must_use]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the narrowing seam: C stores trise into a float. Gone at stage 2b."
-)]
-pub fn average_rise_time(moment_dyne_cm: f32, coefficient: f32) -> f32 {
+pub fn average_rise_time(moment_dyne_cm: f64, coefficient: f64) -> f64 {
     // `cbrt` rather than the original's `exp(log(M0)/3)`: one call instead of two, and
     // exact where the pair is not -- it lands on 3 for 27, which the exp/log pair
     // misses. `tests/float_identities.rs` pins that difference.
-    (f64::from(coefficient) * RISE_TIME_MOMENT_SCALE * f64::from(moment_dyne_cm).cbrt()) as f32
+    coefficient * RISE_TIME_MOMENT_SCALE * moment_dyne_cm.cbrt()
 }
 
 /// The coefficient in `trise = c * this * M0^(1/3)`, Graves & Pitarka (2010).
@@ -351,11 +309,11 @@ const RISE_TIME_MOMENT_SCALE: f64 = 1.0e-09;
 #[derive(Clone, Copy, Debug)]
 pub struct Layer {
     /// Depth to the **bottom** of the layer, in km.
-    pub bottom_depth_km: f32,
+    pub bottom_depth_km: f64,
     /// Shear-wave speed, in km/s.
-    pub shear_speed_km_s: f32,
+    pub shear_speed_km_s: f64,
     /// Density, in g/cm³.
-    pub density_g_cm3: f32,
+    pub density_g_cm3: f64,
 }
 
 impl Layer {
@@ -363,15 +321,8 @@ impl Layer {
     ///
     /// The `1e10` converts from `(km/s)^2 * g/cm^3`.
     #[must_use]
-    pub fn rigidity(self) -> f32 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the narrowing seam: C stores mu into a float"
-        )]
-        let rigidity =
-            (f64::from(self.shear_speed_km_s * self.shear_speed_km_s * self.density_g_cm3)
-                * 1.0e+10) as f32;
-        rigidity
+    pub fn rigidity(self) -> f64 {
+        self.shear_speed_km_s * self.shear_speed_km_s * self.density_g_cm3 * 1.0e+10
     }
 }
 
@@ -414,7 +365,7 @@ impl VelocityModel {
     /// properties for it. Note the search is a linear scan by depth, so a subfault
     /// exactly on a boundary belongs to the layer *above* it.
     #[must_use]
-    pub fn layer_at(&self, depth_km: f32) -> Layer {
+    pub fn layer_at(&self, depth_km: f64) -> Layer {
         let mut index = 0;
         while depth_km > self.layers[index].bottom_depth_km && index < self.layers.len() - 1 {
             index += 1;
@@ -433,7 +384,7 @@ impl VelocityModel {
     ///
     /// (orig. `load_vsden`, ruptime.c)
     #[must_use]
-    pub fn sample(&self, strike_count: usize, depth_km: &[f32]) -> (SlipField, SlipField) {
+    pub fn sample(&self, strike_count: usize, depth_km: &[f64]) -> (SlipField, SlipField) {
         let dip_count = depth_km.len();
         let mut shear_speed = crate::grid::zeros(strike_count, dip_count);
         let mut rigidity = crate::grid::zeros(strike_count, dip_count);

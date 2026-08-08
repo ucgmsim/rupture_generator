@@ -48,30 +48,25 @@ const CELLS: usize = 128;
 /// Kilometres. With `CELLS` this puts wavenumbers on `[1/128, 0.5]` cycles/km.
 const SPACING_KM: f64 = 1.0;
 
-const MIN_WAVELENGTH_KM: f32 = 1.5;
-const MAX_WAVELENGTH_KM: f32 = 80.0;
+const MIN_WAVELENGTH_KM: f64 = 1.5;
+const MAX_WAVELENGTH_KM: f64 = 80.0;
 
 /// Correlation lengths, deliberately unequal.
 ///
 /// An isotropic pair would make `a` a function of `|k|` alone, and a fit against
 /// `log k` would then look correct even though it is the wrong regressor on any real
 /// fault. Keeping them apart is what makes the regressor choice matter.
-const CORNER_STRIKE_KM: f32 = 12.0;
-const CORNER_DIP_KM: f32 = 5.0;
+const CORNER_STRIKE_KM: f64 = 12.0;
+const CORNER_DIP_KM: f64 = 5.0;
 
 /// Wavenumber increment, `1/(N·d)`, in cycles per kilometre.
 fn increment() -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "grid extents are far below 2^52"
-    )]
-    let cells = CELLS as f64;
+    let cells = genslip::units::exact(CELLS);
     1.0 / (cells * SPACING_KM)
 }
 
 fn step() -> WavenumberStep {
-    #[expect(clippy::cast_possible_truncation, reason = "the API is f32")]
-    let value = increment() as f32;
+    let value = increment();
     WavenumberStep {
         strike: value,
         dip: value,
@@ -83,11 +78,10 @@ fn step() -> WavenumberStep {
 /// The standard FFT convention — indices past the midpoint are negative frequencies —
 /// not a property of this crate.
 fn wavenumber(index: usize, count: usize, step: f64) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "grid extents are small")]
     let signed = if index <= count / 2 {
-        index as f64
+        genslip::units::exact(index)
     } else {
-        index as f64 - count as f64
+        genslip::units::exact(index) - genslip::units::exact(count)
     };
     signed * step
 }
@@ -114,8 +108,8 @@ fn drawn<S: DrawSource>(source: &mut S, shape: Spectrum2D) -> Spectrum {
 /// function of.
 fn corner_argument(strike: usize, dip: usize) -> f64 {
     let increment = increment();
-    let kx = wavenumber(strike, CELLS, increment) * f64::from(CORNER_STRIKE_KM);
-    let ky = wavenumber(dip, CELLS, increment) * f64::from(CORNER_DIP_KM);
+    let kx = wavenumber(strike, CELLS, increment) * CORNER_STRIKE_KM;
+    let ky = wavenumber(dip, CELLS, increment) * CORNER_DIP_KM;
     kx * kx + ky * ky
 }
 
@@ -131,8 +125,8 @@ fn band_gain(strike: usize, dip: usize) -> f64 {
     if squared == 0.0 {
         return 0.0;
     }
-    let high = 1.0 + (squared * f64::from(MIN_WAVELENGTH_KM).powi(2)).powi(4);
-    let low = 1.0 + (squared * f64::from(MAX_WAVELENGTH_KM).powi(2)).powi(-4);
+    let high = 1.0 + (squared * MIN_WAVELENGTH_KM.powi(2)).powi(4);
+    let low = 1.0 + (squared * MAX_WAVELENGTH_KM.powi(2)).powi(-4);
     1.0 / (high * low)
 }
 
@@ -220,15 +214,14 @@ fn the_falloff_exponent_is_recovered_from_the_field() {
                     }
                     _ => (1.0 + a).ln(),
                 };
-                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
+                let power = spectrum[[dip, strike]].norm_sqr();
                 if power > 0.0 {
                     points.push((regress_on, power.ln()));
                 }
             }
         }
 
-        #[expect(clippy::cast_precision_loss, reason = "coefficient counts are small")]
-        let count = points.len() as f64;
+        let count = genslip::units::exact(points.len());
         let mean_x = points.iter().map(|(x, _)| x).sum::<f64>() / count;
         let mean_y = points.iter().map(|(_, y)| y).sum::<f64>() / count;
         let spread: f64 = points.iter().map(|(x, _)| (x - mean_x).powi(2)).sum();
@@ -266,7 +259,7 @@ fn the_frankel_shape_is_flat_below_its_corner() {
         let spectrum = drawn(&mut source, Spectrum2D::Frankel);
         for &(strike, dip) in &fitted_coefficients() {
             if corner_argument(strike, dip) < 0.5 {
-                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
+                let power = spectrum[[dip, strike]].norm_sqr();
                 if power > 0.0 {
                     below.push(power);
                 }
@@ -283,8 +276,7 @@ fn the_frankel_shape_is_flat_below_its_corner() {
     // Flat means the pooled power ratio against a constant amplitude is one. `scale`
     // is 1 here, so the expected power is 1 and the ratio is the power itself.
     let (low, high) = wilson_hilferty_band(2 * below.len(), Z);
-    #[expect(clippy::cast_precision_loss, reason = "coefficient counts are small")]
-    let mean = below.iter().sum::<f64>() / below.len() as f64;
+    let mean = below.iter().sum::<f64>() / genslip::units::exact(below.len());
     assert!(
         (low..=high).contains(&mean.cbrt()),
         "power below the corner is {mean:.4}, outside [{low:.4}, {high:.4}] cubed"
@@ -315,13 +307,12 @@ fn the_realised_power_matches_the_prescribed_amplitude() {
                 // von Kármán, from Mai & Beroza: A = scale / sqrt((1+a)^1.75).
                 let a = corner_argument(strike, dip);
                 let amplitude_squared = (1.0 + a).powf(-1.75);
-                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
+                let power = spectrum[[dip, strike]].norm_sqr();
                 ratios.push(power / amplitude_squared);
             }
         }
 
-        #[expect(clippy::cast_precision_loss, reason = "coefficient counts are small")]
-        let count = ratios.len() as f64;
+        let count = genslip::units::exact(ratios.len());
         let mean = ratios.iter().sum::<f64>() / count;
 
         // Two degrees of freedom per coefficient: a real and an imaginary Gaussian.
@@ -369,7 +360,7 @@ fn the_mean_rise_time_is_what_the_moment_implies() {
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         fixture::hypocentre(),
     )
     .expect("the fixture geometry is valid");
@@ -380,10 +371,8 @@ fn the_mean_rise_time_is_what_the_moment_implies() {
     // `trise = c · 1e-9 · M0^(1/3)`, and writing it out here is the only way the test
     // can disagree with the code.
     let source = fixture::source_spec();
-    let expected = f64::from(source.rise_time_coefficient)
-        * 1.0e-9
-        * f64::from(model.moment_dyne_cm).cbrt()
-        * f64::from(model.alpha_t);
+    let expected =
+        source.rise_time_coefficient * 1.0e-9 * model.moment_dyne_cm.cbrt() * model.alpha_t;
 
     let realised = stats::mean(&stats::widen(model.rise_time_s.flat()));
     println!("mean rise time {realised:.5} s against {expected:.5} s implied by M0");
@@ -397,7 +386,7 @@ fn the_mean_rise_time_is_what_the_moment_implies() {
     // so an implementation that dropped it would land 0.4% high and still pass a
     // bound of 5%. Asserting it is in range is what stops that being invisible.
     assert!(
-        (1.0 / 1.1..1.0).contains(&f64::from(model.alpha_t)),
+        (1.0 / 1.1..1.0).contains(&model.alpha_t),
         "alpha_t is {}, outside the range its definition allows",
         model.alpha_t
     );

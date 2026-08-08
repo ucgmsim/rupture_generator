@@ -83,9 +83,11 @@ impl GenslipLcg {
     /// one too.
     const fn uniform_deviate(&mut self) -> f64 {
         self.state = (self.state * MULTIPLIER + INCREMENT) & STATE_MASK;
+        // The state is 31 bits by `STATE_MASK`, so this is exact -- and it is an
+        // `i64` rather than a count, so it does not go through `units::exact`.
         #[expect(
             clippy::cast_precision_loss,
-            reason = "state is 31 bits, exactly representable in f64"
+            reason = "31 bits of state, exactly representable in f64"
         )]
         let state = self.state as f64;
         state / HALF_STATE_RANGE - 1.0
@@ -97,12 +99,12 @@ impl DrawSource for GenslipLcg {
         self.uniform_deviate()
     }
 
-    fn gaussian(&mut self, sigma: f32, mean: f32) -> f64 {
+    fn gaussian(&mut self, sigma: f64, mean: f64) -> f64 {
         let mut sum = 0.0;
         for _ in 0..UNIFORMS_PER_GAUSSIAN {
             sum += 0.5 * (1.0 + self.uniform_deviate());
         }
-        (sum - 6.0) * f64::from(sigma) + f64::from(mean)
+        (sum - 6.0) * sigma + mean
     }
 }
 

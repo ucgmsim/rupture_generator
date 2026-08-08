@@ -20,6 +20,7 @@
 
 use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
 use crate::slip::PerturbationSpec;
+use crate::units;
 
 /// A linear ramp between two depths.
 ///
@@ -27,26 +28,26 @@ use crate::slip::PerturbationSpec;
 /// linear between. The shape genslip uses for every depth-dependent quantity.
 #[derive(Clone, Copy, Debug)]
 pub struct DepthRamp {
-    pub centre_km: f32,
-    pub half_width_km: f32,
+    pub centre_km: f64,
+    pub half_width_km: f64,
 }
 
 impl DepthRamp {
     /// The shallow end of the ramp.
     #[must_use]
-    pub fn shallow_km(self) -> f32 {
+    pub fn shallow_km(self) -> f64 {
         self.centre_km - self.half_width_km
     }
 
     /// The deep end of the ramp.
     #[must_use]
-    pub fn deep_km(self) -> f32 {
+    pub fn deep_km(self) -> f64 {
         self.centre_km + self.half_width_km
     }
 
     /// Fraction of the way through the ramp at `depth_km`, clamped to `0..=1`.
     #[must_use]
-    pub fn weight(self, depth_km: f32) -> f32 {
+    pub fn weight(self, depth_km: f64) -> f64 {
         if depth_km <= self.shallow_km() {
             0.0
         } else if depth_km < self.deep_km() {
@@ -61,7 +62,7 @@ impl DepthRamp {
     /// # The grouping is the contract
     ///
     /// This multiplies before it divides. `(scale * offset) / width` and
-    /// `scale * (offset / width)` are the same number and not the same `f32`, and
+    /// `scale * (offset / width)` are the same number and not the same `f64`, and
     /// the original consistently writes the first — a chain of `*` and `/` at equal
     /// precedence, evaluated left to right. Callers that need the second must say so
     /// and take the difference.
@@ -69,7 +70,7 @@ impl DepthRamp {
     /// Unclamped because every caller guards the range with its own branch first;
     /// clamping here would be a second, redundant comparison.
     #[must_use]
-    pub fn scaled_from_shallow(self, scale: f32, depth_km: f32) -> f32 {
+    pub fn scaled_from_shallow(self, scale: f64, depth_km: f64) -> f64 {
         scale * (depth_km - self.shallow_km()) / (self.deep_km() - self.shallow_km())
     }
 
@@ -79,7 +80,7 @@ impl DepthRamp {
     /// complement: `scaled_from_deep(s, d) + scaled_from_shallow(s, d)` is `s` only
     /// in exact arithmetic.
     #[must_use]
-    pub fn scaled_from_deep(self, scale: f32, depth_km: f32) -> f32 {
+    pub fn scaled_from_deep(self, scale: f64, depth_km: f64) -> f64 {
         scale * (self.deep_km() - depth_km) / (self.deep_km() - self.shallow_km())
     }
 }
@@ -94,9 +95,9 @@ impl DepthRamp {
 #[derive(Clone, Copy, Debug)]
 pub struct RiseTimeStretch {
     pub shallow: DepthRamp,
-    pub shallow_factor: f32,
+    pub shallow_factor: f64,
     pub deep: DepthRamp,
-    pub deep_factor: f32,
+    pub deep_factor: f64,
 }
 
 impl RiseTimeStretch {
@@ -106,7 +107,7 @@ impl RiseTimeStretch {
     /// the ramp's *deep* end and the deep branch from its *shallow* end, so each
     /// returns `1 + excess` at the outer edge and `1` at the inner one.
     #[must_use]
-    pub fn factor_at(self, depth_km: f32) -> f32 {
+    pub fn factor_at(self, depth_km: f64) -> f64 {
         let shallow_excess = self.shallow_factor - 1.0;
         let deep_excess = self.deep_factor - 1.0;
 
@@ -136,7 +137,7 @@ pub struct RiseTimeSpec {
     /// Below 0.1 genslip abandons the correlated field entirely for independent
     /// lognormal noise. That path is not implemented — see the module note in
     /// `PRUNED.md`.
-    pub slip_exponent: f32,
+    pub slip_exponent: f64,
 }
 
 /// Build the dimensionless rise-time field, normalised to unit mean.
@@ -155,7 +156,7 @@ pub struct RiseTimeSpec {
 pub fn rise_time_field(
     correlated: &SlipField,
     slip: &SlipField,
-    depth_km: &[f32],
+    depth_km: &[f64],
     spec: RiseTimeSpec,
 ) -> SlipField {
     let strike_count = correlated.strike_count();
@@ -172,11 +173,7 @@ pub fn rise_time_field(
         depth_km.len()
     );
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (strike_count * dip_count) as f32;
+    let subfault_count = units::exact(strike_count * dip_count);
 
     // The shallow blend. Depth is taken per dip row, not per subfault: genslip reads
     // it from the first subfault of each row, which is exact for a planar segment.
@@ -185,7 +182,7 @@ pub fn rise_time_field(
     // spells this one the same way: `(dep - r_dmin)/(r_dmax - r_dmin)`, with no
     // scale factor fused into the numerator.
     let mut field = crate::grid::zeros(strike_count, dip_count);
-    let mut total = 0.0_f32;
+    let mut total = 0.0_f64;
     for dip in 0..dip_count {
         let deep_weight = spec.shallow_blend.weight(depth_km[dip]);
         let shallow_weight = 1.0 - deep_weight;
@@ -221,22 +218,14 @@ pub fn rise_time_field(
 }
 
 /// Stretch a field about a mean of 1 so its coefficient of variation is `sigma`.
-fn rescale_about_unit_mean(field: &mut SlipField, sigma: f32) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (field.strike_count() * field.dip_count()) as f32;
+fn rescale_about_unit_mean(field: &mut SlipField, sigma: f64) {
+    let subfault_count = units::exact(field.strike_count() * field.dip_count());
 
-    let mut sum_of_squares = 0.0_f32;
+    let mut sum_of_squares = 0.0_f64;
     for value in field.flat() {
         sum_of_squares += (*value - 1.0) * (*value - 1.0);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing seam: C's sqrt returns double and is stored to a float"
-    )]
-    let variation = f64::from(sum_of_squares / subfault_count).sqrt() as f32;
+    let variation = (sum_of_squares / subfault_count).sqrt();
 
     let factor = sigma / variation;
     for value in field.flat_mut() {
@@ -248,17 +237,13 @@ fn rescale_about_unit_mean(field: &mut SlipField, sigma: f32) {
 ///
 /// Zeros are left alone: they are the truncated negatives, and `0^0.5` is 0 anyway,
 /// but the original guards the call rather than relying on that.
-fn apply_slip_exponent(field: &mut SlipField, exponent: f32) {
+fn apply_slip_exponent(field: &mut SlipField, exponent: f64) {
     if exponent <= 0.1 {
         return;
     }
     for value in field.flat_mut() {
         if *value > 0.0 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the narrowing seam: C stores the result into a float"
-            )]
-            let raised = f64::from(*value).powf(f64::from(exponent)) as f32;
+            let raised = (*value).powf(exponent);
             *value = raised;
         }
     }
@@ -266,13 +251,9 @@ fn apply_slip_exponent(field: &mut SlipField, exponent: f32) {
 
 /// Divide through by the mean, so the field averages 1.
 fn normalise_to_unit_mean(field: &mut SlipField) {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "subfault counts are far below 2^24"
-    )]
-    let subfault_count = (field.strike_count() * field.dip_count()) as f32;
+    let subfault_count = units::exact(field.strike_count() * field.dip_count());
 
-    let mut total = 0.0_f32;
+    let mut total = 0.0_f64;
     for value in field.flat() {
         total += *value;
     }
@@ -307,11 +288,11 @@ pub struct DepthScaling {
     /// How rise time stretches with depth.
     pub stretch: RiseTimeStretch,
     /// Rupture speed as a fraction of shear-wave speed.
-    pub rupture_velocity_fraction: f32,
+    pub rupture_velocity_fraction: f64,
     /// Extra reduction of rupture speed in the shallow zone.
-    pub shallow_rupture_velocity: f32,
+    pub shallow_rupture_velocity: f64,
     /// Extra reduction of rupture speed in the deep zone.
-    pub deep_rupture_velocity: f32,
+    pub deep_rupture_velocity: f64,
 }
 
 /// The rupture speed this weighting uses, which is **not** the one the solver uses.
@@ -320,7 +301,7 @@ pub struct DepthScaling {
 /// the inner edge of the zone, where [`crate::rupture::SpeedProfile`] correctly runs
 /// it up to one. Latent — only the slip-and-rupture-speed weighting consults it, and
 /// the configured weighting is uniform — but reproduced as it stands.
-fn weighting_rupture_speed(depth_km: f32, scaling: DepthScaling, shear_speed: f32) -> f32 {
+fn weighting_rupture_speed(depth_km: f64, scaling: DepthScaling, shear_speed: f64) -> f64 {
     let base = shear_speed * scaling.rupture_velocity_fraction;
     let shallow = scaling.stretch.shallow;
     let deep = scaling.stretch.deep;
@@ -355,11 +336,11 @@ fn weighting_rupture_speed(depth_km: f32, scaling: DepthScaling, shear_speed: f3
 pub fn rise_time_normalisation(
     rise_time: &SlipField,
     slip: &SlipField,
-    depth_km: &[f32],
-    shear_speed_km_s: &[f32],
+    depth_km: &[f64],
+    shear_speed_km_s: &[f64],
     scaling: DepthScaling,
     weighting: Weighting,
-) -> f32 {
+) -> f64 {
     let strike_count = rise_time.strike_count();
     let dip_count = rise_time.dip_count();
     assert_eq!(
@@ -374,8 +355,8 @@ pub fn rise_time_normalisation(
         "one shear speed per dip row"
     );
 
-    let mut numerator = 0.0_f32;
-    let mut denominator = 0.0_f32;
+    let mut numerator = 0.0_f64;
+    let mut denominator = 0.0_f64;
 
     for dip in 0..dip_count {
         let rise_factor = scaling.stretch.factor_at(depth_km[dip]);

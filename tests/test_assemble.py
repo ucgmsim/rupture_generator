@@ -39,14 +39,14 @@ def rupture():
         10,
         1.0,
         1.0,
-        depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float32),
-        base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float32),
-        velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float32),
+        depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64),
+        base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float64),
+        velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float64),
     )
     model = VelocityModel1D(
-        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
     )
     shallow, deep = Ramp(6.5, 1.5), Ramp(17.5, 2.5)
     return generate_rupture(
@@ -82,9 +82,9 @@ def geometry() -> SubfaultGeometry:
         longitude_deg=(172.6 + strikes.ravel() * 0.01).astype(np.float32),
         latitude_deg=(-43.5 - dips.ravel() * 0.005).astype(np.float32),
         depth_km=(0.5 + dips.ravel() * 2.0).astype(np.float32),
-        strike_deg=np.full(SUBFAULTS, 45.0, dtype=np.float32),
-        dip_deg=np.full(SUBFAULTS, 60.0, dtype=np.float32),
-        area_cm2=np.full(SUBFAULTS, 1.0e10, dtype=np.float32),
+        strike_deg=np.full(SUBFAULTS, 45.0, dtype=np.float64),
+        dip_deg=np.full(SUBFAULTS, 60.0, dtype=np.float64),
+        area_cm2=np.full(SUBFAULTS, 1.0e10, dtype=np.float64),
     )
 
 
@@ -110,8 +110,8 @@ def assemble():
         generated,
         geometry(),
         header(),
-        shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float32),
-        density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float32),
+        shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float64),
+        density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float64),
     )
 
 
@@ -215,8 +215,8 @@ class TestRefusesMismatchedInput:
                 generated,
                 short,
                 header(),
-                shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float32),
-                density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float32),
+                shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float64),
+                density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float64),
             )
 
     def test_ragged_geometry_arrays_are_refused(self) -> None:
@@ -238,8 +238,8 @@ class TestRefusesMismatchedInput:
                 generated,
                 geometry(),
                 header(),
-                shear_speed_km_s=np.full(3, 3.2, dtype=np.float32),
-                density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float32),
+                shear_speed_km_s=np.full(3, 3.2, dtype=np.float64),
+                density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float64),
             )
 
 
@@ -263,17 +263,17 @@ class TestAPointSourceAssemblesTheSameWay:
             10,
             1.0,
             1.0,
-            depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float32),
-            base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float32),
-            velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float32),
+            depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64),
+            base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float64),
+            velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float64),
         )
         shallow, deep = Ramp(6.5, 1.5), Ramp(17.5, 2.5)
         return generate_point_source(
             grid,
             VelocityModel1D(
-                np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
-                np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
-                np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+                np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float64),
+                np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float64),
+                np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float64),
             ),
             PointSourceSpec(5.2, 0.35, average_dip_deg=60.0, average_rake_deg=175.0),
             TimingSpec(
@@ -295,8 +295,8 @@ class TestAPointSourceAssemblesTheSameWay:
             generated,
             geometry(),
             header(),
-            shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float32),
-            density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float32),
+            shear_speed_km_s=np.full(SUBFAULTS, 3.2, dtype=np.float64),
+            density_g_cm3=np.full(SUBFAULTS, 2.6, dtype=np.float64),
         )
 
     def test_it_writes_one_point_per_subfault(self) -> None:

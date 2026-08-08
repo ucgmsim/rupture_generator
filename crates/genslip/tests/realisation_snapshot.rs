@@ -40,14 +40,13 @@ fn summarise(seed: i64, realisation: u64) -> String {
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         fixture::hypocentre(),
     )
     .expect("the fixture geometry is valid");
 
-    let peak = |values: &[f32]| values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    #[expect(clippy::cast_precision_loss, reason = "small subfault counts")]
-    let mean = |values: &[f32]| values.iter().sum::<f32>() / values.len() as f32;
+    let peak = |values: &[f64]| values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mean = |values: &[f64]| values.iter().sum::<f64>() / genslip::units::exact(values.len());
 
     let onset = model.onset_s.flat();
     let total_samples: usize = model
@@ -144,7 +143,7 @@ fn the_moment_survives_the_pipeline() {
         &fixture::velocity_model(),
         fixture::source_spec(),
         fixture::slip_spec(),
-        fixture::timing_spec(),
+        &fixture::timing_spec(),
         fixture::hypocentre(),
     )
     .expect("the fixture geometry is valid");

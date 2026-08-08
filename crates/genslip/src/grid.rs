@@ -27,16 +27,16 @@
 //!   rest of the crate does and the reversal happens in exactly one place.
 
 use ndarray::{Array2, ArrayBase, Data, DataMut, Ix2};
-use num_complex::Complex32;
+use num_complex::Complex64;
 
 /// A real field on the fault: slip, rake, rise time, a perturbation.
-pub type SlipField = Array2<f32>;
+pub type SlipField = Array2<f64>;
 
 /// A complex field in the wavenumber domain.
 ///
 /// The same shape and layout as a [`SlipField`] — the two differ in what a value
 /// *means*, and in the spectrum being padded past the fault's own extent.
-pub type Spectrum = Array2<Complex32>;
+pub type Spectrum = Array2<Complex64>;
 
 /// Naming the axes of a fault grid.
 ///
