@@ -238,6 +238,153 @@ class TimingSpec:
         max_samples: int = 100000,
     ) -> None: ...
 
+class Projected:
+    """A horizontal position in the geometry's projected CRS, in kilometres.
+
+    Kilometres rather than the metres a projected CRS reports, so the mesh never mixes
+    the two inside an expression. `rupture_generator.mesh.to_projected` converts.
+    """
+
+    easting_km: float
+    northing_km: float
+    def __init__(self, easting_km: float, northing_km: float) -> None: ...
+
+class Plane:
+    """One plane of a fault: where its top edge ends, and how it hangs from that edge.
+
+    Geometry only -- how finely it is cut is a `Cuts`, passed to `build_fault_mesh`,
+    because the same surface can be cut at any resolution.
+
+    Where the top edge *begins* is not here. It is the previous plane's `end`, or the
+    fault's `origin`; see `Fault`.
+    """
+
+    end: Projected
+    dip_deg: float
+    bottom_depth_km: float
+    dips_left: bool
+    def __init__(
+        self,
+        end: Projected,
+        *,
+        dip_deg: float,
+        bottom_depth_km: float,
+        dips_left: bool = False,
+    ) -> None: ...
+
+class Fault:
+    """One or more planes, connected end to end.
+
+    Disconnection is unrepresentable rather than refused: a plane says only where its
+    top edge *ends*, so there is no second copy of a shared corner to disagree with the
+    first. The empty list is the one invariant Python can still break, and it is refused
+    here.
+
+    `top_depth_km` is shared by every plane -- it is the depth of the trace they all
+    hang from. A segment starting deeper than its neighbour does not touch it and is a
+    different fault.
+    """
+
+    origin: Projected
+    top_depth_km: float
+    plane_count: int
+    def __init__(
+        self,
+        origin: Projected,
+        planes: list[Plane],
+        *,
+        top_depth_km: float = 0.0,
+    ) -> None: ...
+
+class PointSource:
+    """One cell, of a given size, centred where it is told.
+
+    Not a degenerate fault in its inputs, because a point is described by where its
+    centre is rather than where its top edge runs -- which is how a catalogue gives one.
+    """
+
+    def __init__(
+        self,
+        centre: Projected,
+        *,
+        depth_km: float,
+        strike_deg: float,
+        dip_deg: float,
+        size_km: float,
+    ) -> None: ...
+
+class Cuts:
+    """How one face is cut up.
+
+    Counts rather than a subfault size, so the cells divide the surface exactly. Turning
+    a size into a count is a rounding decision and belongs where the person who wrote
+    the number can see what it became.
+    """
+
+    strike_count: int
+    dip_count: int
+    def __init__(self, strike_count: int, dip_count: int) -> None: ...
+
+class RefinedMesh:
+    """A fault surface, cut into cells. One patch per plane.
+
+    Every position is an **offset** from `origin`, in kilometres. That is not a
+    convenience: an NZTM northing is ~5,180 km against a ~1 km subfault, so absolute
+    coordinates would round every node at CRS scale and hand back cell-scale quantities
+    carrying 1.2e-12 relative error instead of 3e-15. `rupture_generator.mesh` adds the
+    origin back at the one seam that also does the projection.
+
+    Cell arrays are `(dip, strike)` and node arrays `(dip_node, strike_node)`, with one
+    more node than cell on each axis -- the layout `crates/genslip/src/grid.rs` fixes.
+
+    `strike_deg` is measured from the projection's northing axis. **Grid north is not
+    true north**; `rupture_generator.mesh.project_patch` adds the convergence angle,
+    which reaches five degrees in New Zealand.
+    """
+
+    origin: Projected
+    patch_count: int
+    @staticmethod
+    def from_positions(
+        origin: Projected,
+        patches: list[tuple[Grid, Grid, Grid]],
+    ) -> RefinedMesh:
+        """Rebuild a mesh from node positions -- how one arrives from a file.
+
+        Each patch is `(east_km, north_km, depth_km)` on a `(dip_node, strike_node)`
+        grid. Validated, because a file may have been hand-edited or written by
+        something else.
+        """
+
+    def cell_extents(self, patch: int) -> tuple[int, int]: ...
+    def node_positions(self, patch: int) -> tuple[Grid, Grid, Grid]: ...
+    def cell_centres(self, patch: int) -> tuple[Grid, Grid, Grid]: ...
+    def areas_km2(self, patch: int) -> Grid: ...
+    def strike_deg(self, patch: int) -> Grid: ...
+    def dip_deg(self, patch: int) -> Grid: ...
+    def strike_arc_km(self, patch: int) -> FloatArray: ...
+    def dip_arc_km(self, patch: int) -> FloatArray: ...
+    def spacing(self, patch: int) -> tuple[float, float]: ...
+    def cell_index(self, patch: int, strike_km: float, dip_km: float) -> tuple[int, int]:
+        """The cell containing a position given as two in-fault arc lengths.
+
+        `strike_km` from the `i = 0` end and `dip_km` from the top edge, both arc
+        lengths along the patch's own axes; the result is a zero-based `(strike, dip)`
+        cell index. **Not** the SRF's `shyp`, which is measured from the along-strike
+        centre, and not genslip's one-based `ixs`/`iys` -- reading those as subfault
+        indices is `DEFECTS.md` 17.
+        """
+
+def build_fault_mesh(fault: Fault, cuts: list[Cuts]) -> RefinedMesh:
+    """Discretise a fault. One `Cuts` per plane, in order."""
+
+def build_point_mesh(point: PointSource) -> RefinedMesh:
+    """Discretise a point source into a one-cell mesh.
+
+    Takes no cuts: a point source *is* one subfault, and cutting it into more would be
+    asking for a finite fault.
+    """
+
 class GeneratedRupture:
     """A generated rupture model.
 

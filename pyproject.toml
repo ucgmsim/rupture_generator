@@ -12,6 +12,10 @@ requires-python = ">=3.12"
 dependencies = [
   "h5py>=3.11",
   "numpy>=2",
+  # The projection. `mesh.py` is the only importer: the library works in a Cartesian
+  # CRS and this is the one seam that leaves it for WGS84 -- positions, and the grid
+  # convergence correction that has to go with them.
+  "pyproj>=3.6",
   "scipy>=1.13",
 ]
 

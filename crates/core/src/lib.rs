@@ -32,6 +32,8 @@
     reason = "PyO3 extracts PyReadonlyArray arguments by value"
 )]
 
+pub mod mesh;
+
 use genslip::fft::RustFft;
 use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
 use genslip::grid::FaultAxes;
@@ -72,7 +74,7 @@ const FLAT_IS_THE_PYTHON_API: () = ();
 /// Python with its own message the day it is written. This replaced two hand-written
 /// hypocentre checks that duplicated the library's own, word for word and one
 /// refactor away from disagreeing with it.
-struct Refused(genslip::Error);
+pub(crate) struct Refused(pub genslip::Error);
 
 impl From<Refused> for PyErr {
     fn from(Refused(error): Refused) -> Self {
@@ -1153,6 +1155,14 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SlipSpec>()?;
     module.add_class::<TimingSpec>()?;
     module.add_class::<GeneratedRupture>()?;
+    module.add_class::<mesh::Projected>()?;
+    module.add_class::<mesh::Plane>()?;
+    module.add_class::<mesh::Fault>()?;
+    module.add_class::<mesh::PointSource>()?;
+    module.add_class::<mesh::Cuts>()?;
+    module.add_class::<mesh::RefinedMesh>()?;
+    module.add_function(wrap_pyfunction!(mesh::build_fault_mesh, module)?)?;
+    module.add_function(wrap_pyfunction!(mesh::build_point_mesh, module)?)?;
     module.add_function(wrap_pyfunction!(generate_rupture, module)?)?;
     module.add_function(wrap_pyfunction!(generate_point_source, module)?)?;
     Ok(())

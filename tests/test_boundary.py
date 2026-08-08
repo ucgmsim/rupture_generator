@@ -541,6 +541,12 @@ class TestStubMatchesTheExtension:
             "SpectrumModel",
             "RiseTimeWeighting",
             "SlipRateShape",
+            "Projected",
+            "Plane",
+            "Fault",
+            "PointSource",
+            "Cuts",
+            "RefinedMesh",
         ],
     )
     def test_every_class_describes_the_members_it_has(self, class_name: str) -> None:
