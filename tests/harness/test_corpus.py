@@ -450,7 +450,9 @@ class TestOnsetIsBetterThanTheReference:
     """
 
     @pytest.mark.parametrize("name", CASES)
-    def test_the_onset_field_has_the_same_shape(self, name: str, compared: dict) -> None:
+    def test_the_onset_field_has_the_same_shape(
+        self, name: str, compared: dict
+    ) -> None:
         # The registration claim, and the one this change must not weaken. A one-cell
         # hypocentre error correlated at 0.92-0.997; this stays above 0.998 because
         # nothing moved relative to anything else.
@@ -649,7 +651,9 @@ class TestTheDecomposition:
             assert abs(ratio - 1.0) < 1e-3, f"{name} {field}: sigma ratio {ratio:.6f}"
 
         correlation = float(np.corrcoef(mine, theirs)[0, 1])
-        assert correlation > 1.0 - 1e-6, f"{name} {field}: correlation {correlation:.7f}"
+        assert correlation > 1.0 - 1e-6, (
+            f"{name} {field}: correlation {correlation:.7f}"
+        )
 
 
 class TestTheGeometryDivergence:

@@ -136,14 +136,17 @@ def field_path(error: Exception) -> tuple[str, Exception]:
         The dotted path, and the innermost ``InvalidFieldValue`` or ``MissingField``.
         The path is ``"<unknown>"`` if the chain carried no field names at all.
     """
-    from mashumaro.exceptions import MissingField
+    from mashumaro.exceptions import ExtraKeysError, MissingField
 
     names: list[str] = []
     innermost: Exception = error
     current: Any = error
 
     while current is not None:
-        if isinstance(current, InvalidFieldValue | MissingField):
+        # `ExtraKeysError` is included because a misspelt key raises one *inside* an
+        # `InvalidFieldValue` about the whole containing list. Reporting the outer one
+        # dumps every plane of the fault and never says which word is wrong.
+        if isinstance(current, InvalidFieldValue | MissingField | ExtraKeysError):
             innermost = current
             if getattr(current, "field_name", None):
                 names.append(current.field_name)

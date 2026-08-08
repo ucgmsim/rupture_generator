@@ -1,0 +1,292 @@
+"""The mesh file: node positions, one group per plane.
+
+An ``xr.DataTree``, written to HDF5 or Zarr. What it holds and why is in `MESH.md`; this
+is the code that reads and writes it.
+
+# What a group is
+
+One refined face -- a patch -- materialised. The ``(dip_node, strike_node)`` arrays are
+its vertices, with its topology implied by their shape, which is why there is no face
+list in the file: a structured grid's connectivity *is* its shape.
+
+Positions are **offsets from the mesh's origin**, in kilometres, in the CRS named in the
+root attributes. That is the same thing the library holds, for the same reason -- an
+NZTM northing is ~5,180 km against a ~1 km subfault, so absolute coordinates would round
+every node at CRS scale. The origin is stored once, in the root attributes, and added
+back by whoever wants a coordinate rather than a shape.
+
+# Only the geometry is stored
+
+Cell centres, areas, strike and dip are all functions of the nodes, so they are computed
+on read and never written. A stored quantity that could have been derived is a second
+description free to drift from the first.
+"""
+
+from __future__ import annotations
+
+import datetime
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import numcodecs
+import numpy as np
+import pyproj
+import xarray as xr
+
+from rupture_generator._core import Projected, RefinedMesh
+from rupture_generator.formats import Format, resolve
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+SCHEMA_VERSION = 1
+"""Bumped when a reader of an older file would get the wrong answer rather than an error."""
+
+DEFAULT_ENCODING = {
+    "compressors": [
+        numcodecs.Blosc(cname="zstd", clevel=5, shuffle=numcodecs.Blosc.SHUFFLE)
+    ],
+}
+"""Lossless. A mesh is small and the positions are the geometry, so there is nothing to
+gain by rounding them and a subfault's place to lose."""
+
+NODE_VARIABLES = {
+    "east_km": ("kilometres", "Easting offset from the mesh origin"),
+    "north_km": ("kilometres", "Northing offset from the mesh origin"),
+    "depth_km": ("kilometres", "Depth below the surface, positive downwards"),
+}
+"""Every variable carries its unit and a sentence. `README.md` argues this is what
+stopped shear speed being written in km/s where the SRF wants cm/s."""
+
+
+def to_datatree(
+    meshes: Mapping[str, RefinedMesh],
+    crs: pyproj.CRS,
+    *,
+    attrs: Mapping[str, Any] | None = None,
+) -> xr.DataTree:
+    """Lay meshes out as a tree: one group per plane, nested under its surface.
+
+    Parameters
+    ----------
+    meshes : Mapping of str to RefinedMesh
+        Surface name to mesh. A mesh with several patches becomes several groups.
+    crs : pyproj.CRS
+        The frame every position is in. Stored once, in the root.
+    attrs : Mapping, optional
+        Extra root attributes -- the config verbatim, a title, a git commit.
+
+    Returns
+    -------
+    xr.DataTree
+        With ``/<surface>/plane_<n>`` groups.
+
+    Raises
+    ------
+    ValueError
+        If two surfaces share a name, since a group would silently replace the other.
+    """
+    if len(set(meshes)) != len(meshes):
+        raise ValueError("two surfaces share a name, so one would overwrite the other")
+
+    groups: dict[str, xr.Dataset] = {}
+    origins: dict[str, list[float]] = {}
+
+    for name, mesh in meshes.items():
+        origins[name] = [mesh.origin.easting_km, mesh.origin.northing_km]
+        for patch in range(mesh.patch_count):
+            east_km, north_km, depth_km = mesh.node_positions(patch)
+            strike_count, dip_count = mesh.cell_extents(patch)
+
+            groups[f"{name}/plane_{patch}"] = xr.Dataset(
+                data_vars={
+                    variable: (
+                        ("dip_node", "strike_node"),
+                        array,
+                        {"units": unit, "long_name": description},
+                    )
+                    for variable, array, (unit, description) in zip(
+                        NODE_VARIABLES,
+                        (east_km, north_km, depth_km),
+                        NODE_VARIABLES.values(),
+                        strict=True,
+                    )
+                },
+                coords={
+                    "strike_km": (
+                        "strike_node",
+                        mesh.strike_arc_km(patch),
+                        {
+                            "units": "kilometres",
+                            "long_name": "Distance along strike from the i = 0 edge",
+                        },
+                    ),
+                    "dip_km": (
+                        "dip_node",
+                        mesh.dip_arc_km(patch),
+                        {
+                            "units": "kilometres",
+                            "long_name": "Distance down dip from the top edge",
+                        },
+                    ),
+                },
+                attrs={
+                    "surface": name,
+                    "plane": patch,
+                    "strike_count": strike_count,
+                    "dip_count": dip_count,
+                },
+            )
+
+    tree = xr.DataTree.from_dict(groups)
+    tree.attrs = {
+        "schema_version": SCHEMA_VERSION,
+        "created": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+        "crs": crs.to_string(),
+        # One origin per surface, as JSON because an attribute is a scalar or an array
+        # and this is a mapping. Read back by `from_datatree` and nothing else.
+        "origins": json.dumps(origins),
+        **dict(attrs or {}),
+    }
+    return tree
+
+
+def from_datatree(tree: xr.DataTree) -> tuple[dict[str, RefinedMesh], pyproj.CRS]:
+    """Rebuild meshes from a tree.
+
+    The inverse of :func:`to_datatree`, and lossless: the nodes are the geometry, so
+    everything derived from them comes back identical rather than close.
+
+    Returns
+    -------
+    tuple
+        Surface name to mesh, and the CRS they are in.
+
+    Raises
+    ------
+    ValueError
+        If the tree carries no CRS, or a surface has no recorded origin. Both mean the
+        file is not one of these, and reading it as one would put the fault somewhere.
+    """
+    crs_name = tree.attrs.get("crs")
+    if crs_name is None:
+        raise ValueError("the file has no crs attribute, so its positions mean nothing")
+    origins = json.loads(tree.attrs.get("origins", "{}"))
+
+    # Keyed by the *stored* plane index rather than by the order the groups come back
+    # in, because **Zarr does not preserve order**. Measured: eleven groups written
+    # `plane_0` through `plane_10` come back as
+    #
+    #     plane_10, plane_8, plane_5, plane_7, plane_9, plane_6, plane_4, ...
+    #
+    # which is neither insertion nor lexicographic. HDF5 does preserve insertion, so
+    # this went unnoticed until a two-plane fault came back with its dips swapped -- and
+    # since the order varies between runs, it is the kind of thing that fails somewhere
+    # else, intermittently, long after.
+    by_surface: dict[str, dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
+    for path, node in tree.subtree_with_keys:
+        if not node.has_data or "east_km" not in node.dataset:
+            continue
+        dataset = node.dataset
+        surface = node.attrs.get("surface") or Path(path).parent.name
+        plane = int(node.attrs["plane"])
+
+        planes = by_surface.setdefault(surface, {})
+        if plane in planes:
+            raise ValueError(f"{surface!r} has two planes numbered {plane}")
+        planes[plane] = (
+            dataset["east_km"].to_numpy(),
+            dataset["north_km"].to_numpy(),
+            dataset["depth_km"].to_numpy(),
+        )
+
+    meshes = {}
+    for surface, planes in by_surface.items():
+        if surface not in origins:
+            raise ValueError(f"{surface!r} has no origin, so its offsets mean nothing")
+        expected = set(range(len(planes)))
+        if set(planes) != expected:
+            raise ValueError(
+                f"{surface!r} has planes {sorted(planes)}, expected {sorted(expected)} "
+                "-- a gap means a plane is missing rather than renumbered"
+            )
+        easting_km, northing_km = origins[surface]
+        meshes[surface] = RefinedMesh.from_positions(
+            Projected(easting_km, northing_km),
+            [planes[index] for index in sorted(planes)],
+        )
+
+    return meshes, pyproj.CRS(crs_name)
+
+
+def write_mesh(
+    meshes: Mapping[str, RefinedMesh],
+    crs: pyproj.CRS,
+    path: Path | str,
+    *,
+    format: Format = Format.INFERRED,
+    attrs: Mapping[str, Any] | None = None,
+) -> None:
+    """Write meshes to an HDF5 file or a Zarr store.
+
+    Raises
+    ------
+    ValueError
+        If the format is not one a mesh can be written in. An SRF holds a rupture, not
+        a surface, and there is nothing sensible to put in its slip columns.
+    """
+    path = Path(path)
+    chosen = resolve(path, format)
+    tree = to_datatree(meshes, crs, attrs=attrs)
+
+    match chosen:
+        case Format.NETCDF:
+            tree.to_netcdf(path, engine="h5netcdf", mode="w")
+        case Format.ZARR:
+            tree.to_zarr(path, mode="w", consolidated=False)
+        case _:
+            raise ValueError(
+                f"a mesh cannot be written as {chosen.value}: it holds a fault surface, "
+                "not a rupture. Use .h5 or .zarr"
+            )
+
+
+def read_mesh(
+    path: Path | str, *, format: Format = Format.INFERRED
+) -> tuple[dict[str, RefinedMesh], pyproj.CRS]:
+    """Read meshes back.
+
+    Returns
+    -------
+    tuple
+        Surface name to mesh, and the CRS.
+
+    Raises
+    ------
+    ValueError
+        If the format is not one a mesh is written in.
+    """
+    path = Path(path)
+    chosen = resolve(path, format)
+
+    match chosen:
+        case Format.NETCDF:
+            tree = xr.open_datatree(path, engine="h5netcdf")
+        case Format.ZARR:
+            tree = xr.open_datatree(path, engine="zarr", consolidated=False)
+        case _:
+            raise ValueError(f"a mesh is not read from {chosen.value}")
+
+    with tree:
+        return from_datatree(tree)
+
+
+__all__ = [
+    "DEFAULT_ENCODING",
+    "SCHEMA_VERSION",
+    "from_datatree",
+    "read_mesh",
+    "to_datatree",
+    "write_mesh",
+]

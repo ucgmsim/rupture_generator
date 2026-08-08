@@ -365,7 +365,9 @@ class RefinedMesh:
     def strike_arc_km(self, patch: int) -> FloatArray: ...
     def dip_arc_km(self, patch: int) -> FloatArray: ...
     def spacing(self, patch: int) -> tuple[float, float]: ...
-    def cell_index(self, patch: int, strike_km: float, dip_km: float) -> tuple[int, int]:
+    def cell_index(
+        self, patch: int, strike_km: float, dip_km: float
+    ) -> tuple[int, int]:
         """The cell containing a position given as two in-fault arc lengths.
 
         `strike_km` from the `i = 0` end and `dip_km` from the top edge, both arc
