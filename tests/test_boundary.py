@@ -63,9 +63,21 @@ def velocity_model() -> core.VelocityModel1D:
     )
 
 
+def timing_spec(**overrides) -> core.TimingSpec:
+    """The configured timing defaults, with anything a test wants to move."""
+    return core.TimingSpec(
+        rupture_time_scale=-0.35,
+        rise_time_blend=core.Ramp(2.0, 1.0),
+        shallow_ramp=core.Ramp(6.5, 1.5),
+        deep_ramp=core.Ramp(17.5, 2.5),
+        beta_shallow_ramp=core.Ramp(2.0, 1.0),
+        beta_mid_ramp=core.Ramp(6.5, 1.5),
+        **overrides,
+    )
+
+
 def specs() -> tuple[core.SourceSpec, core.SlipSpec, core.TimingSpec]:
     """The configured defaults, as `root/defaults.yaml` sets them."""
-    shallow, deep = core.Ramp(6.5, 1.5), core.Ramp(17.5, 2.5)
     return (
         core.SourceSpec(
             6.5,
@@ -76,14 +88,7 @@ def specs() -> tuple[core.SourceSpec, core.SlipSpec, core.TimingSpec]:
             average_rake_deg=175.0,
         ),
         core.SlipSpec(core.SpectrumModel.Mai),
-        core.TimingSpec(
-            rupture_time_scale=-0.35,
-            rise_time_blend=core.Ramp(2.0, 1.0),
-            shallow_ramp=shallow,
-            deep_ramp=deep,
-            beta_shallow_ramp=core.Ramp(2.0, 1.0),
-            beta_mid_ramp=core.Ramp(6.5, 1.5),
-        ),
+        timing_spec(),
     )
 
 
@@ -304,6 +309,145 @@ class TestTheVelocityModelReadsBack:
         assert len(core.VelocityModel1D(*self.LAYERS)) == 4
 
 
+class TestThePointSourcePath:
+    """The other entry point, which draws nothing.
+
+    The physics is pinned on the Rust side in `point_source.rs`; what these cover is
+    what only exists at the boundary. The one exception is determinism, which is
+    asserted on both sides deliberately: it is the property the whole path is built
+    around, and a boundary that quietly reintroduced a seed would satisfy every Rust
+    test.
+    """
+
+    @staticmethod
+    def spec() -> core.PointSourceSpec:
+        return core.PointSourceSpec(
+            5.2, 0.35, average_dip_deg=60.0, average_rake_deg=175.0
+        )
+
+    @classmethod
+    def generate(cls, shape: core.SlipRateShape | None = None) -> core.GeneratedRupture:
+        _, _, timing = specs()
+        if shape is not None:
+            timing = timing_spec(slip_rate_shape=shape)
+        return core.generate_point_source(
+            fault_grid(),
+            velocity_model(),
+            cls.spec(),
+            timing,
+            hypocentre_strike=STRIKE // 2,
+            hypocentre_dip=DIP // 2,
+        )
+
+    def test_the_arrays_have_one_value_per_subfault(self) -> None:
+        rupture = self.generate()
+        assert rupture.slip_cm.shape == (STRIKE * DIP,)
+        assert rupture.rake_deg.shape == (STRIKE * DIP,)
+        assert rupture.onset_s.shape == (STRIKE * DIP,)
+        assert rupture.shape == (STRIKE, DIP)
+        assert rupture.slip_rate_offsets.shape == (STRIKE * DIP + 1,)
+
+    def test_there_is_no_seed_to_pass(self) -> None:
+        # The signature is the claim. A point source that accepted a seed would be
+        # advertising randomness it does not have.
+        with pytest.raises(TypeError):
+            core.generate_point_source(
+                fault_grid(),
+                velocity_model(),
+                self.spec(),
+                specs()[2],
+                seed=1,
+                hypocentre_strike=0,
+                hypocentre_dip=0,
+            )
+
+    def test_it_is_deterministic_across_the_boundary(self) -> None:
+        first, second = self.generate(), self.generate()
+        for field in ("slip_cm", "rake_deg", "onset_s", "rise_time_s", "slip_rate"):
+            assert np.array_equal(getattr(first, field), getattr(second, field))
+
+    def test_a_hypocentre_off_the_fault_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="outside"):
+            core.generate_point_source(
+                fault_grid(),
+                velocity_model(),
+                self.spec(),
+                specs()[2],
+                hypocentre_strike=STRIKE,
+                hypocentre_dip=0,
+            )
+
+    def test_a_non_positive_rise_time_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="rise_time_s"):
+            core.PointSourceSpec(5.2, 0.0, average_dip_deg=60.0, average_rake_deg=175.0)
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            core.SlipRateShape.oliu_p2(),
+            core.SlipRateShape.ucsb(),
+            core.SlipRateShape.ucsb2(),
+            core.SlipRateShape.ucsb_t(2.0),
+            core.SlipRateShape.ucsb_var_t1(0.2),
+            core.SlipRateShape.brune(),
+            core.SlipRateShape.urs(),
+            core.SlipRateShape.esg2006(),
+            core.SlipRateShape.cos(),
+            core.SlipRateShape.seki(),
+            core.SlipRateShape.delta(),
+        ],
+    )
+    def test_every_shape_crosses_the_boundary(self, shape: core.SlipRateShape) -> None:
+        rupture = self.generate(shape)
+        assert rupture.slip_rate_offsets[-1] > 0
+        assert np.all(np.isfinite(rupture.slip_rate))
+
+
+class TestTheStypeVocabulary:
+    """`generic_slip2srf`'s option strings, parsed in one place.
+
+    The C dispatches with `strncmp`, so `ucsb-T` takes a numeric suffix and anything
+    unrecognised falls through to `brune` -- silently generating a different rupture
+    from the one that was asked for. Parsing here raises instead.
+    """
+
+    @pytest.mark.parametrize(
+        "stype",
+        [
+            "brune",
+            "delta",
+            "esg2006",
+            "urs",
+            "ucsb",
+            "ucsb2",
+            "ucsb-varT1",
+            "cos",
+            "seki",
+        ],
+    )
+    def test_every_name_the_c_accepts_parses(self, stype: str) -> None:
+        assert core.SlipRateShape.from_stype(stype) is not None
+
+    def test_the_ucsb_t_suffix_is_a_number(self) -> None:
+        assert core.SlipRateShape.from_stype("ucsb-T0.2") == core.SlipRateShape.ucsb_t(
+            0.2
+        )
+        # Bare `ucsb-T` is a stretch of one, which is plain `ucsb`.
+        assert core.SlipRateShape.from_stype("ucsb-T") == core.SlipRateShape.ucsb_t(1.0)
+
+    def test_an_unrecognised_name_is_refused_rather_than_defaulted(self) -> None:
+        with pytest.raises(ValueError, match="not a slip-rate function"):
+            core.SlipRateShape.from_stype("OliuP")
+
+    def test_a_non_numeric_suffix_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="must be a number"):
+            core.SlipRateShape.from_stype("ucsb-Twelve")
+
+    def test_a_non_positive_stretch_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="strictly positive"):
+            core.SlipRateShape.ucsb_t(0.0)
+
+
 class TestStubMatchesTheExtension:
     """The stub is hand-written, so nothing keeps it honest but this.
 
@@ -384,11 +528,13 @@ class TestStubMatchesTheExtension:
             "FaultGrid",
             "VelocityModel1D",
             "SourceSpec",
+            "PointSourceSpec",
             "SlipSpec",
             "TimingSpec",
             "GeneratedRupture",
             "SpectrumModel",
             "RiseTimeWeighting",
+            "SlipRateShape",
         ],
     )
     def test_every_class_describes_the_members_it_has(self, class_name: str) -> None:

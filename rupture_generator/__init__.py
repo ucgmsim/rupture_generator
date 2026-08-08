@@ -28,25 +28,31 @@ rupture = generate_rupture(
 from rupture_generator._core import (
     FaultGrid,
     GeneratedRupture,
+    PointSourceSpec,
     Ramp,
     RiseTimeWeighting,
+    SlipRateShape,
     SlipSpec,
     SourceSpec,
     SpectrumModel,
     TimingSpec,
     VelocityModel1D,
+    generate_point_source,
     generate_rupture,
 )
 
 __all__ = [
     "FaultGrid",
     "GeneratedRupture",
+    "PointSourceSpec",
     "Ramp",
     "RiseTimeWeighting",
+    "SlipRateShape",
     "SlipSpec",
     "SourceSpec",
     "SpectrumModel",
     "TimingSpec",
     "VelocityModel1D",
+    "generate_point_source",
     "generate_rupture",
 ]

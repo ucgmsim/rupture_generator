@@ -26,8 +26,16 @@ rupture = generate_rupture(
 
 **Status: Stage 1 complete; Stage 2 in progress.** Against a stored corpus of six
 whole ruptures, **slip, rake, onset and the slip-rate pulses all agree three orders of
-magnitude inside what would matter** — nothing the corpus checks diverges. The
-point-source path (`generic_slip2srf`) is not started.
+magnitude inside what would matter** — nothing the corpus checks diverges.
+
+**The point-source path is done, and it is not a port.** `generic_slip2srf` turned out
+not to be a generator: it reads slip, rake and onset from a file, stretches a rise time
+with depth, makes a pulse, and writes an SRF. The workflow that calls it hands it the
+*same value in every row*. So a point source is the finite-fault generator with its
+random fields made constant, and `generate_point_source` is exactly that — the same
+assembler, the same depth ramp, the same eikonal solve, the same SRF writer, fed four
+constant fields instead of four drawn ones. Four of the C's ten slip-rate shapes turned
+out to be `oliu_p` with the breakpoints moved.
 
 The gate is now **scientific agreement** rather than bit-equality with the C.
 `ENGINEERING_RULES.md` says what that means: what makes two ruptures the same rupture,
@@ -307,9 +315,29 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    genslip's own output: onset moves 1.2% to 3.6%, correlations stay above 0.9989,
    and slip and rake do not move at all.
 
-3. **The point-source path**, via `generic_slip2srf` (~1,450 lines, untouched). Last —
-   and the one place `genslip-oracle` gets rewired, because 1,450 lines of new port
-   needs per-function parity to be built at all.
+3. **The point-source path is done**, and the premise it was scheduled under was
+   wrong. It was carried here as *"~1,450 lines, untouched"* and as the one place
+   `genslip-oracle` would get rewired, because that much new port needs per-function
+   parity to be built at all.
+
+   It was never 1,450 lines of port. `generic_slip2srf` does not generate anything: it
+   reads `lon lat dep ds dw stk dip rake slip tinit segno` from a text file and turns
+   each row into a pulse. Of its four `.c` files, 950 lines are an SRF writer this
+   repo already has and a plane-header reconstruction `assemble.py` deliberately
+   refuses to do. And the workflow that calls it (`realisation_to_srf.py:706-757`)
+   passes **one slip, one rake and one onset**, repeated over every subfault.
+
+   So a point source is the finite-fault generator with its random fields made
+   constant. `realisation::point_source` builds four constant fields and calls the
+   same `assemble` a finite fault reaches; the rise-time ramp, the fault-wide
+   normalisation, the moment scaling, the eikonal solve and the SRF writer are all the
+   code that was already there. Four of the ten `stype` shapes are `oliu_p` with the
+   breakpoints moved, and `delta` is the spike `oliu_p` already falls back to.
+
+   Two deliberate differences, both stated at the site: onset is **solved for** rather
+   than written as one number everywhere, and `risetime` is the fault-wide **average**
+   rather than an unstretched floor. At a single subfault both collapse to the C's
+   answer exactly, which `point_source.rs` asserts as identities.
 
 ### Smaller things, found and done
 

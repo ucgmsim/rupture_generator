@@ -30,6 +30,45 @@ class RiseTimeWeighting(enum.Enum):
     BySlip = ...
     BySlipAndRuptureSpeed = ...
 
+class SlipRateShape:
+    """Which slip-rate function every subfault gets.
+
+    A class with named constructors rather than an enum, because four of the shapes
+    carry a parameter and Python enums do not. Four of them -- `ucsb`, `ucsb2`,
+    `ucsb_t` and `ucsb_var_t1` -- are the same three-piece sinusoid `oliu_p2` is,
+    with the breakpoints moved.
+    """
+
+    @staticmethod
+    def oliu_p2() -> SlipRateShape: ...
+    @staticmethod
+    def ucsb() -> SlipRateShape: ...
+    @staticmethod
+    def ucsb2() -> SlipRateShape: ...
+    @staticmethod
+    def ucsb_t(stretch: float) -> SlipRateShape: ...
+    @staticmethod
+    def ucsb_var_t1(tau1_ratio: float = 0.13) -> SlipRateShape: ...
+    @staticmethod
+    def brune() -> SlipRateShape: ...
+    @staticmethod
+    def urs() -> SlipRateShape: ...
+    @staticmethod
+    def esg2006() -> SlipRateShape: ...
+    @staticmethod
+    def cos() -> SlipRateShape: ...
+    @staticmethod
+    def seki() -> SlipRateShape: ...
+    @staticmethod
+    def delta() -> SlipRateShape: ...
+    @staticmethod
+    def from_stype(stype: str) -> SlipRateShape:
+        """Parse `generic_slip2srf`'s `stype`, including `ucsb-T`'s numeric suffix.
+
+        Raises `ValueError` on an unrecognised name, where the C falls through to
+        `brune` and silently generates a different rupture.
+        """
+
 class Ramp:
     """A linear ramp between two depths, in kilometres."""
 
@@ -104,6 +143,27 @@ class SourceSpec:
         rise_time_coefficient: float = 1.6,
     ) -> None: ...
 
+class PointSourceSpec:
+    """What a point source is, over and above its geometry.
+
+    Not a `SourceSpec` with fields left blank: there is no spectrum, so no corner
+    relation, and the rise time is given rather than derived from the moment.
+
+    `rise_time_s` is the **fault-wide average**, which the depth ramp redistributes
+    around. `generic_slip2srf` treats its `risetime` as the unstretched value
+    instead, so its ramp only ever lengthens.
+    """
+
+    def __init__(
+        self,
+        magnitude: float,
+        rise_time_s: float,
+        *,
+        average_dip_deg: float,
+        average_rake_deg: float,
+        use_moment_magnitude: bool = True,
+    ) -> None: ...
+
 class SlipSpec:
     """How the slip and rake fields are shaped and trimmed.
 
@@ -165,6 +225,7 @@ class TimingSpec:
         beta_shallow: float = 0.5,
         beta_mid: float = 0.13,
         beta_deep: float = 0.13,
+        slip_rate_shape: SlipRateShape | None = None,
         sample_interval_s: float = 0.005,
         max_samples: int = 100000,
     ) -> None: ...
@@ -202,3 +263,21 @@ def generate_rupture(
     realisation: int = 0,
 ) -> GeneratedRupture:
     """Generate one rupture model. Releases the GIL for the generation itself."""
+
+def generate_point_source(
+    grid: FaultGrid,
+    velocity_model: VelocityModel1D,
+    point_source: PointSourceSpec,
+    timing: TimingSpec,
+    *,
+    hypocentre_strike: int,
+    hypocentre_dip: int,
+) -> GeneratedRupture:
+    """Generate a point source: the same rupture model, with nothing drawn.
+
+    No seed and no realisation, because nothing here is random -- the same inputs
+    give bit-identical output every time. Onset is solved for from the hypocentre
+    rather than written as one number everywhere, which agrees with
+    `generic_slip2srf` exactly at a single subfault and gives a rupture front across
+    a discretised plane where the C has none.
+    """

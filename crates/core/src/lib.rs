@@ -39,7 +39,7 @@ use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
 use genslip::rng::{GenslipLcg, Realisations as _};
 use genslip::rupture::{FactoredSweep, Hypocentre, SpeedProfile};
 use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use genslip::slip_rate::{BetaProfile, SlipRateShape};
+use genslip::slip_rate::{BetaProfile, SlipRateShape as Shape};
 use genslip::source::{CornerRelation, Layer, MagnitudeScale, VelocityModel};
 use genslip::taper::EdgeTapers;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
@@ -70,6 +70,163 @@ impl SpectrumModel {
             Self::Suzuki => Spectrum2D::Suzuki,
             Self::InputCorners => Spectrum2D::InputCorners,
         }
+    }
+}
+
+/// Which slip-rate function every subfault gets.
+///
+/// A class with named constructors rather than an `enum`, because four of the shapes
+/// carry a parameter and Python enums do not. `SlipRateShape.ucsb()` and
+/// `SlipRateShape.ucsb_t(2.0)` are both shapes; only the second has anything to say
+/// beyond its name.
+///
+/// [`from_stype`](SlipRateShape::from_stype) parses `generic_slip2srf`'s command-line
+/// vocabulary, including the numeric suffix on `ucsb-T`.
+#[pyclass(eq, frozen, from_py_object, module = "rupture_generator._core")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlipRateShape {
+    inner: Shape,
+}
+
+#[pymethods]
+impl SlipRateShape {
+    /// genslip's finite-fault default. The only shape whose parameter comes from a
+    /// depth profile rather than from here.
+    #[staticmethod]
+    const fn oliu_p2() -> Self {
+        Self {
+            inner: Shape::OliuP2,
+        }
+    }
+
+    /// `stype=ucsb`.
+    #[staticmethod]
+    const fn ucsb() -> Self {
+        Self { inner: Shape::Ucsb }
+    }
+
+    /// `stype=ucsb2`.
+    #[staticmethod]
+    const fn ucsb2() -> Self {
+        Self {
+            inner: Shape::Ucsb2,
+        }
+    }
+
+    /// `stype=ucsb-T<stretch>`.
+    #[staticmethod]
+    fn ucsb_t(stretch: f32) -> PyResult<Self> {
+        if stretch <= 0.0 {
+            return Err(PyValueError::new_err(
+                "the ucsb-T stretch must be strictly positive",
+            ));
+        }
+        Ok(Self {
+            inner: Shape::UcsbT { stretch },
+        })
+    }
+
+    /// `stype=ucsb-varT1`. The C defaults `tau1_ratio` to 0.13, which is `ucsb`.
+    #[staticmethod]
+    #[pyo3(signature = (tau1_ratio = 0.13))]
+    fn ucsb_var_t1(tau1_ratio: f32) -> PyResult<Self> {
+        if !(0.0..=1.0).contains(&tau1_ratio) {
+            return Err(PyValueError::new_err(
+                "tau1_ratio is a fraction of the duration and must be in [0, 1]",
+            ));
+        }
+        Ok(Self {
+            inner: Shape::UcsbVarT1 { tau1_ratio },
+        })
+    }
+
+    /// `stype=brune`. The duration is the rise time, not the C's slip-derived
+    /// constant — see the Rust `SlipRateShape::Brune`.
+    #[staticmethod]
+    const fn brune() -> Self {
+        Self {
+            inner: Shape::Brune,
+        }
+    }
+
+    /// `stype=urs`.
+    #[staticmethod]
+    const fn urs() -> Self {
+        Self { inner: Shape::Urs }
+    }
+
+    /// `stype=esg2006`.
+    #[staticmethod]
+    const fn esg2006() -> Self {
+        Self {
+            inner: Shape::Esg2006,
+        }
+    }
+
+    /// `stype=cos`.
+    #[staticmethod]
+    const fn cos() -> Self {
+        Self { inner: Shape::Cos }
+    }
+
+    /// `stype=seki`. Moves each subfault's onset back a quarter of its rise time.
+    #[staticmethod]
+    const fn seki() -> Self {
+        Self { inner: Shape::Seki }
+    }
+
+    /// `stype=delta`.
+    #[staticmethod]
+    const fn delta() -> Self {
+        Self {
+            inner: Shape::Delta,
+        }
+    }
+
+    /// Parse `generic_slip2srf`'s `stype`.
+    ///
+    /// The one place the C's option vocabulary is decoded, including the numeric
+    /// suffix `ucsb-T` accepts because the C dispatches on it with `strncmp`. An
+    /// unrecognised name is an error here; the C falls through to `brune`, silently
+    /// generating a different rupture from the one that was asked for.
+    #[staticmethod]
+    fn from_stype(stype: &str) -> PyResult<Self> {
+        if let Some(suffix) = stype.strip_prefix("ucsb-T") {
+            let stretch = if suffix.is_empty() {
+                1.0
+            } else {
+                suffix.parse::<f32>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "{stype:?}: the text after `ucsb-T` must be a number"
+                    ))
+                })?
+            };
+            return Self::ucsb_t(stretch);
+        }
+        match stype {
+            "ucsb" => Ok(Self::ucsb()),
+            "ucsb2" => Ok(Self::ucsb2()),
+            "ucsb-varT1" => Self::ucsb_var_t1(0.13),
+            "brune" => Ok(Self::brune()),
+            "urs" => Ok(Self::urs()),
+            "esg2006" => Ok(Self::esg2006()),
+            "cos" => Ok(Self::cos()),
+            "seki" => Ok(Self::seki()),
+            "delta" => Ok(Self::delta()),
+            "OliuP2" => Ok(Self::oliu_p2()),
+            other => Err(PyValueError::new_err(format!(
+                "{other:?} is not a slip-rate function this understands"
+            ))),
+        }
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "PyO3 requires a reference: a Python object cannot be moved out of the \
+                  interpreter"
+    )]
+    fn __repr__(&self) -> String {
+        format!("SlipRateShape({:?})", self.inner)
     }
 }
 
@@ -423,6 +580,62 @@ impl SourceSpec {
     }
 }
 
+/// What a point source is, over and above its geometry.
+///
+/// Deliberately not a [`SourceSpec`] with fields left blank. A point source has no
+/// spectrum, so it has no corner relation, and it is *told* its rise time rather than
+/// deriving one from the moment — so the two descriptions have four fields in common
+/// and nothing else, and collapsing them would mean a caller filling in corner
+/// exponents that are never read.
+#[pyclass(skip_from_py_object, module = "rupture_generator._core")]
+#[derive(Clone, Copy, Debug)]
+pub struct PointSourceSpec {
+    inner: realisation::PointSourceSpec,
+}
+
+#[pymethods]
+impl PointSourceSpec {
+    /// Build the point-source description.
+    ///
+    /// `rise_time_s` is the **fault-wide average**, which the depth ramp then
+    /// redistributes around. `generic_slip2srf` treats its `risetime` as the
+    /// unstretched value instead, so its ramp can only lengthen and the realised
+    /// average comes out above what was asked for. Reading it as the average is what
+    /// makes a single-subfault source rise in exactly this many seconds whatever its
+    /// depth.
+    #[new]
+    #[pyo3(signature = (
+        magnitude, rise_time_s, *,
+        average_dip_deg, average_rake_deg, use_moment_magnitude = true,
+    ))]
+    fn new(
+        magnitude: f32,
+        rise_time_s: f32,
+        average_dip_deg: f32,
+        average_rake_deg: f32,
+        use_moment_magnitude: bool,
+    ) -> PyResult<Self> {
+        if rise_time_s <= 0.0 {
+            return Err(PyValueError::new_err(
+                "rise_time_s must be strictly positive",
+            ));
+        }
+        Ok(Self {
+            inner: realisation::PointSourceSpec {
+                magnitude,
+                magnitude_scale: if use_moment_magnitude {
+                    MagnitudeScale::Moment
+                } else {
+                    MagnitudeScale::Local
+                },
+                average_dip_deg,
+                average_rake_deg,
+                rise_time_s,
+            },
+        })
+    }
+}
+
 /// How the slip and rake fields are shaped and trimmed.
 #[pyclass(skip_from_py_object, module = "rupture_generator._core")]
 #[derive(Clone, Copy, Debug)]
@@ -542,6 +755,7 @@ impl TimingSpec {
         weighting = RiseTimeWeighting::Uniform,
         beta_shallow_ramp, beta_shallow = 0.5,
         beta_mid_ramp, beta_mid = 0.13, beta_deep = 0.13,
+        slip_rate_shape = None,
         sample_interval_s = 0.005, max_samples = 100_000,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
@@ -568,6 +782,7 @@ impl TimingSpec {
         beta_mid_ramp: Ramp,
         beta_mid: f32,
         beta_deep: f32,
+        slip_rate_shape: Option<SlipRateShape>,
         sample_interval_s: f32,
         max_samples: usize,
     ) -> Self {
@@ -584,10 +799,13 @@ impl TimingSpec {
 
         Self {
             inner: realisation::TimingSpec {
-                // Not exposed yet. `SlipRateShape`'s other variants are
-                // `generic_slip2srf`'s, and they reach Python with the point-source
-                // entry point rather than before it.
-                slip_rate_shape: SlipRateShape::OliuP2,
+                // `OliuP2` is genslip's finite-fault shape and stays the default, so
+                // the other ten are opt-in rather than something a caller can select
+                // by accident.
+                slip_rate_shape: match slip_rate_shape {
+                    Some(shape) => shape.inner,
+                    None => Shape::OliuP2,
+                },
                 rupture_time: PerturbationSpec {
                     correlation: rupture_time_correlation,
                     sigma: rupture_time_sigma,
@@ -832,17 +1050,76 @@ fn generate_rupture(
     Ok(GeneratedRupture::from_model(&model, sample_interval_s))
 }
 
+/// Generate a point source: the same rupture model, with nothing drawn.
+///
+/// A point source is a plane whose slip, rake and perturbations are constant, so this
+/// runs the same assembler [`generate_rupture`] does with those four fields built
+/// rather than drawn. There is **no seed and no realisation**, because there is
+/// nothing random: the same inputs give bit-identical output every time.
+///
+/// Two things differ from `generic_slip2srf`, deliberately. Onset is solved for from
+/// the hypocentre rather than written as one number everywhere — at a single subfault
+/// the two agree exactly, and across a discretised plane this has a rupture front
+/// where the C has none. And `rise_time_s` is the fault-wide average rather than an
+/// unstretched floor.
+///
+/// The GIL is released for the generation itself.
+#[pyfunction]
+#[pyo3(signature = (
+    grid, velocity_model, point_source, timing, *,
+    hypocentre_strike, hypocentre_dip,
+))]
+fn generate_point_source(
+    py: Python<'_>,
+    grid: &FaultGrid,
+    velocity_model: &VelocityModel1D,
+    point_source: &PointSourceSpec,
+    timing: &TimingSpec,
+    hypocentre_strike: usize,
+    hypocentre_dip: usize,
+) -> PyResult<GeneratedRupture> {
+    let extents = grid.inner.extents;
+    if hypocentre_strike >= extents.fault_strike || hypocentre_dip >= extents.fault_dip {
+        return Err(PyValueError::new_err(format!(
+            "hypocentre ({hypocentre_strike}, {hypocentre_dip}) is outside a {}x{} fault",
+            extents.fault_strike, extents.fault_dip
+        )));
+    }
+
+    let sample_interval_s = timing.inner.sample_interval_s;
+
+    // Nothing below touches a Python object.
+    let model = py.detach(|| {
+        realisation::point_source(
+            &mut FactoredSweep::new(),
+            &grid.inner,
+            &velocity_model.inner,
+            point_source.inner,
+            timing.inner,
+            Hypocentre {
+                strike: hypocentre_strike,
+                dip: hypocentre_dip,
+            },
+        )
+    });
+
+    Ok(GeneratedRupture::from_model(&model, sample_interval_s))
+}
+
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SpectrumModel>()?;
     module.add_class::<RiseTimeWeighting>()?;
+    module.add_class::<SlipRateShape>()?;
     module.add_class::<Ramp>()?;
     module.add_class::<FaultGrid>()?;
     module.add_class::<VelocityModel1D>()?;
     module.add_class::<SourceSpec>()?;
+    module.add_class::<PointSourceSpec>()?;
     module.add_class::<SlipSpec>()?;
     module.add_class::<TimingSpec>()?;
     module.add_class::<GeneratedRupture>()?;
     module.add_function(wrap_pyfunction!(generate_rupture, module)?)?;
+    module.add_function(wrap_pyfunction!(generate_point_source, module)?)?;
     Ok(())
 }
