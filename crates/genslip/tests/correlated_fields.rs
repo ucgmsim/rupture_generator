@@ -208,13 +208,18 @@ fn the_rake_field_is_independent_of_slip() {
     let extents = extents();
     let grid = fixture::fault();
 
+    let base_rake = genslip::grid::from_values(
+        extents.fault_strike,
+        extents.fault_dip,
+        grid.base_rake_deg.clone(),
+    );
     let rake = rake_field(
         &mut source,
         &mut fft,
         extents,
         SPACING,
         spectrum(),
-        &grid.base_rake_deg,
+        base_rake.view(),
         15.0,
     );
 

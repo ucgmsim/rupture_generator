@@ -46,6 +46,7 @@ use ndarray::Array2;
 
 use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
 use crate::rise_time::DepthRamp;
+use ndarray::{Array1, Axis};
 
 /// Rupture speed across the fault, in km/s.
 ///
@@ -202,17 +203,13 @@ pub fn speed_field(
     );
     assert_eq!(depth_km.len(), dip_count, "one depth per dip row");
 
-    let mut speeds = Vec::with_capacity(strike_count * dip_count);
-    for dip in 0..dip_count {
-        let depth_factor = profile.depth_factor(depth_km[dip]);
-        for strike in 0..strike_count {
-            speeds.push(
-                velocity_fraction[[dip, strike]] * depth_factor * shear_speed_km_s[[dip, strike]],
-            );
-        }
-    }
+    // The depth factor is one value per dip row, broadcast down it.
+    let depth_factor: Array1<f64> = depth_km
+        .iter()
+        .map(|depth| profile.depth_factor(*depth))
+        .collect();
 
-    crate::grid::from_values(strike_count, dip_count, speeds)
+    velocity_fraction * &depth_factor.insert_axis(Axis(1)) * shear_speed_km_s
 }
 
 /// Where the rupture front is when it reaches each subfault, after perturbation.
@@ -255,31 +252,17 @@ pub fn onset_times(
         "the travel times and the perturbation must cover the same fault"
     );
 
-    let mut onset = Vec::with_capacity(strike_count * dip_count);
-    let mut earliest = f64::INFINITY;
-    for dip in 0..dip_count {
-        for strike in 0..strike_count {
-            // The perturbation is applied in single precision, as the original
-            // stores it into `psrc[].rupt`, a float.
-            let narrowed = travel[[dip, strike]];
-            let time = narrowed + adjustment.perturbation_scale * perturbation[[dip, strike]];
-            earliest = earliest.min(time);
-            onset.push(time);
-        }
-    }
+    // The perturbation is applied where the original stores `psrc[].rupt`.
+    let mut onset = travel + adjustment.perturbation_scale * perturbation;
 
     // A segment without the hypocentre keeps its absolute times; only the one that
     // has it is re-zeroed.
     let shift = if adjustment.contains_hypocentre {
-        earliest
+        onset.fold(f64::INFINITY, |earliest, time| earliest.min(*time))
     } else {
         0.0
     };
 
-    for time in &mut onset {
-        let (narrowed, narrowed_shift) = ((*time), shift);
-        *time = narrowed - narrowed_shift + adjustment.delay_s;
-    }
-
-    crate::grid::from_values(strike_count, dip_count, onset)
+    onset += adjustment.delay_s - shift;
+    onset
 }

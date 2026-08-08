@@ -21,6 +21,14 @@
 //! anything an `f32` could express, so it still cannot hide a wrong constant, which
 //! is the only thing this file was ever able to catch.
 //!
+//! The bound is `PIPELINE_REASSOCIATION`, and it is **chosen rather than derived**.
+//! `ndarray`'s `.mean()` folds pairwise where the transcription folds left to right,
+//! both correct and different; the field is then five stages deep and the rescale
+//! amplifies. Deriving that chain is a paper. What makes a chosen bound defensible
+//! here is the gap it sits in: reassociation moves the answer by ~1e-14, a wrong
+//! constant by 1e-3, and this sits eleven orders of clear air between them. See the
+//! constant's own doc.
+//!
 //! Worth noticing that `float_identities.rs` asserted the *opposite* of this file for
 //! as long as both existed: that `powf` and `exp(n*ln x)` are **not** equal. Both
 //! were right about their own width. Only widening the port made the two statements
@@ -36,7 +44,7 @@
 
 mod common;
 
-use common::tolerance::{agree, transcendental_spelling};
+use common::tolerance::{PIPELINE_REASSOCIATION, agree};
 use genslip::grid::{FaultAxes, SlipField};
 use genslip::rise_time::{
     DepthRamp, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weighting, rise_time_field,
@@ -264,7 +272,7 @@ fn the_rise_time_field_matches_across_every_shape() {
 
             for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
                 assert!(
-                    agree(*got, *want, transcendental_spelling(*want, exponent)),
+                    agree(*got, *want, PIPELINE_REASSOCIATION),
                     "exponent {exponent} on {strike_count}x{dip_count}: \
                      mismatch at {offset}: {got} vs {want}"
                 );
@@ -342,7 +350,7 @@ proptest! {
 
         for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
             prop_assert!(
-                agree(*got, *want, transcendental_spelling(*want, exponent)),
+                agree(*got, *want, PIPELINE_REASSOCIATION),
                 "at {}: {} vs {}",
                 offset,
                 got,

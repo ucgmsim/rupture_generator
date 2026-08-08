@@ -202,3 +202,43 @@ pub fn agree(got: f64, want: f64, bound: f64) -> bool {
     }
     (got - want).abs() <= bound * want.abs().max(1.0)
 }
+
+/// How far a value moves when a sum over `count` terms is **reassociated**.
+///
+/// Not an error bound on either sum — both are correct. It is the gap between two
+/// correct answers, which is what a comparison across a refactor actually needs.
+///
+/// `ndarray`'s `.mean()` and `.sum()` fold pairwise where a hand-written
+/// `for value in field { total += value }` folds left to right. Pairwise is the
+/// *more* accurate of the two, growing as `u*sqrt(log n)` against the sequential
+/// fold's `u*sqrt(n)`, so the sequential one bounds the difference: `2u*sqrt(n)`.
+///
+/// **Detection floor**: 1.3e-15 relative on a 32-subfault field, 8e-15 on a thousand.
+/// Below the point where two spellings of the same arithmetic can be told apart, and
+/// eight orders below anything `f32` could express.
+#[must_use]
+pub fn fold_reorder(count: usize) -> f64 {
+    2.0 * U_F64 * genslip::units::exact(count).sqrt()
+}
+
+/// What a whole elementwise *pipeline* may differ by across a reassociation.
+///
+/// Deliberately not derived, and that is the point worth writing down. The rise-time
+/// field is five stages deep — blend, normalise, rescale to a prescribed spread,
+/// power law, normalise again — and each stage's difference feeds the next. The
+/// rescale in particular multiplies by `sigma/variation`, so a `sigma` of 2 turns a
+/// 1e-15 difference in the variation into a several-times-larger one in the output.
+/// A tight bound on that chain is a paper, not a test.
+///
+/// So this is **chosen**, and its justification is the gap it sits in rather than its
+/// derivation:
+///
+/// * reassociating the folds moves the answer by ~1e-14 at the worst `sigma` the
+///   proptest reaches — measured, not assumed;
+/// * a wrong *constant* — a coefficient, an exponent, a ramp bound, which is the only
+///   thing a transcription of the same formulas can catch — moves it by 1e-3 or more.
+///
+/// Eleven orders of clear air between the two. A bound anywhere in it does the same
+/// job, and one that tracked the reassociation exactly would be a more precise answer
+/// to a question nobody asked.
+pub const PIPELINE_REASSOCIATION: f64 = 1.0e-10;

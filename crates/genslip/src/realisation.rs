@@ -200,6 +200,9 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
 
     let (scaling, spectrum) = derive(spec, slip_spec.spectrum)?;
     let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
+    // A per-subfault quantity is a grid. `FaultGrid` still stores it flat; stage 3
+    // makes that the type rather than a view built at the one call site.
+    let base_rake = crate::grid::from_values(strike_count, dip_count, grid.base_rake_deg.clone());
 
     // --- slip -------------------------------------------------------------------
     let generated = slip::generate_normalised(draws, fft, extents, grid.spacing, spectrum);
@@ -215,10 +218,8 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     }
 
     let scaled = moment::scale_slip(
-        &slip,
-        0,
-        dip_count,
-        rigidity.flat(),
+        slip.view(),
+        rigidity.view(),
         SubfaultSize {
             strike_km: grid.spacing.strike_km,
             dip_km: grid.spacing.dip_km,
@@ -239,7 +240,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         extents,
         grid.spacing,
         spectrum,
-        &grid.base_rake_deg,
+        base_rake.view(),
         slip_spec.rake_sigma_deg,
     );
 
@@ -390,10 +391,8 @@ pub fn point_source<E: EikonalSolver>(
     // rather than a point is that the moment still has to come out right.
     let uniform = crate::grid::from_values(strike_count, dip_count, vec![1.0; subfaults]);
     let slip = moment::scale_slip(
-        &uniform,
-        0,
-        dip_count,
-        rigidity.flat(),
+        uniform.view(),
+        rigidity.view(),
         SubfaultSize {
             strike_km: grid.spacing.strike_km,
             dip_km: grid.spacing.dip_km,

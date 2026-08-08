@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc 4a0348978de43fe578baa534a70c4ae081949c77adc3dfcf335d92937e3bf9dc # shrinks to strike_count = 1, dip_count = 3, sigma = 0.01, exponent = 0.0, blend_centre = 0.5, blend_width = 0.1
 cc 1d1e671f0bda6d89c0ecd1773affdec39ee3ea19d80731817a104dbdfeff5eff # shrinks to strike_count = 15, dip_count = 8, sigma = 2.525640570482574, exponent = 0.0, blend_centre = 0.5, blend_width = 0.1
+cc 7c590dbf10f03dbb15e92c8aecd4a020d9c49c71893a19285902a3c90b33cf1d # shrinks to strike_count = 8, dip_count = 4, sigma = 1.166859204228301, exponent = 0.0, blend_centre = 1.296082954367546, blend_width = 4.2950938243024845
+cc c2c42d3da4d481946bc49a701f950bea70b8da954df820e50ef63acb03950735 # shrinks to strike_count = 9, dip_count = 18, sigma = 1.6770834863932431, exponent = 0.3727483365479973, blend_centre = 1.0700999829153774, blend_width = 2.651481573811381

@@ -227,6 +227,26 @@ pub struct CorrelationLengths {
     pub dip: f64,
 }
 
+/// The half of a grid the generators fill, row by row, with each row's wavenumber.
+///
+/// Every kernel below walks `0..=dip_count/2` — the non-negative dip half — because
+/// the rest is filled by [`crate::grid::impose_hermitian_symmetry`] afterwards. The
+/// dip wavenumber is constant along a row and the original recomputes it at every
+/// point; yielding it *with* the row is what hoists it, and what leaves each kernel's
+/// body about its filter rather than about indexing.
+fn filled_rows(
+    spectrum: &mut Spectrum,
+    step: WavenumberStep,
+) -> impl Iterator<Item = (f64, ndarray::ArrayViewMut1<'_, Complex64>)> {
+    let dip_count = spectrum.dip_count();
+    spectrum
+        .rows_mut()
+        .into_iter()
+        .enumerate()
+        .take(dip_count / 2 + 1)
+        .map(move |(dip, row)| (wavenumber(dip, dip_count, step.dip), row))
+}
+
 /// Signed wavenumber of grid index `index` in an extent of `count` samples.
 ///
 /// Indices past the midpoint represent negative wavenumbers, as in any discrete
@@ -257,14 +277,13 @@ pub fn correlated_field<S: DrawSource>(
     amplitude_scale: f64,
 ) {
     let strike_count = spectrum.strike_count();
-    let dip_count = spectrum.dip_count();
+    let _dip_count = spectrum.dip_count();
 
     let strike_correlation_squared = correlation.strike * correlation.strike;
     let dip_correlation_squared = correlation.dip * correlation.dip;
 
-    for dip in 0..=dip_count / 2 {
-        let ky = wavenumber(dip, dip_count, step.dip);
-        for strike in 0..strike_count {
+    for (ky, mut row) in filled_rows(spectrum, step) {
+        for (strike, value) in row.iter_mut().enumerate() {
             let kx = wavenumber(strike, strike_count, step.strike);
 
             let normalised =
@@ -273,11 +292,10 @@ pub fn correlated_field<S: DrawSource>(
 
             let k2 = kx * kx + ky * ky;
             if k2 > 0.0 {
-                let banded = amplitude / band.divisor(k2);
-                amplitude = banded;
+                amplitude /= band.divisor(k2);
             }
 
-            spectrum[[dip, strike]] = draw_unit_complex(source) * amplitude;
+            *value = draw_unit_complex(source) * amplitude;
         }
     }
 
@@ -303,16 +321,13 @@ pub fn correlated_field<S: DrawSource>(
 /// (orig. `kfilter`, slip.c:1698)
 pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: WavelengthBand, order: i32) {
     let strike_count = spectrum.strike_count();
-    let dip_count = spectrum.dip_count();
+    let _dip_count = spectrum.dip_count();
 
-    for dip in 0..=dip_count / 2 {
-        let ky = wavenumber(dip, dip_count, step.dip);
-        for strike in 0..strike_count {
+    for (ky, mut row) in filled_rows(spectrum, step) {
+        for (strike, value) in row.iter_mut().enumerate() {
             let kx = wavenumber(strike, strike_count, step.strike);
             let k2 = kx * kx + ky * ky;
-
-            let gain = 1.0 / band.divisor_at_order(k2, order);
-            spectrum[[dip, strike]] *= gain;
+            *value *= 1.0 / band.divisor_at_order(k2, order);
         }
     }
 
@@ -335,7 +350,7 @@ pub fn self_affine_field<S: DrawSource>(
     band: WavelengthBand,
 ) {
     let strike_count = spectrum.strike_count();
-    let dip_count = spectrum.dip_count();
+    let _dip_count = spectrum.dip_count();
 
     let falloff = hurst_exponent + 1.0;
 
@@ -343,9 +358,8 @@ pub fn self_affine_field<S: DrawSource>(
     // at every grid point.
     let exponent = -0.5 * falloff;
 
-    for dip in 0..=dip_count / 2 {
-        let ky = wavenumber(dip, dip_count, step.dip);
-        for strike in 0..strike_count {
+    for (dip, (ky, mut row)) in filled_rows(spectrum, step).enumerate() {
+        for (strike, value) in row.iter_mut().enumerate() {
             let kx = wavenumber(strike, strike_count, step.strike);
 
             // Drawn before the amplitude is known, and drawn at the origin too,
@@ -357,12 +371,10 @@ pub fn self_affine_field<S: DrawSource>(
                 0.0
             } else {
                 let k2 = kx * kx + ky * ky;
-                let gain = 1.0 / band.divisor(k2);
-
-                gain * k2.powf(exponent)
+                k2.powf(exponent) / band.divisor(k2)
             };
 
-            spectrum[[dip, strike]] = deviate * amplitude;
+            *value = deviate * amplitude;
         }
     }
 
@@ -440,18 +452,16 @@ pub fn shift_phase(
     // pinned in `contracts.rs` -- and that is unchanged.
     let dc_magnitude = spectrum[[0, 0]].norm();
 
-    for dip in 0..=dip_count / 2 {
-        let ky = wavenumber(dip, dip_count, step.dip);
+    for (ky, mut row) in filled_rows(spectrum, step) {
         let dip_phase = phase_factor(dip_argument * ky);
-        for strike in 0..strike_count {
-            let kx = wavenumber(strike, strike_count, step.strike);
-            let strike_phase = phase_factor(strike_argument * kx);
+        for (strike, value) in row.iter_mut().enumerate() {
+            let strike_phase =
+                phase_factor(strike_argument * wavenumber(strike, strike_count, step.strike));
 
             // Two separate multiplications rather than one combined factor, so the
             // rounding matches: the original applies the along-strike rotation,
             // stores the result, then applies the down-dip one.
-            let rotated = spectrum[[dip, strike]] * strike_phase;
-            spectrum[[dip, strike]] = rotated * dip_phase;
+            *value = *value * strike_phase * dip_phase;
         }
     }
 

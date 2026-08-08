@@ -18,7 +18,9 @@
 //!
 //! (orig. `genslip_v5.6.2.c:2186-2477`)
 
-use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
+use ndarray::{Array1, Axis, azip};
+
+use crate::grid::{FaultAxes, SlipField};
 use crate::slip::PerturbationSpec;
 use crate::units;
 
@@ -173,44 +175,33 @@ pub fn rise_time_field(
         depth_km.len()
     );
 
-    let subfault_count = units::exact(strike_count * dip_count);
-
-    // The shallow blend. Depth is taken per dip row, not per subfault: genslip reads
-    // it from the first subfault of each row, which is exact for a planar segment.
+    // The shallow blend, one weight per dip row: genslip reads depth from the first
+    // subfault of each row, which is exact for a planar segment.
     //
     // `DepthRamp::weight` is used here rather than reproduced because the original
     // spells this one the same way: `(dep - r_dmin)/(r_dmax - r_dmin)`, with no
     // scale factor fused into the numerator.
-    let mut field = crate::grid::zeros(strike_count, dip_count);
-    let mut total = 0.0_f64;
-    for dip in 0..dip_count {
-        let deep_weight = spec.shallow_blend.weight(depth_km[dip]);
-        let shallow_weight = 1.0 - deep_weight;
-        for strike in 0..strike_count {
-            let value =
-                deep_weight * correlated[[dip, strike]] + shallow_weight * slip[[dip, strike]];
-            field[[dip, strike]] = value;
-            total += value;
-        }
-    }
+    let deep: Array1<f64> = depth_km
+        .iter()
+        .map(|depth| spec.shallow_blend.weight(*depth))
+        .collect();
+    let deep = deep.insert_axis(Axis(1));
+    let mut field = &deep * correlated + (1.0 - &deep) * slip;
 
     // The original spells the magnitude `sqrt(x*x)`, which is exactly `abs` -- see
     // `tests/float_identities.rs`. Dividing by the *magnitude* rather than the mean is
     // the part that is not a spelling: it flips a negative-mean field positive.
-    let mean_magnitude = (total / subfault_count).abs();
-    for value in field.flat_mut() {
-        *value /= mean_magnitude;
-    }
+    let mean_magnitude = field
+        .mean()
+        .expect("the fault has at least one subfault")
+        .abs();
+    field /= mean_magnitude;
 
     rescale_about_unit_mean(&mut field, spec.perturbation.sigma.max(0.0));
 
     // Negative rise time is meaningless. Unlike slip, there is no configuration that
     // turns this off.
-    for value in field.flat_mut() {
-        if *value < 0.0 {
-            *value = 0.0;
-        }
-    }
+    field.mapv_inplace(|value| value.max(0.0));
 
     apply_slip_exponent(&mut field, spec.slip_exponent);
     normalise_to_unit_mean(&mut field);
@@ -219,18 +210,11 @@ pub fn rise_time_field(
 
 /// Stretch a field about a mean of 1 so its coefficient of variation is `sigma`.
 fn rescale_about_unit_mean(field: &mut SlipField, sigma: f64) {
-    let subfault_count = units::exact(field.strike_count() * field.dip_count());
-
-    let mut sum_of_squares = 0.0_f64;
-    for value in field.flat() {
-        sum_of_squares += (*value - 1.0) * (*value - 1.0);
-    }
-    let variation = (sum_of_squares / subfault_count).sqrt();
+    let sum_of_squares = field.fold(0.0, |total, value| total + (value - 1.0).powi(2));
+    let variation = (sum_of_squares / units::exact(field.len())).sqrt();
 
     let factor = sigma / variation;
-    for value in field.flat_mut() {
-        *value = factor * (*value - 1.0) + 1.0;
-    }
+    field.mapv_inplace(|value| factor * (value - 1.0) + 1.0);
 }
 
 /// Raise every positive value to `exponent`.
@@ -241,26 +225,18 @@ fn apply_slip_exponent(field: &mut SlipField, exponent: f64) {
     if exponent <= 0.1 {
         return;
     }
-    for value in field.flat_mut() {
-        if *value > 0.0 {
-            let raised = (*value).powf(exponent);
-            *value = raised;
+    field.mapv_inplace(|value| {
+        if value > 0.0 {
+            value.powf(exponent)
+        } else {
+            value
         }
-    }
+    });
 }
 
 /// Divide through by the mean, so the field averages 1.
 fn normalise_to_unit_mean(field: &mut SlipField) {
-    let subfault_count = units::exact(field.strike_count() * field.dip_count());
-
-    let mut total = 0.0_f64;
-    for value in field.flat() {
-        total += *value;
-    }
-    let mean = total / subfault_count;
-    for value in field.flat_mut() {
-        *value /= mean;
-    }
+    *field /= field.mean().expect("the field has at least one subfault");
 }
 
 /// How the fault-wide rise-time average is weighted.
@@ -355,26 +331,31 @@ pub fn rise_time_normalisation(
         "one shear speed per dip row"
     );
 
+    // Both per-row quantities, broadcast down their rows.
     let mut numerator = 0.0_f64;
     let mut denominator = 0.0_f64;
+    for (dip, ((rise_row, slip_row), depth)) in rise_time
+        .rows()
+        .into_iter()
+        .zip(slip.rows())
+        .zip(depth_km)
+        .enumerate()
+    {
+        let rise_factor = scaling.stretch.factor_at(*depth);
+        let rupture_speed = weighting_rupture_speed(*depth, scaling, shear_speed_km_s[dip]);
 
-    for dip in 0..dip_count {
-        let rise_factor = scaling.stretch.factor_at(depth_km[dip]);
-        let rupture_speed = weighting_rupture_speed(depth_km[dip], scaling, shear_speed_km_s[dip]);
-
-        for strike in 0..strike_count {
+        azip!((&rise in &rise_row, &slip in &slip_row) {
             // The original spells each of these `sqrt(s*s)`, which is exactly `abs`.
             // It is additionally a no-op, since slip reaches here already truncated
             // non-negative -- but that is a fact about the caller, so the `abs` stays.
             let weight = match weighting {
                 Weighting::Uniform => 1.0,
-                Weighting::BySlip => slip[[dip, strike]].abs(),
-                Weighting::BySlipAndRuptureSpeed => rupture_speed * slip[[dip, strike]].abs(),
+                Weighting::BySlip => slip.abs(),
+                Weighting::BySlipAndRuptureSpeed => rupture_speed * slip.abs(),
             };
-
-            numerator += rise_factor * weight * rise_time[[dip, strike]];
+            numerator += rise_factor * weight * rise;
             denominator += weight;
-        }
+        });
     }
 
     numerator / denominator

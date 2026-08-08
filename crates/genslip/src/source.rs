@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::grid::SlipField;
+use ndarray::{Array1, Axis};
 
 /// Natural log of ten, the base of every magnitude relation here.
 ///
@@ -385,18 +386,21 @@ impl VelocityModel {
     /// (orig. `load_vsden`, ruptime.c)
     #[must_use]
     pub fn sample(&self, strike_count: usize, depth_km: &[f64]) -> (SlipField, SlipField) {
-        let dip_count = depth_km.len();
-        let mut shear_speed = crate::grid::zeros(strike_count, dip_count);
-        let mut rigidity = crate::grid::zeros(strike_count, dip_count);
+        // One layer lookup per dip row, broadcast along strike -- the properties are
+        // constant across a row because depth is.
+        let layers: Vec<Layer> = depth_km.iter().map(|depth| self.layer_at(*depth)).collect();
+        let column = |of: fn(&Layer) -> f64| {
+            let values: Vec<f64> = layers.iter().map(&of).collect();
+            Array1::from(values)
+                .insert_axis(Axis(1))
+                .broadcast((depth_km.len(), strike_count))
+                .expect("a column broadcasts across a row")
+                .to_owned()
+        };
 
-        for dip in 0..dip_count {
-            let layer = self.layer_at(depth_km[dip]);
-            for strike in 0..strike_count {
-                shear_speed[[dip, strike]] = layer.shear_speed_km_s;
-                rigidity[[dip, strike]] = layer.rigidity();
-            }
-        }
-
-        (shear_speed, rigidity)
+        (
+            column(|layer| layer.shear_speed_km_s),
+            column(|layer| layer.rigidity()),
+        )
     }
 }

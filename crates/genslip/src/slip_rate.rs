@@ -39,6 +39,8 @@ use crate::units;
 use std::f64::consts::PI;
 
 use crate::grid::{FaultAxes, SlipField};
+use ndarray::{Array1, Axis, azip};
+
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
 
 /// Shape parameter of the slip-rate function, varying with depth.
@@ -156,25 +158,31 @@ pub fn rise_times(
     // The floor is one sample: a rise time below `dt` cannot be represented.
     let floor = sample_interval_s / average_s;
 
-    let strike_count = normalised.strike_count();
-    let mut field = crate::grid::zeros(strike_count, normalised.dip_count());
-    for dip in 0..normalised.dip_count() {
-        let depth_factor = stretch.factor_at(depth_km[dip]);
-        for strike in 0..strike_count {
-            let scaled = normalised[[dip, strike]];
-            let mut factor = if normalisation > 0.0 && scaled > 0.0 {
-                depth_factor * scaled / normalisation
-            } else if scaled <= 0.0 {
-                0.0
-            } else {
-                depth_factor
-            };
-            if factor < floor {
-                factor = floor;
-            }
-            field[[dip, strike]] = factor * average_s;
+    // The depth factor is one value per dip row; broadcasting it down the row is what
+    // the inner loop used to be.
+    let stretched: Array1<f64> = depth_km
+        .iter()
+        .map(|depth| stretch.factor_at(*depth))
+        .collect();
+    let stretched = stretched
+        .insert_axis(Axis(1))
+        .broadcast(normalised.raw_dim())
+        .expect("a column broadcasts across its rows")
+        .to_owned();
+
+    let mut field = normalised.to_owned();
+    azip!((factor in &mut field, &depth_factor in &stretched) {
+        let scaled = *factor;
+        *factor = if normalisation > 0.0 && scaled > 0.0 {
+            depth_factor * scaled / normalisation
+        } else if scaled <= 0.0 {
+            0.0
+        } else {
+            depth_factor
         }
-    }
+        .max(floor)
+            * average_s;
+    });
     field
 }
 

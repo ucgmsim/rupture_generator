@@ -8,8 +8,9 @@
 //! Moment matching is the usual path: `M0 = sum over subfaults of mu * area * slip`,
 //! so a single factor `M0_target / M0_unscaled` gives the field its magnitude.
 
+use ndarray::ArrayView2;
+
 use crate::grid::{FaultAxes, SlipField};
-use crate::units;
 
 /// Subfault dimensions, in kilometres.
 #[derive(Clone, Copy, Debug)]
@@ -75,30 +76,27 @@ pub struct ScaledSlip {
 ///
 /// (orig. `scale_slip_r_vsden`, slip.c:502)
 #[must_use]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "an `ArrayView` is a borrow already; `&ArrayView` is a second indirection \
+              that reads worse and buys nothing"
+)]
 pub fn scale_slip(
-    field: &SlipField,
-    dip_offset: usize,
-    dip_count: usize,
-    rigidity: &[f64],
+    field: ArrayView2<'_, f64>,
+    rigidity: ArrayView2<'_, f64>,
     subfault: SubfaultSize,
     scaling: SlipScaling,
 ) -> ScaledSlip {
-    let strike_count = field.strike_count();
-    assert!(
-        dip_offset + dip_count <= field.dip_count(),
-        "fault block rows {dip_offset}..{} does not fit in a {}-row field",
-        dip_offset + dip_count,
-        field.dip_count()
-    );
+    // Both grids cover the same fault. `dip_offset`/`dip_count` used to carve a block
+    // out of a larger field and no caller ever passed anything but the whole thing;
+    // a view does that job at the call site if it is ever wanted again.
     assert_eq!(
-        rigidity.len(),
-        strike_count * dip_count,
-        "got {} rigidity values for {strike_count}x{dip_count} subfaults",
-        rigidity.len()
+        field.extent(),
+        rigidity.extent(),
+        "the slip and rigidity grids must cover the same fault"
     );
 
     let area = subfault.area_cm2();
-    let unscaled = |strike: usize, dip: usize| field[[dip + dip_offset, strike]];
 
     // Accumulated in `f64`. The original folds through a `float` over every subfault,
     // and on a 10^5-subfault fault that costs enough precision to matter: the moment
@@ -106,41 +104,14 @@ pub fn scale_slip(
     // about 6e-5 relative, which is six missing subfaults' worth. In `f64` a single
     // missing subfault is visible. `the_scaled_field_carries_the_moment_it_was_asked
     // _for` is the test that became possible.
-    let moment_sum = || -> f64 {
-        (0..dip_count)
-            .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
-            .map(|(strike, dip)| {
-                area * rigidity[strike + dip * strike_count] * unscaled(strike, dip)
-            })
-            .sum()
-    };
-
-    let subfault_count = units::exact(strike_count * dip_count);
+    let moment_sum = || area * (&field * &rigidity).sum();
 
     let factor = match scaling {
         SlipScaling::Moment { dyne_cm } => dyne_cm / moment_sum(),
-        SlipScaling::AverageSlip { centimetres } => {
-            let sum: f64 = (0..dip_count)
-                .flat_map(|dip| (0..strike_count).map(move |strike| (strike, dip)))
-                .map(|(strike, dip)| unscaled(strike, dip))
-                .sum();
-            centimetres * subfault_count / sum
-        }
+        SlipScaling::AverageSlip { centimetres } => centimetres / field.mean().unwrap_or(0.0),
     };
 
-    let mut slip = crate::grid::zeros(strike_count, dip_count);
-    let mut total = 0.0_f64;
-    let mut maximum = 0.0_f64;
-    for dip in 0..dip_count {
-        for strike in 0..strike_count {
-            let scaled = factor * unscaled(strike, dip);
-            slip[[dip, strike]] = scaled;
-            total += scaled;
-            if scaled > maximum {
-                maximum = scaled;
-            }
-        }
-    }
+    let slip = factor * &field;
 
     // In moment mode the moment is the target by construction. In average-slip mode
     // the original recomputes it from the *unscaled* field, which makes the reported
@@ -148,12 +119,12 @@ pub fn scale_slip(
     // and flagged because it looks like a defect.
 
     ScaledSlip {
-        slip,
-        average_cm: (total / subfault_count),
-        maximum_cm: maximum,
+        average_cm: slip.mean().unwrap_or(0.0),
+        maximum_cm: slip.fold(0.0_f64, |highest, value| highest.max(*value)),
         moment_dyne_cm: match scaling {
             SlipScaling::Moment { dyne_cm } => dyne_cm,
             SlipScaling::AverageSlip { .. } => moment_sum(),
         },
+        slip,
     }
 }

@@ -8,6 +8,8 @@
 //! Applied to the real slip field after the inverse transform, not in the wavenumber
 //! domain.
 
+use ndarray::{Array1, azip};
+
 use crate::grid::{FaultAxes, SlipField};
 use crate::units;
 
@@ -107,40 +109,60 @@ pub fn taper_edges(slip: &mut SlipField, tapers: &EdgeTapers) {
 
     let dip_ramp = |index: usize, width: usize| units::exact(index + 1) / units::exact(width);
 
+    // Each pass multiplies whole rows by a per-column profile, so the profiles are
+    // built once as vectors and the passes are one `azip!` each. There are two of
+    // them and they are *not* the same vector -- see below, it is the whole subtlety
+    // of this routine.
+    let banded: Array1<f64> = (0..strike_count)
+        .map(|strike| side_damping(strike, strike_count, side_width))
+        .collect();
+
+    // The middle's profile. Built by accumulating from both ends rather than by
+    // indexing, because a cell the two ramps both reach must be damped *twice* --
+    // `*=`, not `=`.
+    let mut middle: Array1<f64> = Array1::ones(strike_count);
+    for strike in 0..side_width {
+        let damping = dip_ramp(strike, side_width);
+        middle[strike] *= damping;
+        middle[strike_count - 1 - strike] *= damping;
+    }
+
     // The up-dip band: both ramps.
-    for dip in 0..top_width {
+    for (dip, mut row) in slip.rows_mut().into_iter().enumerate().take(top_width) {
         let damping = dip_ramp(dip, top_width);
-        for strike in 0..strike_count {
-            slip[[dip, strike]] *= side_damping(strike, strike_count, side_width) * damping;
-        }
+        azip!((cell in &mut row, &side in &banded) *cell *= side * damping);
     }
 
     // The down-dip band: both ramps, counting inward from the deep edge.
-    for offset in 0..bottom_width {
+    for (offset, mut row) in slip
+        .rows_mut()
+        .into_iter()
+        .rev()
+        .enumerate()
+        .take(bottom_width)
+    {
         let damping = dip_ramp(offset, bottom_width);
-        let dip = dip_count - 1 - offset;
-        for strike in 0..strike_count {
-            slip[[dip, strike]] *= side_damping(strike, strike_count, side_width) * damping;
-        }
+        azip!((cell in &mut row, &side in &banded) *cell *= side * damping);
     }
 
-    // The middle: the along-strike ramp only.
+    // The middle: the along-strike ramp only, and a *different* one.
     //
-    // NOT a simplification candidate, despite looking like one. This pass writes
-    // `strike` and `count - 1 - strike` explicitly, while the two above test
-    // `strike < width` and `strike + width > count`. The two spellings agree while
-    // the ramps stay apart and *disagree* once they overlap: here a cell in the
-    // overlap is multiplied twice, once from each end, whereas above the second
-    // condition merely overwrites the first. On a 14-wide fault with an 8-wide
-    // taper, cell 6 comes out at 7/8 here and at 1 there.
+    // NOT a simplification candidate, despite the two profiles looking like they
+    // should be one. `banded` tests `strike < width` and `strike + width > count`,
+    // where `middle` accumulates from both ends. The two agree while the ramps stay
+    // apart and **disagree once they overlap**: `middle` damps an overlapped cell
+    // twice, once from each end, where `banded`'s second condition merely overwrites
+    // the first. On a 14-wide fault with an 8-wide taper, cell 6 comes out at 7/8
+    // here and at 1 there.
     //
     // Neither is obviously right. Unifying them would silently pick one, so they
     // stay separate until the scientific suite can say which.
-    for dip in top_width..dip_count.saturating_sub(bottom_width) {
-        for strike in 0..side_width {
-            let damping = dip_ramp(strike, side_width);
-            slip[[dip, strike]] *= damping;
-            slip[[dip, strike_count - 1 - strike]] *= damping;
-        }
+    for mut row in slip
+        .rows_mut()
+        .into_iter()
+        .take(dip_count.saturating_sub(bottom_width))
+        .skip(top_width)
+    {
+        azip!((cell in &mut row, &damping in &middle) *cell *= damping);
     }
 }
