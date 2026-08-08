@@ -15,7 +15,16 @@
 //! comes from -- the per-subfault array rather than a ramp recomputed in the loop --
 //! so one generator serves both.
 //!
-//! (orig. `gslip_sliprate_subs.c` and `load_slip_srf_dd5_vsden`)
+//! # One shape library, two programs
+//!
+//! [`SlipRateShape`] covers genslip's finite-fault `stype` and `generic_slip2srf`'s,
+//! which are different vocabularies spelled the same way. That is not a compromise:
+//! four of `generic_slip2srf`'s ten shapes turn out to be [`oliu_p`] with the
+//! breakpoints moved, so the alternative was a second copy of the same sinusoid.
+//! `slip_rate_contract.rs` asserts the identity sample by sample.
+//!
+//! (orig. `gslip_sliprate_subs.c` and `load_slip_srf_dd5_vsden`; the alias family is
+//! `generic_slip2srf/slip.c`)
 
 // The original writes `3.141592654` where this uses `PI`, and in `f32` the two are the
 // same number: they first differ at the tenth digit, an `f32` carries about seven, and
@@ -328,3 +337,97 @@ pub fn oliu_p(
 
     SlipRate { values }
 }
+
+/// Which slip-rate function a subfault gets.
+///
+/// One vocabulary covering both of genslip's programs. The finite-fault generator
+/// offers one shape, [`OliuP2`](SlipRateShape::OliuP2); `generic_slip2srf` offers ten
+/// under the name `stype`. Rather than a second pulse library for the point-source
+/// path, they are one enum, because **four of `generic_slip2srf`'s ten are
+/// [`oliu_p`] already** and only differ in what they pass it:
+///
+/// | `stype` | is | (`generic_slip2srf/slip.c`) |
+/// | --- | --- | --- |
+/// | `ucsb` | `oliu_p(slip, T, 0.13)` | `gen_ucsb_stf`, :114 |
+/// | `ucsb-varT1` | `oliu_p(slip, T, tau1_ratio)` | `gen_ucsbvT_stf`, :170 |
+/// | `ucsb2` | `oliu_p(slip, 2T, 0.065)` | `gen_ucsb2_stf`, :226 |
+/// | `ucsb-T<b>` | `oliu_p(slip, bT, 0.13/b)` | `gen_ucsbT_stf`, :282 |
+///
+/// 220 lines of C, four times the same three-piece sinusoid with the breakpoints
+/// moved. `ucsb2` writes `tau = 2*t0` and `tau1 = 0.5*0.13*tau` — the comment says
+/// *"keep peak at same place"* — which is `beta = 0.065` on a doubled duration.
+/// `ucsb-T` writes `tau = b*t0` and `tau1 = 0.13*tau/b`, which is `0.13*t0`, so
+/// `beta = 0.13/b`.
+///
+/// # Two differences from the C, in every one of the four
+///
+/// Both come from [`oliu_p`] being genslip's `gen_OliuP_stf` rather than
+/// `generic_slip2srf`'s, and both are deliberate:
+///
+/// * **One trailing zero.** `oliu_p` appends a forced-zero sample so the pulse
+///   closes; the C's ucsb family stops at the last computed sample. The samples that
+///   exist are bit-identical — a zero contributes nothing to the integral, so the
+///   normalisation is unchanged — and a slip-rate function that returns to zero is
+///   the better of the two. `an_alias_is_oliu_p_plus_a_closing_zero` asserts exactly
+///   that, rather than an approximate agreement.
+/// * **A one-sample pulse.** Below two samples `oliu_p` substitutes a fixed
+///   three-point spike; the C computes `alpha(0) = 0`, finds a zero integral, and
+///   emits nothing. Reproducing both would mean two functions again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SlipRateShape {
+    /// genslip's finite-fault default: [`oliu_p`] with `beta` from
+    /// [`beta_field`], so the shape varies with depth.
+    OliuP2,
+    /// `stype=ucsb`. [`oliu_p`] at a fixed `beta` of 0.13.
+    Ucsb,
+    /// `stype=ucsb2`. Twice the duration, with the peak left where `ucsb` puts it.
+    Ucsb2,
+    /// `stype=ucsb-T<b>`. The duration stretched by `b`, with the peak left where
+    /// `ucsb` puts it. The C parses `b` off the end of the option string.
+    UcsbT {
+        /// `b`. One reproduces `ucsb` exactly.
+        stretch: f32,
+    },
+    /// `stype=ucsb-varT1`. `beta` per subfault, from the input file's thirteenth
+    /// column. The C defaults it to 0.13 when the column is absent, which is `Ucsb`.
+    UcsbVarT1 {
+        /// `beta`, the fraction of the duration spent rising.
+        tau1_ratio: f32,
+    },
+}
+
+impl SlipRateShape {
+    /// Build one subfault's slip-rate function.
+    ///
+    /// `duration_s` is the subfault's rise time and `beta` the value
+    /// [`beta_field`] gave it, which only [`OliuP2`](Self::OliuP2) reads. Every
+    /// shape normalises so `sample_interval_s * sum` is `slip_cm`.
+    ///
+    /// # Panics
+    ///
+    /// If `sample_interval_s` is not strictly positive.
+    #[must_use]
+    pub fn pulse(
+        self,
+        slip_cm: f32,
+        duration_s: f32,
+        beta: f32,
+        sample_interval_s: f32,
+        max_samples: usize,
+    ) -> SlipRate {
+        let (duration_s, beta) = match self {
+            Self::OliuP2 => (duration_s, beta),
+            Self::Ucsb => (duration_s, UCSB_BETA),
+            Self::Ucsb2 => (2.0 * duration_s, 0.5 * UCSB_BETA),
+            Self::UcsbT { stretch } => (stretch * duration_s, UCSB_BETA / stretch),
+            Self::UcsbVarT1 { tau1_ratio } => (duration_s, tau1_ratio),
+        };
+        oliu_p(slip_cm, duration_s, beta, sample_interval_s, max_samples)
+    }
+}
+
+/// The fraction of the duration the ucsb family spends rising.
+///
+/// Written `0.13` four times in `generic_slip2srf/slip.c`, and once more as
+/// `0.5 * 0.13` in `ucsb2` where the duration doubles.
+const UCSB_BETA: f32 = 0.13;

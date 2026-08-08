@@ -33,7 +33,7 @@ use crate::rise_time::{self, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weight
 use crate::rng::DrawSource;
 use crate::rupture::{self, EikonalSolver, Hypocentre, OnsetAdjustment, SpeedProfile, TravelTimes};
 use crate::slip::{self, GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use crate::slip_rate::{self, BetaProfile, SlipRate};
+use crate::slip_rate::{self, BetaProfile, SlipRate, SlipRateShape};
 use crate::source::{self, CornerRelation, MagnitudeScale, VelocityModel};
 use crate::taper::{EdgeTapers, SlipField};
 
@@ -110,7 +110,10 @@ pub struct TimingSpec {
     pub rise_time_weighting: Weighting,
     /// Depth profile of rupture speed.
     pub speed_profile: SpeedProfile,
-    /// Shape parameter of the slip-rate pulse.
+    /// Which slip-rate function every subfault gets.
+    pub slip_rate_shape: SlipRateShape,
+    /// Shape parameter of the slip-rate pulse. Read only by
+    /// [`SlipRateShape::OliuP2`]; the others carry their own.
     pub beta: BetaProfile,
     /// Sample interval of the slip-rate functions, in seconds.
     pub sample_interval_s: f32,
@@ -428,7 +431,7 @@ fn assemble<E: EikonalSolver>(
             // smallest corpus case, 108 of 1152 on the largest.
             let cm = scaled.slip[(strike, dip)];
             slip_rate.push(if cm.abs() > slip_rate::MIN_SLIP_CM {
-                slip_rate::oliu_p(
+                timing.slip_rate_shape.pulse(
                     cm,
                     rise_time_s[(strike, dip)],
                     beta[(strike, dip)],

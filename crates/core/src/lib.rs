@@ -39,7 +39,7 @@ use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
 use genslip::rng::{GenslipLcg, Realisations as _};
 use genslip::rupture::{FactoredSweep, Hypocentre, SpeedProfile};
 use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use genslip::slip_rate::BetaProfile;
+use genslip::slip_rate::{BetaProfile, SlipRateShape};
 use genslip::source::{CornerRelation, Layer, MagnitudeScale, VelocityModel};
 use genslip::taper::EdgeTapers;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
@@ -584,6 +584,10 @@ impl TimingSpec {
 
         Self {
             inner: realisation::TimingSpec {
+                // Not exposed yet. `SlipRateShape`'s other variants are
+                // `generic_slip2srf`'s, and they reach Python with the point-source
+                // entry point rather than before it.
+                slip_rate_shape: SlipRateShape::OliuP2,
                 rupture_time: PerturbationSpec {
                     correlation: rupture_time_correlation,
                     sigma: rupture_time_sigma,
