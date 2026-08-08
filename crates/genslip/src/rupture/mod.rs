@@ -39,6 +39,9 @@
 mod marching;
 pub use marching::FastMarching;
 
+mod sweeping;
+pub use sweeping::FactoredSweep;
+
 #[cfg(feature = "wavefront-compat")]
 mod wavefront;
 

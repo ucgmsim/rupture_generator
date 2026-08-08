@@ -15,7 +15,7 @@
 //! answer for exactly those commits. Re-record with `UPDATE_SNAPSHOT=1` and say why
 //! in the commit message; a re-recorded snapshot with no explanation is
 //! indistinguishable from a silently broken one.
-#![cfg(all(feature = "fftw", feature = "wavefront-compat"))]
+#![cfg(feature = "fftw")]
 
 mod common;
 
@@ -23,14 +23,14 @@ use common::fixture;
 use genslip::fft::FftwFft;
 use genslip::realisation::generate;
 use genslip::rng::{GenslipLcg, Realisations as _};
-use genslip::rupture::Wavefront2d;
+use genslip::rupture::FactoredSweep;
 use genslip::source::MagnitudeScale;
 
 /// Summary statistics, formatted so a diff points at which one moved.
 fn summarise(seed: i64, realisation: u64) -> String {
     let mut draws = GenslipLcg::new(seed).realisation(realisation);
     let mut fft = FftwFft::new();
-    let mut solver = Wavefront2d::new();
+    let mut solver = FactoredSweep::new();
 
     let model = generate(
         &mut draws,
@@ -134,7 +134,7 @@ fn the_moment_survives_the_pipeline() {
     // is a single-precision fold over every subfault.
     let mut draws = GenslipLcg::new(909);
     let mut fft = FftwFft::new();
-    let mut solver = Wavefront2d::new();
+    let mut solver = FactoredSweep::new();
     let model = generate(
         &mut draws,
         &mut fft,

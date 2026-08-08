@@ -81,18 +81,29 @@ printf 'Reintroducing each defect and expecting both suites to notice.\n\n'
 printf '  %-8s %-8s %s\n' contracts corpus defect
 printf '  %-8s %-8s %s\n' --------- ------ ------
 
-# DEFECTS.md 17. The solver is handed a source one cell along strike and one down
-# dip, which is what reading genslip's 1-based `ixs` as 0-based did. The onset field
-# stays smooth and correlated 0.92-0.997 with the truth; only the registration moves.
+# DEFECTS.md 17. The source is displaced one cell along strike and one down dip,
+# which is what reading genslip's 1-based `ixs` as 0-based did. The onset field stays
+# smooth and correlated 0.92-0.997 with the truth; only the registration moves.
+#
+# Mutated in the DEFAULT solver, which is the point. It used to be applied to
+# `wavefront.rs`, and when `FactoredSweep` took over as the default this script went
+# on reporting "caught" for the Rust contracts while the corpus silently stopped
+# seeing anything -- the mutation was no longer in the path Python takes. A teeth
+# check that mutates code nobody runs is the exact failure it exists to prevent.
 python3 - <<'MUTATION'
 import pathlib
-p = pathlib.Path("crates/genslip/src/rupture/wavefront.rs")
+p = pathlib.Path("crates/genslip/src/rupture/sweeping.rs")
 s = p.read_text()
-s = s.replace("i32::try_from(strike.source + 1).expect", "i32::try_from(strike.source + 2).expect")
-s = s.replace("i32::try_from(dip.source + 1).expect", "i32::try_from(dip.source + 2).expect")
+old = "        let source_slowness = slowness(hypocentre.strike, hypocentre.dip);"
+assert old in s, "the mutation no longer applies; teeth.sh needs updating"
+s = s.replace(old, old + """
+        let hypocentre = Hypocentre {
+            strike: (hypocentre.strike + 1).min(strike_count - 1),
+            dip: (hypocentre.dip + 1).min(dip_count - 1),
+        };""")
 p.write_text(s)
 MUTATION
-check "17 hypocentre a cell off" rupture_starts_at_the_hypocentre onset
+check "17 hypocentre a cell off" fftw_and_sweeping::rupture_starts onset
 
 # DEFECTS.md 16. The `|slip| > MINSLIP` guard lives in genslip's SRF loader rather
 # than in its generator, so a faithful port of the generator does not have it.

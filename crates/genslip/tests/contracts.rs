@@ -36,7 +36,7 @@
 //! Every contract takes its FFT and its solver as parameters, so replacing either is
 //! a configuration change rather than a test rewrite. `contract_for!` at the bottom
 //! instantiates them; a second instantiation is one line.
-#![cfg(all(feature = "fftw", feature = "wavefront-compat"))]
+#![cfg(feature = "fftw")]
 
 mod common;
 
@@ -812,6 +812,16 @@ macro_rules! contract_for {
     };
 }
 
+// The shipped configuration first: `crates/core` hardwires exactly this pair, so a
+// contract that ran only against something else would be checking a rupture nobody
+// generates. `teeth.sh` mutates the default solver for the same reason.
+contract_for!(
+    fftw_and_sweeping,
+    genslip::fft::FftwFft::new(),
+    genslip::rupture::FactoredSweep::new()
+);
+
+#[cfg(feature = "wavefront-compat")]
 contract_for!(
     fftw_and_wavefront,
     genslip::fft::FftwFft::new(),

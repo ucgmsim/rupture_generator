@@ -24,6 +24,10 @@ rg 'PORTING_RULES.md' crates/genslip/src --files-with-matches
 * **refused** — the port raises instead. Reserved for memory unsafety, which cannot be
   reproduced in safe Rust and should not be wanted.
 * **avoided** — the surrounding code was not ported, so the defect is unreachable.
+* **corrected** — the port does the *right* thing instead, with the physical argument
+  and the measured effect written down. Reserved for defects that change the science
+  rather than the last bits; a correction that cannot state what it changed is
+  indistinguishable from a regression.
 
 ---
 
@@ -37,6 +41,68 @@ rg 'PORTING_RULES.md' crates/genslip/src --files-with-matches
 | 4 | `kfilter`, `slip.c:1723` | No `k2 > 0` guard, unlike `kfilt_gaus2`. At the origin `ln(0)` is `-inf`, so the high cut is `1 + exp(-inf) = 1`, the low cut is `1 + exp(+inf) = inf`, and the gain is `1/inf = 0`. It removes the DC component by relying on IEEE infinity arithmetic rather than by saying so. Deterministic. | `band_pass_removes_the_dc_component` |
 | 5 | `scale_slip_r_vsden`, `slip.c:571` | In average-slip mode the reported moment is recomputed from the **unscaled** field, so it describes the field before scaling rather than after. Invisible on the default path, which matches moment instead. | **Unpinned since the parity suite went**, and reachable only on the `target_savg > 0` path that no configuration takes. Open under rule 10: either fix it and say what it changes, or record who depends on the reported number describing the unscaled field |
 | 6 | `scale_slip_r_vsden`, `slip.c:525` | The running maximum starts at zero, so a field that is negative everywhere reports a maximum of zero rather than its least-negative value. Matters only before negative slip is truncated. | noted in `ScaledSlip::maximum_cm`. Reachable only before truncation, which no configured path skips. Open under rule 10 |
+
+## Live, and corrected
+
+| # | Where | What | Instead |
+| --- | --- | --- | --- |
+| 19 | `wafront2d.f`, the whole solver | **The travel-time solver does not converge.** Refining the grid does not improve its answer: on a linear velocity gradient its worst error is 2.44e-02 at 1 km spacing and 2.37e-02 at 0.5 km, a ratio of 1.03 where a first-order scheme gives 2. Not a coding error — it is the point-source singularity in the unfactored eikonal equation, which Fomel, Luo & Zhao (2009) show "cannot achieve first order accuracy" — but it means genslip's onset times carry an error that no choice of subfault size removes. | `rupture::FactoredSweep`, factored fast sweeping. See below for the measured effect |
+
+### 19 in numbers
+
+The tracker is a good scheme applied to a badly-posed problem. Its stencil is Vidale's
+rotated difference, exact for plane waves at any angle and genuinely second-order — it
+is 23x better than textbook fast marching on a uniform medium. What it cannot do is
+reconstruct the wavefront curvature at a point source, and that error contaminates the
+whole field rather than staying local.
+
+Measured against solutions that are known, in `crates/genslip/tests/eikonal_contract.rs`:
+
+| | uniform medium | gradient, h = 1.0 km | gradient, h = 0.5 km | ratio |
+| --- | --- | --- | --- | --- |
+| `Wavefront2d`, genslip's | 8.8e-03 | 2.44e-02 | 2.37e-02 | **1.03** |
+| plain fast marching | 2.07e-01 | 2.12e-01 | 2.10e-01 | 1.01 |
+| **`FactoredSweep`, the port's** | **exact** | **1.62e-03** | **8.07e-04** | **2.00** |
+
+"Exact" is not a coincidence to be re-derived later: with the known factor taken at the
+source's own slowness the correction is identically one, and that satisfies the
+discrete equations at every node and any spacing. The gradient case is the
+discriminating one, and there the port is **29x closer** at 0.5 km and improves with
+refinement where genslip does not.
+
+### What that costs on a real rupture
+
+The port's onset and genslip's now disagree, and the disagreement is very largely
+genslip's error. Measured on all six corpus cases:
+
+| case | worst | relative | mean offset | correlation |
+| --- | --- | --- | --- | --- |
+| `crustal_small` | 0.156 s | 3.6% | +0.022 s | 0.99892 |
+| `crustal_large` | 0.364 s | 2.1% | +0.055 s | 0.99989 |
+| `subduction` | 0.556 s | 1.2% | +0.030 s | 0.99992 |
+| `bent` | 0.435 s | 3.6% | +0.102 s | 0.99943 |
+| `frankel_corners` | 0.194 s | 2.0% | +0.019 s | 0.99970 |
+| `frankel_no_perturbation` | 0.194 s | 2.1% | +0.019 s | 0.99968 |
+
+Three things are worth reading off that table.
+
+**The magnitude tracks the gradient measurement, not the uniform one.** A real
+rupture-speed field is heterogeneous — depth ramps on a layered velocity model — so
+the 1.2% to 3.6% seen here sits where the 2.4e-02 gradient error predicts, not where
+the 8.8e-03 uniform error would.
+
+**The shape is untouched.** Correlations stay above 0.9989. A better integrator moves
+every arrival a little; it does not move subfaults relative to one another. That
+distinction is what separates this from `DEFECTS.md` 17, which had correlations of
+0.92 to 0.997 *because* it was a registration error.
+
+**The port is systematically later**, on every case, by 0.019 s to 0.102 s. A sign
+that flipped case to case would suggest noise rather than a scheme difference.
+
+This is why `test_corpus.py` records onset rather than asserting it, and why
+`ENGINEERING_RULES.md` says a change of *discretisation* is judged against analytic
+truth rather than against the code it replaces. Judged against genslip, the port is
+2% wrong. Judged against the equation both are solving, genslip is 24x further out.
 
 ## Live, and refused
 

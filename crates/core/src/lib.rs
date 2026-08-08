@@ -36,7 +36,7 @@ use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
 use genslip::realisation::{self, RuptureModel};
 use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
 use genslip::rng::{GenslipLcg, Realisations as _};
-use genslip::rupture::{Hypocentre, SpeedProfile, Wavefront2d};
+use genslip::rupture::{FactoredSweep, Hypocentre, SpeedProfile};
 use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
 use genslip::slip_rate::BetaProfile;
 use genslip::source::{CornerRelation, Layer, MagnitudeScale, VelocityModel};
@@ -763,7 +763,7 @@ fn generate_rupture(
     let model = py.detach(|| {
         let mut draws = GenslipLcg::new(seed).realisation(realisation);
         let mut fft = FftwFft::new();
-        let mut solver = Wavefront2d::new();
+        let mut solver = FactoredSweep::new();
         realisation::generate(
             &mut draws,
             &mut fft,

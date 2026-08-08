@@ -278,6 +278,18 @@ fn refining_the_grid_converges<E: EikonalSolver>(solver: &mut E) {
     // The same physical fault, twice the resolution.
     let coarse = error_at(solver, 33, 1.0);
     let fine = error_at(solver, 65, 0.5);
+
+    // A scheme that is already exact cannot be asked to converge: its "error" is
+    // accumulated rounding and the ratio of two rounding errors is noise. `FactoredSweep`
+    // is exact here, because a uniform medium makes the correction factor identically
+    // one and the discrete equations are satisfied by it at any spacing. The
+    // discriminating convergence check is the gradient case, which no scheme is exact
+    // on.
+    let rounding = 1e-9 * (33.0_f64 * 1.0 / 2.5);
+    if coarse < rounding && fine < rounding {
+        return;
+    }
+
     assert!(
         fine <= 0.8 * coarse,
         "refining halved the step and moved the absolute error from {coarse:.5} s to \
@@ -610,6 +622,76 @@ fn the_two_solvers_are_not_equally_accurate() {
     );
 }
 
+/// The acceptance criterion, executable.
+///
+/// A replacement had to be closer to analytic truth on **both** problems and had to
+/// *converge*, which neither incumbent does. Measured:
+///
+/// | solver | uniform | gradient h=1.0 | gradient h=0.5 | ratio |
+/// | --- | --- | --- | --- | --- |
+/// | `Wavefront2d` | 8.8e-03 | 2.44e-02 | 2.37e-02 | 1.03 |
+/// | `FastMarching` | 2.07e-01 | 2.12e-01 | 2.10e-01 | 1.01 |
+/// | **`FactoredSweep`** | **exact** | **1.62e-03** | **8.07e-04** | **2.00** |
+///
+/// Exact on the uniform medium is not a coincidence to be re-derived later: with `S₀`
+/// the source's own slowness the correction is identically one, and `τ ≡ 1` satisfies
+/// the discrete Eq. (7) at every node and any spacing. So the scheme returns the
+/// analytic solution to rounding, at any resolution.
+#[cfg(feature = "wavefront-compat")]
+#[test]
+fn the_new_solver_is_better_on_both_problems_and_converges() {
+    let uniform_new = point_source_error(&mut genslip::rupture::FactoredSweep::new());
+    assert!(
+        uniform_new < 1e-9,
+        "uniform medium: {uniform_new:.3e}, expected exactness"
+    );
+    assert!(
+        uniform_new < ACCURACY[0].1,
+        "worse than the tracker on a uniform medium"
+    );
+
+    let coarse = gradient_error(&mut genslip::rupture::FactoredSweep::new(), 33, 1.0);
+    let fine = gradient_error(&mut genslip::rupture::FactoredSweep::new(), 65, 0.5);
+    let tracker = gradient_error(&mut genslip::rupture::Wavefront2d::new(), 65, 0.5);
+    assert!(
+        fine < tracker,
+        "gradient: {fine:.3e} against the tracker's {tracker:.3e}"
+    );
+
+    let ratio = coarse / fine;
+    assert!(
+        ratio > 1.8,
+        "gradient convergence ratio {ratio:.2}; a scheme that reproduces the source \
+         curvature gives 2, and one that does not gives 1"
+    );
+}
+
+/// The round count is a property of the medium, not of the mesh.
+///
+/// Zhao's alternating orderings exist to give this: each ordering follows one family
+/// of characteristics, so a fixed number of sweeps covers every ray direction however
+/// fine the grid. It is the whole basis for the O(N) claim — a solver whose rounds
+/// grew with the grid would be O(N log N) at best.
+#[test]
+fn the_sweep_count_does_not_grow_with_the_mesh() {
+    let mut counts = Vec::new();
+    for (cells, spacing) in [(33, 1.0), (65, 0.5), (129, 0.25)] {
+        let mut solver = genslip::rupture::FactoredSweep::new();
+        let _ = gradient_error(&mut solver, cells, spacing);
+        counts.push((cells, solver.rounds()));
+    }
+    println!("rounds by grid size: {counts:?}");
+
+    let first = counts[0].1;
+    for (cells, rounds) in &counts {
+        assert_eq!(
+            *rounds, first,
+            "a {cells}x{cells} grid took {rounds} rounds where 33x33 took {first}"
+        );
+    }
+}
+
+contract_for!(factored_sweep, genslip::rupture::FactoredSweep::new());
 contract_for!(fast_marching, genslip::rupture::FastMarching::new());
 
 #[cfg(feature = "wavefront-compat")]
