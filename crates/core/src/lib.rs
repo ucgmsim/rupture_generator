@@ -47,6 +47,24 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+/// Why the four `#[new]` constructors here take twenty-odd arguments and keep them.
+///
+/// A builder was the obvious answer and is the wrong one. **`#[pyo3(signature = …)]`
+/// *is* the Python keyword API**: the defaults written there are what a Python caller
+/// sees in `help()`, in `_core.pyi`, and when they omit an argument. `PyO3` cannot
+/// derive them from anywhere else, so they have to be literals in that block.
+///
+/// Putting `bon`'s `#[builder(default = …)]` on the Rust structs as well would give
+/// every default *two* homes, one Python-visible and one not, free to drift apart —
+/// which is strictly worse than one long signature. And there is no boilerplate to
+/// save: the Rust specs have exactly two construction sites between them, one of
+/// which is a test fixture.
+///
+/// So the four suppressions stay, and this is the reason, written once rather than
+/// four times. What *would* justify revisiting it is a third Rust caller.
+#[expect(dead_code, reason = "documentation the four suppressions cite by name")]
+const FLAT_IS_THE_PYTHON_API: () = ();
+
 /// Every way the library can refuse, as one `ValueError`.
 ///
 /// `genslip::Error`'s `Display` already names the input and the constraint it broke,
@@ -324,7 +342,11 @@ impl FaultGrid {
         fault_strike, fault_dip, padded_strike, padded_dip,
         strike_km, dip_km, depth_km, base_rake_deg, velocity_fraction,
     ))]
-    #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
+    // See `FLAT_IS_THE_PYTHON_API` for why this is not a builder.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3's flat signature is the Python keyword API"
+    )]
     fn new(
         fault_strike: usize,
         fault_dip: usize,
@@ -537,7 +559,11 @@ impl SourceSpec {
         saturation_magnitude = 6.3, strike_exponent = 0.5, dip_exponent = 0.5,
         rise_time_coefficient = 1.6, average_dip_deg, average_rake_deg,
     ))]
-    #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
+    // See `FLAT_IS_THE_PYTHON_API` for why this is not a builder.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3's flat signature is the Python keyword API"
+    )]
     fn new(
         magnitude: f64,
         model: SpectrumModel,
@@ -683,7 +709,11 @@ impl SlipSpec {
         side_taper = 0.02, top_taper = 0.0, bottom_taper = 0.0,
         truncate_negative = true, water_level = 0.0,
     ))]
-    #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
+    // See `FLAT_IS_THE_PYTHON_API` for why this is not a builder.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3's flat signature is the Python keyword API"
+    )]
     fn new(
         model: SpectrumModel,
         coefficient_of_variation: f64,
@@ -780,7 +810,11 @@ impl TimingSpec {
         slip_rate_shape = None,
         sample_interval_s = 0.005, max_samples = 100_000,
     ))]
-    #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
+    // See `FLAT_IS_THE_PYTHON_API` for why this is not a builder.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3's flat signature is the Python keyword API"
+    )]
     fn new(
         rupture_time_correlation: f64,
         rupture_time_sigma: f64,
