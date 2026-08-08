@@ -97,6 +97,25 @@ fn shear_speeds(dip_count: usize) -> Vec<f64> {
         .collect()
 }
 
+/// A per-dip-row column, repeated along strike into a field over the whole fault.
+///
+/// The reference implementations below read one value per dip row, because that is
+/// what the original does. The port reads a field over the fault, so that a mesh which
+/// bends has a depth at every subfault rather than one per row. This bridges the two —
+/// and it makes each comparison below assert exactly what that change claimed: on a
+/// plane, where every subfault in a row is at the same depth, the field path produces
+/// the row path's answer, bit for bit.
+fn down_dip(strike_count: usize, column: &[f64]) -> SlipField {
+    genslip::grid::from_values(
+        strike_count,
+        column.len(),
+        column
+            .iter()
+            .flat_map(|value| std::iter::repeat_n(*value, strike_count))
+            .collect(),
+    )
+}
+
 /// `main:2226-2352`, transcribed.
 fn reference_field(
     correlated: &SlipField,
@@ -268,7 +287,8 @@ fn the_rise_time_field_matches_across_every_shape() {
             let spec = spec(0.75, exponent);
 
             let expected = reference_field(&correlated, &slip, &depth_km, spec);
-            let produced = rise_time_field(&correlated, &slip, &depth_km, spec);
+            let produced =
+                rise_time_field(&correlated, &slip, &down_dip(strike_count, &depth_km), spec);
 
             for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
                 assert!(
@@ -291,7 +311,12 @@ fn a_negative_mean_field_is_flipped_positive() {
     let slip = seeded(strike_count, dip_count, -3.0);
     let depth_km = vec![100.0; dip_count];
 
-    let produced = rise_time_field(&correlated, &slip, &depth_km, spec(0.75, 0.5));
+    let produced = rise_time_field(
+        &correlated,
+        &slip,
+        &down_dip(strike_count, &depth_km),
+        spec(0.75, 0.5),
+    );
     let total: f64 = produced.flat().iter().sum();
     assert!(total > 0.0, "field summed to {total}, expected positive");
 }
@@ -311,8 +336,14 @@ fn the_normalisation_matches_for_every_weighting() {
 
             let expected =
                 reference_normalisation(&rise, &slip, &depth_km, &shear, scaling(), weighting);
-            let produced =
-                rise_time_normalisation(&rise, &slip, &depth_km, &shear, scaling(), weighting);
+            let produced = rise_time_normalisation(
+                &rise,
+                &slip,
+                &down_dip(strike_count, &depth_km),
+                &down_dip(strike_count, &shear),
+                scaling(),
+                weighting,
+            );
 
             assert_eq!(
                 produced.to_bits(),
@@ -346,7 +377,8 @@ proptest! {
         };
 
         let expected = reference_field(&correlated, &slip, &depth_km, spec);
-        let produced = rise_time_field(&correlated, &slip, &depth_km, spec);
+        let produced =
+                rise_time_field(&correlated, &slip, &down_dip(strike_count, &depth_km), spec);
 
         for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
             prop_assert!(

@@ -160,23 +160,6 @@ impl Error {
             Err(Self::NotPositive { what, value })
         }
     }
-
-    /// `Err(Shape)` unless `found` and `expected` agree.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Shape`] if they do not.
-    pub fn require_len(what: &'static str, found: usize, expected: usize) -> Result<()> {
-        if found == expected {
-            Ok(())
-        } else {
-            Err(Self::Shape {
-                what,
-                found,
-                expected,
-            })
-        }
-    }
 }
 
 /// The crate's result type.

@@ -18,7 +18,7 @@
 //!
 //! (orig. `genslip_v5.6.2.c:2186-2477`)
 
-use ndarray::{Array1, Axis, azip};
+use ndarray::azip;
 
 use crate::grid::{FaultAxes, SlipField};
 use crate::slip::PerturbationSpec;
@@ -147,7 +147,7 @@ pub struct RiseTimeSpec {
 /// `correlated` is the slip-correlated field from
 /// [`crate::slip::correlated_perturbation`], **before** its mean is removed —
 /// genslip normalises this one by its average rather than centring it. `slip` is the
-/// spatial slip field on the same grid, and `depth_km` gives one depth per dip row.
+/// spatial slip field on the same grid, and `depth_km` the depth of each subfault.
 ///
 /// # Panics
 ///
@@ -158,34 +158,27 @@ pub struct RiseTimeSpec {
 pub fn rise_time_field(
     correlated: &SlipField,
     slip: &SlipField,
-    depth_km: &[f64],
+    depth_km: &SlipField,
     spec: RiseTimeSpec,
 ) -> SlipField {
-    let strike_count = correlated.strike_count();
-    let dip_count = correlated.dip_count();
+    let extent = correlated.extent();
     assert_eq!(
-        (slip.strike_count(), slip.dip_count()),
-        (strike_count, dip_count),
+        slip.extent(),
+        extent,
         "the slip and rise-time fields must cover the same fault"
     );
     assert_eq!(
-        depth_km.len(),
-        dip_count,
-        "got {} depths for {dip_count} dip rows",
-        depth_km.len()
+        depth_km.extent(),
+        extent,
+        "the depth and rise-time fields must cover the same fault"
     );
 
-    // The shallow blend, one weight per dip row: genslip reads depth from the first
-    // subfault of each row, which is exact for a planar segment.
+    // The shallow blend, one weight per subfault.
     //
     // `DepthRamp::weight` is used here rather than reproduced because the original
     // spells this one the same way: `(dep - r_dmin)/(r_dmax - r_dmin)`, with no
     // scale factor fused into the numerator.
-    let deep: Array1<f64> = depth_km
-        .iter()
-        .map(|depth| spec.shallow_blend.weight(*depth))
-        .collect();
-    let deep = deep.insert_axis(Axis(1));
+    let deep = depth_km.mapv(|depth| spec.shallow_blend.weight(depth));
     let mut field = &deep * correlated + (1.0 - &deep) * slip;
 
     // The original spells the magnitude `sqrt(x*x)`, which is exactly `abs` -- see
@@ -300,8 +293,7 @@ fn weighting_rupture_speed(depth_km: f64, scaling: DepthScaling, shear_speed: f6
 /// Rise time at a subfault is this scale factor times the depth factor times the
 /// normalised field; the constant is chosen so their weighted average is 1.
 ///
-/// `depth_km` and `shear_speed_km_s` give one value per dip row; `slip` and
-/// `rise_time` cover the whole fault.
+/// Every argument is a field over the whole fault.
 ///
 /// # Panics
 ///
@@ -312,51 +304,54 @@ fn weighting_rupture_speed(depth_km: f64, scaling: DepthScaling, shear_speed: f6
 pub fn rise_time_normalisation(
     rise_time: &SlipField,
     slip: &SlipField,
-    depth_km: &[f64],
-    shear_speed_km_s: &[f64],
+    depth_km: &SlipField,
+    shear_speed_km_s: &SlipField,
     scaling: DepthScaling,
     weighting: Weighting,
 ) -> f64 {
-    let strike_count = rise_time.strike_count();
-    let dip_count = rise_time.dip_count();
+    let extent = rise_time.extent();
     assert_eq!(
-        (slip.strike_count(), slip.dip_count()),
-        (strike_count, dip_count),
+        slip.extent(),
+        extent,
         "the slip and rise-time fields must cover the same fault"
     );
-    assert_eq!(depth_km.len(), dip_count, "one depth per dip row");
     assert_eq!(
-        shear_speed_km_s.len(),
-        dip_count,
-        "one shear speed per dip row"
+        depth_km.extent(),
+        extent,
+        "the depth and rise-time fields must cover the same fault"
+    );
+    assert_eq!(
+        shear_speed_km_s.extent(),
+        extent,
+        "the shear-speed and rise-time fields must cover the same fault"
     );
 
-    // Both per-row quantities, broadcast down their rows.
+    // Accumulated in row-major order — strike fastest — which is the order the depth
+    // ramps used to be applied a row at a time. A weighted mean is not associative in
+    // floating point, so the order is part of the answer rather than an implementation
+    // detail.
     let mut numerator = 0.0_f64;
     let mut denominator = 0.0_f64;
-    for (dip, ((rise_row, slip_row), depth)) in rise_time
-        .rows()
-        .into_iter()
-        .zip(slip.rows())
-        .zip(depth_km)
-        .enumerate()
-    {
-        let rise_factor = scaling.stretch.factor_at(*depth);
-        let rupture_speed = weighting_rupture_speed(*depth, scaling, shear_speed_km_s[dip]);
+    azip!((
+        &rise in rise_time,
+        &slip in slip,
+        &depth in depth_km,
+        &shear_speed in shear_speed_km_s,
+    ) {
+        let rise_factor = scaling.stretch.factor_at(depth);
+        let rupture_speed = weighting_rupture_speed(depth, scaling, shear_speed);
 
-        azip!((&rise in &rise_row, &slip in &slip_row) {
-            // The original spells each of these `sqrt(s*s)`, which is exactly `abs`.
-            // It is additionally a no-op, since slip reaches here already truncated
-            // non-negative -- but that is a fact about the caller, so the `abs` stays.
-            let weight = match weighting {
-                Weighting::Uniform => 1.0,
-                Weighting::BySlip => slip.abs(),
-                Weighting::BySlipAndRuptureSpeed => rupture_speed * slip.abs(),
-            };
-            numerator += rise_factor * weight * rise;
-            denominator += weight;
-        });
-    }
+        // The original spells each of these `sqrt(s*s)`, which is exactly `abs`.
+        // It is additionally a no-op, since slip reaches here already truncated
+        // non-negative -- but that is a fact about the caller, so the `abs` stays.
+        let weight = match weighting {
+            Weighting::Uniform => 1.0,
+            Weighting::BySlip => slip.abs(),
+            Weighting::BySlipAndRuptureSpeed => rupture_speed * slip.abs(),
+        };
+        numerator += rise_factor * weight * rise;
+        denominator += weight;
+    });
 
     numerator / denominator
 }

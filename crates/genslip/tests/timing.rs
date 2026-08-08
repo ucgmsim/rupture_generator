@@ -126,7 +126,7 @@ fn whole_rupture() {
     println!("\nwhole rupture, {subfaults} subfaults: {best:?}");
 
     // The solver alone, on the same grid, for the share.
-    let (shear, _) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
+    let (shear, _) = fixture::velocity_model().sample(&grid.depth_km);
     let speed = genslip::rupture::speed_field(
         &shear,
         &grid.velocity_fraction,

@@ -56,7 +56,7 @@ fn a_point() -> FaultGrid {
     let mut grid = fixture::fault_of(1, 1, 2, 2);
     grid.spacing.strike_km = 0.5;
     grid.spacing.dip_km = 0.5;
-    grid.depth_km = vec![7.0];
+    grid.depth_km = genslip::grid::from_values(1, 1, vec![7.0]);
     grid.base_rake_deg = genslip::grid::from_values(1, 1, vec![175.0]);
     grid.velocity_fraction = genslip::grid::from_values(1, 1, vec![0.8]);
     grid
@@ -160,7 +160,7 @@ fn one_subfault_ruptures_at_the_delay() {
 fn one_subfault_rises_in_the_time_it_was_given() {
     for depth_km in [0.5_f64, 5.0, 7.0, 20.0, 40.0] {
         let mut grid = a_point();
-        grid.depth_km = vec![depth_km];
+        grid.depth_km = genslip::grid::from_values(1, 1, vec![depth_km]);
         let model = valid(point_source(
             &mut FactoredSweep::new(),
             &grid,

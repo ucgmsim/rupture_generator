@@ -184,18 +184,31 @@ fn a_transposed_per_subfault_grid_is_refused() {
     );
 }
 
+/// A transposed depth grid is refused too.
+///
+/// This test used to be `a_depth_per_dip_row_is_required` and it checked a *length*:
+/// depth was one value per dip row, so the only mistake available was the wrong count.
+/// Depth is a field over the fault now, so it gets the same extent comparison
+/// `base_rake_deg` and `velocity_fraction` get, and the transposition above — the
+/// failure that is plausible rather than obvious — is caught here as well.
 #[test]
-fn a_depth_per_dip_row_is_required() {
+fn a_transposed_depth_grid_is_refused() {
     let mut grid = fixture::fault();
-    grid.depth_km.push(40.0);
+    let subfaults = fixture::STRIKE_COUNT * fixture::DIP_COUNT;
+    grid.depth_km = genslip::grid::from_values(
+        fixture::DIP_COUNT,
+        fixture::STRIKE_COUNT,
+        vec![7.0; subfaults],
+    );
 
     assert_eq!(
         refusal(generated(&grid, fixture::hypocentre())),
         Error::Shape {
             what: "depth_km",
-            found: fixture::DIP_COUNT + 1,
-            expected: fixture::DIP_COUNT,
-        }
+            found: subfaults,
+            expected: subfaults,
+        },
+        "the same element count, and the wrong fault"
     );
 }
 

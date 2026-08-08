@@ -57,10 +57,15 @@ use crate::units;
 pub struct FaultGrid {
     pub extents: GridExtents,
     pub spacing: SubfaultSpacing,
-    /// One depth per dip row, in km. genslip reads depth per row too — from the first
-    /// subfault of each — which is exact for a planar segment. A `Vec` because it is
-    /// genuinely one-dimensional, unlike the two below.
-    pub depth_km: Vec<f64>,
+    /// One depth per subfault, in km.
+    ///
+    /// It used to be one per dip row, because genslip reads depth from the first
+    /// subfault of each row — exact for a plane, and only for a plane. A mesh that
+    /// bends or curves has a different depth at every subfault in a row, so the field
+    /// is two-dimensional like the two below and every depth ramp reads it per
+    /// subfault. On a plane the numbers are the same ones, which is what the corpus
+    /// asserts.
+    pub depth_km: SlipField,
     /// One rake per subfault, in degrees, before the rake field perturbs it.
     pub base_rake_deg: SlipField,
     /// Rupture speed as a fraction of shear-wave speed, per subfault.
@@ -211,7 +216,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     let subfaults = strike_count * dip_count;
 
     let (scaling, spectrum) = derive(spec, slip_spec.spectrum)?;
-    let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
+    let (shear_speed, rigidity) = velocity_model.sample(&grid.depth_km);
 
     let mut fields = slip::Generator::new(draws, fft, extents, grid.spacing, spectrum);
 
@@ -365,7 +370,7 @@ pub fn point_source<E: EikonalSolver>(
         average_rise_time_s: spec.rise_time_s,
     };
 
-    let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
+    let (shear_speed, rigidity) = velocity_model.sample(&grid.depth_km);
 
     // Uniform slip, scaled so the summed moment is the target. A field of ones and the
     // same scaler the finite-fault path uses -- what makes this a point *source*
@@ -474,13 +479,13 @@ fn check(grid: &FaultGrid, hypocentre: Hypocentre) -> Result<()> {
         });
     }
 
-    Error::require_len("depth_km", grid.depth_km.len(), dip_count)?;
-
-    // The other two are grids, so what is checked is the *extent* rather than a
-    // length. That is the stronger claim and it used to be uncheckable: a flat
-    // `Vec` of 12 satisfies a 3x4 fault and a 4x3 one equally, and the transposed
-    // rupture that follows is entirely plausible.
+    // All three are grids, so what is checked is the *extent* rather than a length.
+    // That is the stronger claim and it used to be uncheckable: a flat `Vec` of 12
+    // satisfies a 3x4 fault and a 4x3 one equally, and the transposed rupture that
+    // follows is entirely plausible. `depth_km` joined this loop when it stopped
+    // being one value per dip row.
     for (what, extent) in [
+        ("depth_km", grid.depth_km.extent()),
         ("base_rake_deg", grid.base_rake_deg.extent()),
         ("velocity_fraction", grid.velocity_fraction.extent()),
     ] {
@@ -552,7 +557,7 @@ fn assemble<E: EikonalSolver>(
         normalised_rise,
         &scaled.slip,
         &grid.depth_km,
-        &column_of(shear_speed),
+        shear_speed,
         DepthScaling {
             stretch: timing.rise_time_stretch,
             rupture_velocity_fraction: grid.velocity_fraction[[0, 0]],
@@ -590,8 +595,7 @@ fn assemble<E: EikonalSolver>(
 
     // --- slip-rate pulses -------------------------------------------------------
     let shape = timing.slip_rate_shape;
-    let shape_parameter =
-        slip_rate::shape_parameter_field(shape, strike_count, &grid.depth_km, timing.beta);
+    let shape_parameter = slip_rate::shape_parameter_field(shape, &grid.depth_km, timing.beta);
     let mut slip_rate = Vec::with_capacity(subfaults);
     let mut onset_shift_s = Vec::with_capacity(subfaults);
     for dip in 0..dip_count {
@@ -637,12 +641,4 @@ fn assemble<E: EikonalSolver>(
         moment_dyne_cm: scaling.moment_dyne_cm,
         alpha_t: scaling.alpha_t,
     }
-}
-
-/// One value per dip row, taken from the first subfault of each.
-///
-/// The properties this pulls out are constant along strike for a planar segment, and
-/// the original reads them the same way.
-fn column_of(field: &SlipField) -> Vec<f64> {
-    (0..field.dip_count()).map(|dip| field[[dip, 0]]).collect()
 }

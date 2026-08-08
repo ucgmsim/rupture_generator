@@ -94,9 +94,18 @@ pub fn fault_of(
             strike_km: 1.0,
             dip_km: 1.0,
         },
-        depth_km: (0..dip_count)
-            .map(|dip| 0.5 + genslip::units::exact(dip) * 1.5)
-            .collect(),
+        // One depth per subfault. This fixture is a plane, so every subfault in a dip
+        // row gets the same depth -- which is exactly the case the per-row `Vec` this
+        // replaced was exact for.
+        depth_km: genslip::grid::from_values(
+            strike_count,
+            dip_count,
+            (0..dip_count)
+                .flat_map(|dip| {
+                    std::iter::repeat_n(0.5 + genslip::units::exact(dip) * 1.5, strike_count)
+                })
+                .collect(),
+        ),
         base_rake_deg: genslip::grid::from_values(
             strike_count,
             dip_count,

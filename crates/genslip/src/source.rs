@@ -7,7 +7,6 @@
 use crate::error::{Error, Result};
 use crate::grid::SlipField;
 use crate::units;
-use ndarray::{Array1, Axis};
 
 /// Natural log of ten, the base of every magnitude relation here.
 ///
@@ -371,28 +370,17 @@ impl VelocityModel {
     /// Returned as two fields rather than a struct per subfault: the moment scaling
     /// wants rigidity alone and the rupture-speed field wants shear speed alone.
     ///
-    /// # Panics
-    ///
-    /// If `depth_km` is empty.
+    /// One lookup per subfault. It used to be one per dip row broadcast along strike,
+    /// which is exact exactly while depth is constant across a row — true of a plane
+    /// and of nothing else.
     ///
     /// (orig. `load_vsden`, ruptime.c)
     #[must_use]
-    pub fn sample(&self, strike_count: usize, depth_km: &[f64]) -> (SlipField, SlipField) {
-        // One layer lookup per dip row, broadcast along strike -- the properties are
-        // constant across a row because depth is.
-        let layers: Vec<Layer> = depth_km.iter().map(|depth| self.layer_at(*depth)).collect();
-        let column = |of: fn(&Layer) -> f64| {
-            let values: Vec<f64> = layers.iter().map(&of).collect();
-            Array1::from(values)
-                .insert_axis(Axis(1))
-                .broadcast((depth_km.len(), strike_count))
-                .expect("a column broadcasts across a row")
-                .to_owned()
-        };
-
+    pub fn sample(&self, depth_km: &SlipField) -> (SlipField, SlipField) {
+        let layers = depth_km.mapv(|depth| self.layer_at(depth));
         (
-            column(|layer| layer.shear_speed_km_s),
-            column(|layer| layer.rigidity()),
+            layers.mapv(|layer| layer.shear_speed_km_s),
+            layers.mapv(Layer::rigidity),
         )
     }
 }

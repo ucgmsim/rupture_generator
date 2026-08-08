@@ -325,10 +325,14 @@ impl Ramp {
 
 /// The discretised fault.
 ///
-/// `depth_km` is one value per dip row; `base_rake_deg` and `velocity_fraction` are
-/// one per subfault, along-strike index fastest. The padded extents are the
-/// wraparound margin the generator needs and are the caller's to compute — genslip
-/// derives them from the fault's share of a possibly multi-segment rupture.
+/// `depth_km`, `base_rake_deg` and `velocity_fraction` are one value per subfault,
+/// along-strike index fastest. The padded extents are the wraparound margin the
+/// generator needs and are the caller's to compute — genslip derives them from the
+/// fault's share of a possibly multi-segment rupture.
+///
+/// `depth_km` used to be one value per dip *row*, which is exact on a plane and only
+/// on a plane. It is a field like the other two now, so a mesh that bends carries a
+/// depth at every subfault.
 #[pyclass(skip_from_py_object, module = "rupture_generator._core")]
 #[derive(Clone, Debug)]
 pub struct FaultGrid {
@@ -388,13 +392,8 @@ impl FaultGrid {
         let base_rake_deg = base_rake_deg.as_slice()?.to_vec();
         let velocity_fraction = velocity_fraction.as_slice()?.to_vec();
 
-        if depth_km.len() != fault_dip {
-            return Err(PyValueError::new_err(format!(
-                "depth_km has {} entries; a {fault_dip}-row fault needs one per row",
-                depth_km.len()
-            )));
-        }
         for (name, values) in [
+            ("depth_km", &depth_km),
             ("base_rake_deg", &base_rake_deg),
             ("velocity_fraction", &velocity_fraction),
         ] {
@@ -416,10 +415,10 @@ impl FaultGrid {
                     padded_dip,
                 },
                 spacing: SubfaultSpacing { strike_km, dip_km },
-                depth_km,
                 // Per-subfault quantities are grids on the Rust side; the boundary
                 // takes them flat, in the along-strike-fastest order every array
                 // crossing here uses, and reshapes once.
+                depth_km: genslip::grid::from_values(fault_strike, fault_dip, depth_km),
                 base_rake_deg: genslip::grid::from_values(fault_strike, fault_dip, base_rake_deg),
                 velocity_fraction: genslip::grid::from_values(
                     fault_strike,

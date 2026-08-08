@@ -46,7 +46,6 @@ use ndarray::Array2;
 
 use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
 use crate::rise_time::DepthRamp;
-use ndarray::{Array1, Axis};
 
 /// Rupture speed across the fault, in km/s.
 ///
@@ -176,7 +175,7 @@ impl SpeedProfile {
 ///
 /// `shear_speed_km_s` is one value per subfault, `velocity_fraction` the configured
 /// rupture-speed-to-shear-speed ratio at each — a single value repeated unless the
-/// geometry supplied per-subfault ratios. `depth_km` gives one depth per dip row.
+/// geometry supplied per-subfault ratios — and `depth_km` the depth of each.
 ///
 /// # Panics
 ///
@@ -188,28 +187,27 @@ impl SpeedProfile {
 pub fn speed_field(
     shear_speed_km_s: &SlipField,
     velocity_fraction: &SlipField,
-    depth_km: &[f64],
+    depth_km: &SlipField,
     profile: SpeedProfile,
 ) -> SpeedGrid {
-    let strike_count = shear_speed_km_s.strike_count();
-    let dip_count = shear_speed_km_s.dip_count();
+    let extent = shear_speed_km_s.extent();
     assert_eq!(
-        (
-            velocity_fraction.strike_count(),
-            velocity_fraction.dip_count()
-        ),
-        (strike_count, dip_count),
+        velocity_fraction.extent(),
+        extent,
         "the shear-speed and velocity-fraction fields must cover the same fault"
     );
-    assert_eq!(depth_km.len(), dip_count, "one depth per dip row");
+    assert_eq!(
+        depth_km.extent(),
+        extent,
+        "the shear-speed and depth fields must cover the same fault"
+    );
 
-    // The depth factor is one value per dip row, broadcast down it.
-    let depth_factor: Array1<f64> = depth_km
-        .iter()
-        .map(|depth| profile.depth_factor(*depth))
-        .collect();
+    // The product is left-associative — `fraction * factor * speed` — and stays that
+    // way. Three floats multiplied in a different order is a different number, and
+    // the onset times downstream are asserted to 5e-05 s against a stored corpus.
+    let depth_factor = depth_km.mapv(|depth| profile.depth_factor(depth));
 
-    velocity_fraction * &depth_factor.insert_axis(Axis(1)) * shear_speed_km_s
+    velocity_fraction * &depth_factor * shear_speed_km_s
 }
 
 /// Where the rupture front is when it reaches each subfault, after perturbation.

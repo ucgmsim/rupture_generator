@@ -40,7 +40,7 @@ use std::f64::consts::PI;
 
 use crate::grid::{FaultAxes, SlipField};
 use enum_dispatch::enum_dispatch;
-use ndarray::{Array1, Axis, azip};
+use ndarray::azip;
 
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
 
@@ -101,26 +101,6 @@ impl BetaProfile {
     }
 }
 
-/// Shape parameter for every subfault.
-///
-/// # Panics
-///
-/// If `depth_km` does not hold one depth per dip row.
-///
-/// (orig. `genslip_v5.6.2.c:2884-2904`)
-#[must_use]
-pub fn beta_field(strike_count: usize, depth_km: &[f64], profile: BetaProfile) -> SlipField {
-    let dip_count = depth_km.len();
-    let mut field = crate::grid::zeros(strike_count, dip_count);
-    for dip in 0..dip_count {
-        let beta = profile.beta_at(depth_km[dip]);
-        for strike in 0..strike_count {
-            field[[dip, strike]] = beta;
-        }
-    }
-    field
-}
-
 /// Rise time at every subfault, in seconds.
 ///
 /// `normalised` is the unit-mean field from [`crate::rise_time::rise_time_field`] and
@@ -140,16 +120,16 @@ pub fn beta_field(strike_count: usize, depth_km: &[f64], profile: BetaProfile) -
 #[must_use]
 pub fn rise_times(
     normalised: &SlipField,
-    depth_km: &[f64],
+    depth_km: &SlipField,
     stretch: RiseTimeStretch,
     average_s: f64,
     normalisation: f64,
     sample_interval_s: f64,
 ) -> SlipField {
     assert_eq!(
-        depth_km.len(),
-        normalised.dip_count(),
-        "one depth per dip row"
+        depth_km.extent(),
+        normalised.extent(),
+        "the depth and rise-time fields must cover the same fault"
     );
     assert!(
         sample_interval_s > 0.0 && average_s > 0.0,
@@ -159,17 +139,7 @@ pub fn rise_times(
     // The floor is one sample: a rise time below `dt` cannot be represented.
     let floor = sample_interval_s / average_s;
 
-    // The depth factor is one value per dip row; broadcasting it down the row is what
-    // the inner loop used to be.
-    let stretched: Array1<f64> = depth_km
-        .iter()
-        .map(|depth| stretch.factor_at(*depth))
-        .collect();
-    let stretched = stretched
-        .insert_axis(Axis(1))
-        .broadcast(normalised.raw_dim())
-        .expect("a column broadcasts across its rows")
-        .to_owned();
+    let stretched = depth_km.mapv(|depth| stretch.factor_at(depth));
 
     let mut field = normalised.to_owned();
     azip!((factor in &mut field, &depth_factor in &stretched) {
@@ -748,32 +718,19 @@ fn normalise(mut values: Vec<f64>, slip_cm: f64, sample_interval_s: f64) -> Slip
     SlipRate { values }
 }
 
-/// The per-subfault shape parameter, one value per dip row broadcast along strike.
+/// The shape parameter at every subfault.
 ///
 /// A thin wrapper over [`SourceTimeFunction::parameter_at`], which is where the
 /// per-shape knowledge lives. It used to be a `match` with a `_ =>` arm returning
 /// zeros, in a different part of the file from the shapes it was about — and that arm
 /// is where the `urs` bug lived.
-///
-/// # Panics
-///
-/// If `depth_km` does not hold one depth per dip row.
 #[must_use]
 pub fn shape_parameter_field(
     shape: SlipRateShape,
-    strike_count: usize,
-    depth_km: &[f64],
+    depth_km: &SlipField,
     profile: BetaProfile,
 ) -> SlipField {
-    let column: Array1<f64> = depth_km
-        .iter()
-        .map(|depth| shape.parameter_at(*depth, profile))
-        .collect();
-    column
-        .insert_axis(Axis(1))
-        .broadcast((depth_km.len(), strike_count))
-        .expect("a column broadcasts across its rows")
-        .to_owned()
+    depth_km.mapv(|depth| shape.parameter_at(depth, profile))
 }
 
 /// Where `urs`'s tail height changes, `dmin = 4` to `dmax = 6` km (`slip.c:48-49`).

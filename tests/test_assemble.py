@@ -39,7 +39,9 @@ def rupture():
         10,
         1.0,
         1.0,
-        depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64),
+        depth_km=np.repeat(
+            np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64), STRIKE
+        ),
         base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float64),
         velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float64),
     )
@@ -263,7 +265,9 @@ class TestAPointSourceAssemblesTheSameWay:
             10,
             1.0,
             1.0,
-            depth_km=np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64),
+            depth_km=np.repeat(
+            np.array([0.5 + i * 2.0 for i in range(DIP)], dtype=np.float64), STRIKE
+        ),
             base_rake_deg=np.full(SUBFAULTS, 175.0, dtype=np.float64),
             velocity_fraction=np.full(SUBFAULTS, 0.8, dtype=np.float64),
         )

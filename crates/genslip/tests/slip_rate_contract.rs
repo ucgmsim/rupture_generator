@@ -695,7 +695,11 @@ mod the_closed_form_shapes {
             deep: 0.13,
         };
         let depths = [0.0_f64, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
-        let field = shape_parameter_field(SlipRateShape::from(Urs), 1, &depths, profile);
+        let field = shape_parameter_field(
+            SlipRateShape::from(Urs),
+            &genslip::grid::from_values(1, depths.len(), depths.to_vec()),
+            profile,
+        );
 
         // betashal above the ramp, betadeep below it, and the midpoint between. One
         // assertion over the whole column: a failure prints both arrays, so it shows

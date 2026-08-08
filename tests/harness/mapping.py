@@ -452,7 +452,15 @@ def fault_grid(
         derived.padded_dip,
         geometry.mean_along_strike_km,
         geometry.mean_down_dip_km,
-        depth_km=geometry.depth_by_row_km(strike_count).astype(np.float64),
+        # The port takes a depth per subfault now. genslip does not: it reads
+        # `psrc[j*nstk].dep`, the first subfault of each row, for every
+        # depth-dependent quantity. Repeating that row depth along strike is what
+        # hands the port the depths the binary actually used, which is the whole
+        # point of this file -- the corpus cannot exercise a per-subfault depth
+        # because the reference has no way to express one.
+        depth_km=np.repeat(
+            geometry.depth_by_row_km(strike_count).astype(np.float64), strike_count
+        ),
         base_rake_deg=geometry.rake_deg.astype(np.float64),
         velocity_fraction=np.full(subfaults, fraction, dtype=np.float64),
     )

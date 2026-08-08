@@ -82,8 +82,7 @@ fn rupture<F: Fft, E: EikonalSolver>(
 /// The travel-time field alone, with no perturbation on top.
 fn travel_times<E: EikonalSolver>(solver: &mut E, hypocentre: Hypocentre) -> TravelTimes {
     let grid = fixture::fault();
-    let (shear_speed, _) =
-        fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
+    let (shear_speed, _) = fixture::velocity_model().sample(&grid.depth_km);
     let speed = genslip::rupture::speed_field(
         &shear_speed,
         &grid.velocity_fraction,
@@ -644,7 +643,7 @@ fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver
 ) {
     let model = rupture(fft, solver, fixture::SEED, true);
     let grid = fixture::fault();
-    let (_, rigidity) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
+    let (_, rigidity) = fixture::velocity_model().sample(&grid.depth_km);
 
     let area_cm2 = grid.spacing.strike_km * grid.spacing.dip_km * 1.0e10;
     let recomputed: f64 = model

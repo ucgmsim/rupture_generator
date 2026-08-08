@@ -84,8 +84,11 @@ class Ramp:
 class FaultGrid:
     """The discretised fault.
 
-    `depth_km` is one value per dip row; `base_rake_deg` and `velocity_fraction` are
-    one per subfault, along-strike index fastest.
+    `depth_km`, `base_rake_deg` and `velocity_fraction` are all one value per
+    subfault, along-strike index fastest.
+
+    `depth_km` used to be one value per dip *row*, which is exact on a plane and only
+    on a plane. A mesh that bends carries a depth at every subfault.
     """
 
     subfault_count: int

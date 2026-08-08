@@ -48,7 +48,11 @@ def fault_grid(strike: int = STRIKE, dip: int = DIP) -> core.FaultGrid:
         padded(dip),
         1.0,
         1.0,
-        depth_km=np.array([0.5 + i * 2.0 for i in range(dip)], dtype=np.float64),
+        # One depth per subfault, along-strike fastest. This fault is a plane, so
+        # every subfault in a dip row is at the same depth.
+        depth_km=np.repeat(
+            np.array([0.5 + i * 2.0 for i in range(dip)], dtype=np.float64), strike
+        ),
         base_rake_deg=np.full(strike * dip, 175.0, dtype=np.float64),
         velocity_fraction=np.full(strike * dip, 0.8, dtype=np.float64),
     )
@@ -184,7 +188,7 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float64),
+                depth_km=np.zeros(STRIKE * DIP, dtype=np.float64),
                 base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
                 velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
@@ -198,13 +202,15 @@ class TestRefusesBadInput:
                 4,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float64),
+                depth_km=np.zeros(STRIKE * DIP, dtype=np.float64),
                 base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
                 velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
 
     def test_a_short_depth_array_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="needs one per row"):
+        # Depth is one value per subfault now, not one per dip row, so what is short
+        # here is a whole fault's worth rather than a column's.
+        with pytest.raises(ValueError, match="depth_km"):
             core.FaultGrid(
                 STRIKE,
                 DIP,
@@ -212,7 +218,7 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP - 1, dtype=np.float64),
+                depth_km=np.zeros(STRIKE * DIP - 1, dtype=np.float64),
                 base_rake_deg=np.zeros(STRIKE * DIP, dtype=np.float64),
                 velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
@@ -226,7 +232,7 @@ class TestRefusesBadInput:
                 DIP + 2,
                 1.0,
                 1.0,
-                depth_km=np.zeros(DIP, dtype=np.float64),
+                depth_km=np.zeros(STRIKE * DIP, dtype=np.float64),
                 base_rake_deg=np.zeros(3, dtype=np.float64),
                 velocity_fraction=np.full(STRIKE * DIP, 0.8, dtype=np.float64),
             )
