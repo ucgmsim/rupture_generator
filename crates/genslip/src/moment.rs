@@ -11,6 +11,7 @@
 use ndarray::ArrayView2;
 
 use crate::grid::{FaultAxes, SlipField};
+use crate::units;
 
 /// Subfault dimensions, in kilometres.
 #[derive(Clone, Copy, Debug)]
@@ -21,13 +22,8 @@ pub struct SubfaultSize {
 
 impl SubfaultSize {
     /// Subfault area in cm², which is what the moment sum needs.
-    ///
-    /// The kilometre product is formed in single precision and only then widened for
-    /// the unit conversion, matching where the original rounds.
     fn area_cm2(self) -> f64 {
-        const CM2_PER_KM2: f64 = 1.0e+10;
-
-        self.strike_km * self.dip_km * CM2_PER_KM2
+        self.strike_km * self.dip_km * units::CM2_PER_KM2
     }
 }
 

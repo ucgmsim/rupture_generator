@@ -26,9 +26,7 @@ import scipy as sp
 
 from rupture_generator._core import GeneratedRupture
 from rupture_generator.srf import FloatArray, PlaneHeader, Points, SrfFile
-
-CM_PER_KM = np.float32(1.0e5)
-"""What an SRF's shear speed is in, over what a velocity model's is in."""
+from rupture_generator.units import CM_PER_KM, SRF_FLOAT
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,13 +130,14 @@ def to_srf_file(
         area_cm2=geometry.area_cm2,
         onset_s=rupture.onset_s,
         sample_interval_s=np.full(
-            subfaults, rupture.sample_interval_s, dtype=np.float32
+            subfaults, rupture.sample_interval_s, dtype=SRF_FLOAT
         ),
         rake_deg=rupture.rake_deg,
         slip_cm=rupture.slip_cm,
         rise_time_s=rupture.rise_time_s,
-        shear_speed_cm_s=np.asarray(shear_speed_km_s, dtype=np.float32) * CM_PER_KM,
-        density_g_cm3=np.asarray(density_g_cm3, dtype=np.float32),
+        shear_speed_cm_s=np.asarray(shear_speed_km_s, dtype=SRF_FLOAT)
+        * SRF_FLOAT(CM_PER_KM),
+        density_g_cm3=np.asarray(density_g_cm3, dtype=SRF_FLOAT),
     )
 
     # The pulses are already concatenated with offsets that index into them, which is
@@ -154,7 +153,7 @@ def to_srf_file(
     )
 
     slip_rate = sp.sparse.csr_array(
-        (np.asarray(rupture.slip_rate, dtype=np.float32), columns, offsets),
+        (np.asarray(rupture.slip_rate, dtype=SRF_FLOAT), columns, offsets),
         shape=(subfaults, longest),
     )
 

@@ -6,6 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::grid::SlipField;
+use crate::units;
 use ndarray::{Array1, Axis};
 
 /// Natural log of ten, the base of every magnitude relation here.
@@ -296,15 +297,8 @@ pub fn average_rise_time(moment_dyne_cm: f64, coefficient: f64) -> f64 {
     // `cbrt` rather than the original's `exp(log(M0)/3)`: one call instead of two, and
     // exact where the pair is not -- it lands on 3 for 27, which the exp/log pair
     // misses. `tests/float_identities.rs` pins that difference.
-    coefficient * RISE_TIME_MOMENT_SCALE * moment_dyne_cm.cbrt()
+    coefficient * units::RISE_TIME_MOMENT_SCALE * moment_dyne_cm.cbrt()
 }
-
-/// The coefficient in `trise = c * this * M0^(1/3)`, Graves & Pitarka (2010).
-///
-/// Carries the units: `M0` is in dyne-cm and `trise` in seconds, so the `1e-9` is
-/// what makes a magnitude-7 moment give a rise time of order a second rather than of
-/// order `1e9`.
-const RISE_TIME_MOMENT_SCALE: f64 = 1.0e-09;
 
 /// One layer of a one-dimensional velocity model.
 #[derive(Clone, Copy, Debug)]
@@ -318,12 +312,10 @@ pub struct Layer {
 }
 
 impl Layer {
-    /// Rigidity in CMS units (dyne/cm²), `rho * vs^2`.
-    ///
-    /// The `1e10` converts from `(km/s)^2 * g/cm^3`.
+    /// Rigidity in CGS units (dyne/cm²), `rho * vs^2`.
     #[must_use]
     pub fn rigidity(self) -> f64 {
-        self.shear_speed_km_s * self.shear_speed_km_s * self.density_g_cm3 * 1.0e+10
+        self.shear_speed_km_s * self.shear_speed_km_s * self.density_g_cm3 * units::RIGIDITY_SCALE
     }
 }
 
