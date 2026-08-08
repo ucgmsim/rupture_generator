@@ -298,6 +298,360 @@ mod the_ucsb_family_is_oliu_p {
     }
 }
 
+/// What every shape has to be, whichever it is.
+///
+/// `generic_slip2srf` writes the sampling, the truncation, the fold and the rescale
+/// out separately in each of its ten generators. They are one helper here, so these
+/// are properties of that helper as much as of the shapes -- which is the point:
+/// "conserves slip" should be one line of code, not a thing each shape remembers.
+mod every_shape {
+    use super::*;
+
+    const DT: f32 = 0.005;
+
+    /// All eleven, at parameters that exercise each one's own branch.
+    fn all() -> Vec<SlipRateShape> {
+        vec![
+            SlipRateShape::OliuP2,
+            SlipRateShape::Ucsb,
+            SlipRateShape::Ucsb2,
+            SlipRateShape::UcsbT { stretch: 2.0 },
+            SlipRateShape::UcsbVarT1 { tau1_ratio: 0.2 },
+            SlipRateShape::Brune,
+            SlipRateShape::Urs,
+            SlipRateShape::Esg2006,
+            SlipRateShape::Cos,
+            SlipRateShape::Seki,
+            SlipRateShape::Delta,
+        ]
+    }
+
+    fn integral(pulse: &genslip::slip_rate::SlipRate) -> f64 {
+        pulse
+            .as_slice()
+            .iter()
+            .map(|value| f64::from(*value) * f64::from(DT))
+            .sum()
+    }
+
+    /// The integral is the slip. The only thing all eleven promise, and the reason
+    /// the moment comes out right whichever is chosen.
+    #[test]
+    fn conserves_slip() {
+        for shape in all() {
+            for slip in [0.5_f32, 250.0, 4000.0] {
+                for duration_s in [0.05_f32, 0.2, 1.0, 4.0, 20.0] {
+                    let pulse = shape.pulse(slip, duration_s, 0.35, DT, MAX_SAMPLES);
+                    assert!(
+                        !pulse.is_empty(),
+                        "{shape:?} produced nothing at slip {slip}, duration {duration_s}"
+                    );
+                    let bound = pulse_round_trip(pulse.len()) * f64::from(slip);
+                    assert!(
+                        (integral(&pulse) - f64::from(slip)).abs() <= bound,
+                        "{shape:?} at duration {duration_s} integrates to {}, not {slip}",
+                        integral(&pulse)
+                    );
+                }
+            }
+        }
+    }
+
+    /// A pulse ends at rest. Not every one *starts* at rest -- `seki` does not, by
+    /// construction -- so that half is asserted separately, on the shapes that claim it.
+    #[test]
+    fn ends_at_rest() {
+        for shape in all() {
+            let pulse = shape.pulse(250.0, 1.0, 0.35, DT, MAX_SAMPLES);
+            assert_eq!(
+                pulse.as_slice().last(),
+                Some(&0.0),
+                "{shape:?} does not return to zero"
+            );
+        }
+    }
+
+    /// Doubling the duration roughly halves the peak, because the area is fixed.
+    ///
+    /// The weakest statement that still says these are *pulses* rather than arbitrary
+    /// sample runs. Loose, because none of them is a rectangle and `delta` is
+    /// duration-independent by definition and so excluded.
+    #[test]
+    fn a_longer_pulse_is_a_gentler_one() {
+        let peak = |shape: SlipRateShape, duration_s: f32| {
+            shape
+                .pulse(250.0, duration_s, 0.35, DT, MAX_SAMPLES)
+                .as_slice()
+                .iter()
+                .copied()
+                .fold(0.0_f32, f32::max)
+        };
+        for shape in all() {
+            if shape == SlipRateShape::Delta {
+                continue;
+            }
+            let ratio = peak(shape, 0.5) / peak(shape, 2.0);
+            assert!(
+                (2.0..8.0).contains(&ratio),
+                "{shape:?}: quadrupling the duration changed the peak by {ratio}x, \
+                 not by something near 4"
+            );
+        }
+    }
+
+    /// A duration too short to resolve collapses to the shortest thing the shape can
+    /// be, rather than to a long run of garbage.
+    ///
+    /// Two different floors, both deliberate. Most shapes give nothing or `oliu_p`'s
+    /// three-sample spike. `urs` gives five, because its triangles have sample floors
+    /// of their own -- the spike is at least two samples and the whole pulse at least
+    /// four (`slip.c:65-70`), since a triangle below that is not a triangle. Asserting
+    /// a single number here would have meant deleting one of the two.
+    #[test]
+    fn an_unresolvable_duration_collapses_to_the_shortest_pulse_there_is() {
+        for shape in all() {
+            let pulse = shape.pulse(250.0, 1e-6, 0.35, DT, MAX_SAMPLES);
+            let floor = if shape == SlipRateShape::Urs { 5 } else { 3 };
+            assert!(
+                pulse.len() <= floor,
+                "{shape:?} produced {} samples for a 1 microsecond pulse",
+                pulse.len()
+            );
+        }
+    }
+
+    /// The cap binds, and binding does not produce a pulse that lies about its area.
+    #[test]
+    fn the_sample_cap_binds() {
+        for shape in all() {
+            let pulse = shape.pulse(250.0, 100.0, 0.35, DT, 64);
+            assert!(pulse.len() <= 64, "{shape:?} ignored the cap");
+        }
+    }
+}
+
+/// The six shapes that are not `oliu_p`, each checked against what it is *for*.
+mod the_closed_form_shapes {
+    use super::*;
+
+    const DT: f32 = 0.001;
+
+    fn samples(shape: SlipRateShape, duration_s: f32, parameter: f32) -> Vec<f32> {
+        shape
+            .pulse(100.0, duration_s, parameter, DT, MAX_SAMPLES)
+            .as_slice()
+            .to_vec()
+    }
+
+    fn peak_at_s(values: &[f32]) -> f32 {
+        #[expect(clippy::cast_precision_loss, reason = "sample indices are small")]
+        let index = values
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map_or(0, |(index, _)| index) as f32;
+        index * DT
+    }
+
+    /// `brune`: peaks at exactly one time constant, and decays from there.
+    ///
+    /// `(t/T)exp(-t/T)` has its maximum at `t = T`. That is the definition, and it is
+    /// what says the duration handed in is being used as the time constant rather
+    /// than as something else.
+    #[test]
+    fn brune_peaks_at_one_time_constant() {
+        for duration_s in [0.05_f32, 0.2, 1.0] {
+            let peak = peak_at_s(&samples(SlipRateShape::Brune, duration_s, 0.0));
+            assert!(
+                (peak - duration_s).abs() <= 2.0 * DT,
+                "brune with T = {duration_s} peaked at {peak}"
+            );
+        }
+    }
+
+    /// `brune` is causal and one-sided: it starts at zero and never rises again.
+    #[test]
+    fn brune_rises_once_and_decays() {
+        let values = samples(SlipRateShape::Brune, 0.2, 0.0);
+        assert_eq!(values.first(), Some(&0.0));
+        let peak_index = values
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map_or(0, |(index, _)| index);
+        assert!(
+            values[..peak_index]
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1]),
+            "brune is not monotone up to its peak"
+        );
+        assert!(
+            values[peak_index..values.len() - 1]
+                .windows(2)
+                .all(|pair| pair[0] >= pair[1]),
+            "brune is not monotone after its peak"
+        );
+    }
+
+    /// `esg2006`: a Gaussian centred at twice the duration and symmetric about it.
+    #[test]
+    fn esg2006_is_a_symmetric_gaussian() {
+        let duration_s = 0.25_f32;
+        let values = samples(SlipRateShape::Esg2006, duration_s, 0.0);
+        let peak = peak_at_s(&values);
+        assert!(
+            (peak - 2.0 * duration_s).abs() <= 2.0 * DT,
+            "the Gaussian peaked at {peak}, not at {}",
+            2.0 * duration_s
+        );
+
+        // Symmetry about the centre, which no other shape here has.
+        let centre = values.len() / 2;
+        for offset in 1..centre.min(200) {
+            let (left, right) = (values[centre - offset], values[centre + offset]);
+            assert!(
+                (left - right).abs() <= 1e-3 * values[centre],
+                "asymmetric at offset {offset}: {left} against {right}"
+            );
+        }
+    }
+
+    /// `cos`: a full raised cosine, so it is zero at both ends and peaks in the middle.
+    #[test]
+    fn cos_is_a_full_raised_cosine() {
+        let duration_s = 0.4_f32;
+        let values = samples(SlipRateShape::Cos, duration_s, 0.0);
+        assert_eq!(values.first(), Some(&0.0));
+        let peak = peak_at_s(&values);
+        assert!(
+            (peak - 0.5 * duration_s).abs() <= 2.0 * DT,
+            "the cosine peaked at {peak}, not at {}",
+            0.5 * duration_s
+        );
+    }
+
+    /// `seki`: **does not start at rest**, and the onset shift is what admits it.
+    ///
+    /// `sech²(2(2t/T - 1))` is at `sech²(-2)`, about 7% of its peak, at `t = 0`. The
+    /// original moves the subfault's onset back a quarter of the duration to
+    /// compensate; this asserts both halves, because a shift without the discontinuity
+    /// would be unmotivated and a discontinuity without the shift is a pulse arriving
+    /// early.
+    #[test]
+    fn seki_starts_abruptly_and_pays_for_it_with_an_onset_shift() {
+        let duration_s = 0.5_f32;
+        let values = samples(SlipRateShape::Seki, duration_s, 0.0);
+        let peak = values.iter().copied().fold(0.0_f32, f32::max);
+        let ratio = values[0] / peak;
+        assert!(
+            (0.05..0.10).contains(&ratio),
+            "seki starts at {ratio} of its peak, not the ~7% sech^2(-2) gives"
+        );
+
+        assert!(
+            (SlipRateShape::Seki.onset_shift_s(duration_s) - (-0.25 * duration_s)).abs() < 1e-9,
+            "seki does not move the onset back a quarter of its duration"
+        );
+
+        // And it is the only one that does.
+        for shape in [
+            SlipRateShape::OliuP2,
+            SlipRateShape::Ucsb,
+            SlipRateShape::Brune,
+            SlipRateShape::Urs,
+            SlipRateShape::Esg2006,
+            SlipRateShape::Cos,
+            SlipRateShape::Delta,
+        ] {
+            assert!(
+                shape.onset_shift_s(duration_s).abs() < f32::EPSILON,
+                "{shape:?} moves the onset by {} and has no reason to",
+                shape.onset_shift_s(duration_s)
+            );
+        }
+    }
+
+    /// `urs`: a narrow spike then a long tail, with the tail's height the parameter.
+    #[test]
+    fn urs_is_a_spike_then_a_tail() {
+        let duration_s = 1.0_f32;
+        for tail in [0.2_f32, 0.35, 0.5] {
+            let values = samples(SlipRateShape::Urs, duration_s, tail);
+            assert_eq!(values.first(), Some(&0.0));
+
+            let peak_index = values
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map_or(0, |(index, _)| index);
+            let peak_at = peak_at_s(&values);
+            assert!(
+                (peak_at - 0.1 * duration_s).abs() <= 3.0 * DT,
+                "the spike peaked at {peak_at}, not a tenth of the way in"
+            );
+
+            // The shoulder where the second triangle starts sits at the tail's height.
+            let shoulder = (f32::from(2u8) - tail) * peak_at_s(&values) / DT;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small non-negative sample index"
+            )]
+            let shoulder = shoulder as usize;
+            let ratio = values[shoulder.min(values.len() - 1)] / values[peak_index];
+            assert!(
+                (ratio - tail).abs() < 0.1,
+                "the shoulder is at {ratio} of the peak, not the {tail} asked for"
+            );
+        }
+    }
+
+    /// A taller tail carries more of the slip late.
+    ///
+    /// What the depth ramp on this parameter is *for*: shallow subfaults get a longer,
+    /// less impulsive release.
+    #[test]
+    fn a_taller_urs_tail_delays_the_slip() {
+        let centroid = |tail: f32| {
+            let values = samples(SlipRateShape::Urs, 1.0, tail);
+            #[expect(clippy::cast_precision_loss, reason = "sample indices are small")]
+            let weighted: f32 = values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| index as f32 * value)
+                .sum();
+            weighted / values.iter().sum::<f32>()
+        };
+        assert!(
+            centroid(0.5) > centroid(0.2),
+            "a taller tail did not move the slip later"
+        );
+    }
+
+    /// `delta` is the spike `oliu_p` already falls back to, under its own name.
+    ///
+    /// An identity, so asserted as one -- it is why there is no eleventh generator.
+    #[test]
+    fn a_delta_is_the_spike_oliu_p_falls_back_to() {
+        for slip in [0.5_f32, 250.0, 4000.0] {
+            let delta = SlipRateShape::Delta.pulse(slip, 1.0, 0.0, DT, MAX_SAMPLES);
+            // A duration of about one sample is what triggers `oliu_p`'s fallback.
+            let fallback = oliu_p(slip, DT, 0.13, DT, MAX_SAMPLES);
+            assert_eq!(delta.as_slice(), fallback.as_slice());
+            assert_eq!(delta.as_slice(), [0.0, slip / DT, 0.0]);
+        }
+    }
+
+    /// `delta` does not care about the duration. Nothing else here can say that.
+    #[test]
+    fn a_delta_is_the_same_pulse_at_every_duration() {
+        let first = samples(SlipRateShape::Delta, 0.01, 0.0);
+        for duration_s in [0.5_f32, 5.0, 50.0] {
+            assert_eq!(samples(SlipRateShape::Delta, duration_s, 0.0), first);
+        }
+    }
+}
+
 // Deliberately not asserted:
 //
 // - That the pulse is non-negative everywhere. It nearly is, but the piecewise
@@ -306,3 +660,9 @@ mod the_ucsb_family_is_oliu_p {
 // - That the ucsb aliases agree with `generic_slip2srf`'s *output*. They agree with
 //   `oliu_p`, which is a claim this file can settle on its own; agreeing with the C
 //   is a claim about a binary, and it lives in the reference comparison instead.
+// - That `brune`'s duration is the C's. It is not, deliberately: `generic_slip2srf`
+//   derives a time constant from the subfault's slip, and this uses the rise time
+//   like every other shape. See `SlipRateShape::Brune`.
+// - That `esg2006` agrees with the C at all. It cannot: `gen_esg2006_stf` folds its
+//   normalisation into an uninitialised `sum` (`slip.c:342`), so its output is
+//   whatever was on the stack. `DEFECTS.md` 20.

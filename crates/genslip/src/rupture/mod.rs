@@ -153,6 +153,29 @@ impl TravelTimes {
     pub fn as_slice(&self) -> &[f64] {
         &self.values
     }
+
+    /// Move every onset by a per-subfault amount, never below zero.
+    ///
+    /// One caller: [`crate::slip_rate::SlipRateShape::Seki`] radiates before `t = 0`,
+    /// so the arrival is moved back to compensate. The clamp is the original's
+    /// (`generic_slip2srf.c:454`) and is the right shape anyway — a subfault cannot
+    /// rupture before the earthquake starts, and the hypocentre is already at zero.
+    ///
+    /// # Panics
+    ///
+    /// If `shift_s` does not hold one value per subfault.
+    pub fn shift(&mut self, shift_s: &[f32]) {
+        assert_eq!(
+            shift_s.len(),
+            self.values.len(),
+            "got {} shifts for {} subfaults",
+            shift_s.len(),
+            self.values.len()
+        );
+        for (time, shift) in self.values.iter_mut().zip(shift_s) {
+            *time = (*time + f64::from(*shift)).max(0.0);
+        }
+    }
 }
 
 /// Where the rupture starts, as a subfault index.

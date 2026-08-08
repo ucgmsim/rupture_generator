@@ -320,22 +320,7 @@ pub fn oliu_p(
         }
     }
 
-    // Normalise so the integral is the slip. A non-positive integral means the shape
-    // degenerated, and the subfault contributes nothing.
-    let mut integral = 0.0_f32;
-    for value in &values {
-        integral += sample_interval_s * *value;
-    }
-    if integral <= 0.0 {
-        return SlipRate { values: Vec::new() };
-    }
-
-    let scale = slip / integral;
-    for value in &mut values {
-        *value *= scale;
-    }
-
-    SlipRate { values }
+    normalise(values, slip, sample_interval_s)
 }
 
 /// Which slip-rate function a subfault gets.
@@ -394,14 +379,65 @@ pub enum SlipRateShape {
         /// `beta`, the fraction of the duration spent rising.
         tau1_ratio: f32,
     },
+    /// `stype=brune`. `(t/T)·exp(-t/T)`, the classic ω⁻² source pulse.
+    ///
+    /// The only shape whose duration is not simply the rise time in the original:
+    /// `generic_slip2srf` sets `T = 0.1·e⁻¹·√slip/1.2` — a time constant derived
+    /// from the subfault's *slip* — and then multiplies it by the depth factor. The
+    /// port uses the rise time like every other shape. That is a deliberate
+    /// difference and the reason is the whole point of this crate having a rise-time
+    /// model: a duration that is a function of slip is not one the depth ramp,
+    /// the moment scaling and the fault-wide average can all be about at once. A
+    /// caller wanting a corner frequency `f` sets the average rise time to
+    /// `1/(2πf)`, which is exactly the relation the C's `brune_corner_freq` branch
+    /// encodes.
+    ///
+    /// (orig. `gen_brune_stf`, `slip.c:4`)
+    Brune,
+    /// `stype=urs`. Two triangles: a narrow spike, then a long low tail.
+    ///
+    /// The tail's height is the one shape parameter in `generic_slip2srf` that varies
+    /// with depth — 0.5 above 4 km falling to 0.2 below 6 km — and it is a
+    /// [`DepthRamp`] like every other ramp here. See [`shape_parameter_field`].
+    ///
+    /// (orig. `gen_2tri_stf`, `slip.c:37`)
+    Urs,
+    /// `stype=esg2006`. A Gaussian, centred at twice the rise time and truncated at
+    /// four times it.
+    ///
+    /// (orig. `gen_esg2006_stf`, `slip.c:338`)
+    Esg2006,
+    /// `stype=cos`. A full raised cosine, `1 - cos(2πt/T)`.
+    ///
+    /// (orig. `gen_cos_stf`, `slip.c:382`)
+    Cos,
+    /// `stype=seki`. `sech²(2(2t/T − 1))`, peaking at `T/2`.
+    ///
+    /// **The one shape that does not start at rest**: it is at 7% of its peak at
+    /// `t = 0`. The original compensates by moving the subfault's onset back a
+    /// quarter of the duration — see [`SlipRateShape::onset_shift_s`], which is
+    /// plumbed rather than dropped, because without it the pulse arrives early.
+    ///
+    /// (orig. `gen_seki_stf`, `slip.c:421`)
+    Seki,
+    /// `stype=delta`. A single-sample impulse: `[0, slip/dt, 0]`.
+    ///
+    /// Exactly what [`oliu_p`] substitutes for a pulse too short to resolve, so it is
+    /// that branch under its own name rather than a second spelling —
+    /// `a_delta_is_the_spike_oliu_p_falls_back_to` asserts the two are identical.
+    ///
+    /// (orig. `generic_slip2srf.c:456`)
+    Delta,
 }
 
 impl SlipRateShape {
     /// Build one subfault's slip-rate function.
     ///
-    /// `duration_s` is the subfault's rise time and `beta` the value
-    /// [`beta_field`] gave it, which only [`OliuP2`](Self::OliuP2) reads. Every
-    /// shape normalises so `sample_interval_s * sum` is `slip_cm`.
+    /// `duration_s` is the subfault's rise time and `shape_parameter` the value
+    /// [`shape_parameter_field`] gave it, which only [`OliuP2`](Self::OliuP2) and
+    /// [`Urs`](Self::Urs) read. **Every shape normalises so `sample_interval_s * sum`
+    /// is `slip_cm`**, which is what makes the moment come out right whichever is
+    /// chosen, and is the one thing they all have in common.
     ///
     /// # Panics
     ///
@@ -411,18 +447,93 @@ impl SlipRateShape {
         self,
         slip_cm: f32,
         duration_s: f32,
-        beta: f32,
+        shape_parameter: f32,
         sample_interval_s: f32,
         max_samples: usize,
     ) -> SlipRate {
-        let (duration_s, beta) = match self {
-            Self::OliuP2 => (duration_s, beta),
-            Self::Ucsb => (duration_s, UCSB_BETA),
-            Self::Ucsb2 => (2.0 * duration_s, 0.5 * UCSB_BETA),
-            Self::UcsbT { stretch } => (stretch * duration_s, UCSB_BETA / stretch),
-            Self::UcsbVarT1 { tau1_ratio } => (duration_s, tau1_ratio),
+        assert!(
+            sample_interval_s > 0.0,
+            "the sample interval must be positive"
+        );
+
+        // The four that are `oliu_p` with the breakpoints moved.
+        let liu = |duration_s: f32, beta: f32| {
+            oliu_p(slip_cm, duration_s, beta, sample_interval_s, max_samples)
         };
-        oliu_p(slip_cm, duration_s, beta, sample_interval_s, max_samples)
+        match self {
+            Self::OliuP2 => liu(duration_s, shape_parameter),
+            Self::Ucsb => liu(duration_s, UCSB_BETA),
+            Self::Ucsb2 => liu(2.0 * duration_s, 0.5 * UCSB_BETA),
+            Self::UcsbT { stretch } => liu(stretch * duration_s, UCSB_BETA / stretch),
+            Self::UcsbVarT1 { tau1_ratio } => liu(duration_s, tau1_ratio),
+
+            // The rest are sampled from a closed form and then normalised. One helper
+            // does the sampling, the truncation and the normalisation; each shape
+            // supplies only its extent and its amplitude.
+            Self::Brune => sampled(
+                slip_cm,
+                BRUNE_TAIL * duration_s,
+                sample_interval_s,
+                max_samples,
+                |time| {
+                    let scaled = time / duration_s;
+                    scaled * (-scaled).exp()
+                },
+            ),
+            Self::Esg2006 => sampled(
+                slip_cm,
+                4.0 * duration_s,
+                sample_interval_s,
+                max_samples,
+                |time| {
+                    let offset = 4.0 * (time - 2.0 * duration_s) / duration_s;
+                    (-offset * offset).exp()
+                },
+            ),
+            Self::Cos => sampled(
+                slip_cm,
+                duration_s,
+                sample_interval_s,
+                max_samples,
+                |time| 1.0 - (2.0 * PI * time / duration_s).cos(),
+            ),
+            Self::Seki => sampled(
+                slip_cm,
+                SEKI_TAIL * duration_s,
+                sample_interval_s,
+                max_samples,
+                |time| {
+                    let argument = 2.0 * (2.0 * time / duration_s - 1.0);
+                    let sech = argument.cosh().recip();
+                    sech * sech
+                },
+            ),
+            Self::Urs => two_triangles(
+                slip_cm,
+                duration_s,
+                shape_parameter,
+                sample_interval_s,
+                max_samples,
+            ),
+            Self::Delta => impulse(slip_cm, sample_interval_s, max_samples),
+        }
+    }
+
+    /// How far this shape moves the subfault's onset, in seconds.
+    ///
+    /// Zero for every shape but [`Seki`](Self::Seki), which is at 7% of its peak at
+    /// `t = 0` — energy before the rupture arrives. The original shifts the onset back
+    /// a quarter of the duration to compensate (`generic_slip2srf.c:452`) and clamps
+    /// at zero, and so does this.
+    ///
+    /// Kept separate from [`pulse`](Self::pulse) because it is a fact about the
+    /// *arrival*, not about the samples, and the two are stored in different places.
+    #[must_use]
+    pub fn onset_shift_s(self, duration_s: f32) -> f32 {
+        match self {
+            Self::Seki => -0.25 * duration_s,
+            _ => 0.0,
+        }
     }
 }
 
@@ -431,3 +542,219 @@ impl SlipRateShape {
 /// Written `0.13` four times in `generic_slip2srf/slip.c`, and once more as
 /// `0.5 * 0.13` in `ucsb2` where the duration doubles.
 const UCSB_BETA: f32 = 0.13;
+
+/// How many time constants of Brune's exponential tail are kept.
+///
+/// The original writes `3.0 * 1.745 * e`, which is `t95` — the time by which 95% of
+/// the slip has happened — times three. What is discarded is `(1+x)·e⁻ˣ` of the
+/// total at `x = 14.2`, about one part in 10⁵; normalising folds that back in, so
+/// the truncation costs accuracy in the *shape*'s tail rather than in the moment.
+const BRUNE_TAIL: f32 = 3.0 * 1.745 * std::f32::consts::E;
+
+/// How much of `seki`'s `sech²` is kept, in units of the duration.
+const SEKI_TAIL: f32 = 1.5;
+
+/// Sample `amplitude` over `[0, extent_s)` and normalise so the integral is `slip_cm`.
+///
+/// The shared tail of every closed-form shape. It is one function rather than five
+/// because the five differ only in two lines each — an extent and an expression —
+/// where `generic_slip2srf` repeats the sampling, the cap, the fold and the rescale
+/// verbatim in all of them.
+///
+/// A trailing zero closes the pulse, as it does in [`oliu_p`]. `cos` is the one shape
+/// where the original also does this, by returning `nstf + 1` after computing `nstf`
+/// samples.
+fn sampled(
+    slip_cm: f32,
+    extent_s: f32,
+    sample_interval_s: f32,
+    max_samples: usize,
+    amplitude: impl Fn(f32) -> f32,
+) -> SlipRate {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a small non-negative sample count, truncated as the C truncates it"
+    )]
+    let count = (((extent_s / sample_interval_s + 0.5) as i32).max(0) as usize).min(max_samples);
+    if count == 0 {
+        return SlipRate::empty();
+    }
+
+    let mut values = vec![0.0_f32; (count + 1).min(max_samples).max(count)];
+    for (index, value) in values.iter_mut().enumerate().take(count) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "sample counts are far below 2^24"
+        )]
+        let time = index as f32 * sample_interval_s;
+        *value = amplitude(time);
+    }
+    normalise(values, slip_cm, sample_interval_s)
+}
+
+/// `urs`: a narrow triangle to full amplitude, then a long one from `tail` to zero.
+///
+/// `tail` is the second triangle's height as a fraction of the first's — the value
+/// [`shape_parameter_field`] computes for [`SlipRateShape::Urs`].
+///
+/// The sample counts are the original's, floors and all: the spike is a tenth of the
+/// duration but at least two samples, and the whole pulse at least four. Those floors
+/// are what keeps the second triangle inside the first — `(2 - tail)` is at most 1.8,
+/// and `1.8 * 2 < 4`.
+///
+/// (orig. `gen_2tri_stf`, `slip.c:37-112`)
+fn two_triangles(
+    slip_cm: f32,
+    duration_s: f32,
+    tail: f32,
+    sample_interval_s: f32,
+    max_samples: usize,
+) -> SlipRate {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small non-negative sample counts, truncated as the C truncates them"
+    )]
+    let samples = |seconds: f32| ((seconds / sample_interval_s + 0.5) as i32).max(0) as usize;
+
+    let peak = samples(0.1 * duration_s).max(2);
+    let end = samples(duration_s).max(4);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "the C's `it2 = (2 - beta)*it0`, a float product truncated to int"
+    )]
+    let shoulder = (((2.0 - tail) * peak as f32) as i32).max(0) as usize;
+    let shoulder = shoulder.clamp(peak, end);
+
+    let length = (end + 1).min(max_samples);
+    if length == 0 {
+        return SlipRate::empty();
+    }
+    let mut values = vec![0.0_f32; length];
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sample counts are far below 2^24"
+    )]
+    let step = 1.0 / peak as f32;
+    for (index, value) in values.iter_mut().enumerate().take(end.min(length)) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "sample counts are far below 2^24"
+        )]
+        let position = index as f32;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "sample counts are far below 2^24"
+        )]
+        let (peak_at, shoulder_at) = (peak as f32, shoulder as f32);
+        *value = if index < peak {
+            // Rising, zero to one.
+            position * step
+        } else if index < shoulder {
+            // Falling, one to `tail`.
+            (2.0 * peak_at - position) * step
+        } else {
+            // The tail, `tail` to zero.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "sample counts are far below 2^24"
+            )]
+            let span = (end - shoulder) as f32;
+            tail + (shoulder_at - position) * tail / span
+        };
+    }
+    normalise(values, slip_cm, sample_interval_s)
+}
+
+/// `delta`: everything in one sample.
+///
+/// The same three values [`oliu_p`] falls back to when a pulse is too short to
+/// resolve, which is what a delta function is.
+fn impulse(slip_cm: f32, sample_interval_s: f32, max_samples: usize) -> SlipRate {
+    let mut values = vec![0.0_f32, 1.0, 0.0];
+    values.truncate(max_samples.max(1));
+    normalise(values, slip_cm, sample_interval_s)
+}
+
+/// Scale so `sample_interval_s * sum` is `slip_cm`, or give up.
+///
+/// A non-positive integral means the shape degenerated at this resolution, and the
+/// subfault contributes nothing rather than contributing garbage. Shared so that
+/// "conserves slip" is one line of code rather than a property each shape has to
+/// remember to have.
+fn normalise(mut values: Vec<f32>, slip_cm: f32, sample_interval_s: f32) -> SlipRate {
+    // Accumulated in `f64`, where the original folds through a `float`. The fold runs
+    // over every sample of the pulse and the samples span orders of magnitude --
+    // `brune`'s tail is 1e-6 of its peak -- so a single-precision accumulator loses
+    // the tail entirely. Measured on a 20 s `brune` at 5 ms: the `f32` fold put the
+    // integral 1.3e-04 off the slip, against a 5.8e-05 round-trip bound. In `f64` it
+    // lands inside the bound for every shape at every duration tested.
+    let mut integral = 0.0_f64;
+    for value in &values {
+        integral += f64::from(sample_interval_s) * f64::from(*value);
+    }
+    if integral <= 0.0 {
+        return SlipRate::empty();
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing seam: the scale is applied to `f32` samples"
+    )]
+    let scale = (f64::from(slip_cm) / integral) as f32;
+    for value in &mut values {
+        *value *= scale;
+    }
+    SlipRate { values }
+}
+
+/// The per-subfault shape parameter, one value per dip row broadcast along strike.
+///
+/// Two of the eleven shapes vary with depth and they use different ramps, so the
+/// dispatch is here rather than at the call site: [`SlipRateShape::OliuP2`] takes
+/// genslip's `beta` profile, and [`SlipRateShape::Urs`] the tail height
+/// `generic_slip2srf` hardcodes between 4 and 6 km. Everything else gets a value it
+/// does not read.
+///
+/// # Panics
+///
+/// If `depth_km` does not hold one depth per dip row.
+#[must_use]
+pub fn shape_parameter_field(
+    shape: SlipRateShape,
+    strike_count: usize,
+    depth_km: &[f32],
+    profile: BetaProfile,
+) -> SlipField {
+    match shape {
+        SlipRateShape::OliuP2 => beta_field(strike_count, depth_km, profile),
+        SlipRateShape::Urs => {
+            let mut field = SlipField::zeros(strike_count, depth_km.len());
+            for (dip, depth) in depth_km.iter().enumerate() {
+                let tail = URS_DEEP_TAIL + URS_RAMP.scaled_from_deep(URS_TAIL_RANGE, *depth);
+                for strike in 0..strike_count {
+                    field[(strike, dip)] = tail;
+                }
+            }
+            field
+        }
+        _ => SlipField::zeros(strike_count, depth_km.len()),
+    }
+}
+
+/// Where `urs`'s tail height changes, `dmin = 4` to `dmax = 6` km (`slip.c:48-49`).
+const URS_RAMP: DepthRamp = DepthRamp {
+    centre_km: 5.0,
+    half_width_km: 1.0,
+};
+/// `betadeep` (`slip.c:44`): the tail height below the ramp.
+const URS_DEEP_TAIL: f32 = 0.2;
+/// `betashal - betadeep` (`slip.c:44-45`): how much taller it is above the ramp.
+///
+/// The C spells this as a precomputed gradient, `(betadeep - betashal)/(dmax - dmin)`,
+/// multiplied by `(dmax - z)`. That is [`DepthRamp::scaled_from_deep`] with the sign
+/// folded into the scale, which is how every other ramp in this crate is written.
+const URS_TAIL_RANGE: f32 = 0.3;

@@ -114,6 +114,7 @@ truth rather than against the code it replaces. Judged against genslip, the port
 | # | Where | What | Instead |
 | --- | --- | --- | --- |
 | 7 | `taper_slip_all_r`, `slip.c:181` | For a taper fraction above about 1 the ramp reaches past the opposite edge and the routine writes **outside its array**. | `taper_edges` asserts. There is no way to reproduce an out-of-bounds write in safe Rust and no reason to want one. The configured fractions are 0.02 and 0.0, nowhere near the bound. |
+| 20 | `gen_esg2006_stf`, `generic_slip2srf/slip.c:342, 368` | `float sum;` is declared and never initialised, and the normalisation loop accumulates **into it**: `for (it...) sum = sum + (*dt)*stf[it];` with no `sum = 0.0` first. Every other generator in the file writes `sum = 0.0` on the line before. The pulse is then scaled by `slip/sum`, so `stype=esg2006`'s output is a function of whatever was on the stack. | `SlipRateShape::Esg2006` initialises it. There is nothing to reproduce: reading an uninitialised `float` is undefined behaviour, not a behaviour, and gcc is free to give a different answer per build, per call site and per optimisation level. The consequence is that this is the one shape the reference comparison **cannot** compare — recorded there rather than tolerated. |
 
 ## Benign, recorded so nobody "fixes" them into something worse
 
@@ -127,6 +128,24 @@ truth rather than against the code it replaces. Judged against genslip, the port
 | # | Where | What |
 | --- | --- | --- |
 | 10 | `workflow/.../realisation_to_srf.py:805` | The default binary path is `genslip_v5.4.2`, but the `srf:` defaults are written for v5.6.2. `getpar` never asks for names it does not recognise, so `beta_asp`, `beta_subevt`, `beta_*_depth`, `hyb_corlen_*` and `rtime2slip_exp` have been passed and **silently dropped** in production. Same class as the HF port's `calpha = -99.0`. |
+
+## Ours: an accumulator, found by the conservation contract — **fixed**
+
+`normalise` in `slip_rate.rs` folded the pulse integral through an `f32`, as the
+original does in all eleven of its generators. That is fine for genslip, whose one
+shape is a sinusoid a few tens of samples long. It is not fine for `brune`, whose
+tail runs to fourteen time constants and whose samples span six orders of magnitude:
+at a 20 s duration and 5 ms sampling the fold loses the tail, and the pulse
+integrates to **1.3e-04** away from the slip against a **5.8e-05** round-trip bound.
+
+Found by `every_shape::conserves_slip` on the first run, which is what a derived
+bound is for — a chosen tolerance of 1e-3 would have passed and the shape would have
+shipped quietly failing the one thing all eleven promise.
+
+The fold is `f64` now. Cost on the corpus: slip-rate samples move by at most
+**6.9e-08** relative, about one `f32` ulp, in 12 000 to 151 000 samples per case.
+Slip, rake, onset and rise time do not move at all, and the divergence against
+genslip's own pulses is unchanged at 5.617e-05.
 
 ## Ours: gaps in the PyO3 boundary, found by building the getpar mapping — **fixed**
 

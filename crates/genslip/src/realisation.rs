@@ -407,7 +407,7 @@ fn assemble<E: EikonalSolver>(
         timing.speed_profile,
     );
     let travel = solver.solve(&speed, hypocentre, f64::from(grid.spacing.strike_km));
-    let onset_s = rupture::onset_times(
+    let mut onset_s = rupture::onset_times(
         &travel,
         rupture_perturbation,
         OnsetAdjustment {
@@ -418,8 +418,11 @@ fn assemble<E: EikonalSolver>(
     );
 
     // --- slip-rate pulses -------------------------------------------------------
-    let beta = slip_rate::beta_field(strike_count, &grid.depth_km, timing.beta);
+    let shape = timing.slip_rate_shape;
+    let shape_parameter =
+        slip_rate::shape_parameter_field(shape, strike_count, &grid.depth_km, timing.beta);
     let mut slip_rate = Vec::with_capacity(subfaults);
+    let mut onset_shift_s = Vec::with_capacity(subfaults);
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             // The original guards the whole generator on `|slip| > MINSLIP`
@@ -431,18 +434,25 @@ fn assemble<E: EikonalSolver>(
             // smallest corpus case, 108 of 1152 on the largest.
             let cm = scaled.slip[(strike, dip)];
             slip_rate.push(if cm.abs() > slip_rate::MIN_SLIP_CM {
-                timing.slip_rate_shape.pulse(
+                shape.pulse(
                     cm,
                     rise_time_s[(strike, dip)],
-                    beta[(strike, dip)],
+                    shape_parameter[(strike, dip)],
                     timing.sample_interval_s,
                     timing.max_samples,
                 )
             } else {
                 SlipRate::empty()
             });
+            // Non-causal shapes radiate before their nominal start, so the arrival
+            // moves back to meet them. Zero for every shape but `Seki`, and gathered
+            // here rather than inside the pulse because it is a fact about *when*
+            // rather than about the samples.
+            onset_shift_s.push(shape.onset_shift_s(rise_time_s[(strike, dip)]));
         }
     }
+
+    onset_s.shift(&onset_shift_s);
 
     RuptureModel {
         slip: scaled.clone(),
