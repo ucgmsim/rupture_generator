@@ -94,6 +94,69 @@ pub enum Error {
     #[error("average dip is {degrees} degrees, which must be in 0..=90")]
     DipOutOfRange { degrees: f64 },
 
+    /// A mesh has too few of something to be a surface at all.
+    ///
+    /// A face asked to be cut into no cells along one of its axes.
+    ///
+    /// Notably *not* an empty or one-point fault: [`crate::mesh::Fault`] holds its first
+    /// plane separately from the rest, so a fault with no planes cannot be constructed
+    /// and there is nothing here to check.
+    #[error("{what}: found {found}, need at least {needed}")]
+    MeshTooSmall {
+        /// What was short: `"strike cells"`, `"dip cells"`.
+        what: &'static str,
+        found: usize,
+        needed: usize,
+    },
+
+    /// A fault surface would reach above the ground.
+    ///
+    /// Depth is measured downwards, so a negative one is in the air. Reached by a top
+    /// depth given as negative, or by a point source shallower than half its own
+    /// subfault -- genslip's answer to the latter is to floor the top depth at zero,
+    /// which silently shrinks the subfault.
+    #[error("the surface reaches {depth_km} km, which is above the ground")]
+    AboveSurface { depth_km: f64 },
+
+    /// A patch indexes a vertex the mesh does not have.
+    ///
+    /// Only reachable from [`crate::mesh::RefinedMesh::from_parts`], which is how a mesh
+    /// arrives from a *file*. Refinement builds its own indices and cannot produce one.
+    #[error("a patch indexes vertex {index}, but the mesh has {vertices}")]
+    DanglingVertex { index: usize, vertices: usize },
+
+    /// A mesh's cells are not all the same size along one of its axes.
+    ///
+    /// The spectral generators transform on a uniform grid and the eikonal sweep steps
+    /// on one, so a mesh that is not uniform cannot be generated on. Refused here
+    /// rather than averaged, because an average would put every subfault somewhere
+    /// nobody chose.
+    ///
+    /// Refining a plane cannot produce one -- bilinear subdivision of a parallelogram is
+    /// uniform by construction. This guards a mesh that arrived from a *file*, which may
+    /// have been hand-edited or written by an importer, and so has to be checked where
+    /// the data enters rather than assumed from how it was usually made.
+    #[error("{axis} spacing runs from {smallest_km} km to {largest_km} km, which is not uniform")]
+    NonUniformMesh {
+        /// `"strike"` or `"dip"`.
+        axis: &'static str,
+        smallest_km: f64,
+        largest_km: f64,
+    },
+
+    /// A position given in in-fault coordinates is off the mesh.
+    ///
+    /// Both coordinates are arc lengths from an edge — see
+    /// [`crate::mesh::PatchView::cell_index`] for which edge, which is the part that is
+    /// worth reading before assuming.
+    #[error("{axis} position {position_km} km is outside a fault {extent_km} km across")]
+    PositionOffMesh {
+        /// `"strike"` or `"dip"`.
+        axis: &'static str,
+        position_km: f64,
+        extent_km: f64,
+    },
+
     /// The hypocentre is not on the fault.
     #[error("hypocentre ({strike}, {dip}) is outside a {strike_count}x{dip_count} fault")]
     HypocentreOffFault {

@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 04991d2f7eca574a03847e63fe296c94f451b8d408c23ba7cd50b9fc6aa6f70e # shrinks to longitude = 0.0, latitude = 0.0, north_km = 0.0, east_km = -86.48225067243179
+cc e7feb9e9ba8f1d738b4485a5bc3f74cde4345dffaf8e361223d1eaacdc0fe01b # shrinks to longitude = 0.0, latitude = 0.0, bearing_deg = 0.0, dip_deg = 5.0

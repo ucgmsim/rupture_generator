@@ -19,7 +19,6 @@ proptest = "1"
 workspace = true
 
 [dependencies]
-geographiclib-rs = "0.2.7"
 # Every field on the fault is a 2-D array, and was a hand-rolled struct wrapping a
 # `Vec` plus two extents. `grid.rs` states the axis convention this brings with it.
 ndarray = "0.17.2"

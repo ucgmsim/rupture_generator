@@ -78,6 +78,44 @@ than quietly produce a model that ignores them.
 | **`rtime2`** | A rise-time perturbation correlated with roughness, gated on `rtime_rand > 0` at `genslip_v5.6.2.c:2793`. `rtime_rand` defaults to `-1.0` and the config leaves it unset, so the block never runs and — unlike roughness and `tsfac2` — **draws nothing**. Nothing to skip and nothing to preserve. Refuse a positive `rtime_rand`. |
 | **the GSF reader** | Geometry arrives as arrays from `rupture_generator.geometry`, not as a file. `read_gsfpars_vsden_as` and `read_gsfpars_gsf2` are not ported. A GSF *writer* survives in the test harness, which needs one to drive the C binary. |
 
+## Pruned: `genslip::geodesy`, and `geographiclib-rs` with it
+
+`crates/genslip/src/geodesy.rs`, `crates/genslip/tests/geodesy.rs` and the
+`geographiclib-rs` dependency are deleted. The module solved the direct geodesic problem
+on WGS84 by Karney's algorithm, correctly, and **never had a caller** — not the library,
+not `crates/core`, not the Python package.
+
+It was kept on a promise that expired twice. First it was held for
+`rupture_generator/geometry.py`, which turned out to be a stub with `pass` for a body and
+no importers, and was itself deleted. Then it was held for `crates/genslip/src/mesh.rs`,
+the discretiser that would finally place subfaults on the ellipsoid — and when that got
+written, it did not want geodesy at all.
+
+**`mesh.rs` works in a projected Cartesian CRS the modeller names**, so the whole module
+is flat vector arithmetic and every quantity it derives is an exact identity. Placing
+subfaults on the ellipsoid instead makes every one of them carry a curvature error, which
+was measured before the approach was abandoned: on a 60 km subduction interface, cell
+areas came out **1.4e-2** low and a mesh that should have been uniform had a down-dip step
+varying by **6.5e-3** — the first of those larger than `ENGINEERING_RULES.md`'s 1e-2 slip
+bound. The conversion back to WGS84 still has to happen somewhere, and it happens once, in
+`rupture_generator/mesh.py`, with `pyproj`.
+
+So the module's own instruction applied:
+
+> Keep it while placing subfaults on an ellipsoid is a thing the package might do. Delete
+> it, and the dependency with it, the moment that stops being true.
+
+**What is not lost.** The flat-earth error table it recorded — 0.93 m at 1 km rising to
+944 m at 100 km, quadratic in distance — and the four separate faults in genslip's
+`set_ll` are both in `DEFECTS.md`. genslip's own version of the error is still measured
+against the corpus by `test_corpus.py::TestTheGeometryDivergence`, at 43 m crustal and
+1.9 km at subduction scale, and that test does not depend on this module.
+
+**What would bring it back.** A fault too large for one projection to hold — crossing
+several UTM zones — where the distortion of any single CRS exceeds what the projection
+was chosen to bound. That is a real case and this is the right tool for it, but it is not
+a case this package has, and a module held against one is a module with no caller again.
+
 ## Pruned: inherited from `source_modelling.srf`
 
 `rupture_generator/srf.py` began as a copy of `source_modelling/srf.py`. Three of its
