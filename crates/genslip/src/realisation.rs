@@ -118,6 +118,22 @@ pub struct TimingSpec {
     pub max_samples: usize,
 }
 
+/// What the magnitude and geometry imply, before anything is drawn.
+///
+/// The three numbers [`assemble`] needs from the source description, and the reason
+/// it needs nothing else from it. A finite fault derives all three from a magnitude;
+/// a point source derives the first two the same way and is *given* the third.
+#[derive(Clone, Copy, Debug)]
+pub struct Scaling {
+    /// Seismic moment, in dyne-cm.
+    pub moment_dyne_cm: f32,
+    /// The dip-and-rake geometry correction.
+    pub alpha_t: f32,
+    /// Fault-wide average rise time, in seconds, before the depth ramp redistributes
+    /// it. Already multiplied by `alpha_t` where that applies.
+    pub average_rise_time_s: f32,
+}
+
 /// A generated rupture model.
 #[derive(Clone, Debug)]
 pub struct RuptureModel {
@@ -177,8 +193,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         "one velocity fraction per subfault"
     );
 
-    let derived = derive(spec, slip_spec.spectrum);
-    let spectrum = derived.spectrum;
+    let (scaling, spectrum) = derive(spec, slip_spec.spectrum);
     let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
 
     // --- slip -------------------------------------------------------------------
@@ -205,7 +220,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
             dip_km: grid.spacing.dip_km,
         },
         SlipScaling::Moment {
-            dyne_cm: derived.moment_dyne_cm,
+            dyne_cm: scaling.moment_dyne_cm,
         },
     );
 
@@ -256,32 +271,39 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     // from. The two differ by the reload's renormalisation, which is not a scalar.
     let reference_slip = slip::reference_on_fault(&reference, fft, extents, grid.spacing);
 
+    // The last thing the draws feed. It lives here rather than in `assemble` because
+    // it is the one stage that *needs* a drawn field: it normalises to a prescribed
+    // coefficient of variation, so a constant input divides by zero. Everything after
+    // it works on any field, drawn or not.
+    let normalised_rise = rise_time::rise_time_field(
+        &rise_correlated,
+        &reference_slip,
+        &grid.depth_km,
+        timing.rise_time,
+    );
+
     assemble(
-        &Drawn {
-            scaled,
-            rake_deg: rake_deg.clone(),
+        &Fields {
+            slip: scaled,
+            rake_deg,
+            normalised_rise,
             rupture_perturbation,
-            rise_correlated,
-            reference_slip,
         },
         grid,
         &shear_speed,
         timing,
-        &derived,
+        scaling,
         solver,
         hypocentre,
     )
 }
 
-/// What the magnitude and geometry imply, before anything is drawn.
-struct Derived {
-    moment_dyne_cm: f32,
-    alpha_t: f32,
-    average_rise_time_s: f32,
-    spectrum: SpectrumSpec,
-}
-
-fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> Derived {
+/// Resolve a magnitude into a moment, a correction and an average rise time, and fill
+/// in the correlation lengths the spectrum was missing.
+///
+/// The spectrum comes back separately because it is the one output nothing downstream
+/// of the draws reads: [`assemble`] takes the [`Scaling`] and never sees it.
+fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> (Scaling, SpectrumSpec) {
     let moment_dyne_cm = source::seismic_moment(spec.magnitude, spec.magnitude_scale);
     let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg);
     let corners = source::correlation_lengths(spec.magnitude, spec.corners, spec.modified_corners);
@@ -291,57 +313,67 @@ fn derive(spec: SourceSpec, mut spectrum: SpectrumSpec) -> Derived {
         dip: corners.dip_km,
     };
 
-    Derived {
-        moment_dyne_cm,
-        alpha_t: correction.alpha_t,
-        // The same correction shortens rise time and, at the caller, raises rupture
-        // speed. Applying it in one place keeps the two from drifting apart.
-        average_rise_time_s: source::average_rise_time(moment_dyne_cm, spec.rise_time_coefficient)
-            * correction.alpha_t,
+    (
+        Scaling {
+            moment_dyne_cm,
+            alpha_t: correction.alpha_t,
+            // The same correction shortens rise time and, at the caller, raises rupture
+            // speed. Applying it in one place keeps the two from drifting apart.
+            average_rise_time_s: source::average_rise_time(
+                moment_dyne_cm,
+                spec.rise_time_coefficient,
+            ) * correction.alpha_t,
+        },
         spectrum,
-    }
+    )
 }
 
-/// Everything the draw sequence produced, in the order it produced it.
-struct Drawn {
-    scaled: ScaledSlip,
+/// The four fields a rupture is assembled from.
+///
+/// The seam between *where the numbers came from* and *what is done with them*. A
+/// finite fault draws all four off one generator; a point source builds all four as
+/// constants. Everything downstream is the same code, which is the whole reason this
+/// struct exists rather than [`assemble`] taking the drawn fields directly.
+struct Fields {
+    slip: ScaledSlip,
     rake_deg: SlipField,
+    /// Dimensionless, unit mean. `rise_time_field` builds it for a finite fault; a
+    /// point source passes ones, which is the one thing that *cannot* be expressed as
+    /// a degenerate input -- `rise_time_field` normalises to a prescribed spread and
+    /// so divides by a constant field's zero variation.
+    normalised_rise: SlipField,
+    /// Added to the eikonal solve's travel times. Zero for a point source.
     rupture_perturbation: SlipField,
-    rise_correlated: SlipField,
-    /// The reloaded slip spectrum, back in space. What the shallow rise-time blend
-    /// reads -- see `slip::reference_on_fault`.
-    reference_slip: SlipField,
 }
 
-/// Turn the drawn fields into a rupture model. Nothing here draws.
+/// Turn four fields into a rupture model. Nothing here draws, and nothing here knows
+/// whether anything did.
+///
+/// This is the whole of the pipeline downstream of the randomness: rise time, the
+/// eikonal solve, and one pulse per subfault. [`generate`] reaches it with drawn
+/// fields and [`point_source`] with constant ones, and the two produce the same kind
+/// of answer because they run the same code rather than an agreeing copy of it.
 fn assemble<E: EikonalSolver>(
-    drawn: &Drawn,
+    fields: &Fields,
     grid: &FaultGrid,
     shear_speed: &SlipField,
     timing: TimingSpec,
-    derived: &Derived,
+    scaling: Scaling,
     solver: &mut E,
     hypocentre: Hypocentre,
 ) -> RuptureModel {
     let (strike_count, dip_count) = (grid.extents.fault_strike, grid.extents.fault_dip);
-    let Drawn {
-        scaled,
+    let Fields {
+        slip: scaled,
         rake_deg,
+        normalised_rise,
         rupture_perturbation,
-        rise_correlated,
-        reference_slip,
-    } = drawn;
+    } = fields;
     let subfaults = strike_count * dip_count;
 
     // --- rise time --------------------------------------------------------------
-    let normalised_rise = rise_time::rise_time_field(
-        rise_correlated,
-        reference_slip,
-        &grid.depth_km,
-        timing.rise_time,
-    );
     let normalisation = rise_time::rise_time_normalisation(
-        &normalised_rise,
+        normalised_rise,
         &scaled.slip,
         &grid.depth_km,
         &column_of(shear_speed),
@@ -354,10 +386,10 @@ fn assemble<E: EikonalSolver>(
         timing.rise_time_weighting,
     );
     let rise_time_s = slip_rate::rise_times(
-        &normalised_rise,
+        normalised_rise,
         &grid.depth_km,
         timing.rise_time_stretch,
-        derived.average_rise_time_s,
+        scaling.average_rise_time_s,
         normalisation,
         timing.sample_interval_s,
     );
@@ -415,8 +447,8 @@ fn assemble<E: EikonalSolver>(
         onset_s,
         rise_time_s,
         slip_rate,
-        moment_dyne_cm: derived.moment_dyne_cm,
-        alpha_t: derived.alpha_t,
+        moment_dyne_cm: scaling.moment_dyne_cm,
+        alpha_t: scaling.alpha_t,
     }
 }
 
