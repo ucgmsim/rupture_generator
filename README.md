@@ -128,8 +128,20 @@ The crate stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of 
 that has not been written, and per-function parity is how it will be built.
 
 **`EMOD3D_BUILD_DIR` is therefore not needed at all** to build the library, run the
-gate, or generate a rupture. It is needed only if you rewire the oracle, or to *rebuild*
-the corpus with `GENSLIP_BINARY`.
+gate, or generate a rupture. It is needed only if you rewire the oracle, to *rebuild*
+the corpus with `GENSLIP_BINARY`, or to re-run the point-source reference comparison
+with `GENERIC_SLIP2SRF`:
+
+```sh
+GENERIC_SLIP2SRF=/path/to/generic_slip2srf \
+  .venv/bin/python -m pytest tests/harness/test_point_source_reference.py -q -s
+```
+
+That one asserts almost nothing on purpose — the port and `generic_slip2srf` differ
+by design on onset and on what `risetime` means, so it prints the sizes instead. Nine
+of the ten slip-rate shapes agree to **1e-6 relative**, which is the resolution of the
+SRF text format rather than a tolerance; `brune` differs by the ratio of two time
+constants, and that ratio is asserted so the choice is hard to undo by accident.
 
 147 Rust tests and 258 Python tests pass with no EMOD3D build present.
 

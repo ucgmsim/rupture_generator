@@ -606,6 +606,49 @@ mod the_closed_form_shapes {
         }
     }
 
+    /// `urs`'s tail height is a ramp with *ends*, and the ends are where it went wrong.
+    ///
+    /// [`shape_parameter_field`] applied `DepthRamp::scaled_from_deep` without
+    /// bracketing it. `DepthRamp` interpolates and does not clamp -- every other
+    /// caller in the crate brackets it with an explicit three-branch `if` -- so a
+    /// subfault below 6 km got an extrapolated tail rather than `betadeep`. At 7 km,
+    /// one kilometre past the ramp, that was 0.05 against the C's 0.2, and half the
+    /// pulse was wrong.
+    ///
+    /// The reference comparison found it; this is what keeps it found. Both plateaux
+    /// and both breakpoints, because an unbracketed ramp is right in the middle and
+    /// wrong at every depth outside it -- which is most of a fault.
+    #[test]
+    fn the_urs_tail_ramp_has_ends() {
+        use genslip::slip_rate::shape_parameter_field;
+
+        let profile = genslip::slip_rate::BetaProfile {
+            shallow_ramp: genslip::rise_time::DepthRamp {
+                centre_km: 2.0,
+                half_width_km: 1.0,
+            },
+            shallow: 0.5,
+            mid_ramp: genslip::rise_time::DepthRamp {
+                centre_km: 6.5,
+                half_width_km: 1.5,
+            },
+            mid: 0.13,
+            deep: 0.13,
+        };
+        let depths = [0.0_f32, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
+        let field = shape_parameter_field(SlipRateShape::Urs, 1, &depths, profile);
+
+        // betashal above the ramp, betadeep below it, and the midpoint between.
+        let expected = [0.5_f32, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
+        for (index, (depth, want)) in depths.iter().zip(expected).enumerate() {
+            let got = field[(0, index)];
+            assert!(
+                (got - want).abs() < 1e-6,
+                "at {depth} km the tail is {got}, not {want}"
+            );
+        }
+    }
+
     /// A taller tail carries more of the slip late.
     ///
     /// What the depth ramp on this parameter is *for*: shallow subfaults get a longer,

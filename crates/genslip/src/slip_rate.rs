@@ -734,7 +734,18 @@ pub fn shape_parameter_field(
         SlipRateShape::Urs => {
             let mut field = SlipField::zeros(strike_count, depth_km.len());
             for (dip, depth) in depth_km.iter().enumerate() {
-                let tail = URS_DEEP_TAIL + URS_RAMP.scaled_from_deep(URS_TAIL_RANGE, *depth);
+                // Branched, not just scaled. `DepthRamp` interpolates and does not
+                // clamp -- every caller brackets it, and this one did not until the
+                // reference comparison caught it: at 7 km, one kilometre below the
+                // ramp, the unbracketed form gave 0.05 where the C gives 0.2, and
+                // half the pulse was wrong. Same shape as `BetaProfile::beta_at`.
+                let tail = if *depth <= URS_RAMP.shallow_km() {
+                    URS_SHALLOW_TAIL
+                } else if *depth < URS_RAMP.deep_km() {
+                    URS_DEEP_TAIL + URS_RAMP.scaled_from_deep(URS_TAIL_RANGE, *depth)
+                } else {
+                    URS_DEEP_TAIL
+                };
                 for strike in 0..strike_count {
                     field[(strike, dip)] = tail;
                 }
@@ -752,6 +763,9 @@ const URS_RAMP: DepthRamp = DepthRamp {
 };
 /// `betadeep` (`slip.c:44`): the tail height below the ramp.
 const URS_DEEP_TAIL: f32 = 0.2;
+/// `betashal` (`slip.c:45`): the tail height above it. A shallow subfault releases
+/// more of its slip late.
+const URS_SHALLOW_TAIL: f32 = 0.5;
 /// `betashal - betadeep` (`slip.c:44-45`): how much taller it is above the ramp.
 ///
 /// The C spells this as a precomputed gradient, `(betadeep - betashal)/(dmax - dmin)`,
