@@ -3,9 +3,10 @@
 > **These no longer govern the crate.** `ENGINEERING_RULES.md` does.
 >
 > They governed Stage 1, where the contract was bit-equality with genslip v5.6.2
-> checked per function against `genslip-oracle`. That contract is retired: the gate is
-> scientific agreement, and `ENGINEERING_RULES.md` says what that means and what a
-> failing test obliges you to do.
+> checked per function against a `genslip-oracle` crate. That contract is retired and
+> so is the crate — the gate is scientific agreement, and `ENGINEERING_RULES.md` says
+> what that means and what a failing test obliges you to do. References to
+> `genslip-oracle` below are to something that no longer exists.
 >
 > Kept because this is **archaeology worth having** — it explains why the C looks the
 > way it does, and why parts of this crate still carry its shape. Read it to

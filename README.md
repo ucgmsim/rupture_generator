@@ -55,10 +55,9 @@ wrong. **A second reading of the source by the same reader is not a reference.**
 
 ```
 crates/genslip/          the port: physics, no I/O, no PyO3
-crates/genslip-oracle/   dev-only FFI to libgenrandv5.6.a -- unwired; see below
 crates/srf/              the Standard Rupture Format, reader and writer
 crates/core/             the PyO3 boundary
-rupture_generator/       the Python package: srf.py, assemble.py, geometry.py
+rupture_generator/       the Python package: srf.py, assemble.py
 tests/harness/           genslip's getpar vocabulary, for driving the reference
 ```
 
@@ -99,8 +98,21 @@ compatibility backends, both are gone, and the crate has **no system dependencie
 `rustfft` and a fast-sweeping solver do the same jobs in pure Rust, more accurately in
 the solver's case and slightly faster in the transform's.
 
-`genslip-oracle` needs an EMOD3D build. Point `EMOD3D_BUILD_DIR` at one, built
-without fast-math and without FP contraction:
+**Nothing links EMOD3D any more.** `genslip-oracle` — a dev-only FFI to
+`libgenrandv5.6.a`, used by the retired per-function parity suite — is deleted, and
+with it the last `build.rs` in the workspace. It had been unwired for some time and
+was kept for one stated reason: that `generic_slip2srf` was 1,450 lines of unwritten
+port and per-function parity was how it would be built. That premise was wrong (see
+below), so the crate had no remaining purpose.
+
+What survives of the parity suite is in `contracts.rs`, `slip_rate_contract.rs`,
+`rng_contract.rs` and `skipped_fields.rs`, restated as properties of the port rather
+than as bit-equality with the C.
+
+**Two binaries are still useful, and neither is linked.** Both are found by
+environment variable, both are for *regenerating* or *re-measuring* rather than for
+the gate, and the whole suite is green without either. Build them without fast-math
+and without FP contraction:
 
 ```sh
 cmake -B build-oracle \
@@ -109,28 +121,15 @@ cmake -B build-oracle \
   -DCMAKE_Fortran_FLAGS="-O0 -fno-fast-math -ffp-contract=off"
 ```
 
-Two things that are not obvious:
-
 - **`-std=gnu17` is required**, not a preference. EMOD3D declares `FILE *fopfile();`
   with an empty parameter list, which C23 reads as `(void)`, so gcc 15 refuses to
-  compile `StandRupFormat/srf_subs.c` at all. This bites the `genslip_v5.6.2` binary
-  the Stage 0 corpus needs; the `genrand` library the oracle links happens not to.
+  compile `StandRupFormat/srf_subs.c` at all.
 - **The Fortran `-O0` does not take.** `CMakeLists.txt` appends its own `-O2` after
   `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
   `-ffp-contract=off` do take, which are the two that decide float results.
 
-**`genslip-oracle` is not linked by anything.** Not the library, not a test, not the
-gate. The parity suite it existed for is retired, and what survives of it is in
-`contracts.rs`, `slip_rate_contract.rs`, `rng_contract.rs` and `skipped_fields.rs` —
-restated as properties of the port rather than as bit-equality with the C.
-
-The crate stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of port
-that has not been written, and per-function parity is how it will be built.
-
-**`EMOD3D_BUILD_DIR` is therefore not needed at all** to build the library, run the
-gate, or generate a rupture. It is needed only if you rewire the oracle, to *rebuild*
-the corpus with `GENSLIP_BINARY`, or to re-run the point-source reference comparison
-with `GENERIC_SLIP2SRF`:
+`GENSLIP_BINARY` rebuilds the corpus; thirteen tests skip without it. And
+`GENERIC_SLIP2SRF` re-runs the point-source reference comparison:
 
 ```sh
 GENERIC_SLIP2SRF=/path/to/generic_slip2srf \
@@ -143,7 +142,9 @@ of the ten slip-rate shapes agree to **1e-6 relative**, which is the resolution 
 SRF text format rather than a tolerance; `brune` differs by the ratio of two time
 constants, and that ratio is asserted so the choice is hard to undo by accident.
 
-147 Rust tests and 258 Python tests pass with no EMOD3D build present.
+180 Rust tests and 315 Python tests pass with no EMOD3D build present, and
+25 Python tests skip -- the thirteen that want `GENSLIP_BINARY` and the twelve that
+want `GENERIC_SLIP2SRF`.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so
@@ -332,7 +333,11 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    `genslip-oracle` would get rewired, because that much new port needs per-function
    parity to be built at all.
 
-   It was never 1,450 lines of port. `generic_slip2srf` does not generate anything: it
+   Neither half of that held. It was never 1,450 lines of port, and no per-function
+   parity was needed — so `genslip-oracle` had no remaining reason to exist and is
+   deleted, taking the workspace's last `build.rs` with it.
+
+   `generic_slip2srf` does not generate anything: it
    reads `lon lat dep ds dw stk dip rake slip tinit segno` from a text file and turns
    each row into a pulse. Of its four `.c` files, 950 lines are an SRF writer this
    repo already has and a plane-header reconstruction `assemble.py` deliberately

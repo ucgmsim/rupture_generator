@@ -25,7 +25,8 @@
 //!
 //! `LocalFlatEarth` reproduced genslip's `set_ll` bit for bit, for comparison, and
 //! nothing else. With the parity suite retired it had no purpose left, so it went —
-//! taking the last use of `genslip-oracle` outside its own crate with it.
+//! taking the last use of the `genslip-oracle` crate with it. That crate is now
+//! deleted too.
 //!
 //! It was wrong by 0.93 m at 1 km, 20 m at 10 km, 264 m at 50 km, **944 m at 100 km**
 //! and 3.5 km at 200 km: quadratic in distance, as a linearisation is.

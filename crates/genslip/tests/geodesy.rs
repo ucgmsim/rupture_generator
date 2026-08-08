@@ -11,7 +11,7 @@
 //! That made the "swap `Wgs84Geodesic` in for the flat earth" item a false premise:
 //! there was nothing to swap, only a compatibility shim to delete. `LocalFlatEarth`
 //! reproduced genslip's `set_ll` bit for bit, existed for no other reason, and is now
-//! gone along with the last use of `genslip-oracle` outside its own crate.
+//! gone, and so is the `genslip-oracle` crate whose last caller it was.
 //!
 //! # What the flat earth was wrong by, recorded before deleting it
 //!

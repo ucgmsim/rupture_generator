@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/genslip", "crates/genslip-oracle", "crates/srf", "crates/core"]
+members = ["crates/genslip", "crates/srf", "crates/core"]
 
 [workspace.package]
 edition = "2024"
@@ -8,7 +8,6 @@ license = "MIT"
 
 [workspace.dependencies]
 genslip = { path = "crates/genslip" }
-genslip-oracle = { path = "crates/genslip-oracle" }
 srf = { path = "crates/srf" }
 
 [workspace.lints.clippy]
