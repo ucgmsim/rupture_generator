@@ -16,7 +16,6 @@ use common::counting::{CountingSource, field_draw_count};
 use common::stats::{decompose, lag_one_along_dip, lag_one_along_strike, mean, pearson};
 use common::tolerance::{Z, f32_sum_relative, wilson_hilferty_band};
 use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep};
-use genslip::grid::Spectrum;
 use genslip::rng::{DrawSource, GenslipLcg, Pcg};
 
 /// A field with structure in both directions, longer-correlated along strike.
@@ -166,7 +165,7 @@ mod the_draw_counter {
         // parities of the loop bound.
         for (strike_count, dip_count) in [(2, 2), (28, 16), (44, 12), (8, 30)] {
             let mut source = CountingSource::new(GenslipLcg::new(9));
-            let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+            let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
             genslip::field::correlated_field(
                 &mut spectrum,
                 &mut source,

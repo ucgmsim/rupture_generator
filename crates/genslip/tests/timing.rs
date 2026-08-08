@@ -41,7 +41,7 @@ fn speed_field(cells: usize) -> SpeedGrid {
             2.0 + 0.7 * (dip * 0.05).tanh() + 0.3 * (strike * 0.02).sin()
         })
         .collect();
-    SpeedGrid::new(cells, cells, values)
+    genslip::grid::from_values(cells, cells, values)
 }
 
 /// Time per cell, across two orders of magnitude of grid.
@@ -72,7 +72,7 @@ fn solver_scaling() {
             let times = solver.solve(&speed, hypocentre, 1.0);
             best = best.min(start.elapsed());
             rounds = solver.rounds();
-            std::hint::black_box(times.time(0, 0));
+            std::hint::black_box(times[[0, 0]]);
         }
 
         // Per cell AND per round. The round count is a property of the medium, and
@@ -126,7 +126,7 @@ fn whole_rupture() {
 
     // The solver alone, on the same grid, for the share.
     let (shear, _) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
-    let fraction = genslip::taper::SlipField::from_values(
+    let fraction = genslip::grid::from_values(
         grid.extents.fault_strike,
         grid.extents.fault_dip,
         grid.velocity_fraction.clone(),
@@ -143,7 +143,7 @@ fn whole_rupture() {
         let start = Instant::now();
         let times = FactoredSweep::new().solve(&speed, fixture::hypocentre(), 1.0);
         solve_best = solve_best.min(start.elapsed());
-        std::hint::black_box(times.time(0, 0));
+        std::hint::black_box(times[[0, 0]]);
     }
     println!(
         "  of which the eikonal solve: {solve_best:?} ({:.1}%)\n",
@@ -171,7 +171,7 @@ fn whole_rupture() {
 #[ignore = "measures time, not behaviour"]
 fn fft_dip_pass() {
     use genslip::fft::{Direction, Fft, RustFft, transform_2d};
-    use genslip::grid::Spectrum;
+    use genslip::grid::{FaultAxes, FaultAxesMut, Spectrum};
     use num_complex::Complex32;
 
     /// The dip pass as genslip writes it: one strided read and one strided write per
@@ -182,25 +182,25 @@ fn fft_dip_pass() {
         for dip in 0..dip_count {
             let start = dip * strike_count;
             fft.transform(
-                &mut spectrum.as_mut_slice()[start..start + strike_count],
+                &mut spectrum.flat_mut()[start..start + strike_count],
                 direction,
             );
         }
         let mut column = vec![Complex32::default(); dip_count];
         for strike in 0..strike_count {
             for (dip, value) in column.iter_mut().enumerate() {
-                *value = spectrum[(strike, dip)];
+                *value = spectrum[[dip, strike]];
             }
             fft.transform(&mut column, direction);
             for (dip, value) in column.iter().enumerate() {
-                spectrum[(strike, dip)] = *value;
+                spectrum[[dip, strike]] = *value;
             }
         }
     }
 
     fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
-        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
-        for (index, value) in spectrum.as_mut_slice().iter_mut().enumerate() {
+        let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
+        for (index, value) in spectrum.flat_mut().iter_mut().enumerate() {
             #[expect(clippy::cast_precision_loss, reason = "grid indices")]
             let phase = index as f32 * 0.017;
             *value = Complex32::new(phase.sin(), phase.cos());
@@ -245,7 +245,7 @@ fn fft_dip_pass() {
                 which(&mut spectrum, &mut engine, Direction::Forward);
                 which(&mut spectrum, &mut engine, Direction::Inverse);
                 best = best.min(start.elapsed());
-                std::hint::black_box(spectrum[(0, 0)]);
+                std::hint::black_box(spectrum[[0, 0]]);
             }
             best
         };

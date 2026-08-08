@@ -8,7 +8,7 @@
 //! Moment matching is the usual path: `M0 = sum over subfaults of mu * area * slip`,
 //! so a single factor `M0_target / M0_unscaled` gives the field its magnitude.
 
-use crate::taper::SlipField;
+use crate::grid::{FaultAxes, SlipField};
 
 /// Subfault dimensions, in kilometres.
 #[derive(Clone, Copy, Debug)]
@@ -101,7 +101,7 @@ pub fn scale_slip(
     );
 
     let area = subfault.area_cm2();
-    let unscaled = |strike: usize, dip: usize| field[(strike, dip + dip_offset)];
+    let unscaled = |strike: usize, dip: usize| field[[dip + dip_offset, strike]];
 
     // Accumulated in `f64`. The original folds through a `float` over every subfault,
     // and on a 10^5-subfault fault that costs enough precision to matter: the moment
@@ -141,13 +141,13 @@ pub fn scale_slip(
         }
     };
 
-    let mut slip = SlipField::zeros(strike_count, dip_count);
+    let mut slip = crate::grid::zeros(strike_count, dip_count);
     let mut total = 0.0_f64;
     let mut maximum = 0.0_f32;
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             let scaled = factor * unscaled(strike, dip);
-            slip[(strike, dip)] = scaled;
+            slip[[dip, strike]] = scaled;
             total += f64::from(scaled);
             if scaled > maximum {
                 maximum = scaled;

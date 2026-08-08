@@ -8,95 +8,7 @@
 //! Applied to the real slip field after the inverse transform, not in the wavenumber
 //! domain.
 
-/// Slip on the fault, in physical units, on the subfault grid.
-///
-/// Distinct from [`crate::grid::Spectrum`]: that is complex and lives in the
-/// wavenumber domain, this is real and lives on the fault. They have different
-/// extents too — the spectrum is padded.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SlipField {
-    strike_count: usize,
-    dip_count: usize,
-    values: Vec<f32>,
-}
-
-impl SlipField {
-    /// A field of zeros.
-    ///
-    /// # Panics
-    ///
-    /// If either extent is zero.
-    #[must_use]
-    pub fn zeros(strike_count: usize, dip_count: usize) -> Self {
-        assert!(
-            strike_count > 0 && dip_count > 0,
-            "slip field extents must be non-zero, got {strike_count}x{dip_count}"
-        );
-        Self {
-            strike_count,
-            dip_count,
-            values: vec![0.0; strike_count * dip_count],
-        }
-    }
-
-    /// Build from existing values, along-strike index fastest.
-    ///
-    /// # Panics
-    ///
-    /// If `values` does not hold exactly `strike_count * dip_count` entries.
-    #[must_use]
-    pub fn from_values(strike_count: usize, dip_count: usize, values: Vec<f32>) -> Self {
-        assert_eq!(
-            values.len(),
-            strike_count * dip_count,
-            "got {} values for a {strike_count}x{dip_count} field",
-            values.len()
-        );
-        Self {
-            strike_count,
-            dip_count,
-            values,
-        }
-    }
-
-    /// Number of subfaults along strike.
-    #[must_use]
-    pub const fn strike_count(&self) -> usize {
-        self.strike_count
-    }
-
-    /// Number of subfaults down dip.
-    #[must_use]
-    pub const fn dip_count(&self) -> usize {
-        self.dip_count
-    }
-
-    /// The field as one flat slice, along-strike index fastest.
-    #[must_use]
-    pub fn as_slice(&self) -> &[f32] {
-        &self.values
-    }
-
-    /// The field as one mutable flat slice.
-    pub fn as_mut_slice(&mut self) -> &mut [f32] {
-        &mut self.values
-    }
-}
-
-impl std::ops::Index<(usize, usize)> for SlipField {
-    type Output = f32;
-
-    fn index(&self, (strike, dip): (usize, usize)) -> &f32 {
-        &self.values[strike + dip * self.strike_count]
-    }
-}
-
-impl std::ops::IndexMut<(usize, usize)> for SlipField {
-    fn index_mut(&mut self, (strike, dip): (usize, usize)) -> &mut f32 {
-        let offset = strike + dip * self.strike_count;
-        &mut self.values[offset]
-    }
-}
+use crate::grid::{FaultAxes, SlipField};
 
 /// How far each edge taper reaches, as a fraction of the fault's extent.
 #[derive(Clone, Copy, Debug, Default)]
@@ -218,7 +130,7 @@ pub fn taper_edges(slip: &mut SlipField, tapers: &EdgeTapers) {
     for dip in 0..top_width {
         let damping = dip_ramp(dip, top_width);
         for strike in 0..strike_count {
-            slip[(strike, dip)] *= side_damping(strike, strike_count, side_width) * damping;
+            slip[[dip, strike]] *= side_damping(strike, strike_count, side_width) * damping;
         }
     }
 
@@ -227,7 +139,7 @@ pub fn taper_edges(slip: &mut SlipField, tapers: &EdgeTapers) {
         let damping = dip_ramp(offset, bottom_width);
         let dip = dip_count - 1 - offset;
         for strike in 0..strike_count {
-            slip[(strike, dip)] *= side_damping(strike, strike_count, side_width) * damping;
+            slip[[dip, strike]] *= side_damping(strike, strike_count, side_width) * damping;
         }
     }
 
@@ -246,8 +158,8 @@ pub fn taper_edges(slip: &mut SlipField, tapers: &EdgeTapers) {
     for dip in top_width..dip_count.saturating_sub(bottom_width) {
         for strike in 0..side_width {
             let damping = dip_ramp(strike, side_width);
-            slip[(strike, dip)] *= damping;
-            slip[(strike_count - 1 - strike, dip)] *= damping;
+            slip[[dip, strike]] *= damping;
+            slip[[dip, strike_count - 1 - strike]] *= damping;
         }
     }
 }

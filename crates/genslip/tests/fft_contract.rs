@@ -25,13 +25,13 @@
 //! A third engine would have to clear the same bar.
 
 use genslip::fft::{Direction, Fft, RustFft, transform_2d};
-use genslip::grid::Spectrum;
+use genslip::grid::{FaultAxes, FaultAxesMut, Spectrum};
 use num_complex::Complex32;
 
 const SHAPES: [(usize, usize); 5] = [(2, 2), (8, 16), (24, 10), (32, 24), (64, 8)];
 
 fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
-    let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+    let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
@@ -39,7 +39,7 @@ fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
                 (strike as f32 * 0.37).sin() + (dip as f32 * 0.11).cos(),
                 (strike as f32 * 0.19).cos() - (dip as f32 * 0.43).sin(),
             );
-            spectrum[(strike, dip)] = value;
+            spectrum[[dip, strike]] = value;
         }
     }
     spectrum
@@ -48,17 +48,17 @@ fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
 /// Largest absolute difference between two grids, relative to the larger's peak.
 fn relative_divergence(left: &Spectrum, right: &Spectrum) -> f32 {
     let peak = left
-        .as_slice()
+        .flat()
         .iter()
-        .chain(right.as_slice())
+        .chain(right.flat())
         .map(|value| value.norm())
         .fold(0.0_f32, f32::max);
     if peak == 0.0 {
         return 0.0;
     }
-    left.as_slice()
+    left.flat()
         .iter()
-        .zip(right.as_slice())
+        .zip(right.flat())
         .map(|(a, b)| (a - b).norm())
         .fold(0.0_f32, f32::max)
         / peak
@@ -80,7 +80,7 @@ fn round_trip_has_gain_n<F: Fft>(engine: &mut F, label: &str) {
         #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
         let gain = (strike_count * dip_count) as f32;
         let mut expected = original;
-        for value in expected.as_mut_slice() {
+        for value in expected.flat_mut() {
             *value *= gain;
         }
 
@@ -101,7 +101,7 @@ fn transform_is_linear<F: Fft>(engine: &mut F, label: &str) {
     for (strike_count, dip_count) in SHAPES {
         let x = seeded(strike_count, dip_count);
         let mut y = seeded(strike_count, dip_count);
-        for (index, value) in y.as_mut_slice().iter_mut().enumerate() {
+        for (index, value) in y.flat_mut().iter_mut().enumerate() {
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
             let scale = (index as f32 * 0.05).cos();
             *value *= scale;
@@ -110,7 +110,7 @@ fn transform_is_linear<F: Fft>(engine: &mut F, label: &str) {
         let (a, b) = (2.5_f32, -0.75_f32);
 
         let mut combined = x.clone();
-        for (value, other) in combined.as_mut_slice().iter_mut().zip(y.as_slice()) {
+        for (value, other) in combined.flat_mut().iter_mut().zip(y.flat()) {
             *value = *value * a + *other * b;
         }
         transform_2d(&mut combined, engine, Direction::Forward);
@@ -120,9 +120,9 @@ fn transform_is_linear<F: Fft>(engine: &mut F, label: &str) {
         transform_2d(&mut transformed_x, engine, Direction::Forward);
         transform_2d(&mut transformed_y, engine, Direction::Forward);
         for (value, other) in transformed_x
-            .as_mut_slice()
+            .flat_mut()
             .iter_mut()
-            .zip(transformed_y.as_slice())
+            .zip(transformed_y.flat())
         {
             *value = *value * a + *other * b;
         }
@@ -141,15 +141,15 @@ fn transform_is_linear<F: Fft>(engine: &mut F, label: &str) {
 /// rather than merely a self-consistency.
 fn a_constant_becomes_a_spike<F: Fft>(engine: &mut F, label: &str) {
     for (strike_count, dip_count) in SHAPES {
-        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
-        for value in spectrum.as_mut_slice() {
+        let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
+        for value in spectrum.flat_mut() {
             *value = Complex32::new(3.0, 0.0);
         }
         transform_2d(&mut spectrum, engine, Direction::Forward);
 
         #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
         let total = 3.0 * (strike_count * dip_count) as f32;
-        let peak = spectrum[(0, 0)];
+        let peak = spectrum[[0, 0]];
         assert!(
             (peak.re - total).abs() < total * 1e-6 && peak.im.abs() < total * 1e-6,
             "{label}: DC of a constant field on {strike_count}x{dip_count} is {peak:?}, \
@@ -160,7 +160,7 @@ fn a_constant_becomes_a_spike<F: Fft>(engine: &mut F, label: &str) {
             for strike in 0..strike_count {
                 if (strike, dip) != (0, 0) {
                     assert!(
-                        spectrum[(strike, dip)].norm() < total * 1e-6,
+                        spectrum[[dip, strike]].norm() < total * 1e-6,
                         "{label}: leakage into (strike {strike}, dip {dip}) on \
                          {strike_count}x{dip_count}"
                     );
@@ -174,24 +174,24 @@ fn a_constant_becomes_a_spike<F: Fft>(engine: &mut F, label: &str) {
 fn a_real_field_transforms_hermitian<F: Fft>(engine: &mut F, label: &str) {
     for (strike_count, dip_count) in SHAPES {
         let mut spectrum = seeded(strike_count, dip_count);
-        for value in spectrum.as_mut_slice() {
+        for value in spectrum.flat_mut() {
             value.im = 0.0;
         }
         transform_2d(&mut spectrum, engine, Direction::Forward);
 
         let peak = spectrum
-            .as_slice()
+            .flat()
             .iter()
             .map(|value| value.norm())
             .fold(0.0_f32, f32::max);
 
         for dip in 0..dip_count {
             for strike in 0..strike_count {
-                let mirrored = (
-                    (strike_count - strike) % strike_count,
+                let mirrored = [
                     (dip_count - dip) % dip_count,
-                );
-                let difference = (spectrum[(strike, dip)] - spectrum[mirrored].conj()).norm();
+                    (strike_count - strike) % strike_count,
+                ];
+                let difference = (spectrum[[dip, strike]] - spectrum[mirrored].conj()).norm();
                 assert!(
                     difference < peak * 1e-6,
                     "{label}: Hermitian symmetry broken at (strike {strike}, dip {dip}) \

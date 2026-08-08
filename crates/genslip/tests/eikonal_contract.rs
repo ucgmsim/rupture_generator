@@ -36,11 +36,12 @@
 //!   sits at a fixed grid offset from the source, so its relative error is
 //!   resolution-independent. Absolute error is what converges.
 
+use genslip::grid::FaultAxes;
 use genslip::rupture::{EikonalSolver, Hypocentre, SpeedGrid, TravelTimes};
 
 /// A uniform medium, where the analytic solution is `distance / speed`.
 fn uniform(strike_count: usize, dip_count: usize, speed_km_s: f32) -> SpeedGrid {
-    SpeedGrid::new(
+    genslip::grid::from_values(
         strike_count,
         dip_count,
         vec![speed_km_s; strike_count * dip_count],
@@ -57,7 +58,7 @@ fn heterogeneous(strike_count: usize, dip_count: usize) -> SpeedGrid {
             2.0 + 0.7 * (dip * 0.3).tanh() + 0.3 * (strike * 0.4).sin()
         })
         .collect();
-    SpeedGrid::new(strike_count, dip_count, values)
+    genslip::grid::from_values(strike_count, dip_count, values)
 }
 
 /// Speed at the surface, and its increase per kilometre of depth.
@@ -82,7 +83,7 @@ fn linear_gradient(strike_count: usize, dip_count: usize, spacing_km: f64) -> Sp
             speed
         })
         .collect();
-    SpeedGrid::new(strike_count, dip_count, values)
+    genslip::grid::from_values(strike_count, dip_count, values)
 }
 
 /// First-arrival time in a constant-gradient medium, exactly.
@@ -129,7 +130,7 @@ fn extremes(speed: &SpeedGrid) -> (f64, f64) {
     let mut fastest = 0.0_f64;
     for dip in 0..speed.dip_count() {
         for strike in 0..speed.strike_count() {
-            let value = f64::from(speed.speed(strike, dip));
+            let value = f64::from(speed[[dip, strike]]);
             slowest = slowest.min(value);
             fastest = fastest.max(value);
         }
@@ -171,10 +172,10 @@ fn axis_rays_are_exact<E: EikonalSolver>(solver: &mut E) {
         #[expect(clippy::cast_precision_loss, reason = "small test indices")]
         let exact = offset as f64 * spacing * slowness;
         for cell in [
-            times.time(hypocentre.strike + offset, hypocentre.dip),
-            times.time(hypocentre.strike - offset, hypocentre.dip),
-            times.time(hypocentre.strike, hypocentre.dip + offset),
-            times.time(hypocentre.strike, hypocentre.dip - offset),
+            times[[hypocentre.dip, hypocentre.strike + offset]],
+            times[[hypocentre.dip, hypocentre.strike - offset]],
+            times[[hypocentre.dip + offset, hypocentre.strike]],
+            times[[hypocentre.dip - offset, hypocentre.strike]],
         ] {
             assert!(
                 (cell - exact).abs() < 1e-6 * exact,
@@ -213,7 +214,7 @@ fn point_source_error<E: EikonalSolver>(solver: &mut E) -> f64 {
                 continue;
             }
             let exact = distance / f64::from(speed);
-            let relative = (times.time(strike, dip) - exact).abs() / exact;
+            let relative = (times[[dip, strike]] - exact).abs() / exact;
             let cells = distance / spacing;
             let envelope = (2.0 + cells).ln() / cells;
             assert!(
@@ -246,7 +247,7 @@ fn gradient_error<E: EikonalSolver>(solver: &mut E, cells: usize, spacing: f64) 
                 continue;
             }
             let exact = gradient_arrival_s(strike, dip, hypocentre, spacing);
-            worst = worst.max((times.time(strike, dip) - exact).abs() / exact);
+            worst = worst.max((times[[dip, strike]] - exact).abs() / exact);
         }
     }
     worst
@@ -269,7 +270,7 @@ fn refining_the_grid_converges<E: EikonalSolver>(solver: &mut E) {
         for dip in 0..cells {
             for strike in 0..cells {
                 let exact = straight_line_km(strike, dip, hypocentre, spacing) / 2.5;
-                worst = worst.max((times.time(strike, dip) - exact).abs());
+                worst = worst.max((times[[dip, strike]] - exact).abs());
             }
         }
         worst
@@ -320,7 +321,7 @@ fn arrival_is_between_the_straight_line_and_the_lattice_path<E: EikonalSolver>(s
 
     for dip in 0..dip_count {
         for strike in 0..strike_count {
-            let arrival = times.time(strike, dip);
+            let arrival = times[[dip, strike]];
 
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
             let along_axes = lattice_cells(strike, dip, hypocentre) as f64 * spacing / slowest;
@@ -356,10 +357,10 @@ fn every_cell_ruptures_after_a_neighbour<E: EikonalSolver>(solver: &mut E) {
             if (strike, dip) == (hypocentre.strike, hypocentre.dip) {
                 continue;
             }
-            let here = times.time(strike, dip);
+            let here = times[[dip, strike]];
             let earlier = neighbours(strike, dip, strike_count, dip_count)
                 .into_iter()
-                .any(|(s, d)| times.time(s, d) < here);
+                .any(|(s, d)| times[[d, s]] < here);
             assert!(
                 earlier,
                 "({strike}, {dip}) at {here} is a local minimum; nothing reached it"
@@ -385,9 +386,9 @@ fn neighbouring_cells_are_lipschitz<E: EikonalSolver>(solver: &mut E) {
     let bound = spacing / slowest;
     for dip in 0..dip_count {
         for strike in 0..strike_count {
-            let here = times.time(strike, dip);
+            let here = times[[dip, strike]];
             for (s, d) in neighbours(strike, dip, strike_count, dip_count) {
-                let step = (times.time(s, d) - here).abs();
+                let step = (times[[d, s]] - here).abs();
                 assert!(
                     step <= bound * (1.0 + 1e-6),
                     "({strike}, {dip}) to ({s}, {d}) jumps {step} s, past the {bound} \
@@ -408,11 +409,11 @@ fn raising_the_speed_never_delays_anything<E: EikonalSolver>(solver: &mut E) {
     let hypocentre = Hypocentre { strike: 9, dip: 5 };
     let base = heterogeneous(strike_count, dip_count);
 
-    let faster = SpeedGrid::new(
+    let faster = genslip::grid::from_values(
         strike_count,
         dip_count,
         (0..strike_count * dip_count)
-            .map(|index| base.speed(index % strike_count, index / strike_count) * 1.2)
+            .map(|index| base[[index / strike_count, index % strike_count]] * 1.2)
             .collect(),
     );
 
@@ -422,7 +423,7 @@ fn raising_the_speed_never_delays_anything<E: EikonalSolver>(solver: &mut E) {
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             assert!(
-                quick.time(strike, dip) <= slow.time(strike, dip) + 1e-12,
+                quick[[dip, strike]] <= slow[[dip, strike]] + 1e-12,
                 "({strike}, {dip}) got later when the medium got faster"
             );
         }
@@ -435,16 +436,13 @@ fn the_source_is_the_only_zero<E: EikonalSolver>(solver: &mut E) {
     let times: TravelTimes = solver.solve(&heterogeneous(40, 24), hypocentre, 0.75);
 
     assert_eq!(
-        times.time(hypocentre.strike, hypocentre.dip).to_bits(),
+        times[[hypocentre.dip, hypocentre.strike]].to_bits(),
         0.0_f64.to_bits()
     );
     for dip in 0..times.dip_count() {
         for strike in 0..times.strike_count() {
             if (strike, dip) != (hypocentre.strike, hypocentre.dip) {
-                assert!(
-                    times.time(strike, dip) > 0.0,
-                    "({strike}, {dip}) is not later"
-                );
+                assert!(times[[dip, strike]] > 0.0, "({strike}, {dip}) is not later");
             }
         }
     }

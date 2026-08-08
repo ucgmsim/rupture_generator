@@ -40,7 +40,7 @@ use common::tolerance::{Z, log_spectrum_slope_error, wilson_hilferty_band};
 use genslip::field::{
     CorrelationLengths, Spectrum2D, WavelengthBand, WavenumberStep, correlated_field,
 };
-use genslip::grid::Spectrum;
+use genslip::grid::{FaultAxes, Spectrum};
 use genslip::rng::{DrawSource, GenslipLcg, Pcg};
 
 /// Big enough that the flat part of the band holds thousands of coefficients.
@@ -94,7 +94,7 @@ fn wavenumber(index: usize, count: usize, step: f64) -> f64 {
 
 /// One drawn spectrum.
 fn drawn<S: DrawSource>(source: &mut S, shape: Spectrum2D) -> Spectrum {
-    let mut spectrum = Spectrum::zeros(CELLS, CELLS);
+    let mut spectrum = genslip::grid::spectrum(CELLS, CELLS);
     correlated_field(
         &mut spectrum,
         source,
@@ -220,7 +220,7 @@ fn the_falloff_exponent_is_recovered_from_the_field() {
                     }
                     _ => (1.0 + a).ln(),
                 };
-                let power = f64::from(spectrum[(strike, dip)].norm_sqr());
+                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
                 if power > 0.0 {
                     points.push((regress_on, power.ln()));
                 }
@@ -266,7 +266,7 @@ fn the_frankel_shape_is_flat_below_its_corner() {
         let spectrum = drawn(&mut source, Spectrum2D::Frankel);
         for &(strike, dip) in &fitted_coefficients() {
             if corner_argument(strike, dip) < 0.5 {
-                let power = f64::from(spectrum[(strike, dip)].norm_sqr());
+                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
                 if power > 0.0 {
                     below.push(power);
                 }
@@ -315,7 +315,7 @@ fn the_realised_power_matches_the_prescribed_amplitude() {
                 // von Kármán, from Mai & Beroza: A = scale / sqrt((1+a)^1.75).
                 let a = corner_argument(strike, dip);
                 let amplitude_squared = (1.0 + a).powf(-1.75);
-                let power = f64::from(spectrum[(strike, dip)].norm_sqr());
+                let power = f64::from(spectrum[[dip, strike]].norm_sqr());
                 ratios.push(power / amplitude_squared);
             }
         }
@@ -385,7 +385,7 @@ fn the_mean_rise_time_is_what_the_moment_implies() {
         * f64::from(model.moment_dyne_cm).cbrt()
         * f64::from(model.alpha_t);
 
-    let realised = stats::mean(&stats::widen(model.rise_time_s.as_slice()));
+    let realised = stats::mean(&stats::widen(model.rise_time_s.flat()));
     println!("mean rise time {realised:.5} s against {expected:.5} s implied by M0");
 
     assert!(

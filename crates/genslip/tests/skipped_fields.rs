@@ -24,7 +24,6 @@ mod common;
 
 use common::counting::{CountingSource, field_draw_count};
 use genslip::field::{WavelengthBand, WavenumberStep, self_affine_field};
-use genslip::grid::Spectrum;
 use genslip::rng::GenslipLcg;
 use proptest::prelude::*;
 
@@ -39,7 +38,7 @@ const STEP: WavenumberStep = WavenumberStep {
 
 /// Build the field the skip stands in for, and say where it left the stream.
 fn building_it(strike_count: usize, dip_count: usize, seed: i64) -> i64 {
-    let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+    let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
     let mut source = GenslipLcg::new(seed);
     self_affine_field(
         &mut spectrum,
@@ -76,7 +75,7 @@ fn the_draw_count_does_not_depend_on_the_spectrum() {
     let (strike_count, dip_count) = (32, 32);
 
     let build = |hurst: f32, band: WavelengthBand| {
-        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+        let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
         let mut source = CountingSource::new(GenslipLcg::new(5150));
         self_affine_field(&mut spectrum, &mut source, hurst, STEP, band);
         (source.gaussians(), spectrum)
@@ -125,7 +124,7 @@ proptest! {
         let mut skipping = CountingSource::new(GenslipLcg::new(77));
         genslip::slip::skip_unused_field(&mut skipping, strike_count, dip_count);
 
-        let mut spectrum = Spectrum::zeros(2 * strike_count, 2 * dip_count);
+        let mut spectrum = genslip::grid::spectrum(2 * strike_count, 2 * dip_count);
         let mut building = CountingSource::new(GenslipLcg::new(77));
         self_affine_field(
             &mut spectrum,

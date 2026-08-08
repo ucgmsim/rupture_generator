@@ -36,7 +36,7 @@
 
 use num_complex::Complex32;
 
-use crate::grid::{Spectrum, impose_hermitian_symmetry};
+use crate::grid::{FaultAxes, FaultAxesMut, Spectrum, impose_hermitian_symmetry};
 use crate::rng::DrawSource;
 
 /// Order of the band-pass roll-off at both ends.
@@ -290,7 +290,7 @@ pub fn correlated_field<S: DrawSource>(
                 amplitude = banded;
             }
 
-            spectrum[(strike, dip)] = draw_unit_complex(source) * amplitude;
+            spectrum[[dip, strike]] = draw_unit_complex(source) * amplitude;
         }
     }
 
@@ -329,7 +329,7 @@ pub fn band_pass(spectrum: &mut Spectrum, step: WavenumberStep, band: Wavelength
                 reason = "the narrowing seam: C stores the gain into a float"
             )]
             let gain = (1.0 / band.divisor_at_order(k2, order)) as f32;
-            spectrum[(strike, dip)] *= gain;
+            spectrum[[dip, strike]] *= gain;
         }
     }
 
@@ -391,7 +391,7 @@ pub fn self_affine_field<S: DrawSource>(
                 amplitude
             };
 
-            spectrum[(strike, dip)] = deviate * amplitude;
+            spectrum[[dip, strike]] = deviate * amplitude;
         }
     }
 
@@ -399,7 +399,7 @@ pub fn self_affine_field<S: DrawSource>(
     // field has no mean, and the power law diverges there. The other three points
     // keep their real part unscaled -- unlike the correlated field, this one does
     // not restore the quadrature variance.
-    spectrum[(0, 0)] = Complex32::default();
+    spectrum[[0, 0]] = Complex32::default();
     make_corners_real(spectrum, |value| value);
     impose_hermitian_symmetry(spectrum);
 }
@@ -429,11 +429,13 @@ fn make_corners_real(spectrum: &mut Spectrum, rescale: impl Fn(f32) -> f32) {
     let strike_nyquist = spectrum.strike_count() / 2;
     let dip_nyquist = spectrum.dip_count() / 2;
 
+    // `[dip, strike]`, per `grid.rs`. The four corners are the wavenumbers that are
+    // their own conjugate, so they have to be real for the inverse transform to be.
     for corner in [
-        (0, 0),
-        (strike_nyquist, 0),
-        (0, dip_nyquist),
-        (strike_nyquist, dip_nyquist),
+        [0, 0],
+        [0, strike_nyquist],
+        [dip_nyquist, 0],
+        [dip_nyquist, strike_nyquist],
     ] {
         spectrum[corner] = Complex32::new(rescale(spectrum[corner].re), 0.0);
     }
@@ -473,7 +475,7 @@ pub fn shift_phase(
     // A hypotenuse, which cannot overflow the way squaring both parts can. The
     // magnitude is what makes a negative mean come back positive -- `DEFECTS.md` 3,
     // pinned in `contracts.rs` -- and that is unchanged.
-    let dc_magnitude = spectrum[(0, 0)].norm();
+    let dc_magnitude = spectrum[[0, 0]].norm();
 
     for dip in 0..=dip_count / 2 {
         let ky = wavenumber(dip, dip_count, step.dip);
@@ -485,21 +487,21 @@ pub fn shift_phase(
             // Two separate multiplications rather than one combined factor, so the
             // rounding matches: the original applies the along-strike rotation,
             // stores the result, then applies the down-dip one.
-            let rotated = spectrum[(strike, dip)] * strike_phase;
-            spectrum[(strike, dip)] = rotated * dip_phase;
+            let rotated = spectrum[[dip, strike]] * strike_phase;
+            spectrum[[dip, strike]] = rotated * dip_phase;
         }
     }
 
-    spectrum[(0, 0)] = Complex32::new(dc_magnitude, 0.0);
+    spectrum[[0, 0]] = Complex32::new(dc_magnitude, 0.0);
     // Unlike the generators, only the imaginary parts of the remaining three
     // self-conjugate points are cleared; their real parts keep whatever the rotation
     // gave them.
     let strike_nyquist = strike_count / 2;
     let dip_nyquist = dip_count / 2;
     for corner in [
-        (strike_nyquist, 0),
-        (0, dip_nyquist),
-        (strike_nyquist, dip_nyquist),
+        [0, strike_nyquist],
+        [dip_nyquist, 0],
+        [dip_nyquist, strike_nyquist],
     ] {
         spectrum[corner] = Complex32::new(spectrum[corner].re, 0.0);
     }
@@ -549,11 +551,7 @@ pub fn correlate_with(target: &mut Spectrum, reference: &Spectrum, correlation: 
     )]
     let independent = (1.0 - f64::from(correlation * correlation)).sqrt() as f32;
 
-    for (value, other) in target
-        .as_mut_slice()
-        .iter_mut()
-        .zip(reference.as_slice().iter())
-    {
+    for (value, other) in target.flat_mut().iter_mut().zip(reference.flat().iter()) {
         *value = *other * correlation + *value * independent;
     }
 }

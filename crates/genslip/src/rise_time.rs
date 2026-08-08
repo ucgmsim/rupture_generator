@@ -18,8 +18,8 @@
 //!
 //! (orig. `genslip_v5.6.2.c:2186-2477`)
 
+use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
 use crate::slip::PerturbationSpec;
-use crate::taper::SlipField;
 
 /// A linear ramp between two depths.
 ///
@@ -184,15 +184,15 @@ pub fn rise_time_field(
     // `DepthRamp::weight` is used here rather than reproduced because the original
     // spells this one the same way: `(dep - r_dmin)/(r_dmax - r_dmin)`, with no
     // scale factor fused into the numerator.
-    let mut field = SlipField::zeros(strike_count, dip_count);
+    let mut field = crate::grid::zeros(strike_count, dip_count);
     let mut total = 0.0_f32;
     for dip in 0..dip_count {
         let deep_weight = spec.shallow_blend.weight(depth_km[dip]);
         let shallow_weight = 1.0 - deep_weight;
         for strike in 0..strike_count {
             let value =
-                deep_weight * correlated[(strike, dip)] + shallow_weight * slip[(strike, dip)];
-            field[(strike, dip)] = value;
+                deep_weight * correlated[[dip, strike]] + shallow_weight * slip[[dip, strike]];
+            field[[dip, strike]] = value;
             total += value;
         }
     }
@@ -201,7 +201,7 @@ pub fn rise_time_field(
     // `tests/float_identities.rs`. Dividing by the *magnitude* rather than the mean is
     // the part that is not a spelling: it flips a negative-mean field positive.
     let mean_magnitude = (total / subfault_count).abs();
-    for value in field.as_mut_slice() {
+    for value in field.flat_mut() {
         *value /= mean_magnitude;
     }
 
@@ -209,7 +209,7 @@ pub fn rise_time_field(
 
     // Negative rise time is meaningless. Unlike slip, there is no configuration that
     // turns this off.
-    for value in field.as_mut_slice() {
+    for value in field.flat_mut() {
         if *value < 0.0 {
             *value = 0.0;
         }
@@ -229,7 +229,7 @@ fn rescale_about_unit_mean(field: &mut SlipField, sigma: f32) {
     let subfault_count = (field.strike_count() * field.dip_count()) as f32;
 
     let mut sum_of_squares = 0.0_f32;
-    for value in field.as_slice() {
+    for value in field.flat() {
         sum_of_squares += (*value - 1.0) * (*value - 1.0);
     }
     #[expect(
@@ -239,7 +239,7 @@ fn rescale_about_unit_mean(field: &mut SlipField, sigma: f32) {
     let variation = f64::from(sum_of_squares / subfault_count).sqrt() as f32;
 
     let factor = sigma / variation;
-    for value in field.as_mut_slice() {
+    for value in field.flat_mut() {
         *value = factor * (*value - 1.0) + 1.0;
     }
 }
@@ -252,7 +252,7 @@ fn apply_slip_exponent(field: &mut SlipField, exponent: f32) {
     if exponent <= 0.1 {
         return;
     }
-    for value in field.as_mut_slice() {
+    for value in field.flat_mut() {
         if *value > 0.0 {
             #[expect(
                 clippy::cast_possible_truncation,
@@ -273,11 +273,11 @@ fn normalise_to_unit_mean(field: &mut SlipField) {
     let subfault_count = (field.strike_count() * field.dip_count()) as f32;
 
     let mut total = 0.0_f32;
-    for value in field.as_slice() {
+    for value in field.flat() {
         total += *value;
     }
     let mean = total / subfault_count;
-    for value in field.as_mut_slice() {
+    for value in field.flat_mut() {
         *value /= mean;
     }
 }
@@ -387,11 +387,11 @@ pub fn rise_time_normalisation(
             // non-negative -- but that is a fact about the caller, so the `abs` stays.
             let weight = match weighting {
                 Weighting::Uniform => 1.0,
-                Weighting::BySlip => slip[(strike, dip)].abs(),
-                Weighting::BySlipAndRuptureSpeed => rupture_speed * slip[(strike, dip)].abs(),
+                Weighting::BySlip => slip[[dip, strike]].abs(),
+                Weighting::BySlipAndRuptureSpeed => rupture_speed * slip[[dip, strike]].abs(),
             };
 
-            numerator += rise_factor * weight * rise_time[(strike, dip)];
+            numerator += rise_factor * weight * rise_time[[dip, strike]];
             denominator += weight;
         }
     }

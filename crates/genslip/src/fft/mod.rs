@@ -42,7 +42,7 @@ pub use rust::RustFft;
 
 use num_complex::Complex32;
 
-use crate::grid::Spectrum;
+use crate::grid::{FaultAxes, FaultAxesMut, Spectrum};
 
 /// Which way a transform goes.
 ///
@@ -109,19 +109,19 @@ pub fn transform_2d<F: Fft + ?Sized>(spectrum: &mut Spectrum, fft: &mut F, direc
     for dip in 0..dip_count {
         let start = dip * strike_count;
         fft.transform(
-            &mut spectrum.as_mut_slice()[start..start + strike_count],
+            &mut spectrum.flat_mut()[start..start + strike_count],
             direction,
         );
     }
 
     // Down dip: transpose, run contiguous rows, transpose back.
     let mut scratch = vec![Complex32::default(); strike_count * dip_count];
-    transpose_into(spectrum.as_slice(), &mut scratch, dip_count, strike_count);
+    transpose_into(spectrum.flat(), &mut scratch, dip_count, strike_count);
     for strike in 0..strike_count {
         let start = strike * dip_count;
         fft.transform(&mut scratch[start..start + dip_count], direction);
     }
-    transpose_into(&scratch, spectrum.as_mut_slice(), strike_count, dip_count);
+    transpose_into(&scratch, spectrum.flat_mut(), strike_count, dip_count);
 }
 
 /// Side of the square block the transpose works in, in elements.
@@ -164,7 +164,7 @@ fn transpose_into(source: &[Complex32], target: &mut [Complex32], rows: usize, c
 /// The factor callers pass is the product of the sample spacings of the domain the
 /// transform started in.
 pub fn scale(spectrum: &mut Spectrum, factor: f32) {
-    for value in spectrum.as_mut_slice() {
+    for value in spectrum.flat_mut() {
         *value *= factor;
     }
 }

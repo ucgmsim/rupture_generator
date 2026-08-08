@@ -37,6 +37,7 @@
 
 use crate::error::{Error, Result};
 use crate::fft::Fft;
+use crate::grid::{FaultAxes, SlipField};
 use crate::moment::{self, ScaledSlip, SlipScaling, SubfaultSize};
 use crate::rise_time::{self, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weighting};
 use crate::rng::DrawSource;
@@ -44,7 +45,7 @@ use crate::rupture::{self, EikonalSolver, Hypocentre, OnsetAdjustment, SpeedProf
 use crate::slip::{self, GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
 use crate::slip_rate::{self, BetaProfile, SlipRate, SlipRateShape};
 use crate::source::{self, CornerRelation, MagnitudeScale, VelocityModel};
-use crate::taper::{EdgeTapers, SlipField};
+use crate::taper::EdgeTapers;
 
 /// The discretised fault: extents, spacing, and what varies down dip.
 ///
@@ -209,7 +210,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     crate::taper::taper_edges(&mut slip, &slip_spec.tapers);
     if slip_spec.water_level > 0.0 {
         #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
-        let mean = slip.as_slice().iter().sum::<f32>() / subfaults as f32;
+        let mean = slip.flat().iter().sum::<f32>() / subfaults as f32;
         slip::apply_water_level(&mut slip, mean, slip_spec.water_level);
     }
 
@@ -217,7 +218,7 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
         &slip,
         0,
         dip_count,
-        rigidity.as_slice(),
+        rigidity.flat(),
         SubfaultSize {
             strike_km: grid.spacing.strike_km,
             dip_km: grid.spacing.dip_km,
@@ -387,12 +388,12 @@ pub fn point_source<E: EikonalSolver>(
     // Uniform slip, scaled so the summed moment is the target. A field of ones and the
     // same scaler the finite-fault path uses -- what makes this a point *source*
     // rather than a point is that the moment still has to come out right.
-    let uniform = SlipField::from_values(strike_count, dip_count, vec![1.0; subfaults]);
+    let uniform = crate::grid::from_values(strike_count, dip_count, vec![1.0; subfaults]);
     let slip = moment::scale_slip(
         &uniform,
         0,
         dip_count,
-        rigidity.as_slice(),
+        rigidity.flat(),
         SubfaultSize {
             strike_km: grid.spacing.strike_km,
             dip_km: grid.spacing.dip_km,
@@ -405,12 +406,12 @@ pub fn point_source<E: EikonalSolver>(
     Ok(assemble(
         &Fields {
             slip,
-            rake_deg: SlipField::from_values(strike_count, dip_count, grid.base_rake_deg.clone()),
+            rake_deg: crate::grid::from_values(strike_count, dip_count, grid.base_rake_deg.clone()),
             // Unit mean by construction, so `rise_time_normalisation` returns the mean
             // of the depth factor and `rise_times` gives back exactly
             // `factor_at(depth) / mean(factor_at) * rise_time_s`.
             normalised_rise: uniform,
-            rupture_perturbation: SlipField::zeros(strike_count, dip_count),
+            rupture_perturbation: crate::grid::zeros(strike_count, dip_count),
         },
         grid,
         &shear_speed,
@@ -576,7 +577,7 @@ fn assemble<E: EikonalSolver>(
 
     // --- rupture times ----------------------------------------------------------
     let velocity_fraction =
-        SlipField::from_values(strike_count, dip_count, grid.velocity_fraction.clone());
+        crate::grid::from_values(strike_count, dip_count, grid.velocity_fraction.clone());
     let speed = rupture::speed_field(
         shear_speed,
         &velocity_fraction,
@@ -609,12 +610,12 @@ fn assemble<E: EikonalSolver>(
             // getting a three-sample spike where the original writes no samples at
             // all. On a tapered fault that is every edge subfault: 21 of 240 on the
             // smallest corpus case, 108 of 1152 on the largest.
-            let cm = scaled.slip[(strike, dip)];
+            let cm = scaled.slip[[dip, strike]];
             slip_rate.push(if cm.abs() > slip_rate::MIN_SLIP_CM {
                 shape.pulse(
                     cm,
-                    rise_time_s[(strike, dip)],
-                    shape_parameter[(strike, dip)],
+                    rise_time_s[[dip, strike]],
+                    shape_parameter[[dip, strike]],
                     timing.sample_interval_s,
                     timing.max_samples,
                 )
@@ -625,11 +626,14 @@ fn assemble<E: EikonalSolver>(
             // moves back to meet them. Zero for every shape but `Seki`, and gathered
             // here rather than inside the pulse because it is a fact about *when*
             // rather than about the samples.
-            onset_shift_s.push(shape.onset_shift_s(rise_time_s[(strike, dip)]));
+            onset_shift_s.push(shape.onset_shift_s(rise_time_s[[dip, strike]]));
         }
     }
 
-    onset_s.shift(&onset_shift_s);
+    rupture::shift_onsets(
+        &mut onset_s,
+        &crate::grid::from_values(strike_count, dip_count, onset_shift_s),
+    );
 
     RuptureModel {
         slip: scaled.clone(),
@@ -647,5 +651,5 @@ fn assemble<E: EikonalSolver>(
 /// The properties this pulls out are constant along strike for a planar segment, and
 /// the original reads them the same way.
 fn column_of(field: &SlipField) -> Vec<f32> {
-    (0..field.dip_count()).map(|dip| field[(0, dip)]).collect()
+    (0..field.dip_count()).map(|dip| field[[dip, 0]]).collect()
 }

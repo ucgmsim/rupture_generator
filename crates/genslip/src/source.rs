@@ -5,7 +5,7 @@
 //! long the average subfault slips for, and the elastic properties at each depth.
 
 use crate::error::{Error, Result};
-use crate::taper::SlipField;
+use crate::grid::SlipField;
 
 /// Natural log of ten, the base of every magnitude relation here.
 ///
@@ -435,14 +435,14 @@ impl VelocityModel {
     #[must_use]
     pub fn sample(&self, strike_count: usize, depth_km: &[f32]) -> (SlipField, SlipField) {
         let dip_count = depth_km.len();
-        let mut shear_speed = SlipField::zeros(strike_count, dip_count);
-        let mut rigidity = SlipField::zeros(strike_count, dip_count);
+        let mut shear_speed = crate::grid::zeros(strike_count, dip_count);
+        let mut rigidity = crate::grid::zeros(strike_count, dip_count);
 
         for dip in 0..dip_count {
             let layer = self.layer_at(depth_km[dip]);
             for strike in 0..strike_count {
-                shear_speed[(strike, dip)] = layer.shear_speed_km_s;
-                rigidity[(strike, dip)] = layer.rigidity();
+                shear_speed[[dip, strike]] = layer.shear_speed_km_s;
+                rigidity[[dip, strike]] = layer.rigidity();
             }
         }
 

@@ -14,6 +14,10 @@ workspace = true
 
 [dependencies]
 geographiclib-rs = "0.2.7"
+# Every field on the fault is a 2-D array, and was a hand-rolled struct wrapping a
+# `Vec` plus two extents. `grid.rs` states the axis convention this brings with it.
+ndarray = "0.17.2"
+num-traits = "0.2.19"
 num-complex = "0.4.6"
 rand = "0.10.2"
 rand_distr = "0.6.0"

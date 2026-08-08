@@ -12,12 +12,12 @@
 //! approximate — unlike a kernel, there is nothing here a library could do
 //! differently.
 
+use genslip::grid::{FaultAxes, SlipField};
 use genslip::rise_time::{
     DepthRamp, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weighting, rise_time_field,
     rise_time_normalisation,
 };
 use genslip::slip::PerturbationSpec;
-use genslip::taper::SlipField;
 use proptest::prelude::*;
 
 const SHAPES: [(usize, usize); 4] = [(1, 1), (8, 6), (32, 12), (24, 24)];
@@ -39,12 +39,12 @@ fn spec(sigma: f32, exponent: f32) -> RiseTimeSpec {
 /// A field with structure in both directions and some negatives, so the truncation
 /// and the magnitude-normalisation both get exercised.
 fn seeded(strike_count: usize, dip_count: usize, offset: f32) -> SlipField {
-    let mut field = SlipField::zeros(strike_count, dip_count);
+    let mut field = genslip::grid::zeros(strike_count, dip_count);
     for dip in 0..dip_count {
         for strike in 0..strike_count {
             #[expect(clippy::cast_precision_loss, reason = "small test indices")]
             let value = offset + (strike as f32 * 0.41).sin() + (dip as f32 * 0.23).cos() * 0.7;
-            field[(strike, dip)] = value;
+            field[[dip, strike]] = value;
         }
     }
     field
@@ -93,7 +93,7 @@ fn reference_field(
             (0.0, 1.0)
         };
         for strike in 0..strike_count {
-            let value = rise_weight * correlated[(strike, dip)] + slip_weight * slip[(strike, dip)];
+            let value = rise_weight * correlated[[dip, strike]] + slip_weight * slip[[dip, strike]];
             field.push(value);
             total += value;
         }
@@ -193,13 +193,13 @@ fn reference_normalisation(
         }
 
         for strike in 0..strike_count {
-            let s = slip[(strike, dip)];
+            let s = slip[[dip, strike]];
             let sabs = match weighting {
                 Weighting::Uniform => 1.0,
                 Weighting::BySlip => (s * s).sqrt(),
                 Weighting::BySlipAndRuptureSpeed => rf * (s * s).sqrt(),
             };
-            snum += sf * sabs * rise_time[(strike, dip)];
+            snum += sf * sabs * rise_time[[dip, strike]];
             sden += sabs;
         }
     }
@@ -239,7 +239,7 @@ fn the_rise_time_field_matches_across_every_shape() {
             let expected = reference_field(&correlated, &slip, &depth_km, spec);
             let produced = rise_time_field(&correlated, &slip, &depth_km, spec);
 
-            for (offset, (got, want)) in produced.as_slice().iter().zip(&expected).enumerate() {
+            for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
                 assert_eq!(
                     got.to_bits(),
                     want.to_bits(),
@@ -262,7 +262,7 @@ fn a_negative_mean_field_is_flipped_positive() {
     let depth_km = vec![100.0; dip_count];
 
     let produced = rise_time_field(&correlated, &slip, &depth_km, spec(0.75, 0.5));
-    let total: f32 = produced.as_slice().iter().sum();
+    let total: f32 = produced.flat().iter().sum();
     assert!(total > 0.0, "field summed to {total}, expected positive");
 }
 
@@ -318,7 +318,7 @@ proptest! {
         let expected = reference_field(&correlated, &slip, &depth_km, spec);
         let produced = rise_time_field(&correlated, &slip, &depth_km, spec);
 
-        for (offset, (got, want)) in produced.as_slice().iter().zip(&expected).enumerate() {
+        for (offset, (got, want)) in produced.flat().iter().zip(&expected).enumerate() {
             prop_assert_eq!(got.to_bits(), want.to_bits(), "at {}", offset);
         }
     }

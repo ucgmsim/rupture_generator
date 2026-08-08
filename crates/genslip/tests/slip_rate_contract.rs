@@ -641,7 +641,7 @@ mod the_closed_form_shapes {
         // betashal above the ramp, betadeep below it, and the midpoint between.
         let expected = [0.5_f32, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
         for (index, (depth, want)) in depths.iter().zip(expected).enumerate() {
-            let got = field[(0, index)];
+            let got = field[[index, 0]];
             assert!(
                 (got - want).abs() < 1e-6,
                 "at {depth} km the tail is {got}, not {want}"

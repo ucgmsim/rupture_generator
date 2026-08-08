@@ -42,139 +42,49 @@
 mod sweeping;
 pub use sweeping::FactoredSweep;
 
+use ndarray::Array2;
+
+use crate::grid::{FaultAxes, FaultAxesMut, SlipField};
 use crate::rise_time::DepthRamp;
-use crate::taper::SlipField;
 
 /// Rupture speed across the fault, in km/s.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SpeedGrid {
-    strike_count: usize,
-    dip_count: usize,
-    values: Vec<f32>,
-}
-
-impl SpeedGrid {
-    /// Build from speeds in km/s, along-strike index fastest.
-    ///
-    /// # Panics
-    ///
-    /// If `values` does not hold one speed per subfault, or if any speed is not
-    /// strictly positive — the solver divides by it.
-    #[must_use]
-    pub fn new(strike_count: usize, dip_count: usize, values: Vec<f32>) -> Self {
-        assert_eq!(
-            values.len(),
-            strike_count * dip_count,
-            "got {} speeds for a {strike_count}x{dip_count} fault",
-            values.len()
-        );
-        assert!(
-            values.iter().all(|speed| *speed > 0.0),
-            "rupture speeds must be strictly positive; the solver inverts them"
-        );
-        Self {
-            strike_count,
-            dip_count,
-            values,
-        }
-    }
-
-    /// Number of subfaults along strike.
-    #[must_use]
-    pub const fn strike_count(&self) -> usize {
-        self.strike_count
-    }
-
-    /// Number of subfaults down dip.
-    #[must_use]
-    pub const fn dip_count(&self) -> usize {
-        self.dip_count
-    }
-
-    /// Speed at `(strike, dip)`, in km/s.
-    #[must_use]
-    pub fn speed(&self, strike: usize, dip: usize) -> f32 {
-        self.values[strike + dip * self.strike_count]
-    }
-}
+///
+/// A [`SlipField`] by another name — same shape, same layout, different meaning. The
+/// invariant that used to live in a constructor (every speed strictly positive,
+/// because the solver inverts it) is now the solver's own
+/// [`Error::Unreachable`](crate::Error::Unreachable): a zero speed makes an arrival
+/// infinite rather than large, which is what that variant is for and where a caller
+/// can act on it.
+pub type SpeedGrid = SlipField;
 
 /// Rupture onset time at every subfault, in seconds from the hypocentre.
 ///
-/// Double precision throughout: the solver accumulates arrival times across the
-/// whole fault, and genslip's is `real*8` for that reason.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TravelTimes {
-    strike_count: usize,
-    dip_count: usize,
-    values: Vec<f64>,
-}
+/// Double precision, where the fields around it are single: the solver accumulates
+/// arrival times across the whole fault and genslip's is `real*8` for that reason.
+/// Stage 2b makes the distinction moot.
+pub type TravelTimes = Array2<f64>;
 
-impl TravelTimes {
-    /// Build from times in seconds, along-strike index fastest.
-    ///
-    /// # Panics
-    ///
-    /// If `values` does not hold one time per subfault.
-    #[must_use]
-    pub fn new(strike_count: usize, dip_count: usize, values: Vec<f64>) -> Self {
-        assert_eq!(
-            values.len(),
-            strike_count * dip_count,
-            "got {} times for a {strike_count}x{dip_count} fault",
-            values.len()
-        );
-        Self {
-            strike_count,
-            dip_count,
-            values,
-        }
-    }
-
-    /// Number of subfaults along strike.
-    #[must_use]
-    pub const fn strike_count(&self) -> usize {
-        self.strike_count
-    }
-
-    /// Number of subfaults down dip.
-    #[must_use]
-    pub const fn dip_count(&self) -> usize {
-        self.dip_count
-    }
-
-    /// Onset time at `(strike, dip)`, in seconds.
-    #[must_use]
-    pub fn time(&self, strike: usize, dip: usize) -> f64 {
-        self.values[strike + dip * self.strike_count]
-    }
-
-    /// All times, along-strike index fastest.
-    #[must_use]
-    pub fn as_slice(&self) -> &[f64] {
-        &self.values
-    }
-
-    /// Move every onset by a per-subfault amount, never below zero.
-    ///
-    /// One caller: [`crate::slip_rate::SlipRateShape::Seki`] radiates before `t = 0`,
-    /// so the arrival is moved back to compensate. The clamp is the original's
-    /// (`generic_slip2srf.c:454`) and is the right shape anyway — a subfault cannot
-    /// rupture before the earthquake starts, and the hypocentre is already at zero.
-    ///
-    /// # Panics
-    ///
-    /// If `shift_s` does not hold one value per subfault.
-    pub fn shift(&mut self, shift_s: &[f32]) {
-        assert_eq!(
-            shift_s.len(),
-            self.values.len(),
-            "got {} shifts for {} subfaults",
-            shift_s.len(),
-            self.values.len()
-        );
-        for (time, shift) in self.values.iter_mut().zip(shift_s) {
-            *time = (*time + f64::from(*shift)).max(0.0);
-        }
+/// Move every onset by a per-subfault amount, never below zero.
+///
+/// One caller: [`crate::slip_rate::SlipRateShape::Seki`] radiates before `t = 0`, so
+/// the arrival is moved back to compensate. The clamp is the original's
+/// (`generic_slip2srf.c:454`) and is the right shape anyway — a subfault cannot
+/// rupture before the earthquake starts, and the hypocentre is already at zero.
+///
+/// A free function rather than a method, because [`TravelTimes`] is an
+/// [`ndarray::Array2`] now and this is not something an array does.
+///
+/// # Panics
+///
+/// If the two grids do not cover the same fault.
+pub fn shift_onsets(onset_s: &mut TravelTimes, shift_s: &SlipField) {
+    assert_eq!(
+        onset_s.extent(),
+        shift_s.extent(),
+        "the onset and shift grids must cover the same fault"
+    );
+    for (time, shift) in onset_s.flat_mut().iter_mut().zip(shift_s.flat()) {
+        *time = (*time + f64::from(*shift)).max(0.0);
     }
 }
 
@@ -297,12 +207,12 @@ pub fn speed_field(
         let depth_factor = profile.depth_factor(depth_km[dip]);
         for strike in 0..strike_count {
             speeds.push(
-                velocity_fraction[(strike, dip)] * depth_factor * shear_speed_km_s[(strike, dip)],
+                velocity_fraction[[dip, strike]] * depth_factor * shear_speed_km_s[[dip, strike]],
             );
         }
     }
 
-    SpeedGrid::new(strike_count, dip_count, speeds)
+    crate::grid::from_values(strike_count, dip_count, speeds)
 }
 
 /// Where the rupture front is when it reaches each subfault, after perturbation.
@@ -355,9 +265,9 @@ pub fn onset_times(
                 clippy::cast_possible_truncation,
                 reason = "the narrowing seam: C stores the sum into a float"
             )]
-            let narrowed = travel.time(strike, dip) as f32;
+            let narrowed = travel[[dip, strike]] as f32;
             let time =
-                f64::from(narrowed + adjustment.perturbation_scale * perturbation[(strike, dip)]);
+                f64::from(narrowed + adjustment.perturbation_scale * perturbation[[dip, strike]]);
             earliest = earliest.min(time);
             onset.push(time);
         }
@@ -380,5 +290,5 @@ pub fn onset_times(
         *time = f64::from(narrowed - narrowed_shift + adjustment.delay_s);
     }
 
-    TravelTimes::new(strike_count, dip_count, onset)
+    crate::grid::from_values(strike_count, dip_count, onset)
 }

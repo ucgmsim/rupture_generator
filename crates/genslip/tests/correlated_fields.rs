@@ -25,7 +25,7 @@ use common::fixture;
 use common::stats;
 use genslip::fft::{Fft, RustFft};
 use genslip::field::Spectrum2D;
-use genslip::grid::Spectrum;
+use genslip::grid::FaultAxes;
 use genslip::rng::GenslipLcg;
 use genslip::slip::{
     GridExtents, NormalisedSlip, PerturbationSpec, SubfaultSpacing, correlated_perturbation,
@@ -87,7 +87,7 @@ fn the_reload_restores_the_original_padded_statistics() {
     // read the mean back: the DC term of an unnormalised transform is the sum.
     #[expect(clippy::cast_precision_loss, reason = "small grid extents")]
     let points = (extents.padded_strike * extents.padded_dip) as f32;
-    let restored = reloaded[(0, 0)].re / (points * SPACING.strike_km * SPACING.dip_km);
+    let restored = reloaded[[0, 0]].re / (points * SPACING.strike_km * SPACING.dip_km);
 
     assert!(
         (restored - generated.padded.mean).abs() < generated.padded.sigma * 1e-4,
@@ -131,7 +131,7 @@ fn a_perturbation_is_centred_and_has_the_configured_spread() {
             },
         );
 
-        let values = stats::widen(field.as_slice());
+        let values = stats::widen(field.flat());
         assert!(
             stats::mean(&values).abs() < f64::from(sigma) * 1e-4,
             "sigma {sigma}: mean {} is not zero",
@@ -166,7 +166,7 @@ fn the_realised_correlation_tracks_the_requested_one() {
         SPACING,
         generated.padded,
     );
-    let slip = stats::widen(generated.field.as_slice());
+    let slip = stats::widen(generated.field.flat());
 
     let mut realised = |rho: f32| {
         let mut continued = source;
@@ -182,7 +182,7 @@ fn the_realised_correlation_tracks_the_requested_one() {
                 sigma: 1.0,
             },
         );
-        stats::pearson(&stats::widen(field.as_slice()), &slip)
+        stats::pearson(&stats::widen(field.flat()), &slip)
     };
 
     // Monotone in rho, and the ends behave: uncorrelated is near zero, fully
@@ -220,7 +220,7 @@ fn the_rake_field_is_independent_of_slip() {
     );
 
     let deviation: Vec<f64> = rake
-        .as_slice()
+        .flat()
         .iter()
         .zip(&grid.base_rake_deg)
         .map(|(value, base)| f64::from(value - base))
@@ -235,7 +235,7 @@ fn the_rake_field_is_independent_of_slip() {
     // Independent of slip, unlike the two timing perturbations. A weak bound: what
     // would break this is routing rake through the reload, which would put it above
     // 0.8, not a realisation that happened to correlate.
-    let with_slip = stats::pearson(&deviation, &stats::widen(generated.field.as_slice()));
+    let with_slip = stats::pearson(&deviation, &stats::widen(generated.field.flat()));
     assert!(
         with_slip.abs() < 0.4,
         "rake correlates with slip at {with_slip}; it is drawn independently"
@@ -250,10 +250,10 @@ fn the_reloaded_grid_keeps_the_original_deviation() {
     let generated = slip_stage(&mut source, &mut fft);
     let extents = extents();
 
-    let mut padded = Spectrum::zeros(extents.padded_strike, extents.padded_dip);
+    let mut padded = genslip::grid::spectrum(extents.padded_strike, extents.padded_dip);
     for dip in 0..extents.fault_dip {
         for strike in 0..extents.fault_strike {
-            padded[(strike, dip)] = Complex32::new(generated.field[(strike, dip)], 0.0);
+            padded[[dip, strike]] = Complex32::new(generated.field[[dip, strike]], 0.0);
         }
     }
     // Before the reload the padded grid is the fault in a sea of zeros, so its

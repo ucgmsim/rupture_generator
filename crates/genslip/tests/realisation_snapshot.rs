@@ -20,6 +20,7 @@ mod common;
 
 use common::fixture;
 use genslip::fft::RustFft;
+use genslip::grid::FaultAxes;
 use genslip::realisation::generate;
 use genslip::rng::{GenslipLcg, Realisations as _};
 use genslip::rupture::FactoredSweep;
@@ -48,7 +49,7 @@ fn summarise(seed: i64, realisation: u64) -> String {
     #[expect(clippy::cast_precision_loss, reason = "small subfault counts")]
     let mean = |values: &[f32]| values.iter().sum::<f32>() / values.len() as f32;
 
-    let onset = model.onset_s.as_slice();
+    let onset = model.onset_s.flat();
     let total_samples: usize = model
         .slip_rate
         .iter()
@@ -77,11 +78,11 @@ fn summarise(seed: i64, realisation: u64) -> String {
         model.alpha_t,
         model.slip.average_cm,
         model.slip.maximum_cm,
-        mean(model.rake_deg.as_slice()),
-        peak(model.rake_deg.as_slice()),
+        mean(model.rake_deg.flat()),
+        peak(model.rake_deg.flat()),
         onset.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-        mean(model.rise_time_s.as_slice()),
-        peak(model.rise_time_s.as_slice()),
+        mean(model.rise_time_s.flat()),
+        peak(model.rise_time_s.flat()),
         genslip::rng::GenslipLcg::seed(draws),
     )
 }

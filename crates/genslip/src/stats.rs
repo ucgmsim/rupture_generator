@@ -4,7 +4,7 @@
 //! domain: the generators control the *shape* of the spectrum but not the mean or
 //! the variance of the result, so both are measured and divided out.
 
-use crate::grid::Spectrum;
+use crate::grid::{FaultAxes, Spectrum};
 
 /// The mean and population standard deviation of a field's real part.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,7 +28,7 @@ pub struct MeanAndSigma {
 /// (orig. `get_mean_sigma_c`, misc.c:233)
 #[must_use]
 pub fn mean_and_sigma(spectrum: &Spectrum) -> MeanAndSigma {
-    let values = spectrum.as_slice();
+    let values = spectrum.flat();
     assert!(!values.is_empty(), "cannot summarise an empty spectrum");
 
     #[expect(

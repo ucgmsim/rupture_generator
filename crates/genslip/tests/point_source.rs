@@ -28,6 +28,7 @@
 mod common;
 
 use common::fixture;
+use genslip::grid::FaultAxes;
 use genslip::realisation::{FaultGrid, PointSourceSpec, point_source};
 use genslip::rupture::{FactoredSweep, Hypocentre};
 use genslip::slip_rate::SlipRateShape;
@@ -111,7 +112,7 @@ fn one_subfault_slips_the_moment_divided_by_rigidity_and_area() {
     let area_cm2 = (0.5 * 1.0e5) * (0.5 * 1.0e5);
     let expected = f64::from(model.moment_dyne_cm) / (rigidity * area_cm2);
 
-    let slip = f64::from(model.slip.slip[(0, 0)]);
+    let slip = f64::from(model.slip.slip[[0, 0]]);
     assert!(
         (slip - expected).abs() <= 1e-5 * expected,
         "one subfault slipped {slip} cm where the moment implies {expected}"
@@ -138,9 +139,9 @@ fn one_subfault_ruptures_at_the_delay() {
             origin(),
         ));
         assert!(
-            (model.onset_s.time(0, 0) - f64::from(delay_s)).abs() < 1e-12,
+            (model.onset_s[[0, 0]] - f64::from(delay_s)).abs() < 1e-12,
             "a single subfault with a {delay_s} s delay ruptured at {}",
-            model.onset_s.time(0, 0)
+            model.onset_s[[0, 0]]
         );
     }
 }
@@ -165,7 +166,7 @@ fn one_subfault_rises_in_the_time_it_was_given() {
             fixture::timing_spec(),
             origin(),
         ));
-        let rise = model.rise_time_s[(0, 0)];
+        let rise = model.rise_time_s[[0, 0]];
         assert!(
             (rise - RISE_TIME_S).abs() <= 1e-6 * RISE_TIME_S,
             "a point at {depth_km} km rose in {rise} s, not the {RISE_TIME_S} asked for"
@@ -178,7 +179,7 @@ fn one_subfault_rises_in_the_time_it_was_given() {
 fn the_rake_is_the_one_the_geometry_carries() {
     let grid = fixture::fault_of(5, 3, 6, 4);
     let model = generate(&grid);
-    for (index, rake) in model.rake_deg.as_slice().iter().enumerate() {
+    for (index, rake) in model.rake_deg.flat().iter().enumerate() {
         assert!(
             (rake - grid.base_rake_deg[index]).abs() < 1e-6,
             "subfault {index} came out at rake {rake}, not {}",
@@ -202,8 +203,8 @@ fn slip_is_uniform_across_the_plane() {
     let grid = fixture::fault_of(5, 9, 6, 10);
     let model = generate(&grid);
 
-    let first = model.slip.slip[(0, 0)];
-    for value in model.slip.slip.as_slice() {
+    let first = model.slip.slip[[0, 0]];
+    for value in model.slip.slip.flat() {
         assert_eq!(
             value.to_bits(),
             first.to_bits(),
@@ -224,11 +225,11 @@ fn across_a_plane_the_rupture_has_a_front() {
     let hypocentre = (grid.extents.fault_strike / 2, grid.extents.fault_dip / 2);
 
     assert!(
-        model.onset_s.time(hypocentre.0, hypocentre.1).abs() < 1e-12,
+        model.onset_s[[hypocentre.1, hypocentre.0]].abs() < 1e-12,
         "the hypocentre does not rupture at zero"
     );
 
-    let times = model.onset_s.as_slice();
+    let times = model.onset_s.flat();
     assert!(times.iter().all(|time| *time >= 0.0));
 
     let latest = times.iter().copied().fold(0.0_f64, f64::max);
@@ -251,13 +252,13 @@ fn onset_grows_away_from_the_hypocentre() {
 
     for strike in hs..grid.extents.fault_strike - 1 {
         assert!(
-            model.onset_s.time(strike + 1, hd) >= model.onset_s.time(strike, hd),
+            model.onset_s[[hd, strike + 1]] >= model.onset_s[[hd, strike]],
             "onset fell going away from the hypocentre along strike at {strike}"
         );
     }
     for dip in hd..grid.extents.fault_dip - 1 {
         assert!(
-            model.onset_s.time(hs, dip + 1) >= model.onset_s.time(hs, dip),
+            model.onset_s[[dip + 1, hs]] >= model.onset_s[[dip, hs]],
             "onset fell going away from the hypocentre down dip at {dip}"
         );
     }
@@ -273,7 +274,7 @@ fn the_average_rise_time_is_the_one_asked_for() {
     let grid = fixture::fault_of(5, 9, 6, 10);
     let model = generate(&grid);
 
-    let values = model.rise_time_s.as_slice();
+    let values = model.rise_time_s.flat();
     #[expect(clippy::cast_precision_loss, reason = "subfault counts are small")]
     let mean = values.iter().sum::<f32>() / values.len() as f32;
     assert!(
@@ -344,7 +345,7 @@ fn every_shape_makes_it_through_the_pipeline() {
         let slip: f64 = model
             .slip
             .slip
-            .as_slice()
+            .flat()
             .iter()
             .map(|value| f64::from(*value))
             .sum();
@@ -377,8 +378,7 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
             timing,
             Hypocentre { strike: 2, dip: 1 },
         ))
-        .onset_s
-        .time(0, 0)
+        .onset_s[[0, 0]]
     };
 
     let plain = onset_of(SlipRateShape::Ucsb);
@@ -421,10 +421,10 @@ fn the_same_inputs_give_the_same_rupture_every_time() {
     let first = generate(&grid);
     let second = generate(&grid);
 
-    assert_eq!(first.slip.slip.as_slice(), second.slip.slip.as_slice());
-    assert_eq!(first.rake_deg.as_slice(), second.rake_deg.as_slice());
-    assert_eq!(first.onset_s.as_slice(), second.onset_s.as_slice());
-    assert_eq!(first.rise_time_s.as_slice(), second.rise_time_s.as_slice());
+    assert_eq!(first.slip.slip.flat(), second.slip.slip.flat());
+    assert_eq!(first.rake_deg.flat(), second.rake_deg.flat());
+    assert_eq!(first.onset_s.flat(), second.onset_s.flat());
+    assert_eq!(first.rise_time_s.flat(), second.rise_time_s.flat());
     assert_eq!(first.slip_rate, second.slip_rate);
 }
 

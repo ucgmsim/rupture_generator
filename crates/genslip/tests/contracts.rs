@@ -45,13 +45,13 @@ use common::stats::{self, lag_one_along_dip, lag_one_along_strike};
 use common::tolerance::f32_sum_relative;
 use genslip::fft::Fft;
 use genslip::field::{CorrelationLengths, Spectrum2D};
-use genslip::grid::Spectrum;
+use genslip::grid::{FaultAxes, FaultAxesMut};
 use genslip::realisation::{RuptureModel, generate};
 use genslip::rng::GenslipLcg;
 use genslip::rupture::{EikonalSolver, Hypocentre, TravelTimes};
 use genslip::slip::{SpectrumSpec, generate_normalised};
 use genslip::slip_rate::MIN_SLIP_CM;
-use genslip::taper::{EdgeTapers, SlipField, taper_edges};
+use genslip::taper::{EdgeTapers, taper_edges};
 use num_complex::Complex32;
 
 /// Generate the fixture rupture, optionally with the timing perturbation switched off.
@@ -84,7 +84,7 @@ fn travel_times<E: EikonalSolver>(solver: &mut E, hypocentre: Hypocentre) -> Tra
     let grid = fixture::fault();
     let (shear_speed, _) =
         fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
-    let velocity_fraction = SlipField::from_values(
+    let velocity_fraction = genslip::grid::from_values(
         grid.extents.fault_strike,
         grid.extents.fault_dip,
         grid.velocity_fraction.clone(),
@@ -114,7 +114,7 @@ fn the_hypocentre<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
 
     // Exactly zero, not nearly: the solver seeds this cell rather than computing it.
     assert_eq!(
-        travel.time(hypocentre.strike, hypocentre.dip).to_bits(),
+        travel[[hypocentre.dip, hypocentre.strike]].to_bits(),
         0.0_f64.to_bits(),
         "travel time at the hypocentre must be exactly zero"
     );
@@ -126,7 +126,7 @@ fn the_hypocentre<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
                 continue;
             }
             assert!(
-                travel.time(strike, dip) > 0.0,
+                travel[[dip, strike]] > 0.0,
                 "({strike}, {dip}) is not later than the hypocentre"
             );
         }
@@ -135,8 +135,8 @@ fn the_hypocentre<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
     // End to end, with the perturbation off so the earliest subfault IS the source:
     // the whole rupture starts at the configured delay, at the configured cell.
     let model = rupture(fft, solver, fixture::SEED, false);
-    let onset = model.onset_s.as_slice();
-    let at_hypocentre = model.onset_s.time(hypocentre.strike, hypocentre.dip);
+    let onset = model.onset_s.flat();
+    let at_hypocentre = model.onset_s[[hypocentre.dip, hypocentre.strike]];
     let earliest = onset.iter().copied().fold(f64::INFINITY, f64::min);
     assert!(
         (at_hypocentre - earliest).abs() < 1e-12,
@@ -155,7 +155,7 @@ fn the_hypocentre<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
 /// this is every edge subfault.
 fn the_slip_rate_guard<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
     let model = rupture(fft, solver, fixture::SEED, true);
-    let slip = model.slip.slip.as_slice();
+    let slip = model.slip.slip.flat();
 
     let mut silent = 0;
     for (index, pulse) in model.slip_rate.iter().enumerate() {
@@ -193,7 +193,7 @@ fn the_rake_field<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
 
     let deviation: Vec<f64> = model
         .rake_deg
-        .as_slice()
+        .flat()
         .iter()
         .zip(&grid.base_rake_deg)
         .map(|(rake, base)| f64::from(rake - base))
@@ -239,7 +239,7 @@ fn the_axis_order<F: Fft>(fft: &mut F) {
         grid.spacing,
         spec,
     );
-    let field = stats::widen(generated.field.as_slice());
+    let field = stats::widen(generated.field.flat());
 
     let along = lag_one_along_strike(&field, grid.extents.fault_strike, grid.extents.fault_dip);
     let down = lag_one_along_dip(&field, grid.extents.fault_strike, grid.extents.fault_dip);
@@ -279,7 +279,7 @@ fn the_slip_field<F: Fft>(fft: &mut F) {
             grid.spacing,
             spec,
         );
-        let field = stats::widen(generated.field.as_slice());
+        let field = stats::widen(generated.field.flat());
 
         // Unit mean, whichever branch was taken.
         let mean = stats::mean(&field);
@@ -311,7 +311,7 @@ fn the_slip_field<F: Fft>(fft: &mut F) {
 /// merely nearly matches means the symmetry pass missed a cell.
 fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
     let (strike_count, dip_count) = (28, 16);
-    let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+    let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
     genslip::field::correlated_field(
         &mut spectrum,
         &mut GenslipLcg::new(fixture::SEED),
@@ -339,11 +339,11 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
 
     for dip in 0..dip_count {
         for strike in 0..strike_count {
-            let mirrored = spectrum[(
-                (strike_count - strike) % strike_count,
+            let mirrored = spectrum[[
                 (dip_count - dip) % dip_count,
-            )];
-            let here = spectrum[(strike, dip)];
+                (strike_count - strike) % strike_count,
+            ]];
+            let here = spectrum[[dip, strike]];
             assert_eq!(
                 canonical(mirrored.re),
                 canonical(here.re),
@@ -360,15 +360,15 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
     // The four self-conjugate points must be real outright -- they are their own
     // mirror, so the check above is vacuous for them.
     for point in [
-        (0, 0),
-        (strike_count / 2, 0),
-        (0, dip_count / 2),
-        (strike_count / 2, dip_count / 2),
+        [0, 0],
+        [0, strike_count / 2],
+        [dip_count / 2, 0],
+        [dip_count / 2, strike_count / 2],
     ] {
         assert_eq!(
             spectrum[point].im.to_bits(),
             0.0_f32.to_bits(),
-            "self-conjugate point {point:?} carries an imaginary part"
+            "self-conjugate point [dip, strike] = {point:?} carries an imaginary part"
         );
     }
 }
@@ -382,17 +382,17 @@ fn the_spectrum_is_hermitian<F: Fft>(_fft: &mut F) {
 #[test]
 fn correlation_is_exact() {
     for rho in [0.0_f32, 0.3, 0.8, 1.0] {
-        let mut target = Spectrum::zeros(4, 4);
-        let mut reference = Spectrum::zeros(4, 4);
+        let mut target = genslip::grid::spectrum(4, 4);
+        let mut reference = genslip::grid::spectrum(4, 4);
         for index in 0..16 {
-            target.as_mut_slice()[index] = Complex32::new(0.0, 1.0);
-            reference.as_mut_slice()[index] = Complex32::new(1.0, 0.0);
+            target.flat_mut()[index] = Complex32::new(0.0, 1.0);
+            reference.flat_mut()[index] = Complex32::new(1.0, 0.0);
         }
 
         genslip::field::correlate_with(&mut target, &reference, rho);
 
         let residual = (1.0 - rho * rho).sqrt();
-        for value in target.as_slice() {
+        for value in target.flat() {
             assert!(
                 (value.re - rho).abs() < 1e-6 && (value.im - residual).abs() < 1e-6,
                 "rho {rho}: got {value}, wanted {rho} + {residual}i"
@@ -410,8 +410,8 @@ fn correlation_is_exact() {
 /// rewrite with an explicit guard has to decide deliberately rather than by accident.
 #[test]
 fn the_band_pass_removes_the_mean() {
-    let mut spectrum = Spectrum::zeros(8, 8);
-    for value in spectrum.as_mut_slice() {
+    let mut spectrum = genslip::grid::spectrum(8, 8);
+    for value in spectrum.flat_mut() {
         *value = Complex32::new(5.0, 0.0);
     }
 
@@ -425,8 +425,8 @@ fn the_band_pass_removes_the_mean() {
         4,
     );
 
-    assert_eq!(spectrum[(0, 0)].re.to_bits(), 0.0_f32.to_bits());
-    assert_eq!(spectrum[(0, 0)].im.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(spectrum[[0, 0]].re.to_bits(), 0.0_f32.to_bits());
+    assert_eq!(spectrum[[0, 0]].im.to_bits(), 0.0_f32.to_bits());
 }
 
 /// A negative mean comes back positive from a phase shift that should be the identity.
@@ -438,8 +438,8 @@ fn the_band_pass_removes_the_mean() {
 /// `ENGINEERING_RULES.md` rule 10.
 #[test]
 fn a_phase_shift_flips_a_negative_mean() {
-    let mut spectrum = Spectrum::zeros(4, 4);
-    spectrum[(0, 0)] = Complex32::new(-7.5, 0.0);
+    let mut spectrum = genslip::grid::spectrum(4, 4);
+    spectrum[[0, 0]] = Complex32::new(-7.5, 0.0);
 
     genslip::field::shift_phase(
         &mut spectrum,
@@ -452,7 +452,7 @@ fn a_phase_shift_flips_a_negative_mean() {
     );
 
     assert_eq!(
-        spectrum[(0, 0)].re.to_bits(),
+        spectrum[[0, 0]].re.to_bits(),
         7.5_f32.to_bits(),
         "the magnitude round trip stopped flipping the sign"
     );
@@ -474,7 +474,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
     // on the source cell at zero and the test says nothing -- which is the shape a
     // vacuous contract takes.
     let shift_s = -0.4_f32;
-    let perturbation = SlipField::from_values(
+    let perturbation = genslip::grid::from_values(
         grid.extents.fault_strike,
         grid.extents.fault_dip,
         vec![1.0; grid.extents.fault_strike * grid.extents.fault_dip],
@@ -488,13 +488,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
     let hosting = genslip::rupture::onset_times(&travel, &perturbation, adjustment(true));
     let following = genslip::rupture::onset_times(&travel, &perturbation, adjustment(false));
 
-    let earliest = |times: &TravelTimes| {
-        times
-            .as_slice()
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min)
-    };
+    let earliest = |times: &TravelTimes| times.flat().iter().copied().fold(f64::INFINITY, f64::min);
     assert!(
         earliest(&hosting).abs() < 1e-6,
         "the hosting segment starts at {}, not zero",
@@ -507,7 +501,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
         "the following segment starts at {offset}; it should still carry the {shift_s} \
          the perturbation put there"
     );
-    for (unshifted, shifted) in following.as_slice().iter().zip(hosting.as_slice()) {
+    for (unshifted, shifted) in following.flat().iter().zip(hosting.flat()) {
         assert!(
             (unshifted - offset - shifted).abs() < 1e-6,
             "the segments differ by {} rather than the constant {offset}",
@@ -520,7 +514,7 @@ fn only_the_hosting_segment_is_rezeroed<E: EikonalSolver>(solver: &mut E) {
 fn the_delay_is_uniform<E: EikonalSolver>(solver: &mut E) {
     let travel = travel_times(solver, fixture::hypocentre());
     let grid = fixture::fault();
-    let perturbation = SlipField::zeros(grid.extents.fault_strike, grid.extents.fault_dip);
+    let perturbation = genslip::grid::zeros(grid.extents.fault_strike, grid.extents.fault_dip);
 
     let with_delay = |delay_s| {
         genslip::rupture::onset_times(
@@ -536,7 +530,7 @@ fn the_delay_is_uniform<E: EikonalSolver>(solver: &mut E) {
     let base = with_delay(0.0);
     let delayed = with_delay(2.5);
 
-    for (early, late) in base.as_slice().iter().zip(delayed.as_slice()) {
+    for (early, late) in base.flat().iter().zip(delayed.flat()) {
         assert!(
             (late - early - 2.5).abs() < 1e-6,
             "a 2.5 s delay moved a subfault by {}",
@@ -560,7 +554,7 @@ fn a_phase_shift_is_a_translation() {
     };
 
     let seeded = || {
-        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+        let mut spectrum = genslip::grid::spectrum(strike_count, dip_count);
         genslip::field::correlated_field(
             &mut spectrum,
             &mut GenslipLcg::new(4242),
@@ -584,11 +578,11 @@ fn a_phase_shift_is_a_translation() {
     genslip::field::shift_phase(&mut shifted, step, 16.0, 8.0);
 
     let scale = original
-        .as_slice()
+        .flat()
         .iter()
         .fold(0.0_f32, |worst, value| worst.max(value.norm()));
-    for index in 1..original.as_slice().len() {
-        let (before, after) = (original.as_slice()[index], shifted.as_slice()[index]);
+    for index in 1..original.flat().len() {
+        let (before, after) = (original.flat()[index], shifted.flat()[index]);
         assert!(
             (after - before).norm() < scale * 1e-5,
             "a whole-period shift moved index {index}: {before} to {after}"
@@ -601,7 +595,7 @@ fn a_phase_shift_is_a_translation() {
 fn the_taper_is_a_contraction() {
     let (strike_count, dip_count) = (24, 14);
     let original =
-        SlipField::from_values(strike_count, dip_count, vec![1.0; strike_count * dip_count]);
+        genslip::grid::from_values(strike_count, dip_count, vec![1.0; strike_count * dip_count]);
 
     let mut tapered = original.clone();
     taper_edges(
@@ -613,7 +607,7 @@ fn the_taper_is_a_contraction() {
         },
     );
 
-    for (after, before) in tapered.as_slice().iter().zip(original.as_slice()) {
+    for (after, before) in tapered.flat().iter().zip(original.flat()) {
         assert!(
             after.abs() <= before.abs() + f32::EPSILON,
             "the taper amplified {before} to {after}"
@@ -661,9 +655,9 @@ fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver
     let recomputed: f64 = model
         .slip
         .slip
-        .as_slice()
+        .flat()
         .iter()
-        .zip(rigidity.as_slice())
+        .zip(rigidity.flat())
         .map(|(slip_cm, mu)| area_cm2 * f64::from(*mu) * f64::from(*slip_cm))
         .sum();
 
@@ -676,7 +670,7 @@ fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver
         clippy::cast_precision_loss,
         reason = "subfault counts are far below 2^52"
     )]
-    let subfaults = model.slip.slip.as_slice().len() as f64;
+    let subfaults = model.slip.slip.flat().len() as f64;
     let bound = 4.0 * f64::from(f32::EPSILON) * subfaults.sqrt();
     assert!(
         relative < bound,
@@ -688,7 +682,7 @@ fn the_scaled_field_carries_the_moment_it_was_asked_for<F: Fft, E: EikonalSolver
 /// Truncation leaves nothing negative.
 fn truncation_leaves_no_negative_slip<F: Fft, E: EikonalSolver>(fft: &mut F, solver: &mut E) {
     let model = rupture(fft, solver, fixture::SEED, true);
-    for (index, value) in model.slip.slip.as_slice().iter().enumerate() {
+    for (index, value) in model.slip.slip.flat().iter().enumerate() {
         assert!(*value >= 0.0, "subfault {index} slips {value} cm");
     }
 }

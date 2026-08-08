@@ -64,6 +64,7 @@
 //! heterogeneous case ever measures worse than expected, Eq. (8) is the first thing to
 //! add.
 
+use crate::grid::FaultAxes;
 use crate::rupture::{EikonalSolver, Hypocentre, SpeedGrid, TravelTimes};
 
 /// Rounds of four sweeps before giving up on convergence.
@@ -150,7 +151,7 @@ impl EikonalSolver for FactoredSweep {
             hypocentre.dip
         );
 
-        let slowness = |strike: usize, dip: usize| 1.0 / f64::from(speed.speed(strike, dip));
+        let slowness = |strike: usize, dip: usize| 1.0 / f64::from(speed[[dip, strike]]);
         let source_slowness = slowness(hypocentre.strike, hypocentre.dip);
         let at = |strike: usize, dip: usize| strike + dip * strike_count;
 
@@ -222,7 +223,7 @@ impl EikonalSolver for FactoredSweep {
             );
         }
 
-        TravelTimes::new(strike_count, dip_count, times)
+        crate::grid::from_values(strike_count, dip_count, times)
     }
 }
 

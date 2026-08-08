@@ -34,6 +34,7 @@
 
 use genslip::fft::RustFft;
 use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
+use genslip::grid::FaultAxes;
 use genslip::realisation::{self, RuptureModel};
 use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
 use genslip::rng::{GenslipLcg, Realisations as _};
@@ -898,15 +899,15 @@ impl GeneratedRupture {
         }
 
         Self {
-            slip_cm: model.slip.slip.as_slice().to_vec(),
-            rake_deg: model.rake_deg.as_slice().to_vec(),
+            slip_cm: model.slip.slip.flat().to_vec(),
+            rake_deg: model.rake_deg.flat().to_vec(),
             onset_s: model
                 .onset_s
-                .as_slice()
+                .flat()
                 .iter()
                 .map(|time| *time as f32)
                 .collect(),
-            rise_time_s: model.rise_time_s.as_slice().to_vec(),
+            rise_time_s: model.rise_time_s.flat().to_vec(),
             slip_rate,
             slip_rate_offsets,
             strike_count: model.slip.slip.strike_count(),

@@ -37,8 +37,8 @@
 // `f64`, which is where it did real damage. `float_identities.rs` asserts all four.
 use std::f32::consts::PI;
 
+use crate::grid::{FaultAxes, SlipField};
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
-use crate::taper::SlipField;
 
 /// Shape parameter of the slip-rate function, varying with depth.
 ///
@@ -107,11 +107,11 @@ impl BetaProfile {
 #[must_use]
 pub fn beta_field(strike_count: usize, depth_km: &[f32], profile: BetaProfile) -> SlipField {
     let dip_count = depth_km.len();
-    let mut field = SlipField::zeros(strike_count, dip_count);
+    let mut field = crate::grid::zeros(strike_count, dip_count);
     for dip in 0..dip_count {
         let beta = profile.beta_at(depth_km[dip]);
         for strike in 0..strike_count {
-            field[(strike, dip)] = beta;
+            field[[dip, strike]] = beta;
         }
     }
     field
@@ -156,11 +156,11 @@ pub fn rise_times(
     let floor = sample_interval_s / average_s;
 
     let strike_count = normalised.strike_count();
-    let mut field = SlipField::zeros(strike_count, normalised.dip_count());
+    let mut field = crate::grid::zeros(strike_count, normalised.dip_count());
     for dip in 0..normalised.dip_count() {
         let depth_factor = stretch.factor_at(depth_km[dip]);
         for strike in 0..strike_count {
-            let scaled = normalised[(strike, dip)];
+            let scaled = normalised[[dip, strike]];
             let mut factor = if normalisation > 0.0 && scaled > 0.0 {
                 depth_factor * scaled / normalisation
             } else if scaled <= 0.0 {
@@ -171,7 +171,7 @@ pub fn rise_times(
             if factor < floor {
                 factor = floor;
             }
-            field[(strike, dip)] = factor * average_s;
+            field[[dip, strike]] = factor * average_s;
         }
     }
     field
@@ -732,7 +732,7 @@ pub fn shape_parameter_field(
     match shape {
         SlipRateShape::OliuP2 => beta_field(strike_count, depth_km, profile),
         SlipRateShape::Urs => {
-            let mut field = SlipField::zeros(strike_count, depth_km.len());
+            let mut field = crate::grid::zeros(strike_count, depth_km.len());
             for (dip, depth) in depth_km.iter().enumerate() {
                 // Branched, not just scaled. `DepthRamp` interpolates and does not
                 // clamp -- every caller brackets it, and this one did not until the
@@ -747,12 +747,12 @@ pub fn shape_parameter_field(
                     URS_DEEP_TAIL
                 };
                 for strike in 0..strike_count {
-                    field[(strike, dip)] = tail;
+                    field[[dip, strike]] = tail;
                 }
             }
             field
         }
-        _ => SlipField::zeros(strike_count, depth_km.len()),
+        _ => crate::grid::zeros(strike_count, depth_km.len()),
     }
 }
 

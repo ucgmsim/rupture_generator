@@ -99,7 +99,9 @@ name = "genslip"
 version = "0.1.0"
 dependencies = [
  "geographiclib-rs",
+ "ndarray",
  "num-complex",
+ "num-traits",
  "proptest",
  "rand 0.10.2",
  "rand_distr",
