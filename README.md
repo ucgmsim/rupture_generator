@@ -279,10 +279,20 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    suite becoming its own backlog: **no property test lands without the refactor it
    licenses, in the same commit.**
 
-2. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
-   divergence **7.06e-8**, recorded before the swap), `Wgs84Geodesic` for the
-   flat-earth approximation (measured disagreement **944 m at 100 km**), and the
-   remaining `SIMPLIFY` sites.
+2. **Stage 3 is done.** `rustfft` replaced FFTW (measured divergence **7.06e-8**,
+   recorded before the swap), `Wgs84Geodesic` replaced the flat-earth approximation
+   (measured disagreement **944 m at 100 km**), and all nineteen `SIMPLIFY` sites are
+   closed — `rg 'SIMPLIFY:' crates/genslip/src` now returns nothing.
+
+   Six of the nineteen turned out not to be work at all, which is the part worth
+   repeating: three `sqrt(x*x)` sites are exactly `|x|`, `3.141592654f` is exactly
+   `f32::consts::PI`, and one regrouped ramp divides by a power of two. Every one had
+   a note claiming it moved bits. `SIMPLIFICATIONS.md` has the tally and
+   `float_identities.rs` asserts the classification so it cannot drift again.
+
+   The largest single win was not arithmetic: `transform_2d`'s dip pass transposes
+   rather than gathering each strided column, which is **1.7x to 2.2x faster** on the
+   transform and bit-identical.
 
    **The eikonal solver is done**, and it is the one Stage 3 item that turned out to
    be a correction rather than a swap. genslip's expanding-square tracker does not

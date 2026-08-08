@@ -150,57 +150,112 @@ fn whole_rupture() {
     );
 }
 
-/// The two FFT engines, side by side.
+/// The dip pass, gathered against transposed.
 ///
-/// FFTW is a C library with runtime planning; `rustfft` is pure Rust with no system
-/// dependency. `fft_contract.rs` records that they agree to 7.06e-08 relative, which
-/// settles *accuracy*; this settles cost, and the two together are what a swap needs.
+/// The shipped `transform_2d` transposes. This keeps the spelling it replaced —
+/// gather each strided column into scratch, transform, scatter back, which is what
+/// genslip does — so the claim in `fft/mod.rs` can be re-run rather than trusted.
 ///
-/// Planning is included deliberately. Both engines plan lazily and cache per length,
-/// and a rupture transforms a handful of distinct sizes, so amortised planning is what
-/// the pipeline actually pays. Timing only the steady state would flatter whichever
-/// engine plans more expensively.
+/// The two are **bit-identical**, and that is asserted here before either is timed:
+/// every 1-D transform sees the same input sequence either way, so only the memory
+/// traffic differs. A speed comparison between two spellings that had drifted apart
+/// numerically would be measuring the wrong thing.
+///
+/// This used to compare FFTW against `rustfft`. FFTW is gone, and the test had been
+/// silently timing `RustFft` against itself under FFTW's column heading — the
+/// numbers it printed were noise between two runs of the same code. Their real
+/// comparison, 7.06e-08 relative and `rustfft` 10-38% faster, is recorded in
+/// `fft/mod.rs` where it does not rot.
 #[test]
 #[ignore = "measures time, not behaviour"]
-fn fft_engines() {
+fn fft_dip_pass() {
     use genslip::fft::{Direction, Fft, RustFft, transform_2d};
     use genslip::grid::Spectrum;
     use num_complex::Complex32;
 
+    /// The dip pass as genslip writes it: one strided read and one strided write per
+    /// column.
+    fn gathered(spectrum: &mut Spectrum, fft: &mut dyn Fft, direction: Direction) {
+        let strike_count = spectrum.strike_count();
+        let dip_count = spectrum.dip_count();
+        for dip in 0..dip_count {
+            let start = dip * strike_count;
+            fft.transform(
+                &mut spectrum.as_mut_slice()[start..start + strike_count],
+                direction,
+            );
+        }
+        let mut column = vec![Complex32::default(); dip_count];
+        for strike in 0..strike_count {
+            for (dip, value) in column.iter_mut().enumerate() {
+                *value = spectrum[(strike, dip)];
+            }
+            fft.transform(&mut column, direction);
+            for (dip, value) in column.iter().enumerate() {
+                spectrum[(strike, dip)] = *value;
+            }
+        }
+    }
+
+    fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
+        let mut spectrum = Spectrum::zeros(strike_count, dip_count);
+        for (index, value) in spectrum.as_mut_slice().iter_mut().enumerate() {
+            #[expect(clippy::cast_precision_loss, reason = "grid indices")]
+            let phase = index as f32 * 0.017;
+            *value = Complex32::new(phase.sin(), phase.cos());
+        }
+        spectrum
+    }
+
     println!(
-        "\n{:>7} {:>14} {:>14} {:>10}",
-        "grid", "FFTW", "rustfft", "ratio"
+        "\n{:>11} {:>13} {:>13} {:>8}",
+        "grid", "gathered", "transposed", "speedup"
     );
 
-    for cells in [32_usize, 64, 128, 256, 512] {
-        let seeded = || {
-            let mut spectrum = Spectrum::zeros(cells, cells);
-            for (index, value) in spectrum.as_mut_slice().iter_mut().enumerate() {
-                #[expect(clippy::cast_precision_loss, reason = "grid indices")]
-                let phase = index as f32 * 0.017;
-                *value = Complex32::new(phase.sin(), phase.cos());
-            }
-            spectrum
-        };
+    // Oblong shapes as well as square: the two passes are not symmetric, so a grid
+    // that is long along strike stresses the transpose differently from one long
+    // down dip.
+    for (strike_count, dip_count) in [
+        (32_usize, 32_usize),
+        (64, 64),
+        (128, 128),
+        (256, 256),
+        (512, 512),
+        (1024, 256),
+        (256, 1024),
+    ] {
+        let mut theirs = seeded(strike_count, dip_count);
+        let mut ours = seeded(strike_count, dip_count);
+        gathered(&mut theirs, &mut RustFft::new(), Direction::Forward);
+        transform_2d(&mut ours, &mut RustFft::new(), Direction::Forward);
+        assert_eq!(
+            theirs.as_slice(),
+            ours.as_slice(),
+            "{strike_count}x{dip_count}: the two spellings are not bit-identical, so \
+             the timing below compares two different computations"
+        );
 
-        let time = |engine: &mut dyn Fft| {
+        let time = |which: fn(&mut Spectrum, &mut dyn Fft, Direction)| {
+            let mut engine = RustFft::new();
             let mut best = std::time::Duration::MAX;
-            for _ in 0..5 {
-                let mut spectrum = seeded();
+            for _ in 0..9 {
+                let mut spectrum = seeded(strike_count, dip_count);
                 let start = Instant::now();
-                transform_2d(&mut spectrum, engine, Direction::Forward);
-                transform_2d(&mut spectrum, engine, Direction::Inverse);
+                which(&mut spectrum, &mut engine, Direction::Forward);
+                which(&mut spectrum, &mut engine, Direction::Inverse);
                 best = best.min(start.elapsed());
                 std::hint::black_box(spectrum[(0, 0)]);
             }
             best
         };
 
-        let fftw = time(&mut genslip::fft::RustFft::new());
-        let rust = time(&mut RustFft::new());
+        let gather = time(gathered);
+        let transpose = time(|s, f, d| transform_2d(s, f, d));
         println!(
-            "{cells:>7} {fftw:>14?} {rust:>14?} {:>10.2}",
-            rust.as_secs_f64() / fftw.as_secs_f64()
+            "{:>5}x{:<5} {gather:>13?} {transpose:>13?} {:>7.2}x",
+            strike_count,
+            dip_count,
+            gather.as_secs_f64() / transpose.as_secs_f64()
         );
     }
     println!();

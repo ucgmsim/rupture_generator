@@ -15,27 +15,27 @@ which owe a measurement, and how many there actually are.
 
 | | |
 | --- | --- |
-| markers in the code | **1** |
-| closed so far | 18 |
-| owe a measurement | 1, and it is a speed claim rather than an arithmetic one |
+| markers in the code | **0** |
+| closed | 19 |
 
 `README.md` said eleven for a while. It was never eleven — the audit found nineteen,
-four of which turned out not to be work at all.
+four of which turned out not to be work at all, and two more of which turned out to
+be free once measured.
 
-Collect them with:
+The collection command now returns nothing, and that is the check:
 
 ```sh
 rg 'SIMPLIFY:' crates/genslip/src
 ```
 
-The one that is left is `transform_2d`'s dip pass, below under *the transform*: a
-gather/scatter that could be a transpose. It moves nothing and is worth taking only
-if it measures faster, which is a different kind of question from the rest of this
-document and is why it is last.
+This document stops being a backlog here and becomes a record. What it is for now is
+the *classification* — which kinds of rewrite are free and which owe a measurement —
+because that outlives the sites, and `crates/genslip/tests/float_identities.rs`
+asserts it.
 
-### What the arithmetic ones cost, measured
+### What they cost, measured
 
-Fourteen closed in two commits, each one re-run against the corpus:
+Fifteen closed in three commits, each one re-run against the corpus:
 
 | | worst corpus drift |
 | --- | --- |
@@ -43,6 +43,7 @@ Fourteen closed in two commits, each one re-run against the corpus:
 | the two accumulations single → double | folded into the same measurement |
 | the three that "could not be unified without moving bits" | onset moved in **87 subfaults of two cases, worst 9.5e-07 s**, against a 0.05 s bound. Slip, rake, rise time and every slip-rate sample bit-identical |
 | the two that were free after all — `sqrt(x*x)`, `4·atan(1)` | nothing, by construction |
+| the dip pass, gather/scatter → tiled transpose | nothing, and asserted rather than measured — every 1-D transform sees the same input either way. **1.7× to 2.2× faster**, growing with the grid |
 
 The third row deserves its detail, because two of its three sites turned out to move
 nothing at all and the notes claiming otherwise were wrong:
@@ -187,7 +188,7 @@ than fixed; Stage 2 should decide.
 | --- | --- | --- | --- |
 | `fft2d_fftw` | plans **on every call** — two `fftwf_plan_dft_1d` per 2-D transform, and the first is then leaked | plan once per (length, direction) and cache — already so in the port | **free** (and a real speed win) |
 | `fft2d_fftw` | `check_realloc`s a `check_malloc`ed pointer and frees it with `fftwf_free` | one allocator throughout — already so in the port | **free** |
-| `transform_2d`, dip pass | gathers each column into scratch and scatters it back | transpose once, run contiguous rows, transpose back. Cache-friendlier at realistic fault sizes — *measure before believing it* | moves nothing; speed only |
+| `transform_2d`, dip pass | gathered each column into scratch and scattered it back | transpose once, run contiguous rows, transpose back | moves nothing; speed only — **taken, 1.7x to 2.2x** |
 | the engine | FFTW | `rustfft`. Measured divergence between them is **7.06e-8** relative, about half an `f32` ulp | moves bits — this is the Stage 3 swap |
 
 The engine swap is the one entry here with its adjudication baseline already
