@@ -6,6 +6,12 @@ license.workspace = true
 description = "Kinematic rupture model generation: a port of genslip v5.6.2."
 
 [dev-dependencies]
+# Comparison assertions that print both values and the tolerance when they fail. The
+# hand-written `assert!((a - b).abs() < tol)` prints "assertion failed" and nothing
+# else, which is the difference between a test that tells you what broke and one that
+# tells you that something did.
+approx = "0.5.1"
+ndarray = { version = "0.17.2", features = ["approx"] }
 num-complex = "0.4.6"
 proptest = "1"
 

@@ -39,6 +39,7 @@
 //! rather than WGS84, geodetic and geocentric latitude mixed, and `π/180` truncated to
 //! `0.017453293`.
 
+use approx::assert_abs_diff_eq;
 use genslip::geodesy::{Geodesy, Offset, Point, Wgs84Geodesic};
 use proptest::prelude::*;
 
@@ -132,8 +133,8 @@ fn a_zero_offset_is_the_origin() {
                 east_km: 0.0,
             },
         );
-        assert!((produced.longitude_deg - origin.0).abs() < 1e-12);
-        assert!((produced.latitude_deg - origin.1).abs() < 1e-12);
+        assert_abs_diff_eq!(produced.longitude_deg, origin.0, epsilon = 1e-12);
+        assert_abs_diff_eq!(produced.latitude_deg, origin.1, epsilon = 1e-12);
     }
 }
 

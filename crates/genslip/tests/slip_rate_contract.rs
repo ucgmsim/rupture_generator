@@ -17,6 +17,7 @@ use genslip::slip_rate::{
 };
 
 mod common;
+use approx::assert_abs_diff_eq;
 use common::tolerance::pulse_round_trip;
 
 /// genslip's `nt_max`. Large enough never to bind here.
@@ -696,15 +697,22 @@ mod the_closed_form_shapes {
         let depths = [0.0_f64, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
         let field = shape_parameter_field(SlipRateShape::from(Urs), 1, &depths, profile);
 
-        // betashal above the ramp, betadeep below it, and the midpoint between.
-        let expected = [0.5_f64, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
-        for (index, (depth, want)) in depths.iter().zip(expected).enumerate() {
-            let got = field[[index, 0]];
-            assert!(
-                (got - want).abs() < 1e-6,
-                "at {depth} km the tail is {got}, not {want}"
-            );
-        }
+        // betashal above the ramp, betadeep below it, and the midpoint between. One
+        // assertion over the whole column: a failure prints both arrays, so it shows
+        // *which* depths went wrong and by how much, where a per-element loop stops
+        // at the first and says nothing about the shape of the error.
+        let expected = ndarray::array![
+            [0.5],
+            [0.5],
+            [0.5],
+            [0.5],
+            [0.35],
+            [0.2],
+            [0.2],
+            [0.2],
+            [0.2]
+        ];
+        assert_abs_diff_eq!(field, expected, epsilon = 1e-6);
     }
 
     /// A taller tail carries more of the slip late.

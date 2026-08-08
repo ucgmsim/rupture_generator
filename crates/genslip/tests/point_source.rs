@@ -27,6 +27,7 @@
 
 mod common;
 
+use approx::assert_abs_diff_eq;
 use common::fixture;
 use genslip::grid::FaultAxes;
 use genslip::realisation::{FaultGrid, PointSourceSpec, point_source};
@@ -181,12 +182,7 @@ fn one_subfault_rises_in_the_time_it_was_given() {
 fn the_rake_is_the_one_the_geometry_carries() {
     let grid = fixture::fault_of(5, 3, 6, 4);
     let model = generate(&grid);
-    for (index, (rake, base)) in model.rake_deg.iter().zip(&grid.base_rake_deg).enumerate() {
-        assert!(
-            (rake - base).abs() < 1e-6,
-            "subfault {index} came out at rake {rake}, not {base}"
-        );
-    }
+    assert_abs_diff_eq!(model.rake_deg, grid.base_rake_deg, epsilon = 1e-6);
 }
 
 /// Across a plane, slip is uniform along strike and varies only with rigidity.
