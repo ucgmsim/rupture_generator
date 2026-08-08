@@ -17,6 +17,17 @@
 //!
 //! (orig. `gslip_sliprate_subs.c` and `load_slip_srf_dd5_vsden`)
 
+// The original writes `3.141592654` where this uses `PI`, and in `f32` the two are the
+// same number: they first differ at the tenth digit, an `f32` carries about seven, and
+// both round to `0x40490fdb`. The pulse generator's `pi` is a `float`, so the
+// substitution is free — and the corpus agrees, no slip-rate sample moved.
+//
+// What makes it free is the *width*, not the digit count. The same literal at double
+// width is 4.6e-10 away from pi and is a different `f64`; genslip's other truncated
+// constant, `rperd = 0.017453293`, is likewise exact as an `f32` and wrong as an
+// `f64`, which is where it did real damage. `float_identities.rs` asserts all four.
+use std::f32::consts::PI;
+
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
 use crate::taper::SlipField;
 
@@ -39,29 +50,38 @@ pub struct BetaProfile {
 impl BetaProfile {
     /// Shape parameter at `depth_km`.
     ///
-    /// SIMPLIFY: `DepthRamp::scaled_from_shallow`. This is the one ramp in the
-    /// program whose grouping differs: it precomputes a gradient,
-    /// `(v_far - v_near) / width`, and multiplies by the offset — `(a/c)*b` where
-    /// every other site writes `(a*b)/c`. Same number, different `f32`, so the
-    /// helper cannot be used here without moving every beta value.
+    /// Uses [`DepthRamp::scaled_from_shallow`], like every other ramp in the program.
+    ///
+    /// The original writes this one differently: it precomputes a gradient
+    /// `(v_far - v_near)/width` and multiplies by the offset, `(a/c)*b` where every
+    /// other site writes `(a*b)/c`. Equal in exact arithmetic and not in `f32`, which
+    /// is why the two spellings stayed separate under bit-parity.
+    ///
+    /// The size of the difference was measured before unifying, and it is zero here:
+    /// the shipped shallow ramp is 2 km wide, so `/(deep - shallow)` is a division by
+    /// a power of two and exact, and the mid ramp is flat — `beta_mid` and
+    /// `beta_deep` are both 0.13. Sampled at 200 000 depths across each ramp, the two
+    /// groupings agree on every bit. They stop agreeing as soon as the width is not a
+    /// power of two: 15% of depths differ in the last bit at a width of 3 km, 20% at
+    /// 2.2 km. So this is a correctness-neutral unification for the configuration and
+    /// a last-bit one for any other, and the corpus confirms it — no slip-rate sample
+    /// moved.
     #[must_use]
     pub fn beta_at(self, depth_km: f32) -> f32 {
-        let shallow_min = self.shallow_ramp.centre_km - self.shallow_ramp.half_width_km;
-        let shallow_max = self.shallow_ramp.centre_km + self.shallow_ramp.half_width_km;
-        let mid_min = self.mid_ramp.centre_km - self.mid_ramp.half_width_km;
-        let mid_max = self.mid_ramp.centre_km + self.mid_ramp.half_width_km;
-
-        let shallow_gradient = (self.mid - self.shallow) / (shallow_max - shallow_min);
-        let mid_gradient = (self.deep - self.mid) / (mid_max - mid_min);
-
-        if depth_km <= shallow_min {
+        if depth_km <= self.shallow_ramp.shallow_km() {
             self.shallow
-        } else if depth_km < shallow_max {
-            self.shallow + shallow_gradient * (depth_km - shallow_min)
-        } else if depth_km <= mid_min {
+        } else if depth_km < self.shallow_ramp.deep_km() {
+            self.shallow
+                + self
+                    .shallow_ramp
+                    .scaled_from_shallow(self.mid - self.shallow, depth_km)
+        } else if depth_km <= self.mid_ramp.shallow_km() {
             self.mid
-        } else if depth_km < mid_max {
-            self.mid + mid_gradient * (depth_km - mid_min)
+        } else if depth_km < self.mid_ramp.deep_km() {
+            self.mid
+                + self
+                    .mid_ramp
+                    .scaled_from_shallow(self.deep - self.mid, depth_km)
         } else {
             self.deep
         }
@@ -147,22 +167,6 @@ pub fn rise_times(
     }
     field
 }
-
-/// The original's pi, and not `f32::consts::PI`.
-///
-/// It is written `3.141592654` and held in a `float`, so it is the nearest `f32` to
-/// a ten-digit decimal rather than to pi itself. That value sets the phase of every
-/// sinusoid in the pulse, so substituting the true constant moves every sample.
-///
-/// SIMPLIFY: `std::f32::consts::PI`. Unlike the `4.0*atan(1.0)` in `shift_phase`,
-/// this one is **not** free -- the two differ in the last bit.
-#[expect(
-    clippy::excessive_precision,
-    clippy::approx_constant,
-    clippy::unreadable_literal,
-    reason = "reproducing the original's literal, which is not pi; see the doc comment"
-)]
-const PI: f32 = 3.141592654;
 
 /// A slip-rate function: samples at a fixed interval, integrating to the slip.
 #[derive(Clone, Debug, PartialEq)]

@@ -208,39 +208,33 @@ impl SpeedProfile {
     /// weighting is uniform. Both are reproduced as they stand, separately, rather
     /// than unified onto whichever is right.
     fn depth_factor(self, depth_km: f32) -> f32 {
-        let shallow_min = self.shallow.centre_km - self.shallow.half_width_km;
-        let shallow_max = self.shallow.centre_km + self.shallow.half_width_km;
-        let deep_min = self.deep.centre_km - self.deep.half_width_km;
-        let deep_max = self.deep.centre_km + self.deep.half_width_km;
-
-        // SIMPLIFY: `DepthRamp::scaled_from_deep` and `scaled_from_shallow`, which
-        // every other ramp in the program now uses. Not applicable here, because the
-        // scale factor `1.0 - shal_vr` is a *double* — the literal makes it so — and
-        // the helper's is single. The multiply therefore happens at a different
-        // width, and the result differs in the last bit.
+        // `DepthRamp::scaled_from_deep` and `scaled_from_shallow`, like every other
+        // ramp in the program. The original ran this one in `double` throughout — the
+        // literal `1.0 - shal_vr` makes it so, and only the two depth differences are
+        // single — rounding once at the store, where the helper works in `f32`
+        // start to finish. That extra rounding is why it stayed written out under
+        // bit-parity.
         //
-        // Two things are being reproduced at once. The *form*: `(max - depth)/(max -
-        // min)` rather than `1 - (depth - min)/(max - min)`. And the *precision*: the
-        // two differences are single, everything above them is double, and it rounds
-        // once at the store.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the narrowing seam: C stores rfdep into a float"
-        )]
-        let factor = if depth_km <= shallow_min {
+        // Measured before unifying, over the whole corpus: 87 subfaults across two of
+        // the six cases moved, worst 9.5e-07 s. The onset bound is 0.05 s, so the
+        // change is five orders of magnitude inside it, and it is the only thing in
+        // this commit that moved anything at all. Slip, rake, rise time and every
+        // slip-rate sample are bit-identical.
+        if depth_km <= self.shallow.shallow_km() {
             self.shallow_factor
-        } else if depth_km < shallow_max {
-            (1.0 - (1.0 - f64::from(self.shallow_factor)) * f64::from(shallow_max - depth_km)
-                / f64::from(shallow_max - shallow_min)) as f32
-        } else if depth_km <= deep_min {
+        } else if depth_km < self.shallow.deep_km() {
+            1.0 - self
+                .shallow
+                .scaled_from_deep(1.0 - self.shallow_factor, depth_km)
+        } else if depth_km <= self.deep.shallow_km() {
             1.0
-        } else if depth_km < deep_max {
-            (1.0 - (1.0 - f64::from(self.deep_factor)) * f64::from(depth_km - deep_min)
-                / f64::from(deep_max - deep_min)) as f32
+        } else if depth_km < self.deep.deep_km() {
+            1.0 - self
+                .deep
+                .scaled_from_shallow(1.0 - self.deep_factor, depth_km)
         } else {
             self.deep_factor
-        };
-        factor
+        }
     }
 }
 

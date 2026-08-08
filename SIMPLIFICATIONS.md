@@ -15,18 +15,53 @@ which owe a measurement, and how many there actually are.
 
 | | |
 | --- | --- |
-| markers in the code | **15** |
-| closed so far | 4 |
-| free, no adjudication | 0 remaining — all four are taken |
-| owe a measurement | 15 |
+| markers in the code | **1** |
+| closed so far | 18 |
+| owe a measurement | 1, and it is a speed claim rather than an arithmetic one |
 
-`README.md` said eleven for a while. It was never eleven.
+`README.md` said eleven for a while. It was never eleven — the audit found nineteen,
+four of which turned out not to be work at all.
 
 Collect them with:
 
 ```sh
 rg 'SIMPLIFY:' crates/genslip/src
 ```
+
+The one that is left is `transform_2d`'s dip pass, below under *the transform*: a
+gather/scatter that could be a transpose. It moves nothing and is worth taking only
+if it measures faster, which is a different kind of question from the rest of this
+document and is why it is last.
+
+### What the arithmetic ones cost, measured
+
+Fourteen closed in two commits, each one re-run against the corpus:
+
+| | worst corpus drift |
+| --- | --- |
+| the seven transcendental rewrites — `exp(n·log x)` → `powi`/`powf`/`cbrt`, `sqrt(a²+b²)` → `hypot`, two complex multiplies → one | slip 2.3141e-06 → **2.2370e-06**; the snapshot moved one line in its eighth figure |
+| the two accumulations single → double | folded into the same measurement |
+| the three that "could not be unified without moving bits" | onset moved in **87 subfaults of two cases, worst 9.5e-07 s**, against a 0.05 s bound. Slip, rake, rise time and every slip-rate sample bit-identical |
+| the two that were free after all — `sqrt(x*x)`, `4·atan(1)` | nothing, by construction |
+
+The third row deserves its detail, because two of its three sites turned out to move
+nothing at all and the notes claiming otherwise were wrong:
+
+* **`BetaProfile::beta_at`** regrouped `(a/c)*b` to `(a*b)/c`. The shipped shallow
+  ramp is 2 km wide, so the division is by a power of two and exact; the mid ramp is
+  flat. 200 000 sampled depths, not one bit different. At a width of 3 km, 15% of
+  depths would differ.
+* **`3.141592654f`** and `f32::consts::PI` are **the same `f32`** — `0x40490fdb` —
+  because they first differ at the tenth digit and an `f32` carries about seven. The
+  note said they differed in the last bit. They do not, and the marker was never work.
+  The width is what decides: at double width the same literal is a different number,
+  and so is `rperd` below, which is exact as an `f32` and wrong as an `f64`.
+* **`SpeedProfile::depth_factor`** was the real one: the original runs it in `double`
+  and rounds once at the store, the helper works in `f32` throughout. That extra
+  rounding is the whole of the 9.5e-07 s above.
+
+Two of three wrong is the argument for rule 4. A note that says *this moves bits* is
+a prediction, and predictions get measured before they get believed.
 
 ## How to tell the two kinds apart
 
@@ -177,7 +212,7 @@ problems, worst first:
 | It is a linearisation | Kilometres per degree are evaluated once at the origin and applied linearly. Error grows with the square of the distance. |
 | The ellipsoid is not WGS84 | `a = 6378.139`, `1/f = 298.256` — roughly the 1964 IAU figure. WGS84 is `6378.137` and `298.257223563`, which is what everything downstream uses. |
 | Latitude conventions are mixed | `lat0` is converted to *geocentric*, and its cosine is then used as though it were the geodetic parallel radius. |
-| The constant is truncated | `rperd = 0.017453293`, about 2e-9 short. |
+| The constant is truncated | `rperd = 0.017453293`, 4.8e-10 **over** pi/180. Invisible in single precision — it is the nearest `f32` — and a different number in the `double` the projection actually runs in. |
 
 **Measured disagreement**, from `geodesy.rs`, at Christchurch, offset north-east:
 

@@ -13,6 +13,11 @@
 //! So each claim here is executable, and the ones that are **false** are asserted too.
 //! A file that only recorded the exact identities would read as though every
 //! roundabout spelling were free.
+//!
+//! Every site these describe has now been taken. The tests stay because the *claims*
+//! outlive the sites: they are what says the four free rewrites owed no argument and
+//! the bit-moving ones did. The final tally was two more misfilings — see
+//! `a_ten_digit_pi_is_pi_in_single_precision`, and `SIMPLIFICATIONS.md` for the ramp.
 
 use proptest::prelude::*;
 
@@ -109,12 +114,59 @@ fn four_arctangents_of_one_are_pi() {
     );
 }
 
+/// A ten-digit literal is the constant in `f32` and is not in `f64`.
+///
+/// `SIMPLIFICATIONS.md` had genslip's `3.141592654` in the bit-moving column on the
+/// reasoning that a ten-digit decimal is not pi. True of the number and false of the
+/// `f32`: they first differ at the tenth digit, an `f32` carries about seven, and both
+/// round to `0x40490fdb`. So the substitution in the pulse generator, where the
+/// constant is a `float`, is free — and the corpus agrees, no slip-rate sample moved.
+///
+/// **What decides it is the width, not the digit count.** The same test on the same
+/// literals in `double` fails, which is why the second half of this is asserted: it is
+/// the difference between the pulse's `pi` (free) and the geodesy's `rperd` (not, and
+/// one of the four separate faults that got `set_ll` deleted).
+#[expect(
+    clippy::excessive_precision,
+    clippy::approx_constant,
+    clippy::unreadable_literal,
+    reason = "the original's literals are the subject of the test"
+)]
+#[test]
+fn a_ten_digit_constant_survives_f32_and_not_f64() {
+    // `gslip_sliprate_subs.c`: `float pi = 3.141592654;`
+    let pi_single: f32 = 3.141592654;
+    assert_eq!(pi_single.to_bits(), std::f32::consts::PI.to_bits());
+
+    // `misc.c`: `rperd = 0.017453293`, about 5e-10 short of pi/180.
+    let degrees_single: f32 = 0.017453293;
+    assert_eq!(
+        degrees_single.to_bits(),
+        (std::f32::consts::PI / 180.0).to_bits()
+    );
+
+    // Both of them, at double width, are a different number.
+    let pi_double: f64 = 3.141592654;
+    assert_ne!(pi_double.to_bits(), std::f64::consts::PI.to_bits());
+
+    let degrees_double: f64 = 0.017453293;
+    assert_ne!(
+        degrees_double.to_bits(),
+        (std::f64::consts::PI / 180.0).to_bits()
+    );
+    assert!(
+        (degrees_double - std::f64::consts::PI / 180.0).abs() < 1e-9,
+        "and the gap is small enough that only the width makes it visible"
+    );
+}
+
 /// The other side of the taxonomy: rewrites that are **not** free.
 ///
-/// Each of these is a pending `SIMPLIFY` site, and each is worth making — `powi` is
-/// three multiplies where `exp(n·ln x)` is two transcendental calls, and `cbrt` is
-/// exact where the pair is not. But they change the last bits, so each owes a
-/// measurement and a recorded drift rather than a silent commit.
+/// Each of these was a `SIMPLIFY` site, and each was worth making — `powi` is three
+/// multiplies where `exp(n·ln x)` is two transcendental calls, and `cbrt` is exact
+/// where the pair is not. But they change the last bits, so each owed a measurement
+/// and a recorded drift rather than a silent commit. All are taken; the assertions
+/// remain as the record of why they were not free.
 mod these_move_bits_and_owe_a_measurement {
     /// `x.powi(4)` against `exp(4·ln x)` — `field.rs`'s band-pass.
     #[test]

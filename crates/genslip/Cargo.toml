@@ -9,11 +9,6 @@ description = "Kinematic rupture model generation: a port of genslip v5.6.2."
 num-complex = "0.4.6"
 proptest = "1"
 
-["fftw"]
-# Stage 1 only: links FFTW so the port can be compared against genslip bit for
-# bit. Stage 3 drops it and RustFft becomes the only engine.
-fftw = []
-
 [lints]
 workspace = true
 
