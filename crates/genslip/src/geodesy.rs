@@ -5,16 +5,21 @@
 //! onto the surface. That is an offset in kilometres from a known point, and turning
 //! it back into coordinates is the whole of the geodesy in this program.
 //!
-//! # Nothing calls this yet
+//! # Nothing calls this, and nothing is scheduled to
 //!
 //! Not the library, not `crates/core`, not the Python package — `assemble.py` states
 //! it: *"There is no geodesy here and no projection."* The subfault coordinates arrive
-//! from the caller. This module exists because `rupture_generator/geometry.py` is a
-//! stub that will one day need to place subfaults from a fault definition, and this is
-//! what it should place them with.
+//! from the caller.
 //!
-//! Worth knowing before treating it as load-bearing, and worth deleting if that stub
-//! is ever resolved the other way.
+//! This used to be justified by `rupture_generator/geometry.py`, a stub that would one
+//! day place subfaults from a fault definition. That stub is deleted — it was pre-port
+//! scaffold with `pass` for a body and no importers — so the justification is now
+//! narrower and worth stating plainly: **this module is unused**, it is the correct
+//! replacement for a measurably wrong thing (`set_ll`, below), and `geographiclib-rs`
+//! is a dependency held for it alone.
+//!
+//! Keep it while placing subfaults on an ellipsoid is a thing the package might do.
+//! Delete it, and the dependency with it, the moment that stops being true.
 //!
 //! # What was here and is not
 //!

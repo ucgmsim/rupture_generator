@@ -4,11 +4,19 @@ The core produces physics: how much each subfault slips, in what direction, when
 starts, and the shape of the pulse. It knows nothing about where the fault is. This
 puts the two together.
 
-There is no geodesy here and no projection. The subfault coordinates come from
-whoever discretised the fault — `rupture_generator.geometry` — because that is the
-only place that knows how the mesh became a grid. genslip recomputes a plane centre
-from a fault width and a dip with a tangent-plane approximation that is off by a
-kilometre at subduction scale; the caller here already has the answer.
+There is no geodesy here and no projection. The subfault coordinates arrive in
+`SubfaultGeometry`, from whoever discretised the fault, because that is the only
+place that knows how the mesh became a grid. genslip instead recomputes a plane
+centre from a fault width and a dip, with a tangent-plane approximation that is off
+by 43 m on a crustal fault and 1.9 km at subduction scale — `test_corpus.py`'s
+`TestTheGeometryDivergence` measures it. The caller here already has the answer, so
+this asks for it rather than deriving it worse.
+
+This used to name `rupture_generator.geometry` as the source. That module was
+pre-port scaffold: a `Geometry` class and a `closest_point_pair` whose bodies were
+`pass`, no importers anywhere, and not exported from the package. It is deleted. If
+a mesh discretiser is wanted it is a piece of work, not a stub to be filled in, and
+`genslip::geodesy::Wgs84Geodesic` is what it should place subfaults with.
 """
 
 import dataclasses

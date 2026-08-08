@@ -311,25 +311,35 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    and the one place `genslip-oracle` gets rewired, because 1,450 lines of new port
    needs per-function parity to be built at all.
 
-### Smaller things, found and not done
+### Smaller things, found and done
 
-Each is a paragraph of work, and each is written down because the discovery cost more
-than the fix will.
+Each was a paragraph of work, written down because the discovery cost more than the
+fix. All four are closed; what they turned into is worth keeping.
 
-- **`VelocityModel1D` is write-only from Python.** PyO3 exposes its constructor and no
-  getters, so `write_velocity_model` in the harness takes three arrays rather than the
-  model a caller already built. Add `#[pyo3(get)]`, the stub entries, and let the
-  stub-consistency test in `tests/test_boundary.py` check them.
-- **`rupture_generator/geometry.py` is a stub.** `Geometry.discretise` and
-  `closest_point_pair` are `pass`, and `DiscretisedGeometry` now has no callers — the
-  harness grew its own `GsfSubfaults` because `DiscretisedGeometry` has no longitude or
-  latitude to write. Decide what that module is for before something depends on it.
-- **`tests/test_boundary.py`'s padded extents are not genslip's.** Its helper uses
+- **`VelocityModel1D` was write-only from Python.** PyO3 exposed its constructor and
+  no getters, so `write_velocity_model` in the harness took the three arrays and the
+  caller had to remember to pass the same three to `VelocityModel1D`. It now takes the
+  model, which makes *"both sides are given one model"* true by construction instead
+  of by discipline. The stub-consistency test was the reason this went unnoticed for
+  so long: it compared top-level names only, so a class could gain a getter in Rust
+  and keep a stub that did not describe it. It now compares **members**, for every
+  class, with a test asserting the class list is complete.
+- **`rupture_generator/geometry.py` is deleted.** Pre-port scaffold from the initial
+  commit: a `Geometry` class and a `closest_point_pair` whose bodies were `pass`, no
+  importers anywhere in the repo, and not exported from the package. `assemble.py`
+  named it as the source of subfault coordinates; the real contract is
+  `SubfaultGeometry`, supplied by the caller, and it now says so. A mesh discretiser
+  is a piece of work rather than a stub to fill in.
+- **`tests/test_boundary.py`'s padded extents are genslip's now.** The helper used
   `2 * ((strike + 4) // 2 + 1)`, which gives 26 for a 20-subfault fault where genslip
-  reports `nstk2 = 22`. The tests pass because `FaultGrid` takes the padding as an
-  argument, so this misleads a reader rather than breaking anything. genslip's actual
-  rule is now written down and checked against the binary —
-  `mapping.padded_extents` — so this is a two-line change to use it.
-- **`tools/` holds locally-built binaries.** `genslip_v5.6.2` and
-  `fault_seg2gsf_dipdir` there were rebuilt from `build-oracle` with the flags above.
-  The directory is gitignored, so on another machine they will not exist.
+  reports `nstk2 = 22`. It uses the single-plane collapse of the real rule,
+  `even(int(1.10 * n))`, and `test_mapping.py` asserts that agrees with
+  `mapping.padded_extents` — the general form, checked against the binary — at every
+  extent from 2 to 40. One rule, one simplification, and an assertion tying them.
+- **The reference binary is found by `GENSLIP_BINARY`.** This entry used to describe a
+  gitignored `tools/` directory holding locally-built copies of `genslip_v5.6.2` and
+  `fault_seg2gsf_dipdir`. Nothing in the repo ever referenced that path, the directory
+  is not in `.gitignore`, and it does not exist here. What is true: the harness reads
+  `GENSLIP_BINARY`, the thirteen tests that need it skip without it, and the corpus
+  fixtures are committed — so a fresh clone runs the whole gate green with no genslip
+  at all. The binary is needed only to *regenerate* the corpus.

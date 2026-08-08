@@ -546,7 +546,6 @@ def run_port(case: Case) -> Any:
 
     geometry = case.geometry()
     parameters = case.parameters()
-    bottom_depth_km, shear_speed_km_s, density_g_cm3 = case.layers
 
     derived = mapping.derive(
         geometry,
@@ -567,7 +566,7 @@ def run_port(case: Case) -> Any:
             strike_count=case.strike_count,
             dip_count=case.dip_count,
         ),
-        mapping.velocity_model(bottom_depth_km, shear_speed_km_s, density_g_cm3),
+        mapping.velocity_model(*case.layers),
         mapping.source_spec(geometry, parameters, magnitude=case.magnitude),
         mapping.slip_spec(geometry, parameters),
         mapping.timing_spec(
@@ -596,11 +595,11 @@ def generate(case: Case, genslip_path: Path) -> None:
     genslip_path : Path
         The genslip binary.
     """
+    from tests.harness import mapping
     from tests.harness.genslip_reference import generate_segment_rupture
 
     CORPUS.mkdir(parents=True, exist_ok=True)
     geometry = case.geometry()
-    bottom_depth_km, shear_speed_km_s, density_g_cm3 = case.layers
 
     reference = generate_segment_rupture(
         geometry,
@@ -612,9 +611,7 @@ def generate(case: Case, genslip_path: Path) -> None:
         seed=case.seed,
         hypocentre_strike_km=case.hypocentre_strike_km,
         hypocentre_dip_km=case.hypocentre_dip_km,
-        bottom_depth_km=bottom_depth_km,
-        shear_speed_km_s=shear_speed_km_s,
-        density_g_cm3=density_g_cm3,
+        velocity_model=mapping.velocity_model(*case.layers),
         keep_raw=True,
     )
 

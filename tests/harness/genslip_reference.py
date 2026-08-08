@@ -16,11 +16,11 @@ from typing import Any
 
 import numpy as np
 
-from rupture_generator import srf
+from rupture_generator import VelocityModel1D, srf
 from rupture_generator.srf import SrfFile
 from tests.harness import serialise as utils
 from tests.harness.genslip_config import Parameters
-from tests.harness.gsf import FloatArray, GsfSubfaults, write_gsf
+from tests.harness.gsf import GsfSubfaults, write_gsf
 
 # genslip reports what it derived on stderr before it generates anything: the padded
 # extents, the subfault spacing, alphaT, and the rise-time and rupture-velocity
@@ -95,6 +95,7 @@ class ReferenceRun:
     diagnostics: dict[str, float]
     raw: bytes | None = None
 
+
 # genslip reads the fault grid from a GSF file and writes SRF to stdout. These are not
 # user choices -- they describe how this function drives the binary -- so they are set
 # here rather than exposed on `Parameters`.
@@ -120,22 +121,19 @@ def _build_geometry_parameters(geometry_path: Path) -> dict[str, Any]:
     return _DEFAULT_GEOMETRY_PARAMETERS | dict(infile=geometry_path)
 
 
-def write_velocity_model(
-    bottom_depth_km: FloatArray,
-    shear_speed_km_s: FloatArray,
-    density_g_cm3: FloatArray,
-    output: Path,
-) -> None:
+def write_velocity_model(model: VelocityModel1D, output: Path) -> None:
     """Write a velocity model as the 1D file genslip reads.
 
-    One line per layer: thickness, P speed, S speed, density. The arguments are layer
-    *bottoms*, matching `VelocityModel1D`'s constructor, so the thicknesses are
-    differences.
+    One line per layer: thickness, P speed, S speed, density. `VelocityModel1D` holds
+    layer *bottoms*, so the thicknesses are differences.
 
-    Takes the three arrays rather than a `VelocityModel1D` because that type is
-    write-only from Python -- PyO3 exposes its constructor and no getters -- so a
-    caller cannot hand this the model it built. Passing the arrays to both keeps one
-    definition with two consumers, which is the point.
+    **Takes the model the port is given**, not a copy of its arguments. That is the
+    whole point of the function: genslip reads its layers from a file and the port
+    reads them from an object, and the only way to know both sides ran on the same
+    model is for there to be one model. This used to take the three arrays instead,
+    because `VelocityModel1D` exposed a constructor and no getters, and the caller
+    then had to pass the same three arrays to two places and be trusted not to let
+    them drift.
 
     The P speed is a placeholder. `read_Fvelmodel` parses it into the layer struct
     (`ruptime.c:286`) and nothing in genslip reads it back: rupture speed comes from
@@ -144,18 +142,14 @@ def write_velocity_model(
 
     Parameters
     ----------
-    bottom_depth_km : FloatArray
-        Depth of the bottom of each layer, shallow to deep.
-    shear_speed_km_s : FloatArray
-        S-wave speed in each layer.
-    density_g_cm3 : FloatArray
-        Density in each layer.
+    model : VelocityModel1D
+        The layers, shallow to deep. The same object the port is handed.
     output : Path
         Where to write them.
     """
-    bottoms = np.asarray(bottom_depth_km, dtype=np.float64)
-    shear = np.asarray(shear_speed_km_s, dtype=np.float64)
-    density = np.asarray(density_g_cm3, dtype=np.float64)
+    bottoms = np.asarray(model.bottom_depth_km, dtype=np.float64)
+    shear = np.asarray(model.shear_speed_km_s, dtype=np.float64)
+    density = np.asarray(model.density_g_cm3, dtype=np.float64)
     thickness = np.diff(bottoms, prepend=0.0)
 
     lines = [f"{len(bottoms)}"]
@@ -177,9 +171,7 @@ def generate_segment_rupture(
     seed: int,
     hypocentre_strike_km: float,
     hypocentre_dip_km: float,
-    bottom_depth_km: FloatArray,
-    shear_speed_km_s: FloatArray,
-    density_g_cm3: FloatArray,
+    velocity_model: VelocityModel1D,
     keep_raw: bool = False,
 ) -> ReferenceRun:
     """Generate the rupture for one fault segment by invoking genslip.
@@ -209,10 +201,10 @@ def generate_segment_rupture(
         Hypocentre position along strike from the segment's centre, `shypo`.
     hypocentre_dip_km : float
         Hypocentre position down dip from the top edge, `dhypo`.
-    bottom_depth_km, shear_speed_km_s, density_g_cm3 : FloatArray
-        The 1D velocity model, written out as genslip's `velfile`. The same three
-        arrays a caller passes to `VelocityModel1D`, so both sides are provably given
-        the same layers -- see `write_velocity_model`.
+    velocity_model : VelocityModel1D
+        The 1D velocity model, written out as genslip's `velfile`. The same object
+        the port is handed, so both sides are given the same layers by construction
+        rather than by the caller remembering to -- see `write_velocity_model`.
     keep_raw : bool, optional
         Return the bytes genslip wrote alongside the parsed model. The fixture
         corpus wants them; nothing else does, and an SRF can reach gigabytes.
@@ -239,9 +231,7 @@ def generate_segment_rupture(
         gsf_path = tmp / "geometry.gsf"
         write_gsf(geometry, gsf_path)
         velocity_path = tmp / "velocity_model.1d"
-        write_velocity_model(
-            bottom_depth_km, shear_speed_km_s, density_g_cm3, velocity_path
-        )
+        write_velocity_model(velocity_model, velocity_path)
 
         options = (
             parameters.to_cmd()

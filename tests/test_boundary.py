@@ -8,6 +8,7 @@ stub still describes what it claims to.
 """
 
 import ast
+import enum
 from pathlib import Path
 
 import numpy as np
@@ -20,16 +21,31 @@ from rupture_generator import _core as core
 STRIKE, DIP = 16, 10
 
 
-def fault_grid(strike: int = STRIKE, dip: int = DIP) -> core.FaultGrid:
-    """Build a fault whose depths span both rise-time ramps.
+def padded(count: int) -> int:
+    """genslip's padded extent for a single-plane fault.
 
-    The padded extents are rounded up to even, as genslip rounds its own.
+    `(int)(flen_max*extend_fac/flen * nstk)`, rounded up to even. On one plane
+    `flen_max` clamps up to `flen`, so the ratio is exactly `extend_fac` and the whole
+    rule collapses to this. `mapping.padded_extents` is the general form, checked
+    against the binary; `test_mapping.py` asserts the two agree here, so this stays a
+    simplification rather than becoming a second unchecked copy.
+
+    It replaced `2 * ((strike + 4) // 2 + 1)`, which was not genslip's rule at all --
+    it gave 26 for a 20-subfault fault where genslip reports `nstk2 = 22`. Nothing
+    failed, because `FaultGrid` takes the padding as an argument, so it misled a
+    reader rather than breaking anything.
     """
+    scaled = int(1.10 * count)
+    return scaled + 1 if scaled % 2 else scaled
+
+
+def fault_grid(strike: int = STRIKE, dip: int = DIP) -> core.FaultGrid:
+    """Build a fault whose depths span both rise-time ramps."""
     return core.FaultGrid(
         strike,
         dip,
-        2 * ((strike + 4) // 2 + 1),
-        2 * ((dip + 2) // 2 + 1),
+        padded(strike),
+        padded(dip),
         1.0,
         1.0,
         depth_km=np.array([0.5 + i * 2.0 for i in range(dip)], dtype=np.float32),
@@ -71,7 +87,9 @@ def specs() -> tuple[core.SourceSpec, core.SlipSpec, core.TimingSpec]:
     )
 
 
-def generate(seed: int = 20260807, realisation: int = 0, **kwargs) -> core.GeneratedRupture:
+def generate(
+    seed: int = 20260807, realisation: int = 0, **kwargs
+) -> core.GeneratedRupture:
     """Generate a model with the configured defaults."""
     source, slip, timing = specs()
     return core.generate_rupture(
@@ -243,17 +261,108 @@ class TestRefusesBadInput:
             core.SlipSpec(core.SpectrumModel.Mai, min_wavelength_km=0.0)
 
 
+class TestTheVelocityModelReadsBack:
+    """A model hands back the layers it was given.
+
+    The property that makes the getters worth having: anything needing the layers can
+    take the model rather than the model *and* its three arrays. The harness used to
+    take both, and two descriptions of the same layers are two things that can drift.
+    """
+
+    LAYERS = (
+        np.array([1.0, 5.0, 12.0, 30.0], dtype=np.float32),
+        np.array([1.8, 2.6, 3.2, 3.6], dtype=np.float32),
+        np.array([2.1, 2.4, 2.6, 2.7], dtype=np.float32),
+    )
+
+    def test_the_arrays_come_back_unchanged(self) -> None:
+        model = core.VelocityModel1D(*self.LAYERS)
+        for built_from, read_back in zip(
+            self.LAYERS,
+            (model.bottom_depth_km, model.shear_speed_km_s, model.density_g_cm3),
+            strict=True,
+        ):
+            assert np.array_equal(read_back, built_from)
+            assert read_back.dtype == np.float32
+
+    def test_a_model_round_trips_through_its_own_constructor(self) -> None:
+        first = core.VelocityModel1D(*self.LAYERS)
+        second = core.VelocityModel1D(
+            first.bottom_depth_km, first.shear_speed_km_s, first.density_g_cm3
+        )
+        assert np.array_equal(second.bottom_depth_km, first.bottom_depth_km)
+        assert np.array_equal(second.shear_speed_km_s, first.shear_speed_km_s)
+        assert np.array_equal(second.density_g_cm3, first.density_g_cm3)
+
+    def test_writing_to_what_comes_back_does_not_reach_the_model(self) -> None:
+        # A view would let this corrupt a model that is validated on construction.
+        model = core.VelocityModel1D(*self.LAYERS)
+        model.bottom_depth_km[0] = -99.0
+        assert model.bottom_depth_km[0] == pytest.approx(1.0)
+
+    def test_the_length_is_the_layer_count(self) -> None:
+        assert len(core.VelocityModel1D(*self.LAYERS)) == 4
+
+
 class TestStubMatchesTheExtension:
-    """The stub is hand-written, so nothing keeps it honest but this."""
+    """The stub is hand-written, so nothing keeps it honest but this.
+
+    Names *and* members. Checking only the top-level names let a class gain a getter
+    in Rust and keep a stub that did not describe it, which is exactly what happened
+    to `VelocityModel1D`: it had a constructor and nothing else for long enough that
+    the harness grew a workaround for reading a model back.
+    """
 
     @staticmethod
-    def stub_names() -> set[str]:
-        source = (Path(core.__file__).parent / "_core.pyi").read_text()
-        tree = ast.parse(source)
+    def stub_tree() -> ast.Module:
+        return ast.parse((Path(core.__file__).parent / "_core.pyi").read_text())
+
+    @classmethod
+    def stub_names(cls) -> set[str]:
         return {
             node.name
-            for node in tree.body
+            for node in cls.stub_tree().body
             if isinstance(node, ast.ClassDef | ast.FunctionDef)
+        }
+
+    @classmethod
+    def stub_members(cls, class_name: str) -> set[str]:
+        """Public attributes, methods and annotated fields a stub class declares."""
+        for node in cls.stub_tree().body:
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                members = set()
+                for statement in node.body:
+                    if isinstance(statement, ast.FunctionDef):
+                        members.add(statement.name)
+                    elif isinstance(statement, ast.AnnAssign) and isinstance(
+                        statement.target, ast.Name
+                    ):
+                        members.add(statement.target.id)
+                    elif isinstance(statement, ast.Assign):
+                        # `Somerville = ...`, how the stub spells an enum variant.
+                        members.update(
+                            target.id
+                            for target in statement.targets
+                            if isinstance(target, ast.Name)
+                        )
+                return {name for name in members if not name.startswith("_")}
+        raise AssertionError(f"{class_name} is not in the stub")
+
+    @staticmethod
+    def runtime_members(compiled: type) -> set[str]:
+        """The same, from the compiled class.
+
+        `dir()` on a PyO3 type carries `object`'s inheritance, and on an enum carries
+        `enum`'s machinery, so both are subtracted rather than filtered by name --
+        a getter called `name` or `value` would otherwise be invisible.
+        """
+        inherited = set(dir(object))
+        if isinstance(compiled, enum.EnumMeta):
+            inherited |= set(dir(enum.Enum))
+        return {
+            name
+            for name in dir(compiled)
+            if not name.startswith("_") and name not in inherited
         }
 
     def test_every_public_member_is_in_the_stub(self) -> None:
@@ -268,11 +377,54 @@ class TestStubMatchesTheExtension:
         extra = described - exported
         assert not extra, f"documented but not exported: {sorted(extra)}"
 
+    @pytest.mark.parametrize(
+        "class_name",
+        [
+            "Ramp",
+            "FaultGrid",
+            "VelocityModel1D",
+            "SourceSpec",
+            "SlipSpec",
+            "TimingSpec",
+            "GeneratedRupture",
+            "SpectrumModel",
+            "RiseTimeWeighting",
+        ],
+    )
+    def test_every_class_describes_the_members_it_has(self, class_name: str) -> None:
+        described = self.stub_members(class_name)
+        actual = self.runtime_members(getattr(core, class_name))
+        assert described == actual, (
+            f"{class_name}: stub-only {sorted(described - actual)}, "
+            f"undocumented {sorted(actual - described)}"
+        )
+
+    def test_the_parametrisation_covers_every_stub_class(self) -> None:
+        """So a new class cannot be added to the stub and skip the member check."""
+        checked = {
+            case
+            for mark in self.test_every_class_describes_the_members_it_has.pytestmark
+            for case in mark.args[1]
+        }
+        stub_classes = {
+            node.name
+            for node in self.stub_tree().body
+            if isinstance(node, ast.ClassDef)
+        }
+        assert checked == stub_classes
+
     def test_every_enum_variant_exists(self) -> None:
         for enum_name, variants in [
             (
                 "SpectrumModel",
-                ["Somerville", "Mai", "Frankel", "MaiSomerville", "Suzuki", "InputCorners"],
+                [
+                    "Somerville",
+                    "Mai",
+                    "Frankel",
+                    "MaiSomerville",
+                    "Suzuki",
+                    "InputCorners",
+                ],
             ),
             ("RiseTimeWeighting", ["Uniform", "BySlip", "BySlipAndRuptureSpeed"]),
         ]:
@@ -287,7 +439,9 @@ class TestStubMatchesTheExtension:
     seed=st.integers(min_value=0, max_value=2**31 - 1),
 )
 @settings(max_examples=15, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-def test_any_fault_gives_one_value_per_subfault(strike: int, dip: int, seed: int) -> None:
+def test_any_fault_gives_one_value_per_subfault(
+    strike: int, dip: int, seed: int
+) -> None:
     """Shape is a function of the fault alone, whatever the seed."""
     source, slip, timing = specs()
     rupture = core.generate_rupture(

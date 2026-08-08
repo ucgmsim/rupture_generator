@@ -59,14 +59,23 @@ class FaultGrid:
     ) -> None: ...
 
 class VelocityModel1D:
-    """A layered one-dimensional velocity model, ordered shallow to deep."""
+    """A layered one-dimensional velocity model, ordered shallow to deep.
 
+    The three getters return the constructor's own arguments, so a model can be
+    handed to something that needs the layers rather than the layers being carried
+    alongside it. Each returns a fresh array; writing to one does not reach the model.
+    """
+
+    bottom_depth_km: FloatArray
+    shear_speed_km_s: FloatArray
+    density_g_cm3: FloatArray
     def __init__(
         self,
         bottom_depth_km: FloatArray,
         shear_speed_km_s: FloatArray,
         density_g_cm3: FloatArray,
     ) -> None: ...
+    def __len__(self) -> int: ...
 
 class SourceSpec:
     """What the earthquake is, before any field is drawn.

@@ -360,6 +360,17 @@ impl VelocityModel {
         Self { layers }
     }
 
+    /// The layers, shallow to deep.
+    ///
+    /// Read-only, because a model is validated on construction and nothing downstream
+    /// has a reason to edit one in place. The Python binding needs it to hand back
+    /// what it was given — a model the caller cannot read is one they have to keep a
+    /// second copy of, and two copies drift.
+    #[must_use]
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
     /// The layer containing `depth_km`, or the deepest one if it falls below them all.
     ///
     /// Clamping rather than extrapolating is the original's behaviour and the right

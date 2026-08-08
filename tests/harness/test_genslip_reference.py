@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rupture_generator import VelocityModel1D
 from tests.harness import gsf
 from tests.harness.genslip_reference import (
     generate_segment_rupture,
@@ -88,16 +89,19 @@ def run(**overrides):
         seed=overrides.pop("seed", SEED),
         hypocentre_strike_km=0.0,
         hypocentre_dip_km=3.0,
-        bottom_depth_km=BOTTOM_DEPTH_KM,
-        shear_speed_km_s=SHEAR_SPEED_KM_S,
-        density_g_cm3=DENSITY_G_CM3,
+        velocity_model=velocity_model(),
     )
+
+
+def velocity_model() -> VelocityModel1D:
+    """The four layers both sides run on."""
+    return VelocityModel1D(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3)
 
 
 class TestTheVelocityModelFile:
     def test_bottoms_become_thicknesses(self, tmp_path: Path) -> None:
         path = tmp_path / "velocity_model.1d"
-        write_velocity_model(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3, path)
+        write_velocity_model(velocity_model(), path)
         lines = path.read_text().splitlines()
         assert lines[0] == "4"
         thicknesses = [float(line.split()[0]) for line in lines[1:]]
@@ -107,7 +111,7 @@ class TestTheVelocityModelFile:
         # genslip reads `th vp vs den`, so a transposed vp/vs would silently change
         # every rupture speed in the model.
         path = tmp_path / "velocity_model.1d"
-        write_velocity_model(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3, path)
+        write_velocity_model(velocity_model(), path)
         speeds = [float(line.split()[2]) for line in path.read_text().splitlines()[1:]]
         assert speeds == pytest.approx(SHEAR_SPEED_KM_S)
 

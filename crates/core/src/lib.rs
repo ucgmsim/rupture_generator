@@ -281,6 +281,50 @@ impl VelocityModel1D {
             inner: VelocityModel::new(layers),
         })
     }
+
+    /// Depth to the bottom of each layer, in kilometres.
+    #[getter]
+    fn bottom_depth_km<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        self.layer_field(py, |layer| layer.bottom_depth_km)
+    }
+
+    /// Shear-wave speed in each layer, in kilometres per second.
+    #[getter]
+    fn shear_speed_km_s<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        self.layer_field(py, |layer| layer.shear_speed_km_s)
+    }
+
+    /// Density in each layer, in grams per cubic centimetre.
+    #[getter]
+    fn density_g_cm3<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        self.layer_field(py, |layer| layer.density_g_cm3)
+    }
+
+    /// Number of layers.
+    fn __len__(&self) -> usize {
+        self.inner.layers().len()
+    }
+}
+
+impl VelocityModel1D {
+    /// One column of the layer table, as a fresh array.
+    ///
+    /// Fresh rather than a view: a view would alias Rust-owned memory that Python
+    /// could then write through, and the model is validated on construction. Three
+    /// getters returning three arrays is also the shape the constructor takes, so a
+    /// model round-trips through its own arguments.
+    fn layer_field<'py>(
+        &self,
+        py: Python<'py>,
+        of: impl Fn(&Layer) -> f32,
+    ) -> Bound<'py, PyArray1<f32>> {
+        self.inner
+            .layers()
+            .iter()
+            .map(of)
+            .collect::<Vec<_>>()
+            .into_pyarray(py)
+    }
 }
 
 /// What the earthquake is, before any field is drawn.

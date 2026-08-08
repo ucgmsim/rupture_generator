@@ -101,6 +101,22 @@ class TestFaultGrid:
         assert derived().padded_strike == 22
         assert derived().padded_dip == 14
 
+    def test_the_single_plane_case_is_the_simplification_test_boundary_uses(
+        self,
+    ) -> None:
+        # `tests/test_boundary.py` cannot call `padded_extents` -- it would drag the
+        # whole getpar vocabulary into a file whose point is that it does not speak it
+        # -- so it inlines `even(int(1.10*n))`, the single-plane collapse. This is what
+        # keeps that inlining honest: one rule checked against the binary, one
+        # simplification, and an assertion tying them together.
+        from tests.test_boundary import padded
+
+        for count in range(2, 41):
+            length = float(count)
+            assert mapping.padded_extents(
+                count, count, length, length, _make_minimal_params()
+            ) == (padded(count), padded(count))
+
     def test_a_bigger_parent_fault_widens_the_padding(self) -> None:
         # The whole reason extend_fac exists: this segment is part of a longer
         # rupture, so its spectra are evaluated over the parent's length.
@@ -241,23 +257,25 @@ class TestTheHypocentreConversion:
 class TestVelocityModel:
     """Spec group 2: the one group with no getpar names in it."""
 
-    def test_it_is_the_arrays_the_reference_file_is_written_from(
+    def test_the_reference_file_is_written_from_the_port_s_own_model(
         self, tmp_path: Path
     ) -> None:
-        # Not a translation -- the assertion is that both sides get one model. The
-        # file stores *thicknesses* and the port takes layer *bottoms*, so this reads
-        # the file back and re-accumulates: the one place the two representations
-        # could disagree without either side looking wrong.
+        # Not a translation -- the assertion is that both sides get one model, and
+        # since `write_velocity_model` takes the model rather than a copy of its
+        # arguments, that is now true by construction. What is left to check is the
+        # *representation*: the file stores thicknesses and the model holds layer
+        # bottoms, so this reads the file back and re-accumulates. It is the one place
+        # the two could disagree without either side looking wrong.
+        model = mapping.velocity_model(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3)
         path = tmp_path / "velocity_model.1d"
-        write_velocity_model(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3, path)
+        write_velocity_model(model, path)
 
         rows = [line.split() for line in path.read_text().splitlines()[1:]]
+        assert len(rows) == len(model)
         bottoms = np.cumsum([float(row[0]) for row in rows])
-        assert bottoms == pytest.approx(BOTTOM_DEPTH_KM)
-        assert [float(row[2]) for row in rows] == pytest.approx(SHEAR_SPEED_KM_S)
-        assert [float(row[3]) for row in rows] == pytest.approx(DENSITY_G_CM3)
-
-        assert mapping.velocity_model(BOTTOM_DEPTH_KM, SHEAR_SPEED_KM_S, DENSITY_G_CM3)
+        assert bottoms == pytest.approx(model.bottom_depth_km)
+        assert [float(row[2]) for row in rows] == pytest.approx(model.shear_speed_km_s)
+        assert [float(row[3]) for row in rows] == pytest.approx(model.density_g_cm3)
 
     def test_mismatched_layer_counts_are_refused(self) -> None:
         with pytest.raises(ValueError, match="same length"):
