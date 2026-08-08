@@ -17,6 +17,14 @@
 //!   slip rate     one pulse per subfault
 //! ```
 //!
+//! # Two ways in, one assembler
+//!
+//! [`generate`] draws four fields off one stream. [`point_source`] builds the same
+//! four as constants and draws nothing. Both hand them to `assemble`, which is
+//! everything downstream of the randomness — the depth ramp, the eikonal solve, the
+//! pulses — so a point source is not a second pipeline but the same one with its
+//! random inputs made trivial.
+//!
 //! # The order is a contract, not a preference
 //!
 //! Every stochastic field comes off one generator. Reordering two of them, or
@@ -291,6 +299,139 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
             rake_deg,
             normalised_rise,
             rupture_perturbation,
+        },
+        grid,
+        &shear_speed,
+        timing,
+        scaling,
+        solver,
+        hypocentre,
+    )
+}
+
+/// What a point source is, over and above its geometry.
+///
+/// Deliberately small, and deliberately not [`SourceSpec`]: there is no spectrum
+/// here, so there are no corner relations and no coefficient turning a moment into a
+/// rise time. A point source is told its rise time.
+#[derive(Clone, Copy, Debug)]
+pub struct PointSourceSpec {
+    pub magnitude: f32,
+    pub magnitude_scale: MagnitudeScale,
+    /// Average dip and rake, for the same geometry correction a finite fault gets.
+    pub average_dip_deg: f32,
+    pub average_rake_deg: f32,
+    /// Fault-wide average rise time, in seconds — `generic_slip2srf`'s `risetime`.
+    ///
+    /// The *average*, which the depth ramp then redistributes around. The original
+    /// treats it as the unstretched value instead, so its ramp can only ever lengthen
+    /// and the fault-wide average comes out above what was asked for. Redistributing
+    /// is what the finite-fault path does and what makes a one-subfault source come
+    /// out at exactly this number.
+    pub rise_time_s: f32,
+}
+
+/// Generate a point source: the same rupture model, with nothing drawn.
+///
+/// A point source is a plane with **constant slip, constant rake and no
+/// perturbations** — `generic_slip2srf` is handed exactly that, one slip value and
+/// one onset repeated over however many subfaults the geometry discretised into. So
+/// this is not a second pipeline. It builds the four [`Fields`] as constants and
+/// hands them to the same [`assemble`] a finite fault reaches, and everything
+/// downstream — the depth ramp, the fault-wide normalisation, the eikonal solve, the
+/// pulses, the moment — is the code that was already there and already tested.
+///
+/// The signature is the argument. There is no [`DrawSource`] and no [`Fft`], because
+/// nothing here is random; there is no [`SlipSpec`], because there is no spectrum to
+/// shape, no taper and no spread. What is left is a fault, a velocity model, a
+/// magnitude and a rise time.
+///
+/// # Where this differs from `generic_slip2srf`, on purpose
+///
+/// **Onset is solved for, not given.** The C writes one `inittime` at every subfault;
+/// this runs the eikonal solver from the hypocentre and adds
+/// [`TimingSpec::rupture_delay_s`]. For a genuinely single-subfault source the two
+/// agree exactly — the solve gives zero and the delay is the onset. For a
+/// discretised plane the C has a rupture that arrives everywhere at once, and this
+/// has a front. The velocity model is right there; refusing to use it would be the
+/// odd choice.
+///
+/// **Slip is moment-consistent per subfault.** `scale_slip` scales a uniform field so
+/// the summed moment `Σ μᵢ Aᵢ sᵢ` is the target, so a fault crossing a layer boundary
+/// gets the slip that carries the moment rather than the slip a single rigidity
+/// lookup at the centroid implies.
+///
+/// # Panics
+///
+/// If the fault grid's per-subfault arrays disagree with its extents, or if
+/// `rise_time_s` is not strictly positive.
+#[must_use]
+pub fn point_source<E: EikonalSolver>(
+    solver: &mut E,
+    grid: &FaultGrid,
+    velocity_model: &VelocityModel,
+    spec: PointSourceSpec,
+    timing: TimingSpec,
+    hypocentre: Hypocentre,
+) -> RuptureModel {
+    let (strike_count, dip_count) = (grid.extents.fault_strike, grid.extents.fault_dip);
+    let subfaults = strike_count * dip_count;
+    assert_eq!(grid.depth_km.len(), dip_count, "one depth per dip row");
+    assert_eq!(
+        grid.base_rake_deg.len(),
+        subfaults,
+        "one base rake per subfault"
+    );
+    assert_eq!(
+        grid.velocity_fraction.len(),
+        subfaults,
+        "one velocity fraction per subfault"
+    );
+    assert!(
+        spec.rise_time_s > 0.0,
+        "the average rise time must be positive"
+    );
+
+    let correction = source::geometry_correction(spec.average_dip_deg, spec.average_rake_deg);
+    let scaling = Scaling {
+        moment_dyne_cm: source::seismic_moment(spec.magnitude, spec.magnitude_scale),
+        alpha_t: correction.alpha_t,
+        // Given, not derived. The finite-fault path multiplies its `Mo^(1/3)` estimate
+        // by `alpha_t` because the correction is *part of* that estimate; a rise time
+        // the caller measured or chose has already accounted for the geometry, and
+        // shortening it again would be applying the correction twice.
+        average_rise_time_s: spec.rise_time_s,
+    };
+
+    let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
+
+    // Uniform slip, scaled so the summed moment is the target. A field of ones and the
+    // same scaler the finite-fault path uses -- what makes this a point *source*
+    // rather than a point is that the moment still has to come out right.
+    let uniform = SlipField::from_values(strike_count, dip_count, vec![1.0; subfaults]);
+    let slip = moment::scale_slip(
+        &uniform,
+        0,
+        dip_count,
+        rigidity.as_slice(),
+        SubfaultSize {
+            strike_km: grid.spacing.strike_km,
+            dip_km: grid.spacing.dip_km,
+        },
+        SlipScaling::Moment {
+            dyne_cm: scaling.moment_dyne_cm,
+        },
+    );
+
+    assemble(
+        &Fields {
+            slip,
+            rake_deg: SlipField::from_values(strike_count, dip_count, grid.base_rake_deg.clone()),
+            // Unit mean by construction, so `rise_time_normalisation` returns the mean
+            // of the depth factor and `rise_times` gives back exactly
+            // `factor_at(depth) / mean(factor_at) * rise_time_s`.
+            normalised_rise: uniform,
+            rupture_perturbation: SlipField::zeros(strike_count, dip_count),
         },
         grid,
         &shear_speed,
