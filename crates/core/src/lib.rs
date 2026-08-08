@@ -39,7 +39,7 @@ use genslip::field::{CorrelationLengths, Spectrum2D, WavelengthBand};
 use genslip::grid::FaultAxes;
 use genslip::realisation::{self, RuptureModel};
 use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
-use genslip::rng::{GenslipLcg, Realisations as _};
+use genslip::rng::{DrawSource, GenslipLcg, Pcg, Realisations as _};
 use genslip::rupture::{FactoredSweep, Hypocentre, SpeedProfile};
 use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
 use genslip::slip_rate::{BetaProfile, SlipRateShape as Shape};
@@ -80,6 +80,25 @@ impl From<Refused> for PyErr {
     fn from(Refused(error): Refused) -> Self {
         PyValueError::new_err(error.to_string())
     }
+}
+
+/// Which stream of random numbers a rupture is drawn from.
+///
+/// The two are not interchangeable in the sense of "either is fine". `GenslipLcg` exists
+/// to reproduce `genslip v5.6.2` bit for bit -- a 31-bit truncated linear congruential
+/// generator whose normals are twelve summed uniforms, which is a 1960s construction and
+/// has the correlations to prove it. `Pcg` is PCG64-DXSM with a ziggurat, and is what to
+/// use for anything that is not a comparison against the C.
+///
+/// It defaults to the compatible one everywhere, so no existing caller moves.
+#[pyclass(eq, eq_int, from_py_object, module = "rupture_generator._core")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RandomEngine {
+    /// genslip v5.6.2's own generator. Bit-compatible, and only worth that.
+    #[default]
+    GenslipLcg,
+    /// PCG64-DXSM with a ziggurat for the normals.
+    Pcg,
 }
 
 /// Which relation maps magnitude onto the slip spectrum's wavenumber corners.
@@ -1047,6 +1066,7 @@ fn ndarray_from(
 #[pyo3(signature = (
     grid, velocity_model, source, slip, timing, *,
     seed, realisation = 0, hypocentre_strike, hypocentre_dip,
+    engine = RandomEngine::GenslipLcg,
 ))]
 #[expect(
     clippy::too_many_arguments,
@@ -1063,33 +1083,86 @@ fn generate_rupture(
     realisation: u64,
     hypocentre_strike: usize,
     hypocentre_dip: usize,
+    engine: RandomEngine,
 ) -> PyResult<GeneratedRupture> {
     let sample_interval_s = timing.inner.sample_interval_s;
+    let hypocentre = Hypocentre {
+        strike: hypocentre_strike,
+        dip: hypocentre_dip,
+    };
 
     // Nothing below touches a Python object.
     let model = py
         .detach(|| {
-            let mut draws = GenslipLcg::new(seed).realisation(realisation);
-            let mut fft = RustFft::new();
-            let mut solver = FactoredSweep::new();
-            realisation::generate(
-                &mut draws,
-                &mut fft,
-                &mut solver,
-                &grid.inner,
-                &velocity_model.inner,
-                source.inner,
-                slip.inner,
-                &timing.inner,
-                Hypocentre {
-                    strike: hypocentre_strike,
-                    dip: hypocentre_dip,
-                },
-            )
+            // The two generators are different types, so the branch is here rather than
+            // over a `Box<dyn DrawSource>`: `realisation::generate` is generic over its
+            // draw source, and monomorphising it twice costs a little code size and
+            // keeps the draw loop free of a virtual call.
+            match engine {
+                RandomEngine::GenslipLcg => {
+                    // The LCG's seed is signed, which is genslip's own choice: `getpar`
+                    // reads it as a `long` and the generator uses it as one.
+                    let draws = GenslipLcg::new(seed).realisation(realisation);
+                    draw(
+                        draws,
+                        grid,
+                        velocity_model,
+                        source,
+                        slip,
+                        timing,
+                        hypocentre,
+                    )
+                }
+                RandomEngine::Pcg => {
+                    #[expect(
+                        clippy::cast_sign_loss,
+                        reason = "a seed is a bit pattern; PCG takes it unsigned and the \
+                                  config's is signed, so the reinterpretation is here"
+                    )]
+                    let draws = Pcg::new(seed as u64).realisation(realisation);
+                    draw(
+                        draws,
+                        grid,
+                        velocity_model,
+                        source,
+                        slip,
+                        timing,
+                        hypocentre,
+                    )
+                }
+            }
         })
         .map_err(Refused)?;
 
     Ok(GeneratedRupture::from_model(&model, sample_interval_s))
+}
+
+/// The generation itself, once a draw source has been chosen.
+///
+/// Generic rather than duplicated: the arm above picks the type and this is the body
+/// both arms share, so the pipeline appears once.
+fn draw<S: DrawSource>(
+    mut draws: S,
+    grid: &FaultGrid,
+    velocity_model: &VelocityModel1D,
+    source: &SourceSpec,
+    slip: &SlipSpec,
+    timing: &TimingSpec,
+    hypocentre: Hypocentre,
+) -> genslip::Result<RuptureModel> {
+    let mut fft = RustFft::new();
+    let mut solver = FactoredSweep::new();
+    realisation::generate(
+        &mut draws,
+        &mut fft,
+        &mut solver,
+        &grid.inner,
+        &velocity_model.inner,
+        source.inner,
+        slip.inner,
+        &timing.inner,
+        hypocentre,
+    )
 }
 
 /// Generate a point source: the same rupture model, with nothing drawn.
@@ -1145,6 +1218,7 @@ fn generate_point_source(
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<SpectrumModel>()?;
+    module.add_class::<RandomEngine>()?;
     module.add_class::<RiseTimeWeighting>()?;
     module.add_class::<SlipRateShape>()?;
     module.add_class::<Ramp>()?;

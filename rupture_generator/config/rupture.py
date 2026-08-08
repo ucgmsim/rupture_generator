@@ -78,6 +78,14 @@ RISE_TIME_WEIGHTINGS = {
 
 WeightingName = Literal["uniform", "by_slip", "by_slip_and_rupture_speed"]
 
+RANDOM_ENGINES = {
+    "genslip_lcg": _core.RandomEngine.GenslipLcg,
+    "pcg": _core.RandomEngine.Pcg,
+}
+"""Spelled the config's way, mapped once -- as with the spectrum models."""
+
+EngineName = Literal["genslip_lcg", "pcg"]
+
 
 @dataclasses.dataclass
 class RampConfig(ConfigObject):
@@ -373,13 +381,17 @@ class RandomConfig(ConfigObject):
 
     seed: int = 1234
     realisation: int = 0
-    engine: Literal["genslip_lcg", "pcg"] = "genslip_lcg"
+    engine: EngineName = "genslip_lcg"
 
     def __post_init__(self) -> None:
         """Validate the fields, then the invariants between them."""
         super().__post_init__()
         if self.realisation < 0:
             self.refuse("realisation", f"must be 0 or more, got {self.realisation}")
+
+    def to_core(self) -> _core.RandomEngine:
+        """The compiled engine this names."""
+        return RANDOM_ENGINES[self.engine]
 
 
 @dataclasses.dataclass

@@ -28,6 +28,20 @@ class SpectrumModel(enum.Enum):
     Suzuki = ...
     InputCorners = ...
 
+class RandomEngine(enum.Enum):
+    """Which stream of random numbers a rupture is drawn from.
+
+    Not interchangeable in the sense of "either is fine". `GenslipLcg` exists to
+    reproduce genslip v5.6.2 bit for bit -- a 31-bit truncated LCG whose normals are
+    twelve summed uniforms -- and is worth exactly that. `Pcg` is PCG64-DXSM with a
+    ziggurat, and is what to use for anything that is not a comparison against the C.
+
+    Defaults to `GenslipLcg`, so no existing caller moves.
+    """
+
+    GenslipLcg = ...
+    Pcg = ...
+
 class RiseTimeWeighting(enum.Enum):
     """How the fault-wide rise-time constant is averaged."""
 
@@ -418,6 +432,7 @@ def generate_rupture(
     hypocentre_strike: int,
     hypocentre_dip: int,
     realisation: int = 0,
+    engine: RandomEngine = ...,
 ) -> GeneratedRupture:
     """Generate one rupture model. Releases the GIL for the generation itself."""
 

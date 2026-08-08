@@ -176,6 +176,99 @@ class TestReproducibility:
         assert np.array_equal(direct, generate(seed=99, realisation=7).slip_cm)
 
 
+class TestTheRandomEngine:
+    """Two generators, and the reasons they are not interchangeable.
+
+    `GenslipLcg` reproduces genslip v5.6.2: a 31-bit truncated linear congruential
+    generator whose normals are twelve summed uniforms. It exists for comparison against
+    the C and is worth exactly that. `Pcg` is PCG64-DXSM with a ziggurat.
+    """
+
+    ENGINES = pytest.mark.parametrize(
+        "engine",
+        [core.RandomEngine.GenslipLcg, core.RandomEngine.Pcg],
+        ids=["genslip_lcg", "pcg"],
+    )
+
+    def test_the_default_is_the_compatible_one(self) -> None:
+        """So a caller that says nothing keeps getting what it always got.
+
+        `Pcg` is the better generator and the one to choose deliberately. Making it the
+        default would silently change the output of every existing caller, including the
+        corpus comparison -- the one thing in this repo that must not move by accident.
+        """
+        assert np.array_equal(
+            generate().slip_cm,
+            generate(engine=core.RandomEngine.GenslipLcg).slip_cm,
+        )
+
+    def test_the_two_engines_draw_different_ruptures(self) -> None:
+        """Otherwise the option does nothing and nobody would find out.
+
+        A knob wired to nothing looks exactly like a knob that works.
+        """
+        assert not np.array_equal(
+            generate(engine=core.RandomEngine.GenslipLcg).slip_cm,
+            generate(engine=core.RandomEngine.Pcg).slip_cm,
+        )
+
+    @ENGINES
+    def test_either_engine_is_reproducible(self, engine: object) -> None:
+        first = generate(seed=99, engine=engine)
+        second = generate(seed=99, engine=engine)
+        assert np.array_equal(first.slip_cm, second.slip_cm)
+        assert np.array_equal(first.onset_s, second.onset_s)
+        assert np.array_equal(first.slip_rate, second.slip_rate)
+
+    @ENGINES
+    def test_either_engine_makes_a_physical_rupture(self, engine: object) -> None:
+        """Both slip somewhere, and nothing comes out NaN.
+
+        `Pcg` was contract-tested in Rust and had never generated a whole rupture from
+        Python. This is the first thing that runs it end to end.
+        """
+        rupture = generate(seed=7, engine=engine)
+        assert rupture.moment_dyne_cm > 0.0
+        assert rupture.slip_cm.max() > 0.0
+        for field in (
+            rupture.slip_cm,
+            rupture.rake_deg,
+            rupture.onset_s,
+            rupture.rise_time_s,
+            rupture.slip_rate,
+        ):
+            assert np.all(np.isfinite(field))
+
+    @ENGINES
+    def test_realisations_are_independent_of_each_other(self, engine: object) -> None:
+        """Realisation *n* does not depend on generating the ones before it.
+
+        The property that makes a realisation index usable: a study can run realisation
+        500 on its own.
+        """
+        assert np.array_equal(
+            generate(realisation=6, engine=engine).slip_cm,
+            generate(realisation=6, engine=engine).slip_cm,
+        )
+        assert not np.array_equal(
+            generate(realisation=6, engine=engine).slip_cm,
+            generate(realisation=7, engine=engine).slip_cm,
+        )
+
+    @ENGINES
+    def test_either_engine_hits_the_moment_it_was_scaled_to(
+        self, engine: object
+    ) -> None:
+        """Moment is a target the generator scales to hit, not a quantity it accumulates.
+
+        `ENGINEERING_RULES.md` classes it as **exact, to the f64 fold** -- so it is the
+        one number that must not depend on which stream the fields were drawn from.
+        """
+        assert generate(engine=engine).moment_dyne_cm == pytest.approx(
+            generate(engine=core.RandomEngine.GenslipLcg).moment_dyne_cm, rel=1e-12
+        )
+
+
 class TestRefusesBadInput:
     def test_an_odd_padded_extent_is_refused(self) -> None:
         # It would otherwise panic three layers down, inside the spectrum
@@ -539,6 +632,7 @@ class TestStubMatchesTheExtension:
             "TimingSpec",
             "GeneratedRupture",
             "SpectrumModel",
+            "RandomEngine",
             "RiseTimeWeighting",
             "SlipRateShape",
             "Projected",
@@ -573,6 +667,7 @@ class TestStubMatchesTheExtension:
 
     def test_every_enum_variant_exists(self) -> None:
         for enum_name, variants in [
+            ("RandomEngine", ["GenslipLcg", "Pcg"]),
             (
                 "SpectrumModel",
                 [
