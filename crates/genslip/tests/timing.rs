@@ -154,20 +154,22 @@ fn whole_rupture() {
 
 /// The dip pass, gathered against transposed.
 ///
-/// The shipped `transform_2d` transposes. This keeps the spelling it replaced —
-/// gather each strided column into scratch, transform, scatter back, which is what
-/// genslip does — so the claim in `fft/mod.rs` can be re-run rather than trusted.
+/// The shipped `transform_2d` gathers. This keeps the tiled transpose that briefly
+/// replaced it, so the table in `fft/mod.rs` can be re-run rather than trusted — and
+/// so that a *third* change to the grid type gets the same chance to flip the answer
+/// back. It has flipped once already.
 ///
-/// The two are **bit-identical**, and that is asserted here before either is timed:
-/// every 1-D transform sees the same input sequence either way, so only the memory
-/// traffic differs. A speed comparison between two spellings that had drifted apart
-/// numerically would be measuring the wrong thing.
+/// The two are **bit-identical**, and that is asserted before either is timed: every
+/// 1-D transform sees the same input sequence whichever way the memory is moved. A
+/// speed comparison between two spellings that had drifted apart numerically would be
+/// measuring the wrong thing, and there would be no way to tell from the numbers.
 ///
-/// This used to compare FFTW against `rustfft`. FFTW is gone, and the test had been
-/// silently timing `RustFft` against itself under FFTW's column heading — the
-/// numbers it printed were noise between two runs of the same code. Their real
-/// comparison, 7.06e-08 relative and `rustfft` 10-38% faster, is recorded in
-/// `fft/mod.rs` where it does not rot.
+/// This file has now retired two claims it was written to defend. It once compared
+/// FFTW against `rustfft`, and when FFTW was deleted the call was swapped for
+/// `RustFft::new()` — leaving it timing one engine against itself under the other's
+/// column heading, printing noise that read as a measurement. Then it defended a
+/// transpose that `ndarray` made obsolete by speeding up the thing it was measured
+/// against. Both were caught by re-running rather than by reading.
 #[test]
 #[ignore = "measures time, not behaviour"]
 fn fft_dip_pass() {
@@ -175,9 +177,25 @@ fn fft_dip_pass() {
     use genslip::grid::{FaultAxes, FaultAxesMut, Spectrum};
     use num_complex::Complex64;
 
-    /// The dip pass as genslip writes it: one strided read and one strided write per
-    /// column.
-    fn gathered(spectrum: &mut Spectrum, fft: &mut dyn Fft, direction: Direction) {
+    /// Side of the transpose's square block, in elements. 32 keeps both sides of a
+    /// block inside a 32 KiB L1 at `2 * TILE^2 * 16` bytes.
+    const TILE: usize = 32;
+
+    fn transpose_into(source: &[Complex64], target: &mut [Complex64], rows: usize, columns: usize) {
+        for row_block in (0..rows).step_by(TILE) {
+            for column_block in (0..columns).step_by(TILE) {
+                for row in row_block..(row_block + TILE).min(rows) {
+                    for column in column_block..(column_block + TILE).min(columns) {
+                        target[row + column * rows] = source[column + row * columns];
+                    }
+                }
+            }
+        }
+    }
+
+    /// The dip pass by transposing: one tiled transpose, contiguous rows, transpose
+    /// back. What `transform_2d` did between the `rustfft` swap and `ndarray`.
+    fn transposed(spectrum: &mut Spectrum, fft: &mut dyn Fft, direction: Direction) {
         let strike_count = spectrum.strike_count();
         let dip_count = spectrum.dip_count();
         for dip in 0..dip_count {
@@ -187,16 +205,13 @@ fn fft_dip_pass() {
                 direction,
             );
         }
-        let mut column = vec![Complex64::default(); dip_count];
+        let mut scratch = vec![Complex64::default(); strike_count * dip_count];
+        transpose_into(spectrum.flat(), &mut scratch, dip_count, strike_count);
         for strike in 0..strike_count {
-            for (dip, value) in column.iter_mut().enumerate() {
-                *value = spectrum[[dip, strike]];
-            }
-            fft.transform(&mut column, direction);
-            for (dip, value) in column.iter().enumerate() {
-                spectrum[[dip, strike]] = *value;
-            }
+            let start = strike * dip_count;
+            fft.transform(&mut scratch[start..start + dip_count], direction);
         }
+        transpose_into(&scratch, spectrum.flat_mut(), strike_count, dip_count);
     }
 
     fn seeded(strike_count: usize, dip_count: usize) -> Spectrum {
@@ -210,12 +225,13 @@ fn fft_dip_pass() {
 
     println!(
         "\n{:>11} {:>13} {:>13} {:>8}",
-        "grid", "gathered", "transposed", "speedup"
+        "grid", "gathered", "transposed", "cost"
     );
 
-    // Oblong shapes as well as square: the two passes are not symmetric, so a grid
-    // that is long along strike stresses the transpose differently from one long
-    // down dip.
+    // The last column is what the transpose *costs*, so above 1.00 means the shipped
+    // gather is ahead. Oblong shapes as well as square: the two passes are not
+    // symmetric, so a grid long along strike stresses the transpose differently from
+    // one long down dip.
     for (strike_count, dip_count) in [
         (32_usize, 32_usize),
         (64, 64),
@@ -225,13 +241,13 @@ fn fft_dip_pass() {
         (1024, 256),
         (256, 1024),
     ] {
-        let mut theirs = seeded(strike_count, dip_count);
-        let mut ours = seeded(strike_count, dip_count);
-        gathered(&mut theirs, &mut RustFft::new(), Direction::Forward);
-        transform_2d(&mut ours, &mut RustFft::new(), Direction::Forward);
+        let mut shipped = seeded(strike_count, dip_count);
+        let mut alternative = seeded(strike_count, dip_count);
+        transform_2d(&mut shipped, &mut RustFft::new(), Direction::Forward);
+        transposed(&mut alternative, &mut RustFft::new(), Direction::Forward);
         assert_eq!(
-            theirs.as_slice(),
-            ours.as_slice(),
+            shipped.flat(),
+            alternative.flat(),
             "{strike_count}x{dip_count}: the two spellings are not bit-identical, so \
              the timing below compares two different computations"
         );
@@ -250,13 +266,13 @@ fn fft_dip_pass() {
             best
         };
 
-        let gather = time(gathered);
-        let transpose = time(|s, f, d| transform_2d(s, f, d));
+        let gather = time(|s, f, d| transform_2d(s, f, d));
+        let transpose = time(transposed);
         println!(
             "{:>5}x{:<5} {gather:>13?} {transpose:>13?} {:>7.2}x",
             strike_count,
             dip_count,
-            gather.as_secs_f64() / transpose.as_secs_f64()
+            transpose.as_secs_f64() / gather.as_secs_f64()
         );
     }
     println!();

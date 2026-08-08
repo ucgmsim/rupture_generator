@@ -74,33 +74,42 @@ pub trait Fft {
 /// mathematically: each pass rounds, so doing dip first would give a different
 /// answer. Strike first is what the original does.
 ///
-/// # Why the dip pass transposes
+/// # The dip pass gathers, and that was measured twice
 ///
 /// Neither FFTW as genslip calls it nor `rustfft` takes a stride, so a column has to
-/// be made contiguous somehow. genslip gathers each column into scratch, transforms
-/// it, and scatters it back — one strided read and one strided write per column,
-/// every one of them a cache miss on a grid larger than L2.
+/// be made contiguous somehow. This gathers each column into a scratch buffer,
+/// transforms it, and scatters it back, which is what genslip does.
 ///
-/// This transposes the whole grid once, runs the columns as contiguous rows, and
-/// transposes back. The tiled transpose touches each cache line once instead of once
-/// per element, and it is **bit-identical**: every 1-D transform sees exactly the same
-/// input sequence, so only the order of the memory traffic changes.
+/// It **did** transpose the whole grid instead — one tiled transpose, contiguous
+/// rows, transpose back — on a measurement of 1.7× to 2.2×. Two later changes erased
+/// that, and both are worth knowing because neither was about the transform:
 ///
-/// Measured, forward and inverse, best of nine, `--release`:
+/// | | gathered | transposed | |
+/// | --- | ---: | ---: | ---: |
+/// | hand-rolled grid type, `f32` | 7.22 ms | 3.29 ms | **2.19×** |
+/// | after `ndarray` | 2.96 ms | 3.21 ms | 0.92× |
+/// | after `f64` | 3.89 ms | 4.26 ms | 0.91× |
 ///
-/// | grid | gathered | transposed | |
-/// | ---: | ---: | ---: | ---: |
-/// | 32×32 | 8.4 µs | 4.9 µs | 1.70× |
-/// | 64×64 | 32.7 µs | 18.8 µs | 1.74× |
-/// | 128×128 | 192 µs | 99 µs | 1.93× |
-/// | 256×256 | 1.43 ms | 756 µs | 1.89× |
-/// | 512×512 | 7.08 ms | 3.21 ms | 2.20× |
-/// | 1024×256 | 7.07 ms | 3.20 ms | 2.21× |
-/// | 256×1024 | 5.71 ms | 3.22 ms | 1.77× |
+/// (512×512, forward and inverse, best of nine, `--release`.)
 ///
-/// The win grows with the grid, which is what a cache effect looks like and what
-/// distinguishes it from noise. `tests/timing.rs::fft_dip_pass` keeps both spellings
-/// so the table can be re-run rather than trusted.
+/// The transposed column never moved. **`ndarray` made the gather 2.4× faster** —
+/// its `Index` computes offsets from precomputed strides where the hand-rolled one
+/// reloaded an extent field through a reference the loop also wrote through, which
+/// the compiler could not hoist. The win the transpose existed for was a defect in
+/// the type it was measured against.
+///
+/// `f64` was the second chance and did not take it: doubling the memory traffic is
+/// exactly the condition a cache-blocked transpose should win under, and the gather
+/// is still ahead — by 10% at 512×512 and 22% at 32×32, where the transpose's
+/// full-grid allocation is most of the work. So the transpose, its 32-element tiling
+/// constant and that allocation are gone.
+///
+/// Reverting it took the whole rupture from 1.538 ms to **1.298 ms**, which is more
+/// than the 6.5% `f64` cost back.
+///
+/// `tests/timing.rs::fft_dip_pass` keeps both spellings and asserts they are
+/// bit-identical before timing either, so the table above can be re-run rather than
+/// trusted — which is the only reason any of it was decidable.
 pub fn transform_2d<F: Fft + ?Sized>(spectrum: &mut Spectrum, fft: &mut F, direction: Direction) {
     let strike_count = spectrum.strike_count();
     let dip_count = spectrum.dip_count();
@@ -114,41 +123,16 @@ pub fn transform_2d<F: Fft + ?Sized>(spectrum: &mut Spectrum, fft: &mut F, direc
         );
     }
 
-    // Down dip: transpose, run contiguous rows, transpose back.
-    let mut scratch = vec![Complex64::default(); strike_count * dip_count];
-    transpose_into(spectrum.flat(), &mut scratch, dip_count, strike_count);
+    // Down dip: each column is strided, so it is gathered into scratch and scattered
+    // back. One buffer of `dip_count`, reused, against the transpose's full grid.
+    let mut column = vec![Complex64::default(); dip_count];
     for strike in 0..strike_count {
-        let start = strike * dip_count;
-        fft.transform(&mut scratch[start..start + dip_count], direction);
-    }
-    transpose_into(&scratch, spectrum.flat_mut(), strike_count, dip_count);
-}
-
-/// Side of the square block the transpose works in, in elements.
-///
-/// Both the read and the write side of a block have to stay resident at once, so the
-/// working set is `2 * TILE² * 8` bytes — 16 KiB at 32, comfortably inside a 32 KiB
-/// L1. Larger tiles start evicting the block being read; smaller ones stop amortising
-/// the cache line, which holds 4 `Complex64`.
-const TILE: usize = 32;
-
-/// Transpose `source` (`rows` × `columns`, row-major) into `target`, in blocks.
-///
-/// Blocked rather than a plain double loop: one of the two sides is strided whichever
-/// way it is written, and walking a whole row of one against a whole column of the
-/// other touches a fresh cache line on every element. Confining both to a tile means
-/// each line is touched once and reused `TILE` times.
-fn transpose_into(source: &[Complex64], target: &mut [Complex64], rows: usize, columns: usize) {
-    debug_assert_eq!(source.len(), rows * columns);
-    debug_assert_eq!(target.len(), rows * columns);
-
-    for row_block in (0..rows).step_by(TILE) {
-        for column_block in (0..columns).step_by(TILE) {
-            for row in row_block..(row_block + TILE).min(rows) {
-                for column in column_block..(column_block + TILE).min(columns) {
-                    target[row + column * rows] = source[column + row * columns];
-                }
-            }
+        for (dip, value) in column.iter_mut().enumerate() {
+            *value = spectrum[[dip, strike]];
+        }
+        fft.transform(&mut column, direction);
+        for (dip, value) in column.iter().enumerate() {
+            spectrum[[dip, strike]] = *value;
         }
     }
 }
