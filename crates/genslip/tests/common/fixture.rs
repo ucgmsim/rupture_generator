@@ -21,7 +21,7 @@ use genslip::realisation::{FaultGrid, SlipSpec, SourceSpec, TimingSpec};
 use genslip::rise_time::{DepthRamp, RiseTimeSpec, RiseTimeStretch, Weighting};
 use genslip::rupture::{Hypocentre, SpeedProfile};
 use genslip::slip::{GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use genslip::slip_rate::{BetaProfile, SlipRateShape};
+use genslip::slip_rate::{BetaProfile, OliuP2, SlipRateShape};
 use genslip::source::{CornerRelation, Layer, MagnitudeScale, VelocityModel};
 use genslip::taper::EdgeTapers;
 
@@ -247,7 +247,7 @@ pub fn timing_spec() -> TimingSpec {
             deep_factor: 2.0,
         },
         rise_time_weighting: Weighting::Uniform,
-        slip_rate_shape: SlipRateShape::OliuP2,
+        slip_rate_shape: SlipRateShape::from(OliuP2),
         speed_profile: SpeedProfile {
             shallow,
             shallow_factor: 0.6,

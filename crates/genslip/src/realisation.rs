@@ -43,7 +43,7 @@ use crate::rise_time::{self, DepthScaling, RiseTimeSpec, RiseTimeStretch, Weight
 use crate::rng::DrawSource;
 use crate::rupture::{self, EikonalSolver, Hypocentre, OnsetAdjustment, SpeedProfile, TravelTimes};
 use crate::slip::{self, GridExtents, PerturbationSpec, SpectrumSpec, SubfaultSpacing};
-use crate::slip_rate::{self, BetaProfile, SlipRate, SlipRateShape};
+use crate::slip_rate::{self, BetaProfile, SlipRate, SlipRateShape, SourceTimeFunction};
 use crate::source::{self, CornerRelation, MagnitudeScale, VelocityModel};
 use crate::taper::EdgeTapers;
 use crate::units;

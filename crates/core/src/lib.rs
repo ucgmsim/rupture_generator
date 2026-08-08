@@ -109,23 +109,25 @@ impl SlipRateShape {
     /// genslip's finite-fault default. The only shape whose parameter comes from a
     /// depth profile rather than from here.
     #[staticmethod]
-    const fn oliu_p2() -> Self {
+    fn oliu_p2() -> Self {
         Self {
-            inner: Shape::OliuP2,
+            inner: Shape::from(genslip::slip_rate::OliuP2),
         }
     }
 
     /// `stype=ucsb`.
     #[staticmethod]
-    const fn ucsb() -> Self {
-        Self { inner: Shape::Ucsb }
+    fn ucsb() -> Self {
+        Self {
+            inner: Shape::from(genslip::slip_rate::Ucsb),
+        }
     }
 
     /// `stype=ucsb2`.
     #[staticmethod]
-    const fn ucsb2() -> Self {
+    fn ucsb2() -> Self {
         Self {
-            inner: Shape::Ucsb2,
+            inner: Shape::from(genslip::slip_rate::Ucsb2),
         }
     }
 
@@ -138,7 +140,7 @@ impl SlipRateShape {
             ));
         }
         Ok(Self {
-            inner: Shape::UcsbT { stretch },
+            inner: Shape::from(genslip::slip_rate::UcsbT { stretch }),
         })
     }
 
@@ -152,50 +154,56 @@ impl SlipRateShape {
             ));
         }
         Ok(Self {
-            inner: Shape::UcsbVarT1 { tau1_ratio },
+            inner: Shape::from(genslip::slip_rate::UcsbVarT1 { tau1_ratio }),
         })
     }
 
     /// `stype=brune`. The duration is the rise time, not the C's slip-derived
-    /// constant — see the Rust `SlipRateShape::Brune`.
+    /// constant — see the Rust `SlipRateShape::from(genslip::slip_rate::Brune)`.
     #[staticmethod]
-    const fn brune() -> Self {
+    fn brune() -> Self {
         Self {
-            inner: Shape::Brune,
+            inner: Shape::from(genslip::slip_rate::Brune),
         }
     }
 
     /// `stype=urs`.
     #[staticmethod]
-    const fn urs() -> Self {
-        Self { inner: Shape::Urs }
+    fn urs() -> Self {
+        Self {
+            inner: Shape::from(genslip::slip_rate::Urs),
+        }
     }
 
     /// `stype=esg2006`.
     #[staticmethod]
-    const fn esg2006() -> Self {
+    fn esg2006() -> Self {
         Self {
-            inner: Shape::Esg2006,
+            inner: Shape::from(genslip::slip_rate::Esg2006),
         }
     }
 
     /// `stype=cos`.
     #[staticmethod]
-    const fn cos() -> Self {
-        Self { inner: Shape::Cos }
+    fn cos() -> Self {
+        Self {
+            inner: Shape::from(genslip::slip_rate::Cos),
+        }
     }
 
     /// `stype=seki`. Moves each subfault's onset back a quarter of its rise time.
     #[staticmethod]
-    const fn seki() -> Self {
-        Self { inner: Shape::Seki }
+    fn seki() -> Self {
+        Self {
+            inner: Shape::from(genslip::slip_rate::Seki),
+        }
     }
 
     /// `stype=delta`.
     #[staticmethod]
-    const fn delta() -> Self {
+    fn delta() -> Self {
         Self {
-            inner: Shape::Delta,
+            inner: Shape::from(genslip::slip_rate::Delta),
         }
     }
 
@@ -530,7 +538,7 @@ impl SourceSpec {
         rise_time_coefficient = 1.6, average_dip_deg, average_rake_deg,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
-    const fn new(
+    fn new(
         magnitude: f64,
         model: SpectrumModel,
         strike_offset: f64,
@@ -773,7 +781,7 @@ impl TimingSpec {
         sample_interval_s = 0.005, max_samples = 100_000,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one flat constructor per group")]
-    const fn new(
+    fn new(
         rupture_time_correlation: f64,
         rupture_time_sigma: f64,
         rupture_time_scale: f64,
@@ -818,7 +826,7 @@ impl TimingSpec {
                 // by accident.
                 slip_rate_shape: match slip_rate_shape {
                     Some(shape) => shape.inner,
-                    None => Shape::OliuP2,
+                    None => Shape::from(genslip::slip_rate::OliuP2),
                 },
                 rupture_time: PerturbationSpec {
                     correlation: rupture_time_correlation,

@@ -31,7 +31,9 @@ use common::fixture;
 use genslip::grid::FaultAxes;
 use genslip::realisation::{FaultGrid, PointSourceSpec, point_source};
 use genslip::rupture::{FactoredSweep, Hypocentre};
-use genslip::slip_rate::SlipRateShape;
+use genslip::slip_rate::{
+    Brune, Cos, Delta, Esg2006, OliuP2, Seki, SlipRateShape, Ucsb, Ucsb2, UcsbT, UcsbVarT1, Urs,
+};
 use genslip::source::MagnitudeScale;
 
 /// A magnitude small enough that a point source is the right model for it.
@@ -300,17 +302,17 @@ fn every_shape_makes_it_through_the_pipeline() {
     let mut timing = fixture::timing_spec();
 
     for shape in [
-        SlipRateShape::OliuP2,
-        SlipRateShape::Ucsb,
-        SlipRateShape::Ucsb2,
-        SlipRateShape::UcsbT { stretch: 2.0 },
-        SlipRateShape::UcsbVarT1 { tau1_ratio: 0.2 },
-        SlipRateShape::Brune,
-        SlipRateShape::Urs,
-        SlipRateShape::Esg2006,
-        SlipRateShape::Cos,
-        SlipRateShape::Seki,
-        SlipRateShape::Delta,
+        SlipRateShape::from(OliuP2),
+        SlipRateShape::from(Ucsb),
+        SlipRateShape::from(Ucsb2),
+        SlipRateShape::from(UcsbT { stretch: 2.0 }),
+        SlipRateShape::from(UcsbVarT1 { tau1_ratio: 0.2 }),
+        SlipRateShape::from(Brune),
+        SlipRateShape::from(Urs),
+        SlipRateShape::from(Esg2006),
+        SlipRateShape::from(Cos),
+        SlipRateShape::from(Seki),
+        SlipRateShape::from(Delta),
     ] {
         timing.slip_rate_shape = shape;
         let model = valid(point_source(
@@ -373,8 +375,8 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
         .onset_s[[0, 0]]
     };
 
-    let plain = onset_of(SlipRateShape::Ucsb);
-    let seki = onset_of(SlipRateShape::Seki);
+    let plain = onset_of(SlipRateShape::from(Ucsb));
+    let seki = onset_of(SlipRateShape::from(Seki));
     assert!(
         seki < plain,
         "seki arrived at {seki}, not before the {plain} everything else gets"
@@ -387,13 +389,13 @@ fn seki_moves_the_arrival_and_nothing_else_does() {
     );
 
     for shape in [
-        SlipRateShape::OliuP2,
-        SlipRateShape::Ucsb2,
-        SlipRateShape::Brune,
-        SlipRateShape::Urs,
-        SlipRateShape::Esg2006,
-        SlipRateShape::Cos,
-        SlipRateShape::Delta,
+        SlipRateShape::from(OliuP2),
+        SlipRateShape::from(Ucsb2),
+        SlipRateShape::from(Brune),
+        SlipRateShape::from(Urs),
+        SlipRateShape::from(Esg2006),
+        SlipRateShape::from(Cos),
+        SlipRateShape::from(Delta),
     ] {
         assert!(
             (onset_of(shape) - plain).abs() < 1e-12,

@@ -11,7 +11,10 @@
 //! as `beta` falls would satisfy all of it. That is the point: the contract is the
 //! physics, not the formula.
 
-use genslip::slip_rate::{SlipRateShape, oliu_p};
+use genslip::slip_rate::{
+    Brune, Cos, Delta, Esg2006, OliuP2, Seki, SlipRateShape, SourceTimeFunction, Ucsb, Ucsb2,
+    UcsbT, UcsbVarT1, Urs, oliu_p, shape_parameter_field,
+};
 
 mod common;
 use common::tolerance::pulse_round_trip;
@@ -177,7 +180,7 @@ mod the_ucsb_family_is_oliu_p {
     fn ucsb_is_beta_of_thirteen_hundredths() {
         for slip in SLIPS {
             for duration_s in DURATIONS {
-                assert_alias(SlipRateShape::Ucsb, slip, duration_s, 0.13);
+                assert_alias(SlipRateShape::from(Ucsb), slip, duration_s, 0.13);
             }
         }
     }
@@ -188,7 +191,8 @@ mod the_ucsb_family_is_oliu_p {
         // `tau1 = 0.5*0.13*tau` puts `tau1` back at `0.13*t0`.
         for slip in SLIPS {
             for duration_s in DURATIONS {
-                let pulse = SlipRateShape::Ucsb2.pulse(slip, duration_s, f64::NAN, DT, MAX_SAMPLES);
+                let pulse =
+                    SlipRateShape::from(Ucsb2).pulse(slip, duration_s, f64::NAN, DT, MAX_SAMPLES);
                 let expected = oliu_p(slip, 2.0 * duration_s, 0.065, DT, MAX_SAMPLES);
                 assert_eq!(pulse.as_slice(), expected.as_slice());
             }
@@ -199,7 +203,7 @@ mod the_ucsb_family_is_oliu_p {
     fn ucsb_t_stretches_the_duration_and_leaves_the_peak() {
         for stretch in [0.5_f64, 1.0, 2.0, 3.7] {
             for duration_s in DURATIONS {
-                let pulse = SlipRateShape::UcsbT { stretch }.pulse(
+                let pulse = SlipRateShape::from(UcsbT { stretch }).pulse(
                     250.0,
                     duration_s,
                     f64::NAN,
@@ -218,9 +222,14 @@ mod the_ucsb_family_is_oliu_p {
         // string degenerates to the shape it is a generalisation of, which is what
         // makes one function rather than two correct.
         for duration_s in DURATIONS {
-            let stretched =
-                SlipRateShape::UcsbT { stretch: 1.0 }.pulse(250.0, duration_s, f64::NAN, DT, 4096);
-            let plain = SlipRateShape::Ucsb.pulse(250.0, duration_s, f64::NAN, DT, 4096);
+            let stretched = SlipRateShape::from(UcsbT { stretch: 1.0 }).pulse(
+                250.0,
+                duration_s,
+                f64::NAN,
+                DT,
+                4096,
+            );
+            let plain = SlipRateShape::from(Ucsb).pulse(250.0, duration_s, f64::NAN, DT, 4096);
             assert_eq!(stretched.as_slice(), plain.as_slice());
         }
     }
@@ -229,7 +238,7 @@ mod the_ucsb_family_is_oliu_p {
     fn var_t1_is_beta_straight_through_and_defaults_to_ucsb() {
         for tau1_ratio in [0.05_f64, 0.13, 0.3, 0.5] {
             for duration_s in DURATIONS {
-                let pulse = SlipRateShape::UcsbVarT1 { tau1_ratio }.pulse(
+                let pulse = SlipRateShape::from(UcsbVarT1 { tau1_ratio }).pulse(
                     250.0,
                     duration_s,
                     f64::NAN,
@@ -243,9 +252,14 @@ mod the_ucsb_family_is_oliu_p {
 
         // The C reads `tau1_ratio` from the input file's thirteenth column and
         // substitutes 0.13 when it is absent, which is `ucsb`.
-        let defaulted =
-            SlipRateShape::UcsbVarT1 { tau1_ratio: 0.13 }.pulse(250.0, 1.0, f64::NAN, DT, 4096);
-        let ucsb = SlipRateShape::Ucsb.pulse(250.0, 1.0, f64::NAN, DT, 4096);
+        let defaulted = SlipRateShape::from(UcsbVarT1 { tau1_ratio: 0.13 }).pulse(
+            250.0,
+            1.0,
+            f64::NAN,
+            DT,
+            4096,
+        );
+        let ucsb = SlipRateShape::from(Ucsb).pulse(250.0, 1.0, f64::NAN, DT, 4096);
         assert_eq!(defaulted.as_slice(), ucsb.as_slice());
     }
 
@@ -253,11 +267,11 @@ mod the_ucsb_family_is_oliu_p {
     fn oliu_p2_is_the_one_shape_that_reads_beta() {
         // The other four carry their own, which is why the field value can be NaN
         // above. This is the negative half of that claim.
-        let from_field = SlipRateShape::OliuP2.pulse(250.0, 1.0, 0.4, DT, MAX_SAMPLES);
+        let from_field = SlipRateShape::from(OliuP2).pulse(250.0, 1.0, 0.4, DT, MAX_SAMPLES);
         let direct = oliu_p(250.0, 1.0, 0.4, DT, MAX_SAMPLES);
         assert_eq!(from_field.as_slice(), direct.as_slice());
 
-        let poisoned = SlipRateShape::OliuP2.pulse(250.0, 1.0, f64::NAN, DT, MAX_SAMPLES);
+        let poisoned = SlipRateShape::from(OliuP2).pulse(250.0, 1.0, f64::NAN, DT, MAX_SAMPLES);
         assert!(
             poisoned.as_slice().iter().any(|value| value.is_nan()),
             "OliuP2 ignored the beta it is supposed to read"
@@ -273,7 +287,8 @@ mod the_ucsb_family_is_oliu_p {
     #[test]
     fn the_extra_sample_the_c_does_not_write_is_a_zero() {
         for duration_s in DURATIONS {
-            let pulse = SlipRateShape::Ucsb.pulse(250.0, duration_s, f64::NAN, DT, MAX_SAMPLES);
+            let pulse =
+                SlipRateShape::from(Ucsb).pulse(250.0, duration_s, f64::NAN, DT, MAX_SAMPLES);
             let samples = pulse.as_slice();
 
             #[expect(
@@ -306,17 +321,17 @@ mod every_shape {
     /// All eleven, at parameters that exercise each one's own branch.
     fn all() -> Vec<SlipRateShape> {
         vec![
-            SlipRateShape::OliuP2,
-            SlipRateShape::Ucsb,
-            SlipRateShape::Ucsb2,
-            SlipRateShape::UcsbT { stretch: 2.0 },
-            SlipRateShape::UcsbVarT1 { tau1_ratio: 0.2 },
-            SlipRateShape::Brune,
-            SlipRateShape::Urs,
-            SlipRateShape::Esg2006,
-            SlipRateShape::Cos,
-            SlipRateShape::Seki,
-            SlipRateShape::Delta,
+            SlipRateShape::from(OliuP2),
+            SlipRateShape::from(Ucsb),
+            SlipRateShape::from(Ucsb2),
+            SlipRateShape::from(UcsbT { stretch: 2.0 }),
+            SlipRateShape::from(UcsbVarT1 { tau1_ratio: 0.2 }),
+            SlipRateShape::from(Brune),
+            SlipRateShape::from(Urs),
+            SlipRateShape::from(Esg2006),
+            SlipRateShape::from(Cos),
+            SlipRateShape::from(Seki),
+            SlipRateShape::from(Delta),
         ]
     }
 
@@ -377,7 +392,7 @@ mod every_shape {
                 .fold(0.0_f64, f64::max)
         };
         for shape in all() {
-            if shape == SlipRateShape::Delta {
+            if shape == SlipRateShape::from(Delta) {
                 continue;
             }
             let ratio = peak(shape, 0.5) / peak(shape, 2.0);
@@ -385,6 +400,56 @@ mod every_shape {
                 (2.0..8.0).contains(&ratio),
                 "{shape:?}: quadrupling the duration changed the peak by {ratio}x, \
                  not by something near 4"
+            );
+        }
+    }
+
+    /// Exactly the shapes that override a default are the ones that need to.
+    ///
+    /// The check the `_ =>` arms made impossible. `onset_shift_s` and `parameter_at`
+    /// have documented defaults on [`SourceTimeFunction`], and a shape that needs
+    /// otherwise says so in its own impl -- so this enumerates all eleven and asserts
+    /// which two overrides exist. A shape added without its depth ramp, or a
+    /// non-causal one added without its shift, fails here rather than producing a
+    /// plausible rupture.
+    ///
+    /// `Urs`'s ramp is the concrete case: it reached the field through `_ => zeros`
+    /// and gave 0.05 where the C gives 0.2. Eleven Rust tests and eight Python ones
+    /// passed over it; only the reference comparison caught it.
+    #[test]
+    fn only_the_shapes_that_should_override_a_default_do() {
+        let profile = genslip::slip_rate::BetaProfile {
+            shallow_ramp: genslip::rise_time::DepthRamp {
+                centre_km: 2.0,
+                half_width_km: 1.0,
+            },
+            shallow: 0.5,
+            mid_ramp: genslip::rise_time::DepthRamp {
+                centre_km: 6.5,
+                half_width_km: 1.5,
+            },
+            mid: 0.13,
+            deep: 0.13,
+        };
+
+        for shape in all() {
+            let shifts = shape.onset_shift_s(1.0).abs() > 0.0;
+            let is_seki = shape == SlipRateShape::from(Seki);
+            assert_eq!(
+                shifts, is_seki,
+                "{shape:?}: only `seki` radiates before its own start"
+            );
+
+            // Probed at three depths, because a shape whose ramp is flat at one
+            // would look like a shape without one.
+            let varies = [0.0_f64, 5.0, 30.0]
+                .iter()
+                .any(|depth| shape.parameter_at(*depth, profile).abs() > 0.0);
+            let has_a_ramp =
+                shape == SlipRateShape::from(OliuP2) || shape == SlipRateShape::from(Urs);
+            assert_eq!(
+                varies, has_a_ramp,
+                "{shape:?}: only `OliuP2` and `urs` take a parameter from depth"
             );
         }
     }
@@ -401,7 +466,11 @@ mod every_shape {
     fn an_unresolvable_duration_collapses_to_the_shortest_pulse_there_is() {
         for shape in all() {
             let pulse = shape.pulse(250.0, 1e-6, 0.35, DT, MAX_SAMPLES);
-            let floor = if shape == SlipRateShape::Urs { 5 } else { 3 };
+            let floor = if shape == SlipRateShape::from(Urs) {
+                5
+            } else {
+                3
+            };
             assert!(
                 pulse.len() <= floor,
                 "{shape:?} produced {} samples for a 1 microsecond pulse",
@@ -451,7 +520,7 @@ mod the_closed_form_shapes {
     #[test]
     fn brune_peaks_at_one_time_constant() {
         for duration_s in [0.05_f64, 0.2, 1.0] {
-            let peak = peak_at_s(&samples(SlipRateShape::Brune, duration_s, 0.0));
+            let peak = peak_at_s(&samples(SlipRateShape::from(Brune), duration_s, 0.0));
             assert!(
                 (peak - duration_s).abs() <= 2.0 * DT,
                 "brune with T = {duration_s} peaked at {peak}"
@@ -462,7 +531,7 @@ mod the_closed_form_shapes {
     /// `brune` is causal and one-sided: it starts at zero and never rises again.
     #[test]
     fn brune_rises_once_and_decays() {
-        let values = samples(SlipRateShape::Brune, 0.2, 0.0);
+        let values = samples(SlipRateShape::from(Brune), 0.2, 0.0);
         assert_eq!(values.first(), Some(&0.0));
         let peak_index = values
             .iter()
@@ -487,7 +556,7 @@ mod the_closed_form_shapes {
     #[test]
     fn esg2006_is_a_symmetric_gaussian() {
         let duration_s = 0.25_f64;
-        let values = samples(SlipRateShape::Esg2006, duration_s, 0.0);
+        let values = samples(SlipRateShape::from(Esg2006), duration_s, 0.0);
         let peak = peak_at_s(&values);
         assert!(
             (peak - 2.0 * duration_s).abs() <= 2.0 * DT,
@@ -510,7 +579,7 @@ mod the_closed_form_shapes {
     #[test]
     fn cos_is_a_full_raised_cosine() {
         let duration_s = 0.4_f64;
-        let values = samples(SlipRateShape::Cos, duration_s, 0.0);
+        let values = samples(SlipRateShape::from(Cos), duration_s, 0.0);
         assert_eq!(values.first(), Some(&0.0));
         let peak = peak_at_s(&values);
         assert!(
@@ -530,7 +599,7 @@ mod the_closed_form_shapes {
     #[test]
     fn seki_starts_abruptly_and_pays_for_it_with_an_onset_shift() {
         let duration_s = 0.5_f64;
-        let values = samples(SlipRateShape::Seki, duration_s, 0.0);
+        let values = samples(SlipRateShape::from(Seki), duration_s, 0.0);
         let peak = values.iter().copied().fold(0.0_f64, f64::max);
         let ratio = values[0] / peak;
         assert!(
@@ -539,19 +608,20 @@ mod the_closed_form_shapes {
         );
 
         assert!(
-            (SlipRateShape::Seki.onset_shift_s(duration_s) - (-0.25 * duration_s)).abs() < 1e-9,
+            (SlipRateShape::from(Seki).onset_shift_s(duration_s) - (-0.25 * duration_s)).abs()
+                < 1e-9,
             "seki does not move the onset back a quarter of its duration"
         );
 
         // And it is the only one that does.
         for shape in [
-            SlipRateShape::OliuP2,
-            SlipRateShape::Ucsb,
-            SlipRateShape::Brune,
-            SlipRateShape::Urs,
-            SlipRateShape::Esg2006,
-            SlipRateShape::Cos,
-            SlipRateShape::Delta,
+            SlipRateShape::from(OliuP2),
+            SlipRateShape::from(Ucsb),
+            SlipRateShape::from(Brune),
+            SlipRateShape::from(Urs),
+            SlipRateShape::from(Esg2006),
+            SlipRateShape::from(Cos),
+            SlipRateShape::from(Delta),
         ] {
             assert!(
                 shape.onset_shift_s(duration_s).abs() < f64::EPSILON,
@@ -566,7 +636,7 @@ mod the_closed_form_shapes {
     fn urs_is_a_spike_then_a_tail() {
         let duration_s = 1.0_f64;
         for tail in [0.2_f64, 0.35, 0.5] {
-            let values = samples(SlipRateShape::Urs, duration_s, tail);
+            let values = samples(SlipRateShape::from(Urs), duration_s, tail);
             assert_eq!(values.first(), Some(&0.0));
 
             let peak_index = values
@@ -610,8 +680,6 @@ mod the_closed_form_shapes {
     /// wrong at every depth outside it -- which is most of a fault.
     #[test]
     fn the_urs_tail_ramp_has_ends() {
-        use genslip::slip_rate::shape_parameter_field;
-
         let profile = genslip::slip_rate::BetaProfile {
             shallow_ramp: genslip::rise_time::DepthRamp {
                 centre_km: 2.0,
@@ -626,7 +694,7 @@ mod the_closed_form_shapes {
             deep: 0.13,
         };
         let depths = [0.0_f64, 2.0, 3.9, 4.0, 5.0, 6.0, 6.1, 7.0, 30.0];
-        let field = shape_parameter_field(SlipRateShape::Urs, 1, &depths, profile);
+        let field = shape_parameter_field(SlipRateShape::from(Urs), 1, &depths, profile);
 
         // betashal above the ramp, betadeep below it, and the midpoint between.
         let expected = [0.5_f64, 0.5, 0.5, 0.5, 0.35, 0.2, 0.2, 0.2, 0.2];
@@ -646,7 +714,7 @@ mod the_closed_form_shapes {
     #[test]
     fn a_taller_urs_tail_delays_the_slip() {
         let centroid = |tail: f64| {
-            let values = samples(SlipRateShape::Urs, 1.0, tail);
+            let values = samples(SlipRateShape::from(Urs), 1.0, tail);
             let weighted: f64 = values
                 .iter()
                 .enumerate()
@@ -666,7 +734,7 @@ mod the_closed_form_shapes {
     #[test]
     fn a_delta_is_the_spike_oliu_p_falls_back_to() {
         for slip in [0.5_f64, 250.0, 4000.0] {
-            let delta = SlipRateShape::Delta.pulse(slip, 1.0, 0.0, DT, MAX_SAMPLES);
+            let delta = SlipRateShape::from(Delta).pulse(slip, 1.0, 0.0, DT, MAX_SAMPLES);
             // A duration of about one sample is what triggers `oliu_p`'s fallback.
             let fallback = oliu_p(slip, DT, 0.13, DT, MAX_SAMPLES);
             assert_eq!(delta.as_slice(), fallback.as_slice());
@@ -677,9 +745,9 @@ mod the_closed_form_shapes {
     /// `delta` does not care about the duration. Nothing else here can say that.
     #[test]
     fn a_delta_is_the_same_pulse_at_every_duration() {
-        let first = samples(SlipRateShape::Delta, 0.01, 0.0);
+        let first = samples(SlipRateShape::from(Delta), 0.01, 0.0);
         for duration_s in [0.5_f64, 5.0, 50.0] {
-            assert_eq!(samples(SlipRateShape::Delta, duration_s, 0.0), first);
+            assert_eq!(samples(SlipRateShape::from(Delta), duration_s, 0.0), first);
         }
     }
 }
@@ -694,7 +762,7 @@ mod the_closed_form_shapes {
 //   is a claim about a binary, and it lives in the reference comparison instead.
 // - That `brune`'s duration is the C's. It is not, deliberately: `generic_slip2srf`
 //   derives a time constant from the subfault's slip, and this uses the rise time
-//   like every other shape. See `SlipRateShape::Brune`.
+//   like every other shape. See `SlipRateShape::from(Brune)`.
 // - That `esg2006` agrees with the C at all. It cannot: `gen_esg2006_stf` folds its
 //   normalisation into an uninitialised `sum` (`slip.c:342`), so its output is
 //   whatever was on the stack. `DEFECTS.md` 20.

@@ -39,6 +39,7 @@ use crate::units;
 use std::f64::consts::PI;
 
 use crate::grid::{FaultAxes, SlipField};
+use enum_dispatch::enum_dispatch;
 use ndarray::{Array1, Axis, azip};
 
 use crate::rise_time::{DepthRamp, RiseTimeStretch};
@@ -318,13 +319,64 @@ pub fn oliu_p(
     normalise(values, slip, sample_interval_s)
 }
 
+/// What every slip-rate shape can do.
+///
+/// Three behaviours, and the reason this is a trait rather than three matches is the
+/// **defaults**. `onset_shift_s` and `parameter_at` used to be `match` arms ending in
+/// `_ =>`, in two different files from the shape they described, and a catch-all is a
+/// default nobody can see from the code it applies to. A shape needing an onset shift
+/// or a depth-varying parameter got silence: no compile error, a plausible rupture,
+/// and a wrong one.
+///
+/// **That is not hypothetical.** `Urs`'s tail height comes from a depth ramp, and it
+/// reached the field through `_ => zeros` — the reference comparison found it at 0.05
+/// against the C's 0.2, half the pulse wrong, after eleven Rust tests and eight Python
+/// ones had passed over it.
+///
+/// A default here is written once, documented, and overridden *in the shape's own
+/// impl block* next to its other two behaviours.
+#[enum_dispatch]
+pub trait SourceTimeFunction {
+    /// One subfault's slip-rate function.
+    ///
+    /// `duration_s` is the subfault's rise time and `parameter` whatever
+    /// [`shape_parameter_field`] gave it. **Every shape normalises so
+    /// `sample_interval_s * sum` is `slip_cm`**, which is what makes the moment come
+    /// out right whichever is chosen, and is the one thing they all have in common.
+    fn pulse(
+        &self,
+        slip_cm: f64,
+        duration_s: f64,
+        parameter: f64,
+        sample_interval_s: f64,
+        max_samples: usize,
+    ) -> SlipRate;
+
+    /// How far this shape moves the subfault's onset, in seconds.
+    ///
+    /// Zero unless the shape radiates before its nominal start. [`Seki`] is the only
+    /// one that does, and overrides this.
+    fn onset_shift_s(&self, _duration_s: f64) -> f64 {
+        0.0
+    }
+
+    /// This shape's own per-subfault parameter, from depth.
+    ///
+    /// Zero unless the shape has one. [`OliuP2`] and [`Urs`] do, and they use
+    /// different ramps — which is why the dispatch is here rather than at the call
+    /// site.
+    fn parameter_at(&self, _depth_km: f64, _beta: BetaProfile) -> f64 {
+        0.0
+    }
+}
+
 /// Which slip-rate function a subfault gets.
 ///
 /// One vocabulary covering both of genslip's programs. The finite-fault generator
-/// offers one shape, [`OliuP2`](SlipRateShape::OliuP2); `generic_slip2srf` offers ten
-/// under the name `stype`. Rather than a second pulse library for the point-source
-/// path, they are one enum, because **four of `generic_slip2srf`'s ten are
-/// [`oliu_p`] already** and only differ in what they pass it:
+/// offers one shape, [`OliuP2`]; `generic_slip2srf` offers ten under the name
+/// `stype`. Rather than a second pulse library for the point-source path they are one
+/// enum, because **four of `generic_slip2srf`'s ten are [`oliu_p`] already** and only
+/// differ in what they pass it:
 ///
 /// | `stype` | is | (`generic_slip2srf/slip.c`) |
 /// | --- | --- | --- |
@@ -348,187 +400,217 @@ pub fn oliu_p(
 ///   closes; the C's ucsb family stops at the last computed sample. The samples that
 ///   exist are bit-identical — a zero contributes nothing to the integral, so the
 ///   normalisation is unchanged — and a slip-rate function that returns to zero is
-///   the better of the two. `an_alias_is_oliu_p_plus_a_closing_zero` asserts exactly
-///   that, rather than an approximate agreement.
+///   the better of the two.
 /// * **A one-sample pulse.** Below two samples `oliu_p` substitutes a fixed
 ///   three-point spike; the C computes `alpha(0) = 0`, finds a zero integral, and
 ///   emits nothing. Reproducing both would mean two functions again.
+#[enum_dispatch(SourceTimeFunction)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SlipRateShape {
-    /// genslip's finite-fault default: [`oliu_p`] with `beta` from
-    /// [`beta_field`], so the shape varies with depth.
     OliuP2,
-    /// `stype=ucsb`. [`oliu_p`] at a fixed `beta` of 0.13.
     Ucsb,
-    /// `stype=ucsb2`. Twice the duration, with the peak left where `ucsb` puts it.
     Ucsb2,
-    /// `stype=ucsb-T<b>`. The duration stretched by `b`, with the peak left where
-    /// `ucsb` puts it. The C parses `b` off the end of the option string.
-    UcsbT {
-        /// `b`. One reproduces `ucsb` exactly.
-        stretch: f64,
-    },
-    /// `stype=ucsb-varT1`. `beta` per subfault, from the input file's thirteenth
-    /// column. The C defaults it to 0.13 when the column is absent, which is `Ucsb`.
-    UcsbVarT1 {
-        /// `beta`, the fraction of the duration spent rising.
-        tau1_ratio: f64,
-    },
-    /// `stype=brune`. `(t/T)·exp(-t/T)`, the classic ω⁻² source pulse.
-    ///
-    /// The only shape whose duration is not simply the rise time in the original:
-    /// `generic_slip2srf` sets `T = 0.1·e⁻¹·√slip/1.2` — a time constant derived
-    /// from the subfault's *slip* — and then multiplies it by the depth factor. The
-    /// port uses the rise time like every other shape. That is a deliberate
-    /// difference and the reason is the whole point of this crate having a rise-time
-    /// model: a duration that is a function of slip is not one the depth ramp,
-    /// the moment scaling and the fault-wide average can all be about at once. A
-    /// caller wanting a corner frequency `f` sets the average rise time to
-    /// `1/(2πf)`, which is exactly the relation the C's `brune_corner_freq` branch
-    /// encodes.
-    ///
-    /// (orig. `gen_brune_stf`, `slip.c:4`)
+    UcsbT,
+    UcsbVarT1,
     Brune,
-    /// `stype=urs`. Two triangles: a narrow spike, then a long low tail.
-    ///
-    /// The tail's height is the one shape parameter in `generic_slip2srf` that varies
-    /// with depth — 0.5 above 4 km falling to 0.2 below 6 km — and it is a
-    /// [`DepthRamp`] like every other ramp here. See [`shape_parameter_field`].
-    ///
-    /// (orig. `gen_2tri_stf`, `slip.c:37`)
     Urs,
-    /// `stype=esg2006`. A Gaussian, centred at twice the rise time and truncated at
-    /// four times it.
-    ///
-    /// (orig. `gen_esg2006_stf`, `slip.c:338`)
     Esg2006,
-    /// `stype=cos`. A full raised cosine, `1 - cos(2πt/T)`.
-    ///
-    /// (orig. `gen_cos_stf`, `slip.c:382`)
     Cos,
-    /// `stype=seki`. `sech²(2(2t/T − 1))`, peaking at `T/2`.
-    ///
-    /// **The one shape that does not start at rest**: it is at 7% of its peak at
-    /// `t = 0`. The original compensates by moving the subfault's onset back a
-    /// quarter of the duration — see [`SlipRateShape::onset_shift_s`], which is
-    /// plumbed rather than dropped, because without it the pulse arrives early.
-    ///
-    /// (orig. `gen_seki_stf`, `slip.c:421`)
     Seki,
-    /// `stype=delta`. A single-sample impulse: `[0, slip/dt, 0]`.
-    ///
-    /// Exactly what [`oliu_p`] substitutes for a pulse too short to resolve, so it is
-    /// that branch under its own name rather than a second spelling —
-    /// `a_delta_is_the_spike_oliu_p_falls_back_to` asserts the two are identical.
-    ///
-    /// (orig. `generic_slip2srf.c:456`)
     Delta,
 }
 
-impl SlipRateShape {
-    /// Build one subfault's slip-rate function.
-    ///
-    /// `duration_s` is the subfault's rise time and `shape_parameter` the value
-    /// [`shape_parameter_field`] gave it, which only [`OliuP2`](Self::OliuP2) and
-    /// [`Urs`](Self::Urs) read. **Every shape normalises so `sample_interval_s * sum`
-    /// is `slip_cm`**, which is what makes the moment come out right whichever is
-    /// chosen, and is the one thing they all have in common.
-    ///
-    /// # Panics
-    ///
-    /// If `sample_interval_s` is not strictly positive.
-    #[must_use]
-    pub fn pulse(
-        self,
-        slip_cm: f64,
-        duration_s: f64,
-        shape_parameter: f64,
-        sample_interval_s: f64,
-        max_samples: usize,
-    ) -> SlipRate {
-        assert!(
-            sample_interval_s > 0.0,
-            "the sample interval must be positive"
-        );
+/// genslip's finite-fault default: [`oliu_p`] with `beta` from a depth profile, so
+/// the shape varies with depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OliuP2;
 
-        // The four that are `oliu_p` with the breakpoints moved.
-        let liu = |duration_s: f64, beta: f64| {
-            oliu_p(slip_cm, duration_s, beta, sample_interval_s, max_samples)
-        };
-        match self {
-            Self::OliuP2 => liu(duration_s, shape_parameter),
-            Self::Ucsb => liu(duration_s, UCSB_BETA),
-            Self::Ucsb2 => liu(2.0 * duration_s, 0.5 * UCSB_BETA),
-            Self::UcsbT { stretch } => liu(stretch * duration_s, UCSB_BETA / stretch),
-            Self::UcsbVarT1 { tau1_ratio } => liu(duration_s, tau1_ratio),
-
-            // The rest are sampled from a closed form and then normalised. One helper
-            // does the sampling, the truncation and the normalisation; each shape
-            // supplies only its extent and its amplitude.
-            Self::Brune => sampled(
-                slip_cm,
-                BRUNE_TAIL * duration_s,
-                sample_interval_s,
-                max_samples,
-                |time| {
-                    let scaled = time / duration_s;
-                    scaled * (-scaled).exp()
-                },
-            ),
-            Self::Esg2006 => sampled(
-                slip_cm,
-                4.0 * duration_s,
-                sample_interval_s,
-                max_samples,
-                |time| {
-                    let offset = 4.0 * (time - 2.0 * duration_s) / duration_s;
-                    (-offset * offset).exp()
-                },
-            ),
-            Self::Cos => sampled(
-                slip_cm,
-                duration_s,
-                sample_interval_s,
-                max_samples,
-                |time| 1.0 - (2.0 * PI * time / duration_s).cos(),
-            ),
-            Self::Seki => sampled(
-                slip_cm,
-                SEKI_TAIL * duration_s,
-                sample_interval_s,
-                max_samples,
-                |time| {
-                    let argument = 2.0 * (2.0 * time / duration_s - 1.0);
-                    let sech = argument.cosh().recip();
-                    sech * sech
-                },
-            ),
-            Self::Urs => two_triangles(
-                slip_cm,
-                duration_s,
-                shape_parameter,
-                sample_interval_s,
-                max_samples,
-            ),
-            Self::Delta => impulse(slip_cm, sample_interval_s, max_samples),
-        }
+impl SourceTimeFunction for OliuP2 {
+    fn pulse(&self, slip: f64, duration: f64, beta: f64, dt: f64, max: usize) -> SlipRate {
+        oliu_p(slip, duration, beta, dt, max)
     }
 
-    /// How far this shape moves the subfault's onset, in seconds.
-    ///
-    /// Zero for every shape but [`Seki`](Self::Seki), which is at 7% of its peak at
-    /// `t = 0` — energy before the rupture arrives. The original shifts the onset back
-    /// a quarter of the duration to compensate (`generic_slip2srf.c:452`) and clamps
-    /// at zero, and so does this.
-    ///
-    /// Kept separate from [`pulse`](Self::pulse) because it is a fact about the
-    /// *arrival*, not about the samples, and the two are stored in different places.
-    #[must_use]
-    pub fn onset_shift_s(self, duration_s: f64) -> f64 {
-        match self {
-            Self::Seki => -0.25 * duration_s,
-            _ => 0.0,
+    fn parameter_at(&self, depth_km: f64, beta: BetaProfile) -> f64 {
+        beta.beta_at(depth_km)
+    }
+}
+
+/// `stype=ucsb`. [`oliu_p`] at a fixed `beta` of 0.13.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Ucsb;
+
+impl SourceTimeFunction for Ucsb {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        oliu_p(slip, duration, UCSB_BETA, dt, max)
+    }
+}
+
+/// `stype=ucsb2`. Twice the duration, with the peak left where `ucsb` puts it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Ucsb2;
+
+impl SourceTimeFunction for Ucsb2 {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        oliu_p(slip, 2.0 * duration, 0.5 * UCSB_BETA, dt, max)
+    }
+}
+
+/// `stype=ucsb-T<b>`. The duration stretched by `b`, with the peak left where `ucsb`
+/// puts it. The C parses `b` off the end of the option string with `strncmp`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UcsbT {
+    /// `b`. One reproduces `ucsb` exactly.
+    pub stretch: f64,
+}
+
+impl SourceTimeFunction for UcsbT {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        oliu_p(
+            slip,
+            self.stretch * duration,
+            UCSB_BETA / self.stretch,
+            dt,
+            max,
+        )
+    }
+}
+
+/// `stype=ucsb-varT1`. `beta` per subfault, from the input file's thirteenth column.
+/// The C defaults it to 0.13 when the column is absent, which is `ucsb`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UcsbVarT1 {
+    /// `beta`, the fraction of the duration spent rising.
+    pub tau1_ratio: f64,
+}
+
+impl SourceTimeFunction for UcsbVarT1 {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        oliu_p(slip, duration, self.tau1_ratio, dt, max)
+    }
+}
+
+/// `stype=brune`. `(t/T)·exp(-t/T)`, the classic ω⁻² source pulse.
+///
+/// The only shape whose duration is not simply the rise time in the original:
+/// `generic_slip2srf` sets `T = 0.1·e⁻¹·√slip/1.2` — a time constant derived from the
+/// subfault's *slip* — and then multiplies it by the depth factor. The port uses the
+/// rise time like every other shape, and the reason is the whole point of this crate
+/// having a rise-time model: a duration that is a function of slip is not one the
+/// depth ramp, the moment scaling and the fault-wide average can all be about at
+/// once. A caller wanting a corner frequency `f` sets the average rise time to
+/// `1/(2πf)`, which is exactly the relation the C's `brune_corner_freq` branch
+/// encodes.
+///
+/// (orig. `gen_brune_stf`, `slip.c:4`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Brune;
+
+impl SourceTimeFunction for Brune {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        sampled(slip, BRUNE_TAIL * duration, dt, max, |time| {
+            let scaled = time / duration;
+            scaled * (-scaled).exp()
+        })
+    }
+}
+
+/// `stype=urs`. Two triangles: a narrow spike, then a long low tail.
+///
+/// The tail's height is the one shape parameter in `generic_slip2srf` that varies with
+/// depth — 0.5 above 4 km falling to 0.2 below 6 km — and it is a [`DepthRamp`] like
+/// every other ramp here.
+///
+/// (orig. `gen_2tri_stf`, `slip.c:37`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Urs;
+
+impl SourceTimeFunction for Urs {
+    fn pulse(&self, slip: f64, duration: f64, tail: f64, dt: f64, max: usize) -> SlipRate {
+        two_triangles(slip, duration, tail, dt, max)
+    }
+
+    /// Branched, not just scaled. [`DepthRamp`] interpolates and does not clamp;
+    /// every other caller in the crate brackets it and this one did not, until the
+    /// reference comparison caught it — at 7 km, one kilometre below the ramp, the
+    /// unbracketed form gave 0.05 where the C gives 0.2.
+    fn parameter_at(&self, depth_km: f64, _beta: BetaProfile) -> f64 {
+        if depth_km <= URS_RAMP.shallow_km() {
+            URS_SHALLOW_TAIL
+        } else if depth_km < URS_RAMP.deep_km() {
+            URS_DEEP_TAIL + URS_RAMP.scaled_from_deep(URS_TAIL_RANGE, depth_km)
+        } else {
+            URS_DEEP_TAIL
         }
+    }
+}
+
+/// `stype=esg2006`. A Gaussian, centred at twice the rise time and truncated at four
+/// times it.
+///
+/// (orig. `gen_esg2006_stf`, `slip.c:338`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Esg2006;
+
+impl SourceTimeFunction for Esg2006 {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        sampled(slip, 4.0 * duration, dt, max, |time| {
+            let offset = 4.0 * (time - 2.0 * duration) / duration;
+            (-offset * offset).exp()
+        })
+    }
+}
+
+/// `stype=cos`. A full raised cosine, `1 - cos(2πt/T)`.
+///
+/// (orig. `gen_cos_stf`, `slip.c:382`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cos;
+
+impl SourceTimeFunction for Cos {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        sampled(slip, duration, dt, max, |time| {
+            1.0 - (2.0 * PI * time / duration).cos()
+        })
+    }
+}
+
+/// `stype=seki`. `sech²(2(2t/T − 1))`, peaking at `T/2`.
+///
+/// **The one shape that does not start at rest**: it is at 7% of its peak at `t = 0`.
+///
+/// (orig. `gen_seki_stf`, `slip.c:421`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Seki;
+
+impl SourceTimeFunction for Seki {
+    fn pulse(&self, slip: f64, duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        sampled(slip, SEKI_TAIL * duration, dt, max, |time| {
+            let argument = 2.0 * (2.0 * time / duration - 1.0);
+            let sech = argument.cosh().recip();
+            sech * sech
+        })
+    }
+
+    /// The compensation for radiating before `t = 0`. Without it the pulse arrives
+    /// early; the clamp at zero is the original's (`generic_slip2srf.c:454`) and is
+    /// applied by [`crate::rupture::shift_onsets`].
+    fn onset_shift_s(&self, duration_s: f64) -> f64 {
+        -0.25 * duration_s
+    }
+}
+
+/// `stype=delta`. A single-sample impulse: `[0, slip/dt, 0]`.
+///
+/// Exactly what [`oliu_p`] substitutes for a pulse too short to resolve, so it is that
+/// branch under its own name rather than a second spelling.
+///
+/// (orig. `generic_slip2srf.c:456`)
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Delta;
+
+impl SourceTimeFunction for Delta {
+    fn pulse(&self, slip: f64, _duration: f64, _beta: f64, dt: f64, max: usize) -> SlipRate {
+        impulse(slip, dt, max)
     }
 }
 
@@ -668,11 +750,10 @@ fn normalise(mut values: Vec<f64>, slip_cm: f64, sample_interval_s: f64) -> Slip
 
 /// The per-subfault shape parameter, one value per dip row broadcast along strike.
 ///
-/// Two of the eleven shapes vary with depth and they use different ramps, so the
-/// dispatch is here rather than at the call site: [`SlipRateShape::OliuP2`] takes
-/// genslip's `beta` profile, and [`SlipRateShape::Urs`] the tail height
-/// `generic_slip2srf` hardcodes between 4 and 6 km. Everything else gets a value it
-/// does not read.
+/// A thin wrapper over [`SourceTimeFunction::parameter_at`], which is where the
+/// per-shape knowledge lives. It used to be a `match` with a `_ =>` arm returning
+/// zeros, in a different part of the file from the shapes it was about — and that arm
+/// is where the `urs` bug lived.
 ///
 /// # Panics
 ///
@@ -684,31 +765,15 @@ pub fn shape_parameter_field(
     depth_km: &[f64],
     profile: BetaProfile,
 ) -> SlipField {
-    match shape {
-        SlipRateShape::OliuP2 => beta_field(strike_count, depth_km, profile),
-        SlipRateShape::Urs => {
-            let mut field = crate::grid::zeros(strike_count, depth_km.len());
-            for (dip, depth) in depth_km.iter().enumerate() {
-                // Branched, not just scaled. `DepthRamp` interpolates and does not
-                // clamp -- every caller brackets it, and this one did not until the
-                // reference comparison caught it: at 7 km, one kilometre below the
-                // ramp, the unbracketed form gave 0.05 where the C gives 0.2, and
-                // half the pulse was wrong. Same shape as `BetaProfile::beta_at`.
-                let tail = if *depth <= URS_RAMP.shallow_km() {
-                    URS_SHALLOW_TAIL
-                } else if *depth < URS_RAMP.deep_km() {
-                    URS_DEEP_TAIL + URS_RAMP.scaled_from_deep(URS_TAIL_RANGE, *depth)
-                } else {
-                    URS_DEEP_TAIL
-                };
-                for strike in 0..strike_count {
-                    field[[dip, strike]] = tail;
-                }
-            }
-            field
-        }
-        _ => crate::grid::zeros(strike_count, depth_km.len()),
-    }
+    let column: Array1<f64> = depth_km
+        .iter()
+        .map(|depth| shape.parameter_at(*depth, profile))
+        .collect();
+    column
+        .insert_axis(Axis(1))
+        .broadcast((depth_km.len(), strike_count))
+        .expect("a column broadcasts across its rows")
+        .to_owned()
 }
 
 /// Where `urs`'s tail height changes, `dmin = 4` to `dmax = 6` km (`slip.c:48-49`).

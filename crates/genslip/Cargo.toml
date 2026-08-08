@@ -26,3 +26,7 @@ rustfft = "6.4.1"
 # The error type. Pinned to what the sibling HF port uses and what is in the offline
 # registry; `error.rs` says why the crate needs one at all.
 thiserror = "2.0.19"
+# The eleven slip-rate shapes. Each has three behaviours and they were three matches
+# in two files, two of them ending in `_ =>` -- and one of those catch-alls is where
+# the `urs` depth-ramp bug lived. `slip_rate.rs` says the rest.
+enum_dispatch = "0.3.13"
