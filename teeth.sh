@@ -15,6 +15,13 @@
 # evidence it did not cost the teeth. As of the last run every defect was caught by
 # both suites, with the narrowest margin 14x.
 #
+# A mutation that no longer applies is the failure this script is worst at reporting,
+# because it looks exactly like a hole in the suite: nothing changed, so nothing
+# failed, so both columns read MISSED. It has happened twice -- once when the mutated
+# file became dead code, and once when a refactor dropped a trailing comma the pattern
+# matched on. So `mutate` now *asserts the file changed*, and says "did not apply"
+# rather than letting it read as lost coverage.
+#
 #   ./teeth.sh              both suites
 #   ./teeth.sh --rust-only  skip the corpus, which needs a rebuild per mutation
 #
@@ -33,6 +40,26 @@ directory and would discard them." >&2
 fi
 
 status=0
+
+# Apply a search-and-replace to a library file, and fail loudly if it matched nothing.
+#
+#   mutate <file> <needle> <replacement>
+mutate () {
+    if ! python3 - "$@" <<'APPLY'
+import pathlib, sys
+path, needle, replacement = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+source = path.read_text()
+if needle not in source:
+    sys.exit(1)
+path.write_text(source.replace(needle, replacement))
+APPLY
+    then
+        echo "  MUTATION DID NOT APPLY in $1 -- the pattern is stale, not the suite" >&2
+        status=1
+        return 1
+    fi
+    return 0
+}
 
 restore () {
     git checkout -- crates/genslip/src/
@@ -90,55 +117,35 @@ printf '  %-8s %-8s %s\n' --------- ------ ------
 # on reporting "caught" for the Rust contracts while the corpus silently stopped
 # seeing anything -- the mutation was no longer in the path Python takes. A teeth
 # check that mutates code nobody runs is the exact failure it exists to prevent.
-python3 - <<'MUTATION'
-import pathlib
-p = pathlib.Path("crates/genslip/src/rupture/sweeping.rs")
-s = p.read_text()
-old = "        let source_slowness = slowness(hypocentre.strike, hypocentre.dip);"
-assert old in s, "the mutation no longer applies; teeth.sh needs updating"
-s = s.replace(old, old + """
-        let hypocentre = Hypocentre {
+mutate crates/genslip/src/rupture/sweeping.rs \
+    "let source_slowness = slowness(hypocentre.strike, hypocentre.dip);" \
+    "let hypocentre = Hypocentre {
             strike: (hypocentre.strike + 1).min(strike_count - 1),
             dip: (hypocentre.dip + 1).min(dip_count - 1),
-        };""")
-p.write_text(s)
-MUTATION
-check "17 hypocentre a cell off" sweeping::rupture_starts onset
+        };
+        let source_slowness = slowness(hypocentre.strike, hypocentre.dip);" &&
+    check "17 hypocentre a cell off" sweeping::rupture_starts onset
 
 # DEFECTS.md 16. The `|slip| > MINSLIP` guard lives in genslip's SRF loader rather
 # than in its generator, so a faithful port of the generator does not have it.
-python3 - <<'MUTATION'
-import pathlib
-p = pathlib.Path("crates/genslip/src/realisation.rs")
-s = p.read_text()
-s = s.replace("slip_rate.push(if cm.abs() > slip_rate::MIN_SLIP_CM {",
-              "slip_rate.push(if true || cm.abs() > slip_rate::MIN_SLIP_CM {")
-p.write_text(s)
-MUTATION
-check "16 pulse on a silent subfault" a_silent_subfault_emits_no_pulse emits_no_pulse
+mutate crates/genslip/src/realisation.rs \
+    "if cm.abs() > slip_rate::MIN_SLIP_CM {" \
+    "if true || cm.abs() > slip_rate::MIN_SLIP_CM {" &&
+    check "16 pulse on a silent subfault" a_silent_subfault_emits_no_pulse emits_no_pulse
 
 # DEFECTS.md 14. The slip field's dimensionless coefficient of variation handed to
 # the rake field, where a spread in degrees belongs. A factor of twenty.
-python3 - <<'MUTATION'
-import pathlib
-p = pathlib.Path("crates/genslip/src/realisation.rs")
-s = p.read_text()
-s = s.replace("slip_spec.rake_sigma_deg,", "slip_spec.spectrum.coefficient_of_variation,")
-p.write_text(s)
-MUTATION
-check "14 rake spread in the wrong units" the_rake_spread_is_in_degrees rake
+mutate crates/genslip/src/realisation.rs \
+    "slip_spec.rake_sigma_deg" \
+    "slip_spec.spectrum.coefficient_of_variation" &&
+    check "14 rake spread in the wrong units" the_rake_spread_is_in_degrees rake
 
 # DEFECTS.md 18. A Frankel field stretched about its mean where the original shifts
 # it to its minimum. Slip stays correlated 0.993 with the truth and 63% too variable.
-python3 - <<'MUTATION'
-import pathlib
-p = pathlib.Path("crates/genslip/src/slip.rs")
-s = p.read_text()
-s = s.replace("let from_minimum = spectrum_spec.shape.normalises_from_its_minimum();",
-              "let from_minimum = false;")
-p.write_text(s)
-MUTATION
-check "18 Frankel stretched not shifted" the_slip_field_has_the_spread_its_spectrum_implies slip
+mutate crates/genslip/src/slip.rs \
+    "let from_minimum = spectrum_spec.shape.normalises_from_its_minimum();" \
+    "let from_minimum = false;" &&
+    check "18 Frankel stretched not shifted" the_slip_field_has_the_spread_its_spectrum_implies slip
 
 echo
 if [ "$status" -eq 0 ]; then
