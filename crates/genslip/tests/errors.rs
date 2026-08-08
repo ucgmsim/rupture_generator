@@ -157,19 +157,30 @@ fn the_point_source_path_refuses_the_same_hypocentre() {
     assert!(matches!(refusal(result), Error::HypocentreOffFault { .. }));
 }
 
+/// A per-subfault grid of the wrong *shape* is refused, not just the wrong size.
+///
+/// It used to be a `Vec`, and the only thing checkable was its length. A flat vector
+/// of 336 satisfies a 24x14 fault and a 14x24 one equally well, and the transposed
+/// rupture that follows is entirely plausible. Now the extents are compared, so this
+/// case exists at all -- there is no length to get right and shape to get wrong.
 #[test]
-fn a_per_subfault_array_of_the_wrong_length_names_itself() {
+fn a_transposed_per_subfault_grid_is_refused() {
     let mut grid = fixture::fault();
-    grid.base_rake_deg.pop();
-    let expected = fixture::STRIKE_COUNT * fixture::DIP_COUNT;
+    grid.base_rake_deg = genslip::grid::from_values(
+        fixture::DIP_COUNT,
+        fixture::STRIKE_COUNT,
+        vec![175.0; fixture::STRIKE_COUNT * fixture::DIP_COUNT],
+    );
+    let subfaults = fixture::STRIKE_COUNT * fixture::DIP_COUNT;
 
     assert_eq!(
         refusal(generated(&grid, fixture::hypocentre())),
         Error::Shape {
             what: "base_rake_deg",
-            found: expected - 1,
-            expected,
-        }
+            found: subfaults,
+            expected: subfaults,
+        },
+        "the same element count, and the wrong fault"
     );
 }
 

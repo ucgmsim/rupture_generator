@@ -127,14 +127,9 @@ fn whole_rupture() {
 
     // The solver alone, on the same grid, for the share.
     let (shear, _) = fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
-    let fraction = genslip::grid::from_values(
-        grid.extents.fault_strike,
-        grid.extents.fault_dip,
-        grid.velocity_fraction.clone(),
-    );
     let speed = genslip::rupture::speed_field(
         &shear,
-        &fraction,
+        &grid.velocity_fraction,
         &grid.depth_km,
         fixture::timing_spec().speed_profile,
     );

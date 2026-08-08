@@ -58,12 +58,24 @@ pub struct FaultGrid {
     pub extents: GridExtents,
     pub spacing: SubfaultSpacing,
     /// One depth per dip row, in km. genslip reads depth per row too — from the first
-    /// subfault of each — which is exact for a planar segment.
+    /// subfault of each — which is exact for a planar segment. A `Vec` because it is
+    /// genuinely one-dimensional, unlike the two below.
     pub depth_km: Vec<f64>,
     /// One rake per subfault, in degrees, before the rake field perturbs it.
-    pub base_rake_deg: Vec<f64>,
+    pub base_rake_deg: SlipField,
     /// Rupture speed as a fraction of shear-wave speed, per subfault.
-    pub velocity_fraction: Vec<f64>,
+    pub velocity_fraction: SlipField,
+}
+
+impl FaultGrid {
+    /// One subfault's dimensions, which is what the moment scaling wants.
+    #[must_use]
+    pub const fn subfault_size(&self) -> SubfaultSize {
+        SubfaultSize {
+            strike_km: self.spacing.strike_km,
+            dip_km: self.spacing.dip_km,
+        }
+    }
 }
 
 /// What the earthquake is, before any field is drawn.
@@ -200,13 +212,11 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
 
     let (scaling, spectrum) = derive(spec, slip_spec.spectrum)?;
     let (shear_speed, rigidity) = velocity_model.sample(strike_count, &grid.depth_km);
-    // A per-subfault quantity is a grid. `FaultGrid` still stores it flat; stage 3
-    // makes that the type rather than a view built at the one call site.
-    let base_rake = crate::grid::from_values(strike_count, dip_count, grid.base_rake_deg.clone());
+
+    let mut fields = slip::Generator::new(draws, fft, extents, grid.spacing, spectrum);
 
     // --- slip -------------------------------------------------------------------
-    let generated = slip::generate_normalised(draws, fft, extents, grid.spacing, spectrum);
-    let original = generated.padded;
+    let generated = fields.slip();
     let mut slip = generated.field;
     if slip_spec.truncate_negative {
         slip::truncate_negative_slip(&mut slip);
@@ -220,61 +230,32 @@ pub fn generate<S: DrawSource, F: Fft, E: EikonalSolver>(
     let scaled = moment::scale_slip(
         slip.view(),
         rigidity.view(),
-        SubfaultSize {
-            strike_km: grid.spacing.strike_km,
-            dip_km: grid.spacing.dip_km,
-        },
+        grid.subfault_size(),
         SlipScaling::Moment {
             dyne_cm: scaling.moment_dyne_cm,
         },
     );
 
-    // The perturbations correlate against the slip field as it now stands, not the
-    // one the generator produced -- but mapped back onto the statistics that one had.
-    let reference = slip::reload_for_correlation(&slip, fft, extents, grid.spacing, original);
+    // --- everything correlated with slip ----------------------------------------
+    //
+    // The perturbations correlate against the slip field as it now stands -- tapered
+    // and water-levelled -- but mapped back onto the statistics the *generated* field
+    // had, which is what keeps every correlated field on one scale.
+    let reference = fields.reload(&slip, generated.padded);
 
-    // --- rake, then the two perturbations, in the order the draws come off -------
-    let rake_deg = slip::rake_field(
-        draws,
-        fft,
-        extents,
-        grid.spacing,
-        spectrum,
-        base_rake.view(),
-        slip_spec.rake_sigma_deg,
-    );
-
-    let rupture_perturbation = slip::correlated_perturbation(
-        draws,
-        fft,
-        &reference,
-        extents,
-        grid.spacing,
-        spectrum,
-        timing.rupture_time,
-    );
-
-    let rise_correlated = slip::correlated_field_on_fault(
-        draws,
-        fft,
-        &reference,
-        extents,
-        grid.spacing,
-        spectrum,
-        timing.rise_time.perturbation.correlation,
-    );
-
-    // Two fields the original generates and never uses. Their draws are not
-    // optional -- see `slip::skip_unused_field`.
-    let refined = extents.padded_strike.max(extents.padded_dip) * 3;
-    slip::skip_unused_field(draws, refined, refined);
-    slip::skip_unused_field(draws, refined, refined);
+    // The order below is the contract. Each of these consumes draws from the stream
+    // the one above it left, so moving a line moves every field after it.
+    let rake_deg = fields.rake(grid.base_rake_deg.view(), slip_spec.rake_sigma_deg);
+    let rupture_perturbation = fields.correlated_perturbation(&reference, timing.rupture_time);
+    let rise_correlated =
+        fields.correlated_field(&reference, timing.rise_time.perturbation.correlation);
+    fields.skip_unused();
 
     // The original inverse-transforms `slip_c` in place once both correlations have
     // finished with it (`genslip_v5.6.2.c:2225`), and the shallow rise-time blend
     // reads that spatial field rather than the tapered one the reload was built
     // from. The two differ by the reload's renormalisation, which is not a scalar.
-    let reference_slip = slip::reference_on_fault(&reference, fft, extents, grid.spacing);
+    let reference_slip = fields.on_fault(&reference);
 
     // The last thing the draws feed. It lives here rather than in `assemble` because
     // it is the one stage that *needs* a drawn field: it normalises to a prescribed
@@ -405,7 +386,7 @@ pub fn point_source<E: EikonalSolver>(
     Ok(assemble(
         &Fields {
             slip,
-            rake_deg: crate::grid::from_values(strike_count, dip_count, grid.base_rake_deg.clone()),
+            rake_deg: grid.base_rake_deg.clone(),
             // Unit mean by construction, so `rise_time_normalisation` returns the mean
             // of the depth factor and `rise_times` gives back exactly
             // `factor_at(depth) / mean(factor_at) * rise_time_s`.
@@ -494,8 +475,23 @@ fn check(grid: &FaultGrid, hypocentre: Hypocentre) -> Result<()> {
     }
 
     Error::require_len("depth_km", grid.depth_km.len(), dip_count)?;
-    Error::require_len("base_rake_deg", grid.base_rake_deg.len(), subfaults)?;
-    Error::require_len("velocity_fraction", grid.velocity_fraction.len(), subfaults)?;
+
+    // The other two are grids, so what is checked is the *extent* rather than a
+    // length. That is the stronger claim and it used to be uncheckable: a flat
+    // `Vec` of 12 satisfies a 3x4 fault and a 4x3 one equally, and the transposed
+    // rupture that follows is entirely plausible.
+    for (what, extent) in [
+        ("base_rake_deg", grid.base_rake_deg.extent()),
+        ("velocity_fraction", grid.velocity_fraction.extent()),
+    ] {
+        if extent != (strike_count, dip_count) {
+            return Err(Error::Shape {
+                what,
+                found: extent.0 * extent.1,
+                expected: subfaults,
+            });
+        }
+    }
 
     if hypocentre.strike >= strike_count || hypocentre.dip >= dip_count {
         return Err(Error::HypocentreOffFault {
@@ -559,7 +555,7 @@ fn assemble<E: EikonalSolver>(
         &column_of(shear_speed),
         DepthScaling {
             stretch: timing.rise_time_stretch,
-            rupture_velocity_fraction: grid.velocity_fraction[0],
+            rupture_velocity_fraction: grid.velocity_fraction[[0, 0]],
             shallow_rupture_velocity: timing.speed_profile.shallow_factor,
             deep_rupture_velocity: timing.speed_profile.deep_factor,
         },
@@ -575,11 +571,9 @@ fn assemble<E: EikonalSolver>(
     );
 
     // --- rupture times ----------------------------------------------------------
-    let velocity_fraction =
-        crate::grid::from_values(strike_count, dip_count, grid.velocity_fraction.clone());
     let speed = rupture::speed_field(
         shear_speed,
-        &velocity_fraction,
+        &grid.velocity_fraction,
         &grid.depth_km,
         timing.speed_profile,
     );

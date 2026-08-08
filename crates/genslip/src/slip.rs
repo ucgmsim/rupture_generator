@@ -86,6 +86,136 @@ pub struct SpectrumSpec {
     pub phase_shift: (f64, f64),
 }
 
+/// The one generator every stochastic field comes off.
+///
+/// `realisation.rs` says the draw order is a contract: every field comes from one
+/// stream, so reordering two of them — or skipping one without consuming its draws —
+/// changes every field after it, while still producing output that looks entirely
+/// plausible. This is the thing that stream belongs to.
+///
+/// # Why it is a type rather than five arguments
+///
+/// Every generator below needs the same five: the draw source, the FFT engine, the
+/// padded extents, the subfault spacing, and the spectrum they are all filtered
+/// through. Threaded by hand that is a seven-argument call, four times over, where
+/// six of the seven are the same six every time and only one says what is being made.
+/// The interesting argument was outnumbered six to one.
+///
+/// Held here, a call site reads `fields.rake(base, sigma)`, and a sequence of them
+/// reads as the sequence it is — which is the thing `realisation.rs` exists to state.
+pub struct Generator<'a, S, F> {
+    source: &'a mut S,
+    fft: &'a mut F,
+    extents: GridExtents,
+    spacing: SubfaultSpacing,
+    spectrum: SpectrumSpec,
+}
+
+impl<'a, S: DrawSource, F: Fft> Generator<'a, S, F> {
+    /// Bind a stream and an engine to the grid every field is drawn on.
+    pub fn new(
+        source: &'a mut S,
+        fft: &'a mut F,
+        extents: GridExtents,
+        spacing: SubfaultSpacing,
+        spectrum: SpectrumSpec,
+    ) -> Self {
+        Self {
+            source,
+            fft,
+            extents,
+            spacing,
+            spectrum,
+        }
+    }
+
+    /// The slip field: generated, normalised to unit mean, spread to its configured
+    /// coefficient of variation.
+    pub fn slip(&mut self) -> NormalisedSlip {
+        generate_normalised(
+            self.source,
+            self.fft,
+            self.extents,
+            self.spacing,
+            self.spectrum,
+        )
+    }
+
+    /// The rake field, about a per-subfault base.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an `ArrayView` is a borrow already; `&ArrayView` is a second \
+                  indirection that reads worse and buys nothing"
+    )]
+    pub fn rake(&mut self, base_rake: ArrayView2<'_, f64>, sigma_degrees: f64) -> SlipField {
+        rake_field(
+            self.source,
+            self.fft,
+            self.extents,
+            self.spacing,
+            self.spectrum,
+            base_rake,
+            sigma_degrees,
+        )
+    }
+
+    /// The slip field back in the wavenumber domain, for the perturbations to
+    /// correlate against.
+    ///
+    /// Takes no draws — it transforms a field that already exists — but lives here
+    /// because it needs the same grid and engine, and because putting it elsewhere
+    /// would hide that it happens *between* two draws.
+    pub fn reload(&mut self, slip: &SlipField, original: crate::stats::MeanAndSigma) -> Spectrum {
+        reload_for_correlation(slip, self.fft, self.extents, self.spacing, original)
+    }
+
+    /// A field correlated with `reference`, centred and scaled to `spec`.
+    pub fn correlated_perturbation(
+        &mut self,
+        reference: &Spectrum,
+        spec: PerturbationSpec,
+    ) -> SlipField {
+        correlated_perturbation(
+            self.source,
+            self.fft,
+            reference,
+            self.extents,
+            self.spacing,
+            self.spectrum,
+            spec,
+        )
+    }
+
+    /// A field correlated with `reference`, on the fault and otherwise untouched.
+    pub fn correlated_field(&mut self, reference: &Spectrum, correlation: f64) -> SlipField {
+        correlated_field_on_fault(
+            self.source,
+            self.fft,
+            reference,
+            self.extents,
+            self.spacing,
+            self.spectrum,
+            correlation,
+        )
+    }
+
+    /// `reference` transformed back onto the fault.
+    pub fn on_fault(&mut self, reference: &Spectrum) -> SlipField {
+        reference_on_fault(reference, self.fft, self.extents, self.spacing)
+    }
+
+    /// Consume the draws the two unused fields would have taken.
+    ///
+    /// Both of them, because genslip skips two in a row on the same grid with nothing
+    /// between them drawing. Doing them together is what stops one being deleted
+    /// alone — see [`skip_unused_field`].
+    pub fn skip_unused(&mut self) {
+        let refined = self.extents.padded_strike.max(self.extents.padded_dip) * 3;
+        skip_unused_field(self.source, refined, refined);
+        skip_unused_field(self.source, refined, refined);
+    }
+}
+
 /// A slip field and the padded-grid statistics the correlations need.
 ///
 /// The statistics are measured on the padded grid immediately after the inverse

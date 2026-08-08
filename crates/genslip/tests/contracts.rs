@@ -84,14 +84,9 @@ fn travel_times<E: EikonalSolver>(solver: &mut E, hypocentre: Hypocentre) -> Tra
     let grid = fixture::fault();
     let (shear_speed, _) =
         fixture::velocity_model().sample(grid.extents.fault_strike, &grid.depth_km);
-    let velocity_fraction = genslip::grid::from_values(
-        grid.extents.fault_strike,
-        grid.extents.fault_dip,
-        grid.velocity_fraction.clone(),
-    );
     let speed = genslip::rupture::speed_field(
         &shear_speed,
-        &velocity_fraction,
+        &grid.velocity_fraction,
         &grid.depth_km,
         fixture::timing_spec().speed_profile,
     );

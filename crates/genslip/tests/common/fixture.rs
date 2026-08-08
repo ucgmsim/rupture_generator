@@ -97,8 +97,16 @@ pub fn fault_of(
         depth_km: (0..dip_count)
             .map(|dip| 0.5 + genslip::units::exact(dip) * 1.5)
             .collect(),
-        base_rake_deg: vec![175.0; strike_count * dip_count],
-        velocity_fraction: vec![0.8; strike_count * dip_count],
+        base_rake_deg: genslip::grid::from_values(
+            strike_count,
+            dip_count,
+            vec![175.0; strike_count * dip_count],
+        ),
+        velocity_fraction: genslip::grid::from_values(
+            strike_count,
+            dip_count,
+            vec![0.8; strike_count * dip_count],
+        ),
     }
 }
 

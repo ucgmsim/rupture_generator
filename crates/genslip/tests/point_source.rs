@@ -54,8 +54,8 @@ fn a_point() -> FaultGrid {
     grid.spacing.strike_km = 0.5;
     grid.spacing.dip_km = 0.5;
     grid.depth_km = vec![7.0];
-    grid.base_rake_deg = vec![175.0];
-    grid.velocity_fraction = vec![0.8];
+    grid.base_rake_deg = genslip::grid::from_values(1, 1, vec![175.0]);
+    grid.velocity_fraction = genslip::grid::from_values(1, 1, vec![0.8]);
     grid
 }
 
@@ -179,11 +179,10 @@ fn one_subfault_rises_in_the_time_it_was_given() {
 fn the_rake_is_the_one_the_geometry_carries() {
     let grid = fixture::fault_of(5, 3, 6, 4);
     let model = generate(&grid);
-    for (index, rake) in model.rake_deg.flat().iter().enumerate() {
+    for (index, (rake, base)) in model.rake_deg.iter().zip(&grid.base_rake_deg).enumerate() {
         assert!(
-            (rake - grid.base_rake_deg[index]).abs() < 1e-6,
-            "subfault {index} came out at rake {rake}, not {}",
-            grid.base_rake_deg[index]
+            (rake - base).abs() < 1e-6,
+            "subfault {index} came out at rake {rake}, not {base}"
         );
     }
 }

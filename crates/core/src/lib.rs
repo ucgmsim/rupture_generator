@@ -387,8 +387,15 @@ impl FaultGrid {
                 },
                 spacing: SubfaultSpacing { strike_km, dip_km },
                 depth_km,
-                base_rake_deg,
-                velocity_fraction,
+                // Per-subfault quantities are grids on the Rust side; the boundary
+                // takes them flat, in the along-strike-fastest order every array
+                // crossing here uses, and reshapes once.
+                base_rake_deg: genslip::grid::from_values(fault_strike, fault_dip, base_rake_deg),
+                velocity_fraction: genslip::grid::from_values(
+                    fault_strike,
+                    fault_dip,
+                    velocity_fraction,
+                ),
             },
         })
     }
