@@ -138,6 +138,20 @@ cargo test -p srf --release -- --ignored --nocapture float_leaf        # the num
 Currently **405 MiB/s** on `tests/srfs/rupture_1.srf` (69 MiB, 190,546 points).
 `SRF_THROUGHPUT_FILE` overrides the input.
 
+The eikonal solver and the whole pipeline are measured the same way:
+
+```sh
+cargo test -p genslip --release -- --ignored --nocapture solver_scaling
+cargo test -p genslip --release -- --ignored --nocapture whole_rupture
+```
+
+The solver costs **372 to 393 ns per subfault per sweep round** from a 32x32 grid to a
+1024x1024 one — flat across a 1024-fold range, which is what O(N) looks like. genslip's
+solver was O(N^1.5), because it ordered each expanding ring with a selection sort; it
+also declared that sort's scratch array `DIMENSION TI(400)`, so a fault more than 400
+subfaults across would have read past the end of it. A whole rupture on the 24x14
+fixture is 1.4 ms, of which the solve is 16%.
+
 Thirteen tests drive the real `genslip_v5.6.2` and skip without it. Point
 `GENSLIP_BINARY` at one to run them. **The corpus comparison is not among them** --
 `tests/corpus/` is committed, so `test_corpus.py` runs anywhere. The binary is only
