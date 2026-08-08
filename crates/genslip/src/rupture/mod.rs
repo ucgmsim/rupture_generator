@@ -36,6 +36,9 @@
 //!
 //! (orig. `genslip_v5.6.2.c:2995-3045`, `ruptime.c:get_rslow_stretch`, `wafront2d.f`)
 
+mod marching;
+pub use marching::FastMarching;
+
 #[cfg(feature = "wavefront-compat")]
 mod wavefront;
 

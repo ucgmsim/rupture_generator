@@ -265,12 +265,23 @@ bit-parity and every divergence will need decomposing before it can be argued ab
    suite becoming its own backlog: **no property test lands without the refactor it
    licenses, in the same commit.**
 
-2. **Stage 3**, once the scientific suite is the gate: the `eikonal` crate for the
-   Fortran solver **first**, because `wavefront-compat` gates the only `EikonalSolver`
-   and until it is replaced `--no-default-features` compiles but cannot generate a
-   rupture at all; then `rustfft` for FFTW (measured divergence **7.06e-8**, recorded
-   before the swap), `Wgs84Geodesic` for the flat-earth approximation (measured
-   disagreement **944 m at 100 km**), and the **fifteen** remaining `SIMPLIFY` sites.
+2. **Stage 3**, once the scientific suite is the gate: `rustfft` for FFTW (measured
+   divergence **7.06e-8**, recorded before the swap), `Wgs84Geodesic` for the
+   flat-earth approximation (measured disagreement **944 m at 100 km**), and the
+   remaining `SIMPLIFY` sites.
+
+   **The eikonal solver is the open one.** `wavefront-compat` gates the only usable
+   `EikonalSolver`, so until it is replaced `--no-default-features` compiles but
+   cannot generate a rupture, and `EMOD3D_BUILD_DIR` cannot leave the build. The
+   `eikonal` crate was tried and **rejected on a measurement**: it satisfies every
+   contract but its worst error against the analytic point-source solution is 0.207
+   relative and **0.234 s absolute**, against the tracker's 0.0088 and 0.011 s. The
+   gap is not a defect — the tracker computes an analytic solution near the source
+   and fast marching does not — but 0.234 s is **4.7x** the 0.05 s onset bound, so a
+   solver whose own discretisation error exceeds what counts as the same rupture
+   cannot replace one that is inside it. `crates/genslip/src/rupture/marching.rs`
+   keeps the adapter and the numbers; what would make it viable is seeding the
+   source's neighbourhood analytically, which the crate does not expose.
    Four of the original nineteen were never work: three were mis-filed as bit-moving
    when `sqrt(x*x)` is provably exactly `abs(x)`, and one had been taken and never
    un-marked. `SIMPLIFICATIONS.md` has the audit and

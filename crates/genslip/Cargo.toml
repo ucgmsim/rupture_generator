@@ -24,7 +24,9 @@ wavefront-compat = []
 workspace = true
 
 [dependencies]
+eikonal = "0.1.0"
 geographiclib-rs = "0.2.7"
+ndarray = "0.17"
 num-complex = "0.4.6"
 rand = "0.10.2"
 rand_distr = "0.6.0"
