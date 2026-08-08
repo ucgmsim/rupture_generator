@@ -112,19 +112,19 @@ Two things that are not obvious:
   `CMAKE_Fortran_FLAGS`, and the later flag wins. `-fno-fast-math` and
   `-ffp-contract=off` do take, which are the two that decide float results.
 
-**`genslip-oracle` is no longer wired into anything the gate runs.** The eight
-per-function parity files that used it are gone; what survives of them is in
-`contracts.rs`, `slip_rate_contract.rs` and `rng_contract.rs`, restated as properties
-of the port rather than as bit-equality with the C. Four files still link it
-(`slip_pipeline`, `correlated_fields`, `skipped_fields`, `geodesy`) and are next.
+**`genslip-oracle` is not linked by anything.** Not the library, not a test, not the
+gate. The parity suite it existed for is retired, and what survives of it is in
+`contracts.rs`, `slip_rate_contract.rs`, `rng_contract.rs` and `skipped_fields.rs` —
+restated as properties of the port rather than as bit-equality with the C.
 
-The crate itself stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of
-port that has not been written, and per-function parity is how it will be built.
+The crate stays, unwired, for one reason: `generic_slip2srf` is ~1,450 lines of port
+that has not been written, and per-function parity is how it will be built.
 
-`EMOD3D_BUILD_DIR` is now needed **only** by `genslip-oracle`, which nothing the gate
-runs links. The library itself no longer touches an `EMOD3D` build at all.
+**`EMOD3D_BUILD_DIR` is therefore not needed at all** to build the library, run the
+gate, or generate a rupture. It is needed only if you rewire the oracle, or to *rebuild*
+the corpus with `GENSLIP_BINARY`.
 
-144 Rust tests and 258 Python tests pass in this configuration.
+147 Rust tests and 258 Python tests pass with no EMOD3D build present.
 
 Two timing tests are `#[ignore]`d, because the gate answers questions about behaviour
 and these answer one about cost. The SRF parser is handed multi-gigabyte files, so

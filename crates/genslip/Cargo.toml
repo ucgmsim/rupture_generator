@@ -6,7 +6,6 @@ license.workspace = true
 description = "Kinematic rupture model generation: a port of genslip v5.6.2."
 
 [dev-dependencies]
-genslip-oracle.workspace = true
 num-complex = "0.4.6"
 proptest = "1"
 

@@ -52,4 +52,4 @@ Two things about driving the binary that cost time to find, both now pinned by
   is a flat list of subfaults and does not say what shape the grid is.
 
 Delete all of it when the comparison stops being useful — which is the same moment
-`genslip-oracle`, the `fftw` feature and the `wavefront-compat` feature go.
+`genslip-oracle` and the `fftw` feature go. (`wavefront-compat` already has.)
