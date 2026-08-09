@@ -16,8 +16,8 @@ few hundred lines instead of a few thousand.
 
 That returns the topologically honest mesh, with vertices shared between neighbouring
 cells. Rerun colours by *vertex*, so a shared one would interpolate a piecewise-constant
-field and draw values that were never computed -- a slip of 40 cm blended into its
-neighbour's 300 cm across the seam between them.
+field and draw values that were never computed -- a slip of 0.4 m blended into its
+neighbour's 3 m across the seam between them.
 
 So this duplicates: four vertices per cell, one flat colour. That is a display list
 rather than a mesh, and the difference matters exactly here.
@@ -39,15 +39,15 @@ from typing import TYPE_CHECKING, Annotated
 import numpy as np
 import typer
 
-from rupture_generator.formats.rupture import planes_in, read_rupture
-from rupture_generator.moment import moment_rate, rigidity_dyne_cm2
+from rupture_generator.formats.rupture import read_rupture, segments_in
+from rupture_generator.moment import moment_rate, rigidity_pa
 from rupture_generator.scripts.errors import console
 
 if TYPE_CHECKING:
     import xarray as xr
 
 FIELDS = {
-    "slip": ("slip_cm", "centimetres"),
+    "slip": ("slip_m", "metres"),
     "rise-time": ("rise_time_s", "seconds"),
     "onset": ("onset_s", "seconds"),
     "rake": ("rake_deg", "degrees"),
@@ -160,7 +160,7 @@ def quads(plane: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
 
 
 def cumulative_slip(plane: xr.Dataset, times_s: np.ndarray) -> np.ndarray:
-    """How much each subfault has slipped by each time, in centimetres.
+    """How much each subfault has slipped by each time, in metres.
 
     Each subfault's pulse integrated up to `t`, placed at its own onset. This is what
     makes the animation a rupture rather than a slide show: at any moment, the part of
@@ -233,7 +233,7 @@ def view(
         raise typer.Exit(1) from error
 
     with read_rupture(rupture) as tree:
-        planes = planes_in(tree)
+        planes = segments_in(tree)
         if not planes:
             console.print(f"[red]{rupture} holds no rupture[/red]")
             raise typer.Exit(1)
@@ -379,26 +379,24 @@ def moment_rate_of(
     the shear speed and density the generator sampled, which the file does not carry --
     so this uses the slip and area it does, with a constant rigidity, and the curve's
     *shape* is what the panel is for. The absolute scale is on the axis and in the
-    file's `moment_dyne_cm`.
+    file's `moment_newton_m`.
     """
     total = np.zeros_like(times_s)
     for _, _, plane in planes:
-
-        class Ragged:
-            shape = (plane.attrs["strike_count"], plane.attrs["dip_count"])
-            sample_interval_s = plane.attrs["sample_interval_s"]
-            slip_rate = plane["slip_rate"].to_numpy()
-            slip_rate_offsets = plane["slip_rate_offset"].to_numpy()
-            onset_s = plane["onset_s"].to_numpy().ravel()
-
-        area_cm2 = plane["area_cm2"].to_numpy().ravel()
-        # 30 GPa, which is crustal rock -- see `moment.rigidity_dyne_cm2`.
+        area_m2 = plane["area_m2"].to_numpy().ravel()
+        # 30 GPa, which is crustal rock.
         rigidity = np.full_like(
-            area_cm2, float(rigidity_dyne_cm2(np.array([3.2]), np.array([2.6]))[0])
+            area_m2, float(rigidity_pa(np.array([3.2]), np.array([2.6]))[0])
         )
 
         plane_times, plane_rate = moment_rate(
-            Ragged(), area_cm2, rigidity, duration_s=float(times_s[-1] - times_s[0])
+            plane["slip_rate_offset"].to_numpy(),
+            plane["slip_rate"].to_numpy(),
+            plane["onset_s"].to_numpy().ravel(),
+            area_m2,
+            rigidity,
+            sample_interval_s=float(plane.attrs["sample_interval_s"]),
+            duration_s=float(times_s[-1] - times_s[0]),
         )
         total += np.interp(times_s, plane_times, plane_rate, left=0.0, right=0.0)
     return total

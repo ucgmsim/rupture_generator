@@ -179,9 +179,106 @@ def moment_of(
     return float(np.sum(rigidity_pa * area_km2 * M2_PER_KM2 * slip_m))
 
 
+def moment_rate(
+    pulse_offsets: np.ndarray,
+    pulse_samples: FloatArray,
+    onset_s: FloatArray,
+    area_m2: FloatArray,
+    rigidity_pa: FloatArray,
+    *,
+    sample_interval_s: float,
+    duration_s: float | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """The moment rate function, sampled at the rupture's own interval.
+
+    .. math:: \\dot{M}(t) = \\sum_i \\mu_i A_i \\dot{s}_i(t - t_i)
+
+    It is the first thing anyone looks at to judge whether a generated rupture is
+    plausible: a source time function that is ragged, or that peaks at the very
+    start, or whose integral misses the target moment, says something is wrong before
+    any map does. That makes it a library quantity rather than a viewer's, and it has
+    a test a viewer could not give it -- the integral is the moment the generator was
+    scaled to hit.
+
+    Each subfault's pulse has its own length and starts at its own onset, so this
+    places each at its own offset into a shared timeline rather than summing aligned
+    arrays. Onsets are quantised to the sample interval: a pulse starts at the sample
+    nearest its onset, an error under half a sample -- 0.0025 s at the default
+    interval, a twentieth of the onset bound. Interpolating instead would smear each
+    pulse across two samples and change the peak, which is the number people read off
+    this.
+
+    Parameters
+    ----------
+    pulse_offsets, pulse_samples : np.ndarray
+        The CSR pulses, in metres per second.
+    onset_s, area_m2, rigidity_pa : FloatArray
+        One value per subfault, flattened along strike fastest.
+    sample_interval_s : float
+    duration_s : float, optional
+        How long a timeline to build. Defaults to just past the last pulse's last
+        sample, which is the shortest one that loses nothing.
+
+    Returns
+    -------
+    tuple of FloatArray
+        Times in seconds from the first onset, and moment rate in newton-metres per
+        second.
+    """
+    offsets = np.asarray(pulse_offsets, dtype=np.int64)
+    samples = np.asarray(pulse_samples, dtype=np.float64)
+    lengths = np.diff(offsets)
+    subfaults = len(lengths)
+
+    onset_s = np.asarray(onset_s, dtype=np.float64).ravel()
+    first_s = float(onset_s.min()) if subfaults else 0.0
+    starts = np.rint((onset_s - first_s) / sample_interval_s).astype(np.int64)
+
+    if duration_s is None:
+        finish = int((starts + lengths).max()) + 1 if subfaults else 1
+    else:
+        finish = int(np.ceil(duration_s / sample_interval_s)) + 1
+
+    rate = np.zeros(finish, dtype=np.float64)
+    weight = (
+        np.asarray(area_m2, dtype=np.float64).ravel()
+        * np.asarray(rigidity_pa, dtype=np.float64).ravel()
+    )
+
+    for subfault in range(subfaults):
+        length = int(lengths[subfault])
+        if length == 0:
+            # A subfault that did not slip has no pulse at all -- no samples, which
+            # is not the same as a pulse of zeros. On a tapered fault that is every
+            # edge subfault.
+            continue
+        start = int(starts[subfault])
+        stop = min(start + length, finish)
+        if stop <= start:
+            continue
+        pulse = samples[offsets[subfault] : offsets[subfault] + (stop - start)]
+        rate[start:stop] += weight[subfault] * pulse
+
+    return np.arange(finish, dtype=np.float64) * sample_interval_s + first_s, rate
+
+
+def cumulative_moment(times_s: FloatArray, rate_newton_m_s: FloatArray) -> FloatArray:
+    """Moment released up to each time, in newton-metres.
+
+    The running integral of the rate. Its last value is the rupture's total moment,
+    which is the identity the moment-rate test rests on.
+    """
+    if len(times_s) < 2:
+        return np.zeros_like(rate_newton_m_s)
+    interval_s = float(times_s[1] - times_s[0])
+    return np.cumsum(rate_newton_m_s) * interval_s
+
+
 __all__ = [
     "MAGNITUDE_COEFFICIENT",
+    "cumulative_moment",
     "moment_of",
+    "moment_rate",
     "rigidity_pa",
     "sample_velocity_model",
     "scale_to_moment",
