@@ -547,7 +547,10 @@ class CumulativeSlip:
 
     def _sampled(self, index: np.ndarray) -> np.ndarray:
         """Each row's running total at its own `index`, zero where it has no pulse."""
-        at = self.starts + np.where(self.occupied, index, 0)
+        # A row with no pulse is read at position zero and masked out afterwards. It
+        # cannot be read at its own start: a subfault that does not slip has none, and
+        # if it is the last one that start is one sample past the end of the integral.
+        at = np.where(self.occupied, self.starts + index, 0)
         return np.where(
             self.occupied, (self.integral[at] - self.before) * self.interval_s, 0.0
         )
