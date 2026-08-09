@@ -507,29 +507,60 @@ def moment_release(
     return total, cumulative_moment(times_s, total)
 
 
-def cumulative_slip(segment: Segment, times_s: np.ndarray) -> np.ndarray:
-    """How much each subfault has slipped by each time, in metres.
+class CumulativeSlip:
+    """How much each subfault has slipped by a given time, in metres.
 
     Each subfault's pulse integrated up to `t`, placed at its own onset. This is what
     makes the animation a rupture rather than a slide show: at any moment, the part of
     the fault that has moved is exactly the part the front has reached.
-    """
-    offsets = segment.pulse_offsets
-    samples = segment.pulse_samples
-    onset_s = segment.onset_s.ravel()
-    interval_s = segment.sample_interval_s
 
-    slipped = np.zeros((len(times_s), onset_s.size), dtype=np.float64)
-    for cell in range(onset_s.size):
-        start, stop = int(offsets[cell]), int(offsets[cell + 1])
-        if stop == start:
-            continue
-        running = np.cumsum(samples[start:stop]) * interval_s
-        into = np.floor((times_s - onset_s[cell]) / interval_s).astype(np.int64)
-        slipped[:, cell] = np.where(
-            into < 0, 0.0, running[np.clip(into, 0, len(running) - 1)]
+    **One frame at a time, by design.** The whole animation as a `(frames, cells)`
+    array is the obvious shape and it does not fit: at the quarter-second default the
+    shipped twenty-fault scenario is 1,229 frames over 2 million subfaults, which is
+    20 GB of float64 for a picture that only ever shows one row of it. Here the state
+    is the rupture rather than the animation, so the cost stops depending on how finely
+    the timeline is stepped.
+
+    **Constructing this consumes `segment.pulse_samples`.** The rates are overwritten
+    in place with their own running sum, because a separate integral would be a second
+    copy of the largest array in the file. Build it after anything that reads the
+    rates -- `moment_release` is the only such caller, and it runs first.
+    """
+
+    def __init__(self, segment: Segment) -> None:
+        offsets = np.asarray(segment.pulse_offsets, dtype=np.int64)
+        self.starts = offsets[:-1]
+        self.lengths = np.diff(offsets)
+        self.occupied = self.lengths > 0
+        self.interval_s = segment.sample_interval_s
+        self.onset_s = segment.onset_s.ravel()
+
+        # One running sum over every pulse laid end to end, rather than one per row:
+        # a row's own running total is the difference from the value just before it
+        # starts. In float64 the shared accumulator is good to about one part in 10^9
+        # of a pulse here, which is nine digits more than a colour ramp can show.
+        self.integral = segment.pulse_samples
+        np.cumsum(self.integral, out=self.integral)
+        self.before = np.where(
+            self.starts > 0, self.integral[self.starts - 1], 0.0
         )
-    return slipped
+
+    def _sampled(self, index: np.ndarray) -> np.ndarray:
+        """Each row's running total at its own `index`, zero where it has no pulse."""
+        at = self.starts + np.where(self.occupied, index, 0)
+        return np.where(
+            self.occupied, (self.integral[at] - self.before) * self.interval_s, 0.0
+        )
+
+    def at(self, time_s: float) -> np.ndarray:
+        """Slip so far at `time_s`, one value per subfault, flat."""
+        into = np.floor((time_s - self.onset_s) / self.interval_s)
+        index = np.clip(into, 0, np.maximum(self.lengths - 1, 0)).astype(np.int64)
+        return np.where(into < 0, 0.0, self._sampled(index))
+
+    def total(self) -> np.ndarray:
+        """Each subfault's slip once its pulse has finished."""
+        return self._sampled(np.maximum(self.lengths - 1, 0))
 
 
 # ============================================================================
@@ -763,9 +794,13 @@ def log_rupture(
     _log_static_fields(rerun, segments, kept, bins)
     _log_hypocentre(rerun, segments)
 
+    # `moment_release` reads the slip *rates*; building the clocks overwrites them with
+    # their running sum. That order is a requirement, not a preference.
     rate, cumulative = moment_release(segments, times_s)
-    slipped = {segment.name: cumulative_slip(segment, times_s) for segment in segments}
-    peak = max(float(values.max()) for values in slipped.values()) or 1.0
+    slipped = {segment.name: CumulativeSlip(segment) for segment in segments}
+    peak = max(
+        [float(clock.total().max()) for clock in slipped.values()] + [0.0]
+    ) or 1.0
 
     for step, moment_s in enumerate(times_s):
         rerun.set_time("rupture", duration=float(moment_s))
@@ -775,12 +810,14 @@ def log_rupture(
         frame = []
         for segment in segments:
             indices = kept[segment.name]
-            current = slipped[segment.name][step][indices]
+            current = slipped[segment.name].at(float(moment_s))
             rerun.log(
                 f"/fault/slip/{segment.name}",
-                _mesh(rerun, segment.corners_m[indices], hot(current, 0.0, peak)),
+                _mesh(
+                    rerun, segment.corners_m[indices], hot(current[indices], 0.0, peak)
+                ),
             )
-            frame.append(slipped[segment.name][step])
+            frame.append(current)
         rerun.log(
             "/histogram/slip",
             rerun.BarChart(
@@ -878,8 +915,8 @@ def _mesh(rerun, corners: np.ndarray, colours: np.ndarray):  # noqa: ANN001
 
 __all__ = [
     "FIELDS",
+    "CumulativeSlip",
     "Segment",
-    "cumulative_slip",
     "hot",
     "load",
     "moment_release",
