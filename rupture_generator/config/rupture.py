@@ -181,6 +181,67 @@ class PointSourceConfig(SourceConfig):
     type: Literal["point"] = "point"
 
 
+@dataclasses.dataclass
+class PerFaultSourceConfig(SourceConfig):
+    """A rupture whose faults each carry a magnitude of their own.
+
+    The other finite source states one magnitude for the event and lets the sampled
+    fields decide how the moment divides between faults. This one states the division:
+    each fault is scaled to its own target, and the event's magnitude is whatever they
+    sum to. Both are defensible and they are different models -- a hazard model that
+    derived each fault's magnitude from its own area has already decided the
+    partition, and a pipeline that re-derived it would be discarding that.
+
+    Rake is per fault for the same reason: a system that ruptures a strike-slip fault
+    into a normal one has two mechanisms, and one number cannot carry both.
+
+    Dip is **not** here. It is a property of the geometry, and every segment's mean
+    dip is read from its own chart -- which is exact, and one fewer thing stated twice.
+    """
+
+    magnitudes: dict[str, float] = dataclasses.field(default_factory=dict)
+    rakes: dict[str, float] = dataclasses.field(default_factory=dict)
+    rise_time_coefficient: PositiveFloat = 1.6
+    type: Literal["per_fault"] = "per_fault"
+
+    def __post_init__(self) -> None:
+        """Validate the fields, then the invariants between them."""
+        super().__post_init__()
+        if not self.magnitudes:
+            self.refuse(
+                "magnitudes",
+                "a per-fault source needs a magnitude for each fault; with one fault "
+                "and one magnitude, use a finite source",
+            )
+        missing = set(self.magnitudes) - set(self.rakes)
+        if missing:
+            self.refuse(
+                "rakes",
+                f"{', '.join(sorted(missing))} has a magnitude but no rake, and a "
+                "fault that slips has a direction",
+            )
+        for name, magnitude in self.magnitudes.items():
+            if not 3.0 <= magnitude <= 10.0:
+                self.refuse(
+                    "magnitudes",
+                    f"{name} has magnitude {magnitude}, outside the [3, 10] this "
+                    "generator models",
+                )
+
+    @property
+    def magnitude(self) -> float:
+        """The event's magnitude: what the parts sum to, in moment.
+
+        Reported rather than configured. Summing magnitudes directly would be
+        meaningless -- they are logarithms -- so this sums the moments and converts
+        back, which is the only arithmetic here that means anything.
+        """
+        total = sum(
+            10.0 ** (1.5 * (value + 6.0333003)) for value in self.magnitudes.values()
+        )
+        return (math.log10(total) - 9.0499505) / 1.5
+
+
 def default_wavelength_band(strike_km: float, dip_km: float) -> tuple[float, float]:
     """The wavelength limits genslip picks when none is given, for this grid.
 
@@ -454,6 +515,7 @@ __all__ = [
     "FieldConfig",
     "FiniteSourceConfig",
     "HypocentreConfig",
+    "PerFaultSourceConfig",
     "PointSourceConfig",
     "RampConfig",
     "RandomConfig",

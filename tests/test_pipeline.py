@@ -327,7 +327,7 @@ def test_a_rupture_file_round_trips(
     with read_rupture(path) as back:
         found = segments_in(back)
         assert len(found) == 1
-        restored = found[0][2]
+        restored = found[0][1]
 
         original = only(realisation)
         for name in original.data_vars:

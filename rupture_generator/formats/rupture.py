@@ -100,6 +100,7 @@ def to_dataset(
     pulse_samples: np.ndarray,
     sample_interval_s: float,
     moment_newton_m: float,
+    segment_name: str | None = None,
     hypocentre_km: tuple[float, float] | None = None,
 ) -> xr.Dataset:
     """One segment's rupture and geometry, as a dataset.
@@ -116,6 +117,11 @@ def to_dataset(
         The CSR pulses from the kernel: ``pulse_samples[offsets[k]:offsets[k+1]]`` is
         subfault ``k``'s, flattened along strike fastest.
     sample_interval_s, moment_newton_m : float
+    segment_name : str, optional
+        What the causality tree calls this segment. Stored because a surface can
+        yield several segments and they would otherwise be distinguishable only by
+        the group name -- a convention rather than a record, and one the tree in the
+        root attributes refers to by a name the groups did not carry.
     hypocentre_km : tuple of float, optional
         Where the rupture started, in **this segment's own** arc lengths. Omitted on
         a segment that does not hold it -- writing it into every group claimed three
@@ -213,6 +219,7 @@ def to_dataset(
         },
         attrs={
             "surface": mesh.surface,
+            "segment": segment_name or mesh.surface,
             "strike_count": cells_j,
             "dip_count": cells_i,
             "sample_interval_s": sample_interval_s,
@@ -307,18 +314,16 @@ def segments_in(tree: xr.DataTree) -> list[tuple[str, int, xr.Dataset]]:
 
     Returns
     -------
-    list of (str, int, xr.Dataset)
-        Surface name, segment index, and the segment's dataset.
+    list of (str, xr.Dataset)
+        The segment's name -- what the causality tree calls it -- and its dataset.
     """
     found = []
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "slip_m" not in node.dataset:
             continue
-        name = Path(path).name
-        surface = node.attrs.get("surface") or Path(path).parent.name
-        index = int(name.rsplit("_", 1)[-1]) if "_" in name else 0
-        found.append((str(surface), index, node.dataset))
-    return sorted(found, key=lambda entry: (entry[0], entry[1]))
+        segment = node.attrs.get("segment") or node.attrs.get("surface") or path
+        found.append((str(segment), path, node.dataset))
+    return [entry[:1] + entry[2:] for entry in sorted(found, key=lambda e: e[1])]
 
 
 def mesh_of(dataset: xr.Dataset) -> RuptureMesh:

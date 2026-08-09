@@ -50,6 +50,7 @@ from rupture_generator.config.geometry import (
 )
 from rupture_generator.config.rupture import (
     FiniteSourceConfig,
+    PerFaultSourceConfig,
     PointSourceConfig,
     RampConfig,
     RuptureConfig,
@@ -123,8 +124,16 @@ def _stream(config: RuptureConfig, stage: str, segment: int) -> np.random.Genera
     )
 
 
-def _covariance(config: RuptureConfig) -> CovarianceSpec:
-    """The field structure this source implies."""
+def _covariance(
+    config: RuptureConfig, magnitude: float | None = None
+) -> CovarianceSpec:
+    """The field structure a magnitude implies.
+
+    Per segment rather than per event when the source states a magnitude per fault:
+    correlation lengths scale with magnitude, so a fault carrying an Mw 6.3 has
+    smaller asperities than one carrying an Mw 7.9, and using the event's summed
+    magnitude for both would give the small fault patches larger than itself.
+    """
     source = config.source
     if isinstance(source, FiniteSourceConfig):
         return correlation_lengths(
@@ -132,6 +141,8 @@ def _covariance(config: RuptureConfig) -> CovarianceSpec:
             strike_offset=source.strike_offset,
             dip_offset=source.dip_offset,
         )
+    if isinstance(source, PerFaultSourceConfig) and magnitude is not None:
+        return correlation_lengths(magnitude)
     # A point source draws no fields, but the stages still want a spec; one cell has
     # no structure to describe, so any positive length does.
     return CovarianceSpec(1.0, 1.0)
@@ -278,7 +289,6 @@ def generate(
         cannot travel at.
     """
     sampler = sampler or SpectralSampler()
-    covariance = _covariance(config)
     source = config.source
     propagation_config = propagation_config or ComputedPropagation()
 
@@ -316,8 +326,42 @@ def generate(
     position = {name: index for index, name in enumerate(names)}
 
     target_moment = moment.seismic_moment_nm(source.magnitude)
-    correction = timing.alpha_t(source.average_dip_deg, source.average_rake_deg)
     is_point = isinstance(source, PointSourceConfig)
+    per_fault = isinstance(source, PerFaultSourceConfig)
+
+    if per_fault:
+        unknown = set(source.magnitudes) - set(names)
+        if unknown:
+            raise ValueError(
+                f"the source gives magnitudes for {', '.join(sorted(unknown))}, "
+                f"which are not segments of this rupture ({', '.join(names)})"
+            )
+        missing = set(names) - set(source.magnitudes)
+        if missing:
+            raise ValueError(
+                f"{', '.join(sorted(missing))} has no magnitude, and a fault that "
+                "ruptures carries moment"
+            )
+
+    def dip_of(name: str) -> float:
+        """A segment's own mean dip, read from its chart rather than restated."""
+        return float(np.mean(segments[name].strike_dip_deg()[1]))
+
+    def rake_of(name: str) -> float:
+        return source.rakes[name] if per_fault else source.average_rake_deg
+
+    def magnitude_of(name: str) -> float:
+        return source.magnitudes[name] if per_fault else source.magnitude
+
+    def correction_of(name: str) -> float:
+        return timing.alpha_t(
+            dip_of(name) if per_fault else source.average_dip_deg, rake_of(name)
+        )
+
+    covariances = {
+        name: _covariance(config, magnitude_of(name) if per_fault else None)
+        for name in names
+    }
 
     # ---- Materials ------------------------------------------------------------
     materials = {}
@@ -330,13 +374,15 @@ def generate(
         )
 
     # ---- S4: slip, drawn per segment and scaled once ---------------------------
-    slip_params = stages.SlipParams(
-        covariance=covariance,
-        coefficient_of_variation=config.slip.coefficient_of_variation,
-        side_taper=config.slip.side_taper,
-        top_taper=config.slip.top_taper,
-        bottom_taper=config.slip.bottom_taper,
-    )
+    def slip_params_for(name: str) -> stages.SlipParams:
+        return stages.SlipParams(
+            covariance=covariances[name],
+            coefficient_of_variation=config.slip.coefficient_of_variation,
+            side_taper=config.slip.side_taper,
+            top_taper=config.slip.top_taper,
+            bottom_taper=config.slip.bottom_taper,
+        )
+
     patterns: dict[str, np.ndarray] = {}
     gaussians: dict[str, np.ndarray] = {}
     references: dict[str, object] = {}
@@ -349,6 +395,7 @@ def generate(
             gaussians[name] = np.zeros(mesh.cell_counts)
             references[name] = None
         else:
+            slip_params = slip_params_for(name)
             pattern, gaussian, reference = stages.slip_pattern(
                 mesh, slip_params, _stream(config, "slip", position[name]), sampler
             )
@@ -357,14 +404,23 @@ def generate(
             references[name] = reference
             clipped = max(clipped, stages.truncated_fraction(gaussian, slip_params))
 
-    # One factor over every segment, so the partition of moment between faults is
-    # the fields' own rather than an artefact of scaling each alone.
-    scaled = moment.scale_to_moment(
-        [patterns[name] for name in names],
-        [materials[name][1] for name in names],
-        [segments[name].areas_km2() for name in names],
-        target_moment,
-    )
+    # Either one factor over every segment -- so the partition of moment between
+    # faults is the fields' own -- or a target per fault, when the source states how
+    # the moment divides. The two are different models and the config says which.
+    if per_fault:
+        scaled = moment.scale_each_to_moment(
+            [patterns[name] for name in names],
+            [materials[name][1] for name in names],
+            [segments[name].areas_km2() for name in names],
+            [moment.seismic_moment_nm(source.magnitudes[name]) for name in names],
+        )
+    else:
+        scaled = moment.scale_to_moment(
+            [patterns[name] for name in names],
+            [materials[name][1] for name in names],
+            [segments[name].areas_km2() for name in names],
+            target_moment,
+        )
     slips = dict(zip(names, scaled, strict=True))
 
     # ---- S5, S6: rise time and rake, per segment ------------------------------
@@ -380,7 +436,9 @@ def generate(
             continue
 
         average_s = stages.average_rise_time_s(
-            target_moment, source.rise_time_coefficient, correction
+            moment.seismic_moment_nm(magnitude_of(name)),
+            source.rise_time_coefficient,
+            correction_of(name),
         )
         rise_times[name] = stages.rise_time_field(
             mesh,
@@ -389,14 +447,16 @@ def generate(
             _rise_time_params(config, average_s),
             _stream(config, "rise_time", position[name]),
             sampler,
-            covariance,
+            covariances[name],
             sample_interval_s=config.timing.sample_interval_s,
         )
         rakes[name] = stages.rake_field(
             mesh,
             stages.RakeParams(
-                covariance=covariance,
-                base_rake_deg=config.field.base_rake_deg,
+                covariance=covariances[name],
+                base_rake_deg=(
+                    source.rakes[name] if per_fault else config.field.base_rake_deg
+                ),
                 sigma_deg=config.slip.rake_sigma_deg,
             ),
             _stream(config, "rake", position[name]),
@@ -404,15 +464,19 @@ def generate(
         )
 
     # ---- S7, S8: the wavefront, in causal order -------------------------------
-    speed_params = timing.SpeedParams(
-        velocity_fraction=config.field.velocity_fraction,
-        average_dip_deg=source.average_dip_deg,
-        average_rake_deg=source.average_rake_deg,
-        shallow=_ramp(config.timing.shallow_speed_ramp or config.timing.shallow_ramp),
-        deep=_ramp(config.timing.deep_speed_ramp or config.timing.deep_ramp),
-        shallow_factor=config.timing.shallow_speed_factor,
-        deep_factor=config.timing.deep_speed_factor,
-    )
+    def speed_params_for(name: str) -> timing.SpeedParams:
+        return timing.SpeedParams(
+            velocity_fraction=config.field.velocity_fraction,
+            average_dip_deg=dip_of(name) if per_fault else source.average_dip_deg,
+            average_rake_deg=rake_of(name),
+            shallow=_ramp(
+                config.timing.shallow_speed_ramp or config.timing.shallow_ramp
+            ),
+            deep=_ramp(config.timing.deep_speed_ramp or config.timing.deep_ramp),
+            shallow_factor=config.timing.shallow_speed_factor,
+            deep_factor=config.timing.deep_speed_factor,
+        )
+
     onset_params = stages.OnsetParams(
         scale_s=config.timing.rupture_time_scale,
         correlation=config.timing.rupture_time_correlation,
@@ -454,7 +518,7 @@ def generate(
             delay_s = 0.0
 
         travel_time_s = timing.travel_times(
-            mesh, materials[name][0], speed_params, seeds
+            mesh, materials[name][0], speed_params_for(name), seeds
         )
         reference = references[name]
         if reference is None:
@@ -467,7 +531,7 @@ def generate(
                 dataclasses.replace(onset_params, delay_s=delay_s),
                 _stream(config, "onset", position[name]),
                 sampler,
-                covariance,
+                covariances[name],
                 hypocentre=pinned,
             )
 
@@ -498,6 +562,7 @@ def generate(
             pulse_samples=samples,
             sample_interval_s=config.timing.sample_interval_s,
             moment_newton_m=target_moment,
+            segment_name=name,
             # Only the segment the rupture nucleated on records a hypocentre;
             # writing one into every group claimed several hypocentres for one
             # earthquake.

@@ -168,6 +168,48 @@ def scale_to_moment(
     return [factor * field for field in fields]
 
 
+def scale_each_to_moment(
+    fields: list[FloatArray],
+    rigidities_pa: list[FloatArray],
+    areas_km2: list[FloatArray],
+    target_moments_nm: list[float],
+) -> list[FloatArray]:
+    """Scale each segment to a target of its own.
+
+    The counterpart of :func:`scale_to_moment`, for a source that states how the
+    moment divides between faults rather than letting the fields decide. A hazard
+    model that derived each fault's magnitude from its own area has already made that
+    decision; re-deriving it would discard what the model said.
+
+    The two are genuinely different: here each segment's moment is exact and the
+    event's total is whatever the parts sum to, where jointly the total is exact and
+    the parts are whatever the fields give.
+
+    Returns
+    -------
+    list of FloatArray
+        Slip in metres, one array per segment.
+
+    Raises
+    ------
+    ValueError
+        If a segment's pattern carries no moment anywhere, naming its position --
+        which for a per-fault source means that fault cannot reach its target at all.
+    """
+    scaled = []
+    for index, (field, rigidity, area, target) in enumerate(
+        zip(fields, rigidities_pa, areas_km2, target_moments_nm, strict=True)
+    ):
+        total = float(np.sum(rigidity * area * M2_PER_KM2 * field))
+        if not (total > 0.0):
+            raise ValueError(
+                f"segment {index}'s slip pattern carries no moment anywhere, so no "
+                "factor makes it carry its target -- every subfault was truncated"
+            )
+        scaled.append((target / total) * field)
+    return scaled
+
+
 def moment_of(
     slip_m: FloatArray, rigidity_pa: FloatArray, area_km2: FloatArray
 ) -> float:
@@ -281,6 +323,7 @@ __all__ = [
     "moment_rate",
     "rigidity_pa",
     "sample_velocity_model",
+    "scale_each_to_moment",
     "scale_to_moment",
     "seismic_moment_nm",
 ]

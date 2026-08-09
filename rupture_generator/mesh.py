@@ -545,8 +545,9 @@ class RuptureMesh:
             discretisation mismatch.
         """
         strike_sizes, dip_sizes, weights = self._block_cut_sizes()
-        _refuse_mixed_resolution(strike_sizes, axis="strike")
-        _refuse_mixed_resolution(dip_sizes, axis="dip")
+        cells_i = self.cell_counts[0]
+        _refuse_mixed_resolution(strike_sizes, weights, axis="strike")
+        _refuse_mixed_resolution(dip_sizes, [cells_i] * len(dip_sizes), axis="dip")
 
         strike_steps, dip_steps = self.line_steps()
         strike_means: list[float] = []
@@ -587,15 +588,34 @@ class RuptureMesh:
         )
 
 
-def _refuse_mixed_resolution(sizes: list[float], *, axis: str) -> None:
-    """Refuse blocks cut at resolutions too far apart to average into one grid."""
+def _refuse_mixed_resolution(
+    sizes: list[float], counts: list[int], *, axis: str
+) -> None:
+    """Refuse blocks cut at resolutions too far apart to average into one grid.
+
+    The bound scales with how *short* the shortest block is, because rounding alone
+    produces more spread on a short plane than a long one. A plane cut into ``n``
+    cells has a realised size within ``1/(2n)`` of the size requested -- the request
+    lands anywhere in ``[n - 1/2, n + 1/2]`` cells -- so two planes can differ by
+    ``1/(2n_a) + 1/(2n_b)`` through rounding and nothing else. A five-cell plane can
+    therefore be a legitimate 20% from its neighbour.
+
+    Measured: the shipped Alpine-Hope traces at 100 m have planes of five cells, and
+    a flat 10% bound refused them for a spread rounding had produced. The check can
+    only be as sharp as the geometry allows, and saying so is better than a constant
+    that is right at one resolution.
+    """
+    from_rounding = 1.0 / min(counts)
+    permitted = max(SPACING_SPREAD, from_rounding)
+
     spread = (max(sizes) - min(sizes)) / min(sizes)
-    if spread > SPACING_SPREAD:
+    if spread > permitted:
         raise ValueError(
             f"the planes were cut into {axis} subfaults of "
-            f"{[f'{size:.3g}' for size in sizes]} km, a {spread:.0%} spread. The "
-            "generator runs on one grid with one spacing, and that is too far apart "
-            "to average -- give the planes the same subfault size"
+            f"{[f'{size:.3g}' for size in sizes]} km, a {spread:.0%} spread against "
+            f"the {permitted:.0%} that rounding onto their cell counts could produce. "
+            "The generator runs on one grid with one spacing -- give the planes the "
+            "same subfault size"
         )
 
 

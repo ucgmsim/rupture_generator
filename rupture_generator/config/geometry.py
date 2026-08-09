@@ -335,8 +335,15 @@ class GeometryConfig(ConfigObject):
             # Only the surface part can be checked here, because how many segments a
             # surface yields is not known until it has been meshed and fused. The
             # whole name is checked against the real segments when the rupture runs.
+            #
+            # The whole name is tried **first**, because a fault name may itself
+            # contain a colon: "Alpine: Caswell" is one surface, not segment Caswell
+            # of a surface called Alpine.
+            known = set(names)
             unknown = {
-                name for name in named if name.split(":", 1)[0] not in set(names)
+                name
+                for name in named
+                if name not in known and name.rsplit(":", 1)[0] not in known
             }
             if unknown:
                 self.refuse(

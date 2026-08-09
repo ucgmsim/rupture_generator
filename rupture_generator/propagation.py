@@ -485,7 +485,14 @@ class JumpDelay(Protocol):
     """
 
     def __call__(self, distance_km: FloatArray) -> FloatArray:
-        """Seconds, elementwise over an array of gap widths."""
+        """Seconds, elementwise over an array of gap widths.
+
+        Must be **non-negative and monotone**: a wider gap never crosses faster than
+        a narrower one. That is not a tidiness rule -- :func:`causal_jump` relies on
+        it to search nearest neighbours rather than every pair, which is what makes a
+        million-subfault rupture tractable. A model that violated it would need the
+        exhaustive search back.
+        """
         ...
 
 
@@ -585,11 +592,12 @@ def causal_jump(
     kilometres and says nothing about that. The same limit decides which faults are
     connected at all, so any pair the tree contains has at least one candidate.
 
-    Every candidate pair is examined. The cost is the product of the two subfault
-    counts -- a few million distance evaluations for a pair of ordinary faults, which
-    numpy does in milliseconds -- so restricting to each pair's near-approach region
-    is an optimisation to make when it is measured to be needed, not part of the
-    contract.
+    The search is over nearest neighbours rather than over pairs, and that is exact
+    rather than an approximation: a delay never decreases with distance, so a given
+    departure point's earliest arrival is always to the closest point on the other
+    fault. It is also what makes the stage tractable -- the two largest faults of the
+    shipped scenario have 145 billion pairs between them and 37,740 nearest
+    neighbours.
 
     Parameters
     ----------
@@ -623,33 +631,45 @@ def causal_jump(
     from_points = (parent_centres + parent_origin).reshape(-1, 3)
     to_points = (child_centres + child_origin).reshape(-1, 3)
 
-    distance_km = np.linalg.norm(
-        from_points[:, None, :] - to_points[None, :, :], axis=-1
-    )
-    reachable = distance_km <= max_distance_km
+    # **Only each parent subfault's nearest child can win.** A delay never decreases
+    # with distance, so for a given departure point the earliest arrival is always to
+    # the closest point on the other fault:
+    #
+    #     min_c [ t_P(p) + delay(d(p, c)) ]  =  t_P(p) + delay( min_c d(p, c) )
+    #
+    # which turns a search over every pair into one nearest-neighbour query per
+    # parent subfault. That is the difference between tractable and not: the two
+    # largest faults of the shipped scenario have 145 billion pairs between them and
+    # 37,740 nearest neighbours.
+    #
+    # Exact for any delay monotone in distance, which is the one thing
+    # :class:`JumpDelay` asks of an implementation.
+    from scipy.spatial import cKDTree
+
+    nearest_km, nearest = cKDTree(to_points).query(from_points, k=1, workers=-1)
+
+    reachable = nearest_km <= max_distance_km
     if not reachable.any():
         raise ValueError(
             f"{parent.surface!r} and {child.surface!r} come no closer than "
-            f"{distance_km.min():.2f} km, past the {max_distance_km:.1f} km a "
+            f"{float(nearest_km.min()):.2f} km, past the {max_distance_km:.1f} km a "
             "rupture jumps, so the front never crosses between them"
         )
 
-    arrival_s = np.where(reachable, departures[:, None] + delay(distance_km), np.inf)
-
-    flat = int(np.argmin(arrival_s))
-    from_index, to_index = np.unravel_index(flat, arrival_s.shape)
+    arrivals_s = np.where(reachable, departures + delay(nearest_km), np.inf)
+    from_cell = int(np.argmin(arrivals_s))
+    to_cell = int(nearest[from_cell])
 
     return Jump(
         parent_cell=tuple(
-            int(index)
-            for index in np.unravel_index(int(from_index), parent.cell_counts)
+            int(index) for index in np.unravel_index(from_cell, parent.cell_counts)
         ),
         child_cell=tuple(
-            int(index) for index in np.unravel_index(int(to_index), child.cell_counts)
+            int(index) for index in np.unravel_index(to_cell, child.cell_counts)
         ),
-        distance_km=float(distance_km[from_index, to_index]),
-        departure_s=float(departures[from_index]),
-        arrival_s=float(arrival_s[from_index, to_index]),
+        distance_km=float(nearest_km[from_cell]),
+        departure_s=float(departures[from_cell]),
+        arrival_s=float(arrivals_s[from_cell]),
     )
 
 
