@@ -271,7 +271,9 @@ def fault_grid(fused: Fused, config: RuptureConfig) -> _core.FaultGrid:
         fused.dip_km,
         depth_km=fused.depth_km.ravel(),
         base_rake_deg=np.full(subfaults, config.field.base_rake_deg),
-        velocity_fraction=np.full(subfaults, config.field.velocity_fraction / correction),
+        velocity_fraction=np.full(
+            subfaults, config.field.velocity_fraction / correction
+        ),
     )
 
 

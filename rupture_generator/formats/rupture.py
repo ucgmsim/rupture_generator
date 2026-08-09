@@ -137,7 +137,10 @@ def to_dataset(
         "node_north_km": (
             ("dip_node", "strike_node"),
             north_km,
-            {"units": "kilometres", "long_name": "Northing offset from the mesh origin"},
+            {
+                "units": "kilometres",
+                "long_name": "Northing offset from the mesh origin",
+            },
         ),
         "node_depth_km": (
             ("dip_node", "strike_node"),
@@ -170,7 +173,10 @@ def to_dataset(
             "strike_km": (
                 "strike_node",
                 mesh.strike_arc_km(patch),
-                {"units": "kilometres", "long_name": "Along strike from the i = 0 edge"},
+                {
+                    "units": "kilometres",
+                    "long_name": "Along strike from the i = 0 edge",
+                },
             ),
             "dip_km": (
                 "dip_node",

@@ -86,23 +86,23 @@ class PlaneHeader:
 class Points:
     """The subfaults of an SRF, one array per field.
 
-    Every array holds one value per subfault, in the file's order: along strike
-    fastest, within each segment in turn.
+        Every array holds one value per subfault, in the file's order: along strike
+        fastest, within each segment in turn.
 
-    `shear_speed_cm_s` and `density_g_cm3` are the version 2.0 material properties.
-    They are present together or not at all, which is what distinguishes a version
-    2.0 point block from a version 1.0 one.
+        `shear_speed_cm_s` and `density_g_cm3` are the version 2.0 material properties.
+        They are present together or not at all, which is what distinguishes a version
+        2.0 point block from a version 1.0 one.
 
-Each field's name says what it holds and in what unit, so only the five that are
-    not self-evident are written down:
+    Each field's name says what it holds and in what unit, so only the five that are
+        not self-evident are written down:
 
-    - ``area_cm2`` is square centimetres, which is what the format stores and what the
-      moment sum is expressed in.
-    - ``onset_s`` is the SRF's ``tinit``, and ``sample_interval_s`` its ``dt``.
-    - ``rise_time_s`` is **derived** on read as ``nt1 * dt``; the file holds ``nt1``.
-      `README.md`'s first trap is comparing it against a generated rise time.
-    - ``shear_speed_cm_s`` is **centimetres** per second, a factor of 1e5 from the
-      kilometres per second a velocity model is written in.
+        - ``area_cm2`` is square centimetres, which is what the format stores and what the
+          moment sum is expressed in.
+        - ``onset_s`` is the SRF's ``tinit``, and ``sample_interval_s`` its ``dt``.
+        - ``rise_time_s`` is **derived** on read as ``nt1 * dt``; the file holds ``nt1``.
+          `README.md`'s first trap is comparing it against a generated rise time.
+        - ``shear_speed_cm_s`` is **centimetres** per second, a factor of 1e5 from the
+          kilometres per second a velocity model is written in.
     """
 
     longitude_deg: FloatArray

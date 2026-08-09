@@ -19,8 +19,7 @@ Each subcommand lives in its own module and is attached here, which is
 
 import typer
 
-from rupture_generator.scripts import generate_cli, mesh_cli
-from rupture_generator.scripts import view as view_cli
+from rupture_generator.scripts import mesh_cli
 
 app = typer.Typer(
     help="Generate kinematic rupture models.",
@@ -43,8 +42,10 @@ def main() -> None:
 # Single commands rather than sub-groups: each does one thing, and
 # `rupture-generator mesh build` is a word nobody needs to type.
 app.command("mesh")(mesh_cli.mesh)
-app.command("generate")(generate_cli.generate)
-app.command("view")(view_cli.view)
+
+# `generate` and `view` are attached again when the pipeline reaches them: they read
+# and write the rupture file, which is being recut against the one mesh type. The
+# callback above is what keeps `mesh` from becoming the root command in the meantime.
 
 
 if __name__ == "__main__":
