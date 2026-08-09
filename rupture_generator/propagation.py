@@ -680,12 +680,19 @@ def closest_approach_km(first: RuptureMesh, second: RuptureMesh) -> float:
     than between surfaces, which understates the true closest approach by up to half
     a subfault -- immaterial against a 15 km cutoff and a 3 km decay length, and it
     keeps this the same quantity the jump search minimises over.
+
+    Over nearest neighbours rather than over pairs, for the reason :func:`causal_jump`
+    is: the minimum over every pair is the minimum over each point's nearest, so the
+    tree gives the same number without the matrix. The dense form held an
+    ``(n_first, n_second, 3)`` difference, which on the two largest faults of the
+    shipped scenario is 145 billion pairs -- 3.5 TB -- before anything is reduced.
     """
+    from scipy.spatial import cKDTree
+
     from_points = (first.centres() + np.array([*first.origin_km, 0.0])).reshape(-1, 3)
     to_points = (second.centres() + np.array([*second.origin_km, 0.0])).reshape(-1, 3)
-    return float(
-        np.linalg.norm(from_points[:, None, :] - to_points[None, :, :], axis=-1).min()
-    )
+    nearest_km, _ = cKDTree(to_points).query(from_points, k=1, workers=-1)
+    return float(nearest_km.min())
 
 
 __all__ = [

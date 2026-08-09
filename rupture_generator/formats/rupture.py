@@ -32,10 +32,18 @@ being written in km/s where the SRF wants cm/s.
 
 # The pulses are ragged, so they are stored as CSR
 
-Each subfault's pulse has its own length. ``data``/``indices``/``indptr`` is the layout
-the kernel already produces and `scipy.sparse.csr_array` already wants, so nothing is
-translated on either side -- and the column index of a sample is its position *within
-its own pulse*, not within the rupture.
+Each subfault's pulse has its own length. ``data``/``indptr`` is the layout the kernel
+already produces and `scipy.sparse.csr_array` already wants, so nothing is translated on
+either side -- and the column index of a sample is its position *within its own pulse*,
+not within the rupture.
+
+**The ``indices`` of that triple are not stored**, because for this matrix they carry no
+information: every pulse starts at column zero and runs contiguously, so a sample's
+column is ``arange(n) - repeat(indptr[:-1], diff(indptr))`` and is a function of
+``indptr`` alone. Writing them down doubles the file, and on the shipped twenty-fault
+scenario that is 7.6 GB of int64 restating 7.6 GB of float64 -- the array that used to
+exhaust memory before the rupture could be written at all. `assemble.to_srf_file`
+rebuilds them where `scipy.sparse` insists on having them.
 """
 
 from __future__ import annotations
@@ -148,14 +156,6 @@ def to_dataset(
     }
 
     offsets = np.asarray(pulse_offsets, dtype=np.int64)
-    lengths = np.diff(offsets)
-    # The column of a sample is its position within its own pulse, which is what makes
-    # this a CSR matrix of shape (subfault, longest pulse).
-    columns = (
-        np.concatenate([np.arange(length, dtype=np.int64) for length in lengths])
-        if len(lengths)
-        else np.empty(0, dtype=np.int64)
-    )
 
     nodes = mesh.nodes()
     data_vars: dict[str, Any] = {
@@ -182,11 +182,6 @@ def to_dataset(
                 "units": "metres per second",
                 "long_name": "Slip-rate pulses, concatenated (CSR data)",
             },
-        ),
-        "slip_rate_column": (
-            "sample",
-            columns,
-            {"long_name": "Sample position within its own pulse (CSR indices)"},
         ),
         "slip_rate_offset": (
             "cell_edge",

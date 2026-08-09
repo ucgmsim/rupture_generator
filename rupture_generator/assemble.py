@@ -198,12 +198,12 @@ def to_srf_file(
     )
     longest = int(lengths.max()) if len(lengths) else 0
     # A sample's column is its position within its own pulse, which is what makes the
-    # ragged set of pulses a CSR matrix as wide as the longest of them.
-    within = (
-        np.concatenate([np.arange(length, dtype=np.int64) for length in lengths])
-        if longest
-        else np.empty(0, dtype=np.int64)
-    )
+    # ragged set of pulses a CSR matrix as wide as the longest of them. Written as one
+    # ramp less its own row's start rather than as a pulse-at-a-time comprehension: the
+    # comprehension built an array object per subfault and held all of them alive to
+    # concatenate, which on the shipped twenty-fault scenario is two million objects
+    # and 7.6 GB of int64 to produce a 7.6 GB result.
+    within = np.arange(len(samples), dtype=np.int64) - np.repeat(offsets[:-1], lengths)
 
     return SrfFile(
         version="2.0",

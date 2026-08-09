@@ -44,17 +44,24 @@ vis = ["rerun-sdk>=0.26"]
 rupture-generator = "rupture_generator.scripts.cli:app"
 
 [dependency-groups]
-dev = ["deptry", "ruff", "ty", "numpydoc"]
+dev = ["deptry", "ruff", "ty", "numpydoc", "py-spy"]
 
+# `debug = false` is load-bearing, not a preference. setuptools-rust's default is
+# `debug = None`, which means *auto*: an inplace build gets `--debug` and everything
+# else gets `--release`. An editable install is an inplace build, so the whole
+# development and profiling path silently ran an unoptimised eikonal solver -- the
+# kernels exist to be fast, and `cargo` was being told not to make them.
 [[tool.setuptools-rust.ext-modules]]
 target = "rupture_generator.srf_parser"
 path = "crates/srf/Cargo.toml"
 binding = "PyO3"
+debug = false
 
 [[tool.setuptools-rust.ext-modules]]
 target = "rupture_generator._kernels"
 path = "crates/kernels/Cargo.toml"
 binding = "PyO3"
+debug = false
 
 [tool.setuptools.packages]
 find = { where = [
