@@ -116,6 +116,7 @@ def mesh(
         config.crs,
         output,
         format=output_format,
+        propagation=config.propagation,
         attrs={
             "title": config.title or geometry.stem,
             "geometry_config": geometry.read_text(),

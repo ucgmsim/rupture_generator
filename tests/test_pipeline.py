@@ -19,9 +19,14 @@ from pathlib import Path
 import numpy as np
 import pyproj
 import pytest
+import xarray as xr
 
 from rupture_generator import assemble, moment
 from rupture_generator.config import read_config, read_geometry
+from rupture_generator.config.geometry import (
+    GeometryConfig,
+    PredeterminedPropagation,
+)
 from rupture_generator.config.rupture import RuptureConfig
 from rupture_generator.formats.mesh import read_mesh, write_mesh
 from rupture_generator.formats.rupture import (
@@ -31,7 +36,12 @@ from rupture_generator.formats.rupture import (
     write_rupture,
 )
 from rupture_generator.mesh import build_surface, fuse, validate_chart
-from rupture_generator.pipeline import Realisation, charts_for, generate
+from rupture_generator.pipeline import (
+    Realisation,
+    charts_for,
+    generate,
+    segments_of,
+)
 from rupture_generator.srf import read_srf, write_srf
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -42,6 +52,12 @@ Generated = tuple[Realisation, RuptureConfig, pyproj.CRS]
 MIN_SLIP_M = 1.0e-4
 """The kernel's own no-pulse guard. Below it a subfault gets no pulse at all, which is
 not the same as a pulse of zeros."""
+
+
+def only(realisation: Realisation) -> xr.Dataset:
+    """The one segment of a single-fault rupture."""
+    (segment,) = realisation.segments.values()
+    return segment
 
 
 def _config() -> RuptureConfig:
@@ -75,8 +91,10 @@ def test_a_bent_fault_generates_as_one_segment(bent: Generated) -> None:
     """
     realisation, _, _ = bent
     assert len(realisation.segments) == 1
+    assert realisation.tree == {realisation.root: None}
+    assert realisation.jumps == {}
 
-    segment = realisation.segments[0]
+    segment = only(realisation)
     # Both config planes are present, and the seam column is counted once.
     planes = segment["plane"].to_numpy()
     assert set(np.unique(planes)) == {0, 1}
@@ -91,7 +109,7 @@ def test_the_moment_is_the_magnitudes(bent: Generated) -> None:
     was written is not what was scaled.
     """
     realisation, config, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     _, rigidity = moment.sample_velocity_model(
         segment["centre_depth_km"].to_numpy(),
@@ -116,7 +134,7 @@ def test_the_rupture_starts_where_it_was_told(bent: Generated) -> None:
     config named, and the config names it in arc lengths that the file records back.
     """
     realisation, config, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
     onset = segment["onset_s"].to_numpy()
 
     assert float(onset[realisation.hypocentre]) == pytest.approx(
@@ -137,7 +155,7 @@ def test_the_front_spreads_outward_from_the_hypocentre(bent: Generated) -> None:
     not track distance would be one whose wavefront never ran.
     """
     realisation, _, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     centres = np.stack(
         [
@@ -163,7 +181,7 @@ def test_every_slipping_subfault_has_a_pulse_carrying_its_slip(bent: Generated) 
     missing because it could also mean a pulse that was thrown away.
     """
     realisation, _, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     slip_m = segment["slip_m"].to_numpy().ravel()
     offsets = segment["slip_rate_offset"].to_numpy()
@@ -187,12 +205,12 @@ def test_the_rupture_is_reproducible(bent: Generated) -> None:
     again, _, _ = _run("hope.geometry.toml")
 
     assert np.array_equal(
-        realisation.segments[0]["slip_m"].to_numpy(),
-        again.segments[0]["slip_m"].to_numpy(),
+        only(realisation)["slip_m"].to_numpy(),
+        only(again)["slip_m"].to_numpy(),
     )
     assert np.array_equal(
-        realisation.segments[0]["onset_s"].to_numpy(),
-        again.segments[0]["onset_s"].to_numpy(),
+        only(realisation)["onset_s"].to_numpy(),
+        only(again)["onset_s"].to_numpy(),
     )
 
 
@@ -217,7 +235,7 @@ def test_a_single_plane_fault_generates(tmp_path: Path) -> None:
     validate_chart(segments[0])
 
     realisation = generate(_config(), segments, geometry.crs)
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     assert set(np.unique(segment["plane"].to_numpy())) == {0}
     assert (segment["slip_m"].to_numpy() >= 0.0).all()
@@ -257,16 +275,11 @@ def test_a_point_source_is_the_pipeline_with_constant_fields() -> None:
 
     segments = fuse(build_surface(point, geometry.crs))
     realisation = generate(config, segments, geometry.crs)
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
-    assert segment.sizes == {
-        "i": 1,
-        "j": 1,
-        "i_node": 2,
-        "j_node": 2,
-        "sample": segment.sizes["sample"],
-        "cell_edge": 2,
-    }
+    assert (segment.sizes["i"], segment.sizes["j"]) == (1, 1)
+    assert (segment.sizes["i_node"], segment.sizes["j_node"]) == (2, 2)
+    assert segment.sizes["cell_edge"] == 2
     assert float(segment["rise_time_s"].to_numpy()[0, 0]) == pytest.approx(0.8)
     assert float(segment["rake_deg"].to_numpy()[0, 0]) == pytest.approx(
         config.field.base_rake_deg
@@ -304,7 +317,7 @@ def test_a_rupture_file_round_trips(
     """
     realisation, _, crs = bent
     tree = to_datatree(
-        {"hope/segment_0": realisation.segments[0]},
+        {"hope/segment_0": only(realisation)},
         crs,
         attrs={"seed": 1234, "moment_newton_m": realisation.moment_newton_m},
     )
@@ -316,7 +329,7 @@ def test_a_rupture_file_round_trips(
         assert len(found) == 1
         restored = found[0][2]
 
-        original = realisation.segments[0]
+        original = only(realisation)
         for name in original.data_vars:
             assert np.array_equal(
                 restored[name].to_numpy(), original[name].to_numpy()
@@ -341,14 +354,14 @@ def test_a_mesh_file_carries_a_bent_fault_into_the_pipeline(tmp_path: Path) -> N
 
     path = tmp_path / "mesh.h5"
     write_mesh({"hope": charts}, geometry.crs, path)
-    restored, crs = read_mesh(path)
+    restored, crs, _ = read_mesh(path)
 
     direct = generate(_config(), fuse(charts), geometry.crs)
     through_file = generate(_config(), fuse(restored["hope"]), crs)
 
     assert np.array_equal(
-        direct.segments[0]["slip_m"].to_numpy(),
-        through_file.segments[0]["slip_m"].to_numpy(),
+        only(direct)["slip_m"].to_numpy(),
+        only(through_file)["slip_m"].to_numpy(),
     )
 
 
@@ -363,7 +376,7 @@ def test_an_srf_carries_the_same_rupture_in_its_own_units(
     tolerances here are 1e-5 rather than 1e-9.
     """
     realisation, config, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     depth_km = segment["centre_depth_km"].to_numpy()
     bottoms = np.asarray(config.velocity_model.bottom_depth_km)
@@ -410,7 +423,7 @@ def test_the_srf_hypocentre_is_measured_from_the_plane_centre(bent: Generated) -
     place.
     """
     realisation, config, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
     header = assemble.plane_header(
         segment,
         hypocentre_km=(config.hypocentre.strike_km, config.hypocentre.dip_km),
@@ -430,7 +443,7 @@ def test_the_moment_survives_the_trip_into_cgs(bent: Generated) -> None:
     is what makes the four of them one claim instead of four.
     """
     realisation, config, _ = bent
-    segment = realisation.segments[0]
+    segment = only(realisation)
 
     depth_km = segment["centre_depth_km"].to_numpy()
     bottoms = np.asarray(config.velocity_model.bottom_depth_km)
@@ -461,3 +474,220 @@ def test_the_moment_survives_the_trip_into_cgs(bent: Generated) -> None:
     assert moment_dyne_cm * 1.0e-7 == pytest.approx(
         realisation.moment_newton_m, rel=1.0e-5
     )
+
+
+# ============================================================================
+# Several faults, one earthquake
+# ============================================================================
+
+
+def _two_fault_geometry() -> tuple[GeometryConfig, RuptureConfig]:
+    """The shipped two-segment example, with a hypocentre that names its fault."""
+    geometry = read_geometry(EXAMPLES / "kaikoura.geometry.toml")
+    config = _config()
+    config.hypocentre.fault = "kaikoura:0"
+    return geometry, config
+
+
+@pytest.fixture(scope="module")
+def two_faults() -> Generated:
+    """A rupture that crosses between segments."""
+    geometry, config = _two_fault_geometry()
+    segments = segments_of(geometry)
+    return (
+        generate(
+            config, segments, geometry.crs, propagation_config=geometry.propagation
+        ),
+        config,
+        geometry.crs,
+    )
+
+
+def test_a_multi_segment_rupture_has_a_causality_tree(two_faults: Generated) -> None:
+    """Two segments, one root, and the other triggered by it."""
+    realisation, _, _ = two_faults
+
+    assert set(realisation.segments) == {"kaikoura:0", "kaikoura:1"}
+    assert realisation.tree == {"kaikoura:0": None, "kaikoura:1": "kaikoura:0"}
+    assert realisation.root == "kaikoura:0"
+    assert set(realisation.jumps) == {"kaikoura:1"}
+
+
+def test_the_front_reaches_a_child_after_it_leaves_its_parent(
+    two_faults: Generated,
+) -> None:
+    """Causality across the jump, in both of its halves.
+
+    The seed time is the parent's own arrival at the jump-off point plus a
+    non-negative delay -- so the child cannot start before the parent got there --
+    and nothing on the child precedes that seed. Together those are what make the
+    tree a statement about time rather than only about which faults broke.
+    """
+    realisation, _, _ = two_faults
+    jump = realisation.jumps["kaikoura:1"]
+
+    parent = realisation.segments["kaikoura:0"]
+    child = realisation.segments["kaikoura:1"]
+
+    assert jump.departure_s == pytest.approx(
+        float(parent["onset_s"].to_numpy()[jump.parent_cell]), abs=1e-9
+    )
+    assert jump.arrival_s >= jump.departure_s
+    assert float(child["onset_s"].to_numpy().min()) >= jump.departure_s - 1e-9
+
+
+def test_onsets_do_not_decrease_along_a_path_of_the_tree(
+    two_faults: Generated,
+) -> None:
+    """A child fault never begins before its parent did.
+
+    The whole-rupture form of causality: walking the tree from the root, each
+    segment's earliest onset is at or after its parent's earliest. A rupture whose
+    second fault began before the first would be two earthquakes filed as one.
+    """
+    realisation, _, _ = two_faults
+
+    earliest = {
+        name: float(segment["onset_s"].to_numpy().min())
+        for name, segment in realisation.segments.items()
+    }
+    for name, parent in realisation.tree.items():
+        if parent is not None:
+            assert earliest[name] >= earliest[parent] - 1e-9
+
+    # The root still starts at the delay, and is still the earliest thing anywhere.
+    assert earliest[realisation.root] == pytest.approx(0.0, abs=1e-9)
+    assert earliest[realisation.root] == min(earliest.values())
+
+
+def test_the_moment_is_shared_between_the_faults(two_faults: Generated) -> None:
+    """One factor over every segment: the parts sum to the whole.
+
+    Each fault's own moment is whatever its pattern and the shared factor give it, so
+    neither hits a target of its own -- which is the point. Scaling each alone would
+    make the partition between faults an artefact of how the two fields happened to
+    normalise rather than of the earthquake.
+    """
+    realisation, config, _ = two_faults
+
+    moments = []
+    for segment in realisation.segments.values():
+        _, rigidity = moment.sample_velocity_model(
+            segment["centre_depth_km"].to_numpy(),
+            np.asarray(config.velocity_model.bottom_depth_km),
+            np.asarray(config.velocity_model.shear_speed_km_s),
+            np.asarray(config.velocity_model.density_g_cm3),
+        )
+        moments.append(
+            float(
+                np.sum(
+                    rigidity
+                    * segment["area_m2"].to_numpy()
+                    * segment["slip_m"].to_numpy()
+                )
+            )
+        )
+
+    expected = moment.seismic_moment_nm(config.source.magnitude)
+    assert sum(moments) == pytest.approx(expected, rel=1e-9)
+    assert all(part > 0.0 for part in moments)
+    assert not any(part == pytest.approx(expected, rel=1e-3) for part in moments)
+
+
+def test_only_the_nucleating_segment_records_a_hypocentre(
+    two_faults: Generated,
+) -> None:
+    """One earthquake, one hypocentre.
+
+    Writing the arc lengths into every group claimed a hypocentre per fault, which a
+    reader has no way to tell from a rupture that genuinely nucleated three times.
+    """
+    realisation, _, _ = two_faults
+
+    holders = [
+        name
+        for name, segment in realisation.segments.items()
+        if "hypocentre_strike_km" in segment.attrs
+    ]
+    assert holders == [realisation.root]
+
+
+def test_a_stated_propagation_gives_the_tree_it_states() -> None:
+    """Predetermined mode, end to end, and it does not consult the sampler."""
+    geometry, config = _two_fault_geometry()
+    geometry.propagation = PredeterminedPropagation(
+        parents={"kaikoura:1": "kaikoura:0"}
+    )
+    segments = segments_of(geometry)
+
+    realisation = generate(
+        config, segments, geometry.crs, propagation_config=geometry.propagation
+    )
+    assert realisation.tree == {"kaikoura:0": None, "kaikoura:1": "kaikoura:0"}
+
+
+def test_a_stated_root_that_is_not_the_hypocentres_fault_is_refused() -> None:
+    """Two statements of one fact, refused when they disagree."""
+    geometry, config = _two_fault_geometry()
+    geometry.propagation = PredeterminedPropagation(
+        parents={"kaikoura:1": "kaikoura:0"}
+    )
+    config.hypocentre.fault = "kaikoura:1"
+    segments = segments_of(geometry)
+
+    with pytest.raises(ValueError, match="rooted at"):
+        generate(
+            config, segments, geometry.crs, propagation_config=geometry.propagation
+        )
+
+
+def test_a_rupture_over_several_segments_needs_to_say_where_it_starts() -> None:
+    """With one fault there is nothing to choose; with two there is."""
+    geometry, config = _two_fault_geometry()
+    config.hypocentre.fault = None
+    segments = segments_of(geometry)
+
+    with pytest.raises(ValueError, match="which one it is on"):
+        generate(config, segments, geometry.crs)
+
+
+def test_a_multi_segment_rupture_writes_one_srf_plane_per_segment(
+    two_faults: Generated, tmp_path: Path
+) -> None:
+    """The gap the old writer refused: a multi-fault rupture as one SRF.
+
+    genslip emits one PLANE record per segment and orders its points the same way, so
+    this is the format's own shape rather than an extension of it.
+    """
+    realisation, config, _ = two_faults
+
+    segments = list(realisation.segments.values())
+    speeds, densities = [], []
+    bottoms = np.asarray(config.velocity_model.bottom_depth_km)
+    layer_densities = np.asarray(config.velocity_model.density_g_cm3)
+    for segment in segments:
+        depth_km = segment["centre_depth_km"].to_numpy()
+        shear_speed, _ = moment.sample_velocity_model(
+            depth_km,
+            bottoms,
+            np.asarray(config.velocity_model.shear_speed_km_s),
+            layer_densities,
+        )
+        layer = np.minimum(
+            np.searchsorted(bottoms, depth_km, side="left"), len(bottoms) - 1
+        )
+        speeds.append(shear_speed.ravel())
+        densities.append(layer_densities[layer].ravel())
+
+    path = tmp_path / "multi.srf"
+    write_srf(path, assemble.to_srf_file(segments, speeds, densities))
+    srf = read_srf(path)
+
+    assert len(srf.planes) == 2
+    assert len(srf.points.longitude_deg) == sum(
+        segment.sizes["i"] * segment.sizes["j"] for segment in segments
+    )
+    total_slip_cm = np.concatenate(
+        [segment["slip_m"].to_numpy().ravel() * 100.0 for segment in segments]
+    )
+    assert np.allclose(srf.points.slip_cm, total_slip_cm, rtol=1e-5)

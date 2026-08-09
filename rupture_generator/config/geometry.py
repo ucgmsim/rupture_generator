@@ -205,6 +205,75 @@ class PointConfig(SurfaceConfig):
 
 
 @dataclasses.dataclass
+class PropagationConfig(ConfigObject):
+    """How a rupture crosses between the surfaces of a fault system.
+
+    Tagged, because the two ways of answering are different in kind rather than in
+    degree: either the tree is *computed* from how far apart the faults are, or it is
+    *stated*. A file that says nothing gets the computed form with its defaults, so a
+    geometry with one surface never has to mention this at all.
+    """
+
+    class Config(ConfigObject.Config):
+        discriminator = Discriminator(field="type", include_subtypes=True)
+
+
+@dataclasses.dataclass
+class ComputedPropagation(PropagationConfig):
+    """Sample which fault triggers which from how far apart they are.
+
+    The probability that a rupture jumps a gap follows Shaw & Dieterich (2007):
+    certain within ``delta_km``, decaying with characteristic length ``d0_km``, and
+    beyond ``max_jump_km`` not a jump anyone models. The tree is then drawn from the
+    distribution those probabilities imply -- or, with ``strategy =
+    "maximum_likelihood"``, taken as its single most likely member, which is what a
+    campaign wanting the modal scenario rather than a sample asks for.
+    """
+
+    strategy: Literal["sampled", "maximum_likelihood"] = "sampled"
+    d0_km: PositiveFloat = 3.0
+    delta_km: PositiveFloat = 1.0
+    max_jump_km: PositiveFloat = 15.0
+    type: Literal["computed"] = "computed"
+
+
+@dataclasses.dataclass
+class PredeterminedPropagation(PropagationConfig):
+    """State which fault triggers which, rather than sampling it.
+
+    ``parents`` maps each triggered fault to the one that triggered it. The fault
+    that appears as nobody's child is the root, and it must be the one the hypocentre
+    is on -- stated in the rupture config, checked here, so the tree is written down
+    once rather than twice.
+
+    Examples
+    --------
+    TOML::
+
+        [propagation]
+        type = "predetermined"
+        parents = { kelly = "hope", conway = "kelly" }
+    """
+
+    parents: dict[str, str] = dataclasses.field(default_factory=dict)
+    type: Literal["predetermined"] = "predetermined"
+
+    def __post_init__(self) -> None:
+        """Validate the fields, then the shape of what they describe."""
+        super().__post_init__()
+        if not self.parents:
+            self.refuse(
+                "parents",
+                "a predetermined propagation needs to say which fault triggers "
+                "which; with one surface there is nothing to state, so use the "
+                "computed form or omit the section",
+            )
+        for child, parent in self.parents.items():
+            if child == parent:
+                self.refuse("parents", f"{child!r} cannot trigger itself")
+
+
+@dataclasses.dataclass
 class GeometryConfig(ConfigObject):
     """A whole geometry file: a CRS, and the surfaces in it.
 
@@ -236,6 +305,9 @@ class GeometryConfig(ConfigObject):
 
     crs: pyproj.CRS = CRS
     surfaces: list[SurfaceConfig] = dataclasses.field(default_factory=list)
+    propagation: PropagationConfig = dataclasses.field(
+        default_factory=lambda: ComputedPropagation()
+    )
     schema_version: int = 1
     title: str | None = None
 
@@ -253,6 +325,26 @@ class GeometryConfig(ConfigObject):
                 f"two surfaces are called {sorted(duplicates)!r}; names become group "
                 "names in the mesh file, so they have to be distinct",
             )
+
+        if isinstance(self.propagation, PredeterminedPropagation):
+            named = set(self.propagation.parents) | set(
+                self.propagation.parents.values()
+            )
+            # A propagation names *segments*, and a surface whose planes do not all
+            # share a seam becomes several of them -- ``surface:0``, ``surface:1``.
+            # Only the surface part can be checked here, because how many segments a
+            # surface yields is not known until it has been meshed and fused. The
+            # whole name is checked against the real segments when the rupture runs.
+            unknown = {
+                name for name in named if name.split(":", 1)[0] not in set(names)
+            }
+            if unknown:
+                self.refuse(
+                    "propagation",
+                    f"the propagation names {', '.join(sorted(unknown))}, which "
+                    f"{'is' if len(unknown) == 1 else 'are'} not on any surface in "
+                    f"this geometry ({', '.join(sorted(names))})",
+                )
 
         if not self.crs.is_projected:
             self.refuse(

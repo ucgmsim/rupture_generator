@@ -11,6 +11,8 @@ What is here is the I/O, the option handling and the summary. The pipeline is
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -29,62 +31,61 @@ from rupture_generator.scripts.errors import console, load_config
 from rupture_generator.srf import write_srf
 
 
-def choose_surface(
-    meshes: dict[str, list[RuptureMesh]], surface: str | None
-) -> tuple[str, list[RuptureMesh]]:
-    """Which surface of the mesh to generate on.
+def named_segments(
+    meshes: dict[str, list[RuptureMesh]],
+    surface: str | None,
+    plane: int | None,
+) -> dict[str, RuptureMesh]:
+    """The validated segments to generate on, named as the causality tree names them.
 
-    Ambiguity is an error listing the choices, never a default: picking the first of
-    several would run silently on a fault nobody chose, and the output would look
-    exactly like the one that was wanted.
+    Without ``--surface`` every surface in the mesh takes part, which is what a
+    multi-fault rupture is; with it, one does. A surface that fuses to a single
+    segment keeps its own name, and one whose planes do not all share a seam becomes
+    ``surface:0``, ``surface:1`` -- because those parts are what rupture.
+
+    ``--plane`` selects **one plane's own chart**, before fusion: it is how a bent
+    fault gets generated a plane at a time when the fused surface is not what was
+    wanted. It needs a surface to be unambiguous.
 
     Raises
     ------
     ValueError
-        If the name is unknown, or several surfaces are present and none was named.
+        If a name or plane index is not in the mesh, or ``--plane`` is given without
+        a surface to apply it to.
     """
-    if surface is not None:
-        if surface not in meshes:
-            raise ValueError(
-                f"the mesh holds no surface called {surface!r}; it has "
-                f"{', '.join(sorted(meshes))}"
-            )
-        return surface, meshes[surface]
-
-    if len(meshes) != 1:
+    if surface is not None and surface not in meshes:
         raise ValueError(
-            f"the mesh holds {len(meshes)} surfaces ({', '.join(sorted(meshes))}), "
-            "so --surface has to say which"
+            f"the mesh holds no surface called {surface!r}; it has "
+            f"{', '.join(sorted(meshes))}"
         )
-    return next(iter(meshes.items()))
+    if plane is not None and surface is None and len(meshes) != 1:
+        raise ValueError(
+            "--plane says which plane of one surface to generate on, so it needs "
+            f"--surface to say which of {', '.join(sorted(meshes))}"
+        )
 
+    chosen = {surface: meshes[surface]} if surface is not None else dict(meshes)
 
-def segments_of(charts: list[RuptureMesh], plane: int | None) -> list[RuptureMesh]:
-    """The validated segments to generate on.
+    segments: dict[str, RuptureMesh] = {}
+    for name, charts in chosen.items():
+        if plane is not None:
+            if not 0 <= plane < len(charts):
+                raise ValueError(
+                    f"{name!r} has {len(charts)} planes, numbered 0 to "
+                    f"{len(charts) - 1}, so there is no plane {plane}"
+                )
+            parts = [charts[plane]]
+        else:
+            parts = fuse(charts)
 
-    ``--plane`` selects **one plane's own chart**, before fusion, which is what makes
-    it useful: it is how a bent fault gets generated a plane at a time when the fused
-    surface is not what was wanted. Without it, planes that share a seam are fused
-    into one segment and planes that do not stay separate.
-
-    Raises
-    ------
-    ValueError
-        If the plane index is not one of the surface's.
-    """
-    if plane is not None:
-        if not 0 <= plane < len(charts):
-            raise ValueError(
-                f"this surface has {len(charts)} planes, numbered 0 to "
-                f"{len(charts) - 1}, so there is no plane {plane}"
-            )
-        chosen = [charts[plane]]
-    else:
-        chosen = fuse(charts)
-
-    for segment in chosen:
-        validate_chart(segment)
-    return chosen
+        for part in parts:
+            validate_chart(part)
+        if len(parts) == 1:
+            segments[name] = parts[0]
+        else:
+            for index, part in enumerate(parts):
+                segments[f"{name}:{index}"] = part
+    return segments
 
 
 def report(
@@ -110,17 +111,26 @@ def report(
     table.add_column("value", justify="right")
 
     slip_m = np.concatenate(
-        [segment["slip_m"].to_numpy().ravel() for segment in realisation.segments]
+        [
+            segment["slip_m"].to_numpy().ravel()
+            for segment in realisation.segments.values()
+        ]
     )
     rise_s = np.concatenate(
-        [segment["rise_time_s"].to_numpy().ravel() for segment in realisation.segments]
+        [
+            segment["rise_time_s"].to_numpy().ravel()
+            for segment in realisation.segments.values()
+        ]
     )
     onset_s = np.concatenate(
-        [segment["onset_s"].to_numpy().ravel() for segment in realisation.segments]
+        [
+            segment["onset_s"].to_numpy().ravel()
+            for segment in realisation.segments.values()
+        ]
     )
 
     for name, value in (
-        ("segments", f"{len(realisation.segments)}"),
+        ("segments", ", ".join(realisation.segments)),
         ("subfaults", f"{slip_m.size}"),
         ("magnitude", f"{config.source.magnitude:.2f}"),
         ("moment", f"{realisation.moment_newton_m:.4g} N m"),
@@ -130,6 +140,14 @@ def report(
         ("truncated", f"{realisation.truncated_fraction:.1%}"),
     ):
         table.add_row(name, value)
+
+    # Who triggered whom, and where the front crossed. On a single-fault rupture the
+    # tree is one node and there is nothing to say.
+    for child, jump in realisation.jumps.items():
+        table.add_row(
+            f"{realisation.tree[child]} to {child}",
+            f"{jump.distance_km:.2f} km at {jump.arrival_s:.2f} s",
+        )
     return table
 
 
@@ -188,15 +206,16 @@ def generate(
     if realisation is not None:
         rupture_config.random.realisation = realisation
 
-    meshes, crs = read_mesh(mesh_path)
+    meshes, crs, propagation = read_mesh(mesh_path)
 
     # Everything geometric and everything physical, in one place, so a refusal from
     # any of it renders the same way -- one red line naming the cause, rather than a
     # traceback for a mistake in a file.
     try:
-        name, charts = choose_surface(meshes, surface)
-        segments = segments_of(charts, plane)
-        result = pipeline.generate(rupture_config, segments, crs)
+        segments = named_segments(meshes, surface, plane)
+        result = pipeline.generate(
+            rupture_config, segments, crs, propagation_config=propagation
+        )
     except ValueError as error:
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(1) from error
@@ -207,14 +226,23 @@ def generate(
     else:
         tree = to_datatree(
             {
-                f"{name}/segment_{index}": segment
-                for index, segment in enumerate(result.segments)
+                f"{name.replace(':', '_')}/segment": segment
+                for name, segment in result.segments.items()
             },
             crs,
             attrs={
                 "title": rupture_config.title or config.stem,
                 "config": config.read_text(),
-                "surface": name,
+                # The causality tree, as JSON: which segment triggered which, and
+                # where the front crossed onto each. Without it a multi-fault
+                # rupture file is a set of faults that happen to be in one place.
+                "causality_tree": json.dumps(result.tree),
+                "jumps": json.dumps(
+                    {
+                        name: dataclasses.asdict(jump)
+                        for name, jump in result.jumps.items()
+                    }
+                ),
                 "seed": rupture_config.random.seed,
                 "realisation": rupture_config.random.realisation,
                 "moment_newton_m": result.moment_newton_m,
@@ -246,7 +274,7 @@ def _write_srf(
     speeds = np.asarray(config.velocity_model.shear_speed_km_s)
     layer_densities = np.asarray(config.velocity_model.density_g_cm3)
 
-    for segment in result.segments:
+    for segment in result.segments.values():
         depth_km = segment["centre_depth_km"].to_numpy()
         shear_speed, _ = moment.sample_velocity_model(
             depth_km, bottoms, speeds, layer_densities
@@ -257,7 +285,10 @@ def _write_srf(
         shear_speeds.append(shear_speed.ravel())
         densities.append(layer_densities[layer].ravel())
 
-    write_srf(output, assemble.to_srf_file(result.segments, shear_speeds, densities))
+    write_srf(
+        output,
+        assemble.to_srf_file(list(result.segments.values()), shear_speeds, densities),
+    )
 
 
-__all__ = ["choose_surface", "generate", "report", "segments_of"]
+__all__ = ["generate", "named_segments", "report"]

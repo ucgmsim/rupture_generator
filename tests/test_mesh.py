@@ -762,7 +762,7 @@ def test_a_mesh_file_round_trips_losslessly(
     path = tmp_path_factory.mktemp("mesh") / f"mesh{suffix}"
     write_mesh({fault.name: charts}, NZTM, path)
 
-    back, crs = read_mesh(path)
+    back, crs, _ = read_mesh(path)
     assert crs == NZTM
     assert list(back) == [fault.name]
     for original, restored in zip(back[fault.name], charts, strict=True):

@@ -80,10 +80,17 @@ class HypocentreConfig(ConfigObject):
     ``strike_km`` from the ``j = 0`` end of the fault and ``dip_km`` from its top edge.
     Both are in-fault distances, so they mean the same thing whatever the fault is cut
     into -- which an index does not.
+
+    ``fault`` names which surface the rupture nucleated on, and so which fault is the
+    root of the causality tree. It lives here rather than with the propagation because
+    it is a property of *this earthquake* rather than of the fault system: the same
+    geometry, ruptured from a different fault, is a different tree. Omitted when the
+    geometry has one surface, since there is nothing to choose.
     """
 
     strike_km: DepthKm
     dip_km: DepthKm
+    fault: str | None = None
 
 
 @dataclasses.dataclass

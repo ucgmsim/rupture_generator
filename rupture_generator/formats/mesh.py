@@ -35,6 +35,7 @@ import numpy as np
 import pyproj
 import xarray as xr
 
+from rupture_generator.config.geometry import ComputedPropagation, PropagationConfig
 from rupture_generator.formats import Format, resolve
 from rupture_generator.mesh import RuptureMesh
 
@@ -53,6 +54,7 @@ def to_datatree(
     meshes: Mapping[str, list[RuptureMesh]],
     crs: pyproj.CRS,
     *,
+    propagation: PropagationConfig | None = None,
     attrs: Mapping[str, Any] | None = None,
 ) -> xr.DataTree:
     """Lay charts out as a tree: one group per plane, nested under its surface.
@@ -63,6 +65,8 @@ def to_datatree(
         Surface name to its per-plane charts, in trace order.
     crs : pyproj.CRS
         The frame every position is in. Stored once, in the root.
+    propagation : PropagationConfig, optional
+        How a rupture crosses between these surfaces. Defaults to the computed form.
     attrs : Mapping, optional
         Extra root attributes -- the config verbatim, a title.
 
@@ -116,12 +120,20 @@ def to_datatree(
         # One origin per surface, as JSON because an attribute is a scalar or an
         # array and this is a mapping. Read back by `from_datatree` and nothing else.
         "origins": json.dumps(origins),
+        # How a rupture crosses between these surfaces is a property of the fault
+        # system, so it travels with the fault system. The `geometry_config` attribute
+        # the CLI also writes is the input file verbatim -- provenance, for a human
+        # and for reproducing a run -- where this is the operative copy the pipeline
+        # reads back.
+        "propagation": json.dumps((propagation or ComputedPropagation()).to_dict()),
         **dict(attrs or {}),
     }
     return tree
 
 
-def from_datatree(tree: xr.DataTree) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
+def from_datatree(
+    tree: xr.DataTree,
+) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS, PropagationConfig]:
     """Rebuild charts from a tree.
 
     The inverse of :func:`to_datatree`, and lossless: the nodes are the geometry, so
@@ -130,7 +142,8 @@ def from_datatree(tree: xr.DataTree) -> tuple[dict[str, list[RuptureMesh]], pypr
     Returns
     -------
     tuple
-        Surface name to per-plane charts, and the CRS they are in.
+        Surface name to per-plane charts, the CRS they are in, and how a rupture
+        crosses between them.
 
     Raises
     ------
@@ -191,7 +204,13 @@ def from_datatree(tree: xr.DataTree) -> tuple[dict[str, list[RuptureMesh]], pypr
             for index in sorted(planes)
         ]
 
-    return meshes, pyproj.CRS(crs_name)
+    stored = tree.attrs.get("propagation")
+    propagation = (
+        PropagationConfig.from_dict(json.loads(stored))
+        if stored
+        else ComputedPropagation()
+    )
+    return meshes, pyproj.CRS(crs_name), propagation
 
 
 def write_mesh(
@@ -200,6 +219,7 @@ def write_mesh(
     path: Path | str,
     *,
     format: Format = Format.INFERRED,
+    propagation: PropagationConfig | None = None,
     attrs: Mapping[str, Any] | None = None,
 ) -> None:
     """Write charts to an HDF5 file or a Zarr store.
@@ -212,7 +232,7 @@ def write_mesh(
     """
     path = Path(path)
     chosen = resolve(path, format)
-    tree = to_datatree(meshes, crs, attrs=attrs)
+    tree = to_datatree(meshes, crs, propagation=propagation, attrs=attrs)
 
     match chosen:
         case Format.NETCDF:
@@ -228,13 +248,13 @@ def write_mesh(
 
 def read_mesh(
     path: Path | str, *, format: Format = Format.INFERRED
-) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
+) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS, PropagationConfig]:
     """Read charts back.
 
     Returns
     -------
     tuple
-        Surface name to per-plane charts, and the CRS.
+        Surface name to per-plane charts, the CRS, and the propagation.
 
     Raises
     ------
