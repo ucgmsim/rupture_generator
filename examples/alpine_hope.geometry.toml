@@ -1,0 +1,1632 @@
+# The Alpine-Hope joint rupture, converted from a workflow realisation.
+#
+# Every fault here is a run of planes hanging from a digitised trace. The
+# propagation is stated rather than sampled, because this scenario is a
+# specific one: the hazard model chose which fault triggers which, and
+# recomputing it would be generating a different earthquake.
+#
+# Traces thinned where the fault's own depth cannot support them:
+# at a bend the bottom edge shortens by the horizontal reach of the
+# dip, and a plane shorter than that closes to a triangle at depth.
+#   Alpine: George landward: 9 -> 8 trace points, worst deviation 1071 m
+#   Alpine: George to Jacksons: 36 -> 31 trace points, worst deviation 237 m
+#   Alpine: Jacksons to Kaniere: 28 -> 27 trace points, worst deviation 6 m
+#   Hanmer: 13 -> 12 trace points, worst deviation 149 m
+#   Hope: Conway: 13 -> 12 trace points, worst deviation 187 m
+#   Kelly: 18 -> 16 trace points, worst deviation 43 m
+#   Opouawe - Uruti: 29 -> 22 trace points, worst deviation 548 m
+
+schema_version = 1
+crs = "EPSG:2193"
+title = "Rupture 71072"
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Caswell"
+origin = { longitude_deg = 166.982100, latitude_deg = -45.039300 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.017000, latitude_deg = -45.033800 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.046200, latitude_deg = -45.019300 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.061757, latitude_deg = -45.007874 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.083900, latitude_deg = -44.991600 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.109400, latitude_deg = -44.967800 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.122232, latitude_deg = -44.957270 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.183400, latitude_deg = -44.907000 }
+dip_deg = 80.051
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Caswell - South George"
+origin = { longitude_deg = 167.183400, latitude_deg = -44.907000 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.196000, latitude_deg = -44.901300 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.213100, latitude_deg = -44.889400 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.246000, latitude_deg = -44.858700 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.262200, latitude_deg = -44.842000 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.306731, latitude_deg = -44.808936 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.312700, latitude_deg = -44.804500 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.342100, latitude_deg = -44.783700 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.375300, latitude_deg = -44.764400 }
+dip_deg = 80.048
+bottom_depth_km = 16.720
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: George landward"
+origin = { longitude_deg = 167.375000, latitude_deg = -44.764500 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.459518, latitude_deg = -44.729624 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.465300, latitude_deg = -44.726200 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.471400, latitude_deg = -44.722200 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.491500, latitude_deg = -44.711000 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.505600, latitude_deg = -44.700600 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.515400, latitude_deg = -44.694800 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.538500, latitude_deg = -44.682300 }
+dip_deg = 80.052
+bottom_depth_km = 18.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: George to Jacksons"
+origin = { longitude_deg = 167.538500, latitude_deg = -44.682300 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.606200, latitude_deg = -44.646200 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.628700, latitude_deg = -44.633800 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.636395, latitude_deg = -44.629880 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.735901, latitude_deg = -44.579100 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.749600, latitude_deg = -44.573500 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.811500, latitude_deg = -44.545000 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.834720, latitude_deg = -44.529001 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.887800, latitude_deg = -44.505500 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.934756, latitude_deg = -44.479509 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.953000, latitude_deg = -44.469400 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.963100, latitude_deg = -44.461800 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 167.990700, latitude_deg = -44.451400 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.031587, latitude_deg = -44.427181 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.041000, latitude_deg = -44.421600 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.122615, latitude_deg = -44.369158 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.126900, latitude_deg = -44.366400 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.168300, latitude_deg = -44.345100 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.218683, latitude_deg = -44.315599 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.226700, latitude_deg = -44.310900 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.238900, latitude_deg = -44.301500 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.276300, latitude_deg = -44.279100 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.311391, latitude_deg = -44.259478 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.322200, latitude_deg = -44.250100 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.378600, latitude_deg = -44.223000 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.406197, latitude_deg = -44.205823 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.489400, latitude_deg = -44.174900 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.508469, latitude_deg = -44.160352 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.529100, latitude_deg = -44.144600 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.606207, latitude_deg = -44.109481 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.708600, latitude_deg = -44.062700 }
+dip_deg = 80.047
+bottom_depth_km = 20.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Jacksons to Kaniere"
+origin = { longitude_deg = 168.708600, latitude_deg = -44.062700 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.829529, latitude_deg = -44.011185 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 168.950249, latitude_deg = -43.959543 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.070758, latitude_deg = -43.907774 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.084400, latitude_deg = -43.901900 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.189187, latitude_deg = -43.853700 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.307162, latitude_deg = -43.799225 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.357100, latitude_deg = -43.776100 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.425560, latitude_deg = -43.745359 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.544216, latitude_deg = -43.691907 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.662660, latitude_deg = -43.638333 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.779421, latitude_deg = -43.582975 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 169.895929, latitude_deg = -43.527457 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.012222, latitude_deg = -43.471821 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.050000, latitude_deg = -43.453700 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.126367, latitude_deg = -43.414026 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.239359, latitude_deg = -43.355136 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.352133, latitude_deg = -43.296135 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.464687, latitude_deg = -43.237024 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.486200, latitude_deg = -43.225700 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.579836, latitude_deg = -43.180769 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.695438, latitude_deg = -43.125100 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.756100, latitude_deg = -43.095800 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.809557, latitude_deg = -43.067963 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 170.922053, latitude_deg = -43.009219 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.034334, latitude_deg = -42.950364 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.146400, latitude_deg = -42.891400 }
+dip_deg = 50.113
+bottom_depth_km = 17.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Nancy"
+origin = { longitude_deg = 166.877600, latitude_deg = -45.118500 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.915100, latitude_deg = -45.088500 }
+dip_deg = 80.051
+bottom_depth_km = 21.760
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.929569, latitude_deg = -45.078714 }
+dip_deg = 80.051
+bottom_depth_km = 21.760
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.942300, latitude_deg = -45.070100 }
+dip_deg = 80.051
+bottom_depth_km = 21.760
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.982100, latitude_deg = -45.039300 }
+dip_deg = 80.051
+bottom_depth_km = 21.760
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Resolution - Dagg"
+origin = { longitude_deg = 166.306500, latitude_deg = -45.541100 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.338100, latitude_deg = -45.521800 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.376800, latitude_deg = -45.483200 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.397598, latitude_deg = -45.465883 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.408500, latitude_deg = -45.456800 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.428900, latitude_deg = -45.439900 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.465100, latitude_deg = -45.401600 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.481369, latitude_deg = -45.386162 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.504600, latitude_deg = -45.364100 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.580368, latitude_deg = -45.316035 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.627300, latitude_deg = -45.294900 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.687993, latitude_deg = -45.252773 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.704500, latitude_deg = -45.241300 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.720800, latitude_deg = -45.220500 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.771596, latitude_deg = -45.173476 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.824600, latitude_deg = -45.124300 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.860700, latitude_deg = -45.096900 }
+dip_deg = 80.054
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Alpine: Resolution - Five Fingers"
+origin = { longitude_deg = 165.546000, latitude_deg = -46.002400 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 165.648654, latitude_deg = -45.950673 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 165.729900, latitude_deg = -45.909600 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 165.748613, latitude_deg = -45.896799 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 165.838797, latitude_deg = -45.834981 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 165.928708, latitude_deg = -45.773046 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.011085, latitude_deg = -45.706265 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.020400, latitude_deg = -45.698700 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.102807, latitude_deg = -45.645875 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.177900, latitude_deg = -45.597600 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.194265, latitude_deg = -45.585330 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.211100, latitude_deg = -45.572700 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.236800, latitude_deg = -45.562900 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.273700, latitude_deg = -45.551700 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 166.296800, latitude_deg = -45.536500 }
+dip_deg = 80.062
+bottom_depth_km = 21.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hanmer"
+origin = { longitude_deg = 172.757765, latitude_deg = -42.516376 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.775000, latitude_deg = -42.517000 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.779017, latitude_deg = -42.517721 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.799803, latitude_deg = -42.521449 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.820590, latitude_deg = -42.525173 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.841381, latitude_deg = -42.528893 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.862173, latitude_deg = -42.532610 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.883400, latitude_deg = -42.536400 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.903843, latitude_deg = -42.533013 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.924631, latitude_deg = -42.531287 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.945114, latitude_deg = -42.535845 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.965600, latitude_deg = -42.540400 }
+dip_deg = 60.103
+bottom_depth_km = 3.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Conway"
+origin = { longitude_deg = 173.664100, latitude_deg = -42.324000 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.618000, latitude_deg = -42.341700 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.562537, latitude_deg = -42.350480 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.507900, latitude_deg = -42.359100 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.462661, latitude_deg = -42.378837 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.359630, latitude_deg = -42.404558 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.323300, latitude_deg = -42.413600 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.260534, latitude_deg = -42.437244 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.163517, latitude_deg = -42.473689 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.066387, latitude_deg = -42.510051 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.042700, latitude_deg = -42.518900 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.965600, latitude_deg = -42.540400 }
+dip_deg = 80.037
+bottom_depth_km = 20.240
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Hanmer NW"
+origin = { longitude_deg = 172.648400, latitude_deg = -42.575500 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.665199, latitude_deg = -42.567179 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.681994, latitude_deg = -42.558855 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.698784, latitude_deg = -42.550529 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.715570, latitude_deg = -42.542200 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.732351, latitude_deg = -42.533869 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.749128, latitude_deg = -42.525536 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.765900, latitude_deg = -42.517200 }
+dip_deg = 70.060
+bottom_depth_km = 3.440
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Hope River"
+origin = { longitude_deg = 172.573500, latitude_deg = -42.588500 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.453347, latitude_deg = -42.599200 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.350000, latitude_deg = -42.608300 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.333691, latitude_deg = -42.611743 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.247000, latitude_deg = -42.630000 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.217983, latitude_deg = -42.637850 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.104248, latitude_deg = -42.668532 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.990400, latitude_deg = -42.699100 }
+dip_deg = 70.075
+bottom_depth_km = 21.840
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Hurunui"
+origin = { longitude_deg = 171.990400, latitude_deg = -42.699100 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.907729, latitude_deg = -42.721230 }
+dip_deg = 70.072
+bottom_depth_km = 16.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.825000, latitude_deg = -42.743300 }
+dip_deg = 70.072
+bottom_depth_km = 16.000
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Kakapo-2-Hamner"
+origin = { longitude_deg = 172.648400, latitude_deg = -42.575500 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.611799, latitude_deg = -42.584612 }
+dip_deg = 70.075
+bottom_depth_km = 22.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.573500, latitude_deg = -42.588500 }
+dip_deg = 70.075
+bottom_depth_km = 22.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Seaward"
+origin = { longitude_deg = 174.000000, latitude_deg = -42.200000 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.914162, latitude_deg = -42.228791 }
+dip_deg = 80.036
+bottom_depth_km = 16.640
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.828246, latitude_deg = -42.257518 }
+dip_deg = 80.036
+bottom_depth_km = 16.640
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.742252, latitude_deg = -42.286180 }
+dip_deg = 80.036
+bottom_depth_km = 16.640
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.703100, latitude_deg = -42.299200 }
+dip_deg = 80.036
+bottom_depth_km = 16.640
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 173.664100, latitude_deg = -42.324000 }
+dip_deg = 80.036
+bottom_depth_km = 16.640
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Hope: Te Rapa"
+origin = { longitude_deg = 174.508300, latitude_deg = -41.963300 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.438267, latitude_deg = -41.992957 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.368169, latitude_deg = -42.022571 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.298006, latitude_deg = -42.052143 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.227778, latitude_deg = -42.081671 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.157484, latitude_deg = -42.111157 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.087125, latitude_deg = -42.140600 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.016700, latitude_deg = -42.170000 }
+dip_deg = 80.035
+bottom_depth_km = 14.480
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Kelly"
+origin = { longitude_deg = 171.825000, latitude_deg = -42.743300 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.777307, latitude_deg = -42.763757 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.755500, latitude_deg = -42.773100 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.726339, latitude_deg = -42.778275 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.672620, latitude_deg = -42.787787 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.618885, latitude_deg = -42.797275 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.565133, latitude_deg = -42.806736 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.511365, latitude_deg = -42.816173 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.463311, latitude_deg = -42.836126 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.415313, latitude_deg = -42.856246 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.362926, latitude_deg = -42.869302 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.310518, latitude_deg = -42.882334 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.275600, latitude_deg = -42.891000 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.257113, latitude_deg = -42.891066 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.201757, latitude_deg = -42.891246 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.146400, latitude_deg = -42.891400 }
+dip_deg = 70.076
+bottom_depth_km = 8.880
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Opouawe - Uruti"
+origin = { longitude_deg = 176.658100, latitude_deg = -41.288400 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.576532, latitude_deg = -41.330373 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.494859, latitude_deg = -41.372289 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.413080, latitude_deg = -41.414147 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.331197, latitude_deg = -41.455946 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.249207, latitude_deg = -41.497688 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.211200, latitude_deg = -41.517000 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.163280, latitude_deg = -41.534399 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 176.073952, latitude_deg = -41.566755 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.976143, latitude_deg = -41.576722 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.885461, latitude_deg = -41.606632 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.795015, latitude_deg = -41.637362 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.704482, latitude_deg = -41.668021 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.613863, latitude_deg = -41.698609 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.523158, latitude_deg = -41.729125 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.426605, latitude_deg = -41.745846 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.375300, latitude_deg = -41.749500 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.328504, latitude_deg = -41.757506 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.231433, latitude_deg = -41.774046 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.142090, latitude_deg = -41.802027 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.080283, latitude_deg = -41.860293 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 175.006600, latitude_deg = -41.909500 }
+dip_deg = 40.122
+bottom_depth_km = 11.120
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Te Rapa 1"
+origin = { longitude_deg = 174.688500, latitude_deg = -41.949400 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.628442, latitude_deg = -41.954065 }
+dip_deg = 80.042
+bottom_depth_km = 12.800
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.568375, latitude_deg = -41.958698 }
+dip_deg = 80.042
+bottom_depth_km = 12.800
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.508300, latitude_deg = -41.963300 }
+dip_deg = 80.042
+bottom_depth_km = 12.800
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Te Rapa 2"
+origin = { longitude_deg = 175.013400, latitude_deg = -41.800900 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.946651, latitude_deg = -41.828384 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.879845, latitude_deg = -41.855830 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.847000, latitude_deg = -41.869300 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.814894, latitude_deg = -41.885559 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.751728, latitude_deg = -41.917497 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces.planes]]
+end = { longitude_deg = 174.688500, latitude_deg = -41.949400 }
+dip_deg = 70.067
+bottom_depth_km = 12.160
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+# Who triggers whom. The jump *points* are not carried across: this
+# generator finds them from the solved wavefront rather than by closest
+# approach, so importing them would import an answer to a question it asks
+# itself, and asks differently.
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Alpine: Caswell" = "Alpine: Caswell - South George"
+"Alpine: George landward" = "Alpine: Caswell - South George"
+"Alpine: Nancy" = "Alpine: Caswell"
+"Alpine: Resolution - Dagg" = "Alpine: Nancy"
+"Alpine: Resolution - Five Fingers" = "Alpine: Resolution - Dagg"
+"Alpine: George to Jacksons" = "Alpine: George landward"
+"Alpine: Jacksons to Kaniere" = "Alpine: George to Jacksons"
+"Kelly" = "Alpine: Jacksons to Kaniere"
+"Hope: Hurunui" = "Kelly"
+"Hope: Hope River" = "Hope: Hurunui"
+"Hope: Kakapo-2-Hamner" = "Hope: Hope River"
+"Hope: Hanmer NW" = "Hope: Kakapo-2-Hamner"
+"Hanmer" = "Hope: Hanmer NW"
+"Hope: Conway" = "Hanmer"
+"Hope: Seaward" = "Hope: Conway"
+"Hope: Te Rapa" = "Hope: Seaward"
+"Te Rapa 1" = "Hope: Te Rapa"
+"Te Rapa 2" = "Te Rapa 1"
+"Opouawe - Uruti" = "Te Rapa 2"

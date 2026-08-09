@@ -1,0 +1,96 @@
+# The Alpine-Hope joint rupture, converted from a workflow realisation.
+#
+# Twenty faults, each with a magnitude of its own; together Mw 8.31.
+# The source is `per_fault` rather than `finite` because the hazard model
+# already decided how the moment divides between them -- deriving that
+# division again from one event magnitude would discard what it said.
+
+schema_version = 1
+title = "Rupture 71072"
+
+# The realisation gives the hypocentre as fractions along strike and down
+# dip; this config uses in-fault arc lengths, so the fractions are resolved
+# against the root fault's own extent when the mesh is known. These are that
+# resolution for the meshed geometry.
+[hypocentre]
+fault = "Alpine: Caswell - South George"
+strike_km = 0.0  # filled in by the converter's --resolve step
+dip_km = 0.0
+
+[velocity_model]
+bottom_depth_km  = [2.80, 3.00, 3.20, 3.40, 3.60, 3.80, 4.00, 4.20, 4.40, 4.60, 4.80, 5.00, 8.00, 12.00, 27.00, 39.00, 1038.00]
+shear_speed_km_s = [2.490, 2.700, 2.770, 2.840, 2.910, 2.980, 3.050, 3.120, 3.190, 3.260, 3.330, 3.400, 3.600, 3.600, 3.700, 4.300, 4.600]
+density_g_cm3    = [2.440, 2.480, 2.490, 2.510, 2.520, 2.540, 2.560, 2.580, 2.600, 2.610, 2.630, 2.660, 2.720, 2.720, 2.830, 3.120, 3.330]
+
+[source]
+type = "per_fault"
+rise_time_coefficient = 1.6
+
+[source.magnitudes]
+"Alpine: Caswell" = 7.273476
+"Alpine: Caswell - South George" = 7.190807
+"Alpine: George landward" = 7.139805
+"Alpine: George to Jacksons" = 7.735249
+"Alpine: Jacksons to Kaniere" = 7.934434
+"Alpine: Nancy" = 7.107628
+"Alpine: Resolution - Dagg" = 7.602173
+"Alpine: Resolution - Five Fingers" = 7.640057
+"Hanmer" = 6.421749
+"Hope: Conway" = 7.511497
+"Hope: Hanmer NW" = 6.315790
+"Hope: Hope River" = 7.483584
+"Hope: Hurunui" = 7.016939
+"Hope: Kakapo-2-Hamner" = 6.892948
+"Hope: Seaward" = 7.240146
+"Hope: Te Rapa" = 7.307411
+"Kelly" = 7.202827
+"Opouawe - Uruti" = 7.565565
+"Te Rapa 1" = 6.932311
+"Te Rapa 2" = 7.141746
+
+[source.rakes]
+"Alpine: Caswell" = 180.000
+"Alpine: Caswell - South George" = 180.000
+"Alpine: George landward" = 180.000
+"Alpine: George to Jacksons" = 180.000
+"Alpine: Jacksons to Kaniere" = 160.000
+"Alpine: Nancy" = 180.000
+"Alpine: Resolution - Dagg" = 180.000
+"Alpine: Resolution - Five Fingers" = 180.000
+"Hanmer" = -135.000
+"Hope: Conway" = 180.000
+"Hope: Hanmer NW" = -160.000
+"Hope: Hope River" = 160.000
+"Hope: Hurunui" = 160.000
+"Hope: Kakapo-2-Hamner" = 160.000
+"Hope: Seaward" = 160.000
+"Hope: Te Rapa" = 160.000
+"Kelly" = 180.000
+"Opouawe - Uruti" = 90.000
+"Te Rapa 1" = 160.000
+"Te Rapa 2" = 135.000
+
+[slip]
+coefficient_of_variation = 0.75
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.02
+
+[field]
+velocity_fraction = 0.8
+
+[timing]
+rupture_time_scale = -0.35
+rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
+shallow_ramp      = { centre_km = 6.5, half_width_km = 1.5 }
+deep_ramp         = { centre_km = 17.5, half_width_km = 2.5 }
+beta_shallow_ramp = { centre_km = 2.0,  half_width_km = 1.0 }
+beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
+shallow_speed_factor = 0.6
+deep_speed_factor = 0.6
+
+[random]
+seed = 1663495676
+realisation = 0
+
+# Hypocentre fractions from the realisation: s = 0.5, d = 0.5465986642702483
