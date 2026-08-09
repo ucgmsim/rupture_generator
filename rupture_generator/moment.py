@@ -1,164 +1,182 @@
-"""The moment rate function: how fast the earthquake is releasing moment.
+"""Magnitude, moment, rigidity, and the one scaling that closes them.
+
+Everything here is SI: moment in newton-metres, rigidity in pascals, slip in metres.
+The mesh works in kilometres, so the one conversion -- square kilometres to square
+metres -- happens here, once, in :func:`scale_to_moment`.
+
+# One magnitude convention
 
 .. math::
 
-    \\dot{M}(t) = \\sum_i \\mu_i A_i \\dot{s}_i(t - t_i)
+    \\log_{10} M_0 [\\mathrm{N\\,m}] = 1.5 (M_w + 6.0333003)
 
-summed over subfaults, where :math:`\\mu` is rigidity, :math:`A` is area,
-:math:`\\dot{s}` is the subfault's slip-rate pulse and :math:`t_i` its onset. In
-dyne-centimetres per second, because the core works in CGS.
-
-# Why it is here rather than in the viewer
-
-It is the first thing anyone looks at to judge whether a generated rupture is plausible:
-a source time function that is ragged, or that peaks at the very start, or whose
-integral misses the target moment, says something is wrong before any map does. That
-makes it a library quantity, and it has a test the viewer could not give it -- the
-integral must equal the moment the generator was *scaled to hit*, which
-`ENGINEERING_RULES.md` classes as exact to the f64 fold.
-
-# The pulses are ragged, and the sum is a scatter-add
-
-Each subfault's pulse has its own length -- `nt1` is what the slip-rate generator
-returned, not `rise_time / dt`, which is `README.md`'s first trap -- and starts at its
-own onset. So this places each pulse at its own offset into a shared timeline rather
-than summing aligned arrays: a sliced ``+=`` per subfault, which accumulates where two
-of them overlap in time.
+Hanks & Kanamori (1979) **equation 7**, in the SI form the paper itself publishes.
+Equation 4 is a different relation with a different constant, and defaulting to it
+read 1.109 times too much moment and mean slip against every config that leaves the
+production default alone -- one of the four wrong numbers, and worth naming because
+the error is a clean multiplicative factor that no diagnostic about *shape* can see.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from rupture_generator._core import GeneratedRupture
-from rupture_generator.units import CM2_PER_KM2
+from rupture_generator.units import M2_PER_KM2
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
+MAGNITUDE_COEFFICIENT = 6.0333003
+"""The constant in eq. 7's SI form.
 
-def rigidity_dyne_cm2(
-    shear_speed_km_s: FloatArray, density_g_cm3: FloatArray
-) -> FloatArray:
-    """Rigidity from shear speed and density, in dyne per square centimetre.
+The CGS literature writes 10.699967 for dyne-centimetres; the two differ by the
+``1e7`` between the units, and this is the one the paper published.
+"""
 
-    :math:`\\mu = \\rho v_s^2`, with the kilometres-per-second squared turned into
-    centimetres-per-second squared -- which is the same factor as
-    :data:`~rupture_generator.units.CM2_PER_KM2` and is a different quantity with the
-    same number. `crates/genslip/src/units.rs` names both, and says why having two names
-    for `1e10` is the point.
+
+def seismic_moment_nm(magnitude: float) -> float:
+    """Moment in newton-metres, from moment magnitude.
 
     Parameters
     ----------
-    shear_speed_km_s, density_g_cm3 : FloatArray
-        One value per subfault, in the units a velocity model is written in.
+    magnitude : float
+        Moment magnitude.
+
+    Returns
+    -------
+    float
+        Seismic moment, newton-metres. An M6 is about 1.1e18.
+    """
+    return float(10.0 ** (1.5 * (magnitude + MAGNITUDE_COEFFICIENT)))
+
+
+def rigidity_pa(shear_speed_km_s: FloatArray, density_g_cm3: FloatArray) -> FloatArray:
+    """Rigidity in pascals, from shear speed and density.
+
+    :math:`\\mu = \\rho v_s^2`, with the velocity model's own units -- kilometres per
+    second and grams per cubic centimetre -- carried into SI by a single factor of
+    ``1e9``: ``(1e3 m/s)^2 x (1e3 kg/m^3)``.
 
     Returns
     -------
     FloatArray
-        Dyne per square centimetre. Crustal rock is about 3e11, which is 30 GPa.
+        Pascals. Crustal rock is about 3e10, which is 30 GPa.
     """
-    return density_g_cm3 * shear_speed_km_s * shear_speed_km_s * CM2_PER_KM2
+    return np.asarray(density_g_cm3) * np.asarray(shear_speed_km_s) ** 2 * 1.0e9
 
 
-def moment_rate(
-    rupture: GeneratedRupture,
-    area_cm2: FloatArray,
-    rigidity_dyne_cm2: FloatArray,
-    *,
-    duration_s: float | None = None,
+def sample_velocity_model(
+    depth_km: FloatArray,
+    bottom_depth_km: FloatArray,
+    shear_speed_km_s: FloatArray,
+    density_g_cm3: FloatArray,
 ) -> tuple[FloatArray, FloatArray]:
-    """The moment rate function, sampled at the rupture's own interval.
+    """Shear speed and rigidity at each subfault's depth.
 
-    Parameters
-    ----------
-    rupture : GeneratedRupture
-        With its ragged slip-rate pulses and their offsets.
-    area_cm2, rigidity_dyne_cm2 : FloatArray
-        One value per subfault, along-strike fastest -- the order every field in the
-        core is produced in.
-    duration_s : float, optional
-        How long a timeline to build. Defaults to just past the last pulse's last
-        sample, which is the shortest one that loses nothing.
+    Two conventions that are choices rather than consequences, both kept:
+
+    A depth **exactly on a layer boundary belongs to the layer above it**, which is
+    what ``side="left"`` gives; the alternative makes a fault whose top edge sits on
+    a boundary sample the layer it is not in.
+
+    A depth **below the deepest layer clamps** to that layer rather than
+    extrapolating. A subfault below the model is a modelling error, not a reason to
+    invent properties for it.
+
+    Sampled **per subfault**, not per row: one lookup per dip row broadcast along
+    strike is exact for a plane and for nothing else, and a bent chart has a
+    different depth at every subfault in a row.
 
     Returns
     -------
     tuple of FloatArray
-        Times in seconds from the first onset, and moment rate in dyne-cm per second.
+        Shear speed in km/s and rigidity in pascals, shaped like ``depth_km``.
+    """
+    bottoms = np.asarray(bottom_depth_km, dtype=np.float64)
+    layer = np.minimum(
+        np.searchsorted(bottoms, np.asarray(depth_km), side="left"), len(bottoms) - 1
+    )
+    shear_speed = np.asarray(shear_speed_km_s, dtype=np.float64)[layer]
+    density = np.asarray(density_g_cm3, dtype=np.float64)[layer]
+    return shear_speed, rigidity_pa(shear_speed, density)
+
+
+def scale_to_moment(
+    fields: list[FloatArray],
+    rigidities_pa: list[FloatArray],
+    areas_km2: list[FloatArray],
+    target_moment_nm: float,
+) -> list[FloatArray]:
+    """Scale unit-mean slip patterns so that together they carry the target moment.
+
+    .. math::
+
+        \\gamma = \\frac{M_0}{\\sum_k \\sum_{ij} \\mu_{ij} A_{ij} f_{ij}},
+        \\qquad s_{ij} = \\gamma f_{ij}
+
+    **One factor, shared across every segment.** That is the whole content of the
+    joint scaling: a segment's own moment is whatever the shared factor and its own
+    pattern give it, and only the total is a target. A per-segment scaling would
+    make the moment right and the *partition between faults* an artefact of how the
+    patterns happened to normalise.
+
+    That the sum then equals the target is a tautology -- it is divided by exactly
+    that sum. What the assertion is worth is the **registration**: that the sum runs
+    over all segments, that the areas are the mesh's own rather than a nominal
+    product of spacings, and that the accumulation is in float64. The C folds through
+    single precision, which on a hundred thousand subfaults costs about 6e-5
+    relative -- six missing subfaults' worth, where in float64 one missing subfault
+    is visible.
+
+    Parameters
+    ----------
+    fields : list of FloatArray
+        Per-segment slip patterns, dimensionless and non-negative.
+    rigidities_pa, areas_km2 : list of FloatArray
+        Per-segment rigidity in pascals and cell area in square kilometres.
+    target_moment_nm : float
+        The moment the whole event must carry, newton-metres.
+
+    Returns
+    -------
+    list of FloatArray
+        Slip in **metres**, one array per segment.
 
     Raises
     ------
     ValueError
-        If the material arrays do not describe the rupture's subfaults.
-
-    Notes
-    -----
-    Onsets are quantised to the sample interval, so a pulse starts at the sample nearest
-    its onset rather than at the onset exactly. The error is under half a sample --
-    0.0025 s at the default 0.005 s interval, which is a twentieth of
-    `ENGINEERING_RULES.md`'s 0.05 s onset bound. Interpolating instead would smear each
-    pulse across two samples and change the peak, which is the number people read off
-    this.
+        If every field is zero everywhere, which carries no moment and cannot be
+        scaled to carry any.
     """
-    strike_count, dip_count = rupture.shape
-    subfaults = strike_count * dip_count
-    for name, values in (
-        ("area_cm2", area_cm2),
-        ("rigidity_dyne_cm2", rigidity_dyne_cm2),
-    ):
-        if len(values) != subfaults:
-            raise ValueError(
-                f"{name} has {len(values)} entries for {subfaults} subfaults"
-            )
+    total = 0.0
+    for field, rigidity, area in zip(fields, rigidities_pa, areas_km2, strict=True):
+        total += float(np.sum(rigidity * area * M2_PER_KM2 * field))
 
-    interval_s = rupture.sample_interval_s
-    offsets = np.asarray(rupture.slip_rate_offsets, dtype=np.int64)
-    samples = np.asarray(rupture.slip_rate, dtype=np.float64)
-    lengths = np.diff(offsets)
+    if not (total > 0.0):
+        raise ValueError(
+            "the slip pattern carries no moment anywhere, so there is no factor that "
+            "makes it carry the target -- every subfault was truncated to zero"
+        )
 
-    # Each subfault's pulse starts at the sample nearest its onset. Measured from the
-    # earliest onset rather than from zero, so a rupture with a delay does not carry a
-    # run of leading zeros nobody asked for.
-    onset_s = np.asarray(rupture.onset_s, dtype=np.float64)
-    first_s = float(onset_s.min()) if subfaults else 0.0
-    starts = np.rint((onset_s - first_s) / interval_s).astype(np.int64)
-
-    if duration_s is None:
-        finish = int((starts + lengths).max()) + 1 if subfaults else 1
-    else:
-        finish = int(np.ceil(duration_s / interval_s)) + 1
-
-    rate = np.zeros(finish, dtype=np.float64)
-    weight = np.asarray(area_cm2, dtype=np.float64) * np.asarray(
-        rigidity_dyne_cm2, dtype=np.float64
-    )
-
-    for subfault in range(subfaults):
-        length = int(lengths[subfault])
-        if length == 0:
-            # A subfault that did not slip has no pulse at all -- `nt1 = 0` and no
-            # samples, which is not the same as a pulse of zeros. On a tapered fault
-            # that is every edge subfault.
-            continue
-        start = int(starts[subfault])
-        stop = min(start + length, finish)
-        if stop <= start:
-            continue
-        pulse = samples[offsets[subfault] : offsets[subfault] + (stop - start)]
-        rate[start:stop] += weight[subfault] * pulse
-
-    return np.arange(finish, dtype=np.float64) * interval_s + first_s, rate
+    factor = target_moment_nm / total
+    return [factor * field for field in fields]
 
 
-def cumulative_moment(times_s: FloatArray, rate_dyne_cm_s: FloatArray) -> FloatArray:
-    """Moment released up to each time, in dyne-centimetres.
+def moment_of(
+    slip_m: FloatArray, rigidity_pa: FloatArray, area_km2: FloatArray
+) -> float:
+    """One segment's seismic moment, newton-metres.
 
-    The running integral of the rate. Its last value is the rupture's total moment,
-    which is the identity `tests/test_moment.py` rests on.
+    The inverse reading of :func:`scale_to_moment`, for reporting and for the test
+    that the parts sum to the whole.
     """
-    if len(times_s) < 2:
-        return np.zeros_like(rate_dyne_cm_s)
-    interval_s = float(times_s[1] - times_s[0])
-    return np.cumsum(rate_dyne_cm_s) * interval_s
+    return float(np.sum(rigidity_pa * area_km2 * M2_PER_KM2 * slip_m))
 
 
-__all__ = ["cumulative_moment", "moment_rate", "rigidity_dyne_cm2"]
+__all__ = [
+    "MAGNITUDE_COEFFICIENT",
+    "moment_of",
+    "rigidity_pa",
+    "sample_velocity_model",
+    "scale_to_moment",
+    "seismic_moment_nm",
+]
