@@ -22,8 +22,8 @@ integral must equal the moment the generator was *scaled to hit*, which
 Each subfault's pulse has its own length -- `nt1` is what the slip-rate generator
 returned, not `rise_time / dt`, which is `README.md`'s first trap -- and starts at its
 own onset. So this places each pulse at its own offset into a shared timeline rather
-than summing aligned arrays, and `np.add.at` does the accumulation because two subfaults
-can land in the same sample.
+than summing aligned arrays: a sliced ``+=`` per subfault, which accumulates where two
+of them overlap in time.
 """
 
 from __future__ import annotations

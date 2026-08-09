@@ -100,6 +100,29 @@ struct PointHeader {
     dt: f32,
 }
 
+impl PointHeader {
+    /// The header's eight columns, plus the three the slip line opens with.
+    ///
+    /// Both versions of the point block read the same header and then complete it the
+    /// same way. Written out twice, the two copies were eleven fields each and nothing
+    /// but reading them side by side would have caught one drifting.
+    fn into_point(self, rake: f32, slip1: f32, rise: f32) -> Point {
+        Point {
+            lon: self.lon,
+            lat: self.lat,
+            dep: self.dep,
+            stk: self.stk,
+            dip: self.dip,
+            area: self.area,
+            tinit: self.tinit,
+            dt: self.dt,
+            rake,
+            slip1,
+            rise,
+        }
+    }
+}
+
 // Common point header values for both V1 and V2.
 fn read_point_header(scanner: &mut scanner::Scanner) -> Result<PointHeader, SrfParseError> {
     Ok(PointHeader {
@@ -177,20 +200,7 @@ fn read_srf_points_v1(
         )]
         let rise = (nt as f32) * header.dt;
 
-        let point = Point {
-            lon: header.lon,
-            lat: header.lat,
-            dep: header.dep,
-            stk: header.stk,
-            dip: header.dip,
-            area: header.area,
-            tinit: header.tinit,
-            dt: header.dt,
-            rake,
-            slip1,
-            rise,
-        };
-        metadata.push(&point);
+        metadata.push(&header.into_point(rake, slip1, rise));
 
         read_slip_row(scanner, &mut slipt1, nt)?;
     }
@@ -243,22 +253,8 @@ fn read_srf_points_v2(
             )]
             let rise = (nt as f32) * header.dt;
 
-            let point = Point {
-                lon: header.lon,
-                lat: header.lat,
-                dep: header.dep,
-                stk: header.stk,
-                dip: header.dip,
-                area: header.area,
-                tinit: header.tinit,
-                dt: header.dt,
-                rake,
-                slip1,
-                rise,
-            };
-
             metadata.push(&PointV2 {
-                base: point,
+                base: header.into_point(rake, slip1, rise),
                 vs,
                 density,
             });

@@ -8,8 +8,8 @@ reused across every realisation and every magnitude run on it; a source is what 
 
 `mashumaro`'s ``Discriminator(include_subtypes=True)`` resolves a ``type`` tag against
 whatever subclasses *exist*, which means they have to have been imported. The walk below
-does that, so dropping a new slip-rate shape or surface kind into its module is the
-whole of adding one -- there is no list to keep in step, which is the point.
+does that, so dropping a new surface kind or source kind into its module is the whole of
+adding one -- there is no list to keep in step, which is the point.
 
 Deliberately eager rather than lazy. A tag that fails to resolve because a module was
 never imported produces "no such type" for a type that is right there, and the
@@ -22,7 +22,6 @@ import pkgutil
 from rupture_generator.config.core import ConfigObject, field_path
 from rupture_generator.config.geometry import GeometryConfig, SurfaceConfig
 from rupture_generator.config.rupture import RuptureConfig, read_config, read_geometry
-from rupture_generator.config.slip_rate import SlipRateShapeConfig
 
 
 def _register_subtypes() -> None:
@@ -37,7 +36,6 @@ __all__ = [
     "ConfigObject",
     "GeometryConfig",
     "RuptureConfig",
-    "SlipRateShapeConfig",
     "SurfaceConfig",
     "field_path",
     "read_config",

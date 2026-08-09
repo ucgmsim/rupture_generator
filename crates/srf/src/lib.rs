@@ -6,11 +6,6 @@
     clippy::needless_pass_by_value,
     reason = "PyO3 argument extraction and map_err both require owned values"
 )]
-#![expect(
-    clippy::similar_names,
-    reason = "the vocabulary is the SRF format's -- slip/slipt1, srf/srf_file -- and \
-              renaming for distinctness would move it away from the spec"
-)]
 
 pub mod pytypes;
 mod scanner;
@@ -27,7 +22,7 @@ use std::error;
 use std::fs::File;
 use std::io::{BufWriter, Error, Write};
 
-use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata, PySrfPlane};
+use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
 use crate::types::{
     CsrMatrixView, SrfFileView, SrfMetadataV2View, SrfMetadataVersioned, SrfMetadataView, SrfPlane,
 };
@@ -77,43 +72,31 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     let metadata = srf.metadata.borrow(py);
     let slipt1 = srf.slipt1.borrow(py);
 
-    let planes: Vec<SrfPlane> = srf
-        .planes
-        .iter()
-        .map(|plane| SrfPlane::from(&*plane.borrow(py)))
-        .collect();
+    let planes: Vec<SrfPlane> = srf.planes.iter().map(|plane| *plane.borrow(py)).collect();
 
-    // Readonly borrows of the numpy buffers (to avoid copying large amounts of memory back and forth between python and rust).
-    let lon = metadata.lon.bind(py).readonly();
-    let lat = metadata.lat.bind(py).readonly();
-    let dep = metadata.dep.bind(py).readonly();
-    let stk = metadata.stk.bind(py).readonly();
-    let dip = metadata.dip.bind(py).readonly();
-    let area = metadata.area.bind(py).readonly();
-    let tinit = metadata.tinit.bind(py).readonly();
-    let dt = metadata.dt.bind(py).readonly();
-    let rake = metadata.rake.bind(py).readonly();
-    let slip1 = metadata.slip1.bind(py).readonly();
-    let rise = metadata.rise.bind(py).readonly();
+    // Readonly borrows of the numpy buffers, so nothing large is copied between Python
+    // and Rust. The guards have to outlive the slices taken from them, which is why
+    // they are bound to named locals here rather than inside the struct literal.
+    //
+    // The view's name is an argument because a `let` introduced inside a macro is
+    // hygienic and would not be visible here.
+    macro_rules! borrow_columns {
+        ($view:ident = $($column:ident),* $(,)?) => {
+            $(let $column = metadata.$column.bind(py).readonly();)*
+            let $view: SrfMetadataView = SrfMetadataView {
+                $($column: $column.as_slice()?,)*
+            };
+        };
+    }
+    borrow_columns! {
+        base = lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise
+    }
+
     let vs = metadata.vs.as_ref().map(|arr| arr.bind(py).readonly());
     let density = metadata.density.as_ref().map(|arr| arr.bind(py).readonly());
     let row_ptr = slipt1.row_ptr.bind(py).readonly();
     let indices = slipt1.indices.bind(py).readonly();
     let data = slipt1.data.bind(py).readonly();
-
-    let base: SrfMetadataView = SrfMetadataView {
-        lon: lon.as_slice()?,
-        lat: lat.as_slice()?,
-        dep: dep.as_slice()?,
-        stk: stk.as_slice()?,
-        dip: dip.as_slice()?,
-        area: area.as_slice()?,
-        tinit: tinit.as_slice()?,
-        dt: dt.as_slice()?,
-        rake: rake.as_slice()?,
-        slip1: slip1.as_slice()?,
-        rise: rise.as_slice()?,
-    };
 
     let metadata_view = match (&vs, &density) {
         (Some(vs), Some(density)) => SrfMetadataVersioned::V2(SrfMetadataV2View {
@@ -152,7 +135,7 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
 #[pymodule]
 #[pyo3(name = "srf_parser")]
 fn srf_utils(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PySrfPlane>()?;
+    m.add_class::<SrfPlane>()?;
     m.add_class::<PyCsrMatrix>()?;
     m.add_class::<PySrfMetadata>()?;
     m.add_class::<PySrfFile>()?;

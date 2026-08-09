@@ -1,70 +1,33 @@
 use numpy::PyArray1;
 use pyo3::prelude::*;
 
-use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata, PySrfPlane};
+use crate::py_record;
+use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
 
-#[derive(Debug, Copy, Clone)]
-pub struct SrfPlane {
-    pub elon: f32,
-    pub elat: f32,
-    pub nstk: usize,
-    pub ndip: usize,
-    pub len: f32,
-    pub wid: f32,
-    pub stk: f32,
-    pub dip: f32,
-    pub dtop: f32,
-    pub shyp: f32,
-    pub dhyp: f32,
+py_record! {
+    // `Copy` is safe: every field is a scalar, and it is what lets `write_srf`
+    // read a plane out of its `Py<SrfPlane>` with a dereference rather than a
+    // clone or a field-by-field rebuild.
+    #[pyclass(name = "PySrfPlane", from_py_object)]
+    #[derive(Debug, Copy, Clone)]
+    SrfPlane {
+        elon: f32,
+        elat: f32,
+        nstk: usize,
+        ndip: usize,
+        len: f32,
+        wid: f32,
+        stk: f32,
+        dip: f32,
+        dtop: f32,
+        shyp: f32,
+        dhyp: f32,
+    }
 }
 
 impl SrfPlane {
     pub fn points(&self) -> usize {
         self.nstk * self.ndip
-    }
-}
-
-impl From<&PySrfPlane> for SrfPlane {
-    fn from(plane: &PySrfPlane) -> Self {
-        SrfPlane {
-            elon: plane.elon,
-            elat: plane.elat,
-            nstk: plane.nstk,
-            ndip: plane.ndip,
-            len: plane.len,
-            wid: plane.wid,
-            stk: plane.stk,
-            dip: plane.dip,
-            dtop: plane.dtop,
-            shyp: plane.shyp,
-            dhyp: plane.dhyp,
-        }
-    }
-}
-
-impl<'py> IntoPyObject<'py> for SrfPlane {
-    type Target = PySrfPlane;
-    type Output = Bound<'py, Self::Target>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        Ok(Py::new(
-            py,
-            PySrfPlane {
-                elon: self.elon,
-                elat: self.elat,
-                nstk: self.nstk,
-                ndip: self.ndip,
-                len: self.len,
-                wid: self.wid,
-                stk: self.stk,
-                dip: self.dip,
-                dtop: self.dtop,
-                shyp: self.shyp,
-                dhyp: self.dhyp,
-            },
-        )?
-        .into_bound(py))
     }
 }
 
@@ -186,15 +149,6 @@ impl<'a> Iterator for CsrRowIter<'a> {
 
 impl ExactSizeIterator for CsrRowIter<'_> {}
 
-impl<'a, R: AsRef<[usize]>, D: AsRef<[f32]>> IntoIterator for &'a CsrMatrix<R, D> {
-    type Item = &'a [f32];
-    type IntoIter = CsrRowIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.rows()
-    }
-}
-
 #[cfg(test)]
 mod csr_tests {
     use super::*;
@@ -283,175 +237,113 @@ mod csr_tests {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub struct Point {
-    pub lon: f32,
-    pub lat: f32,
-    pub dep: f32,
-    pub stk: f32,
-    pub dip: f32,
-    pub area: f32,
-    pub tinit: f32,
-    pub dt: f32,
-    pub rake: f32,
-    pub slip1: f32,
-    pub rise: f32,
+/// A point's eleven columns, and the six things built from that list.
+///
+/// The list is the SRF's own, in the SRF's own order, and it appeared **eight** times
+/// in this file before this: the array-of-structs `Point`, the struct-of-arrays
+/// `SrfMetadata`, `with_capacity`, `push`, `iter`, `PointIter`, its `next`, and the
+/// conversion into `PySrfMetadata`. Nothing but care kept the eight in step, and
+/// several of them would still compile with a field quietly reading the wrong column.
+///
+/// `$first` is taken separately because the iterator needs one column to measure its
+/// own length against, and picking it out is what lets every other use be uniform.
+macro_rules! point_columns {
+    ($first:ident, $($rest:ident),* $(,)?) => {
+        /// One point: a row of the SRF's point block.
+        #[derive(Debug, Copy, Clone)]
+        pub struct Point {
+            pub $first: f32,
+            $(pub $rest: f32,)*
+        }
+
+        /// Per-point metadata in struct-of-arrays layout. Generic over storage:
+        /// `Vec<f32>` (the default) when the parser builds it, `&[f32]` when viewing
+        /// numpy-owned arrays for writing.
+        #[derive(Debug)]
+        pub struct SrfMetadata<S = Vec<f32>> {
+            pub $first: S,
+            $(pub $rest: S,)*
+        }
+
+        impl SrfMetadata {
+            pub fn with_capacity(n: usize) -> Self {
+                SrfMetadata {
+                    $first: Vec::with_capacity(n),
+                    $($rest: Vec::with_capacity(n),)*
+                }
+            }
+
+            pub fn push(&mut self, point: &Point) {
+                self.$first.push(point.$first);
+                $(self.$rest.push(point.$rest);)*
+            }
+        }
+
+        impl<S: AsRef<[f32]>> SrfMetadata<S> {
+            pub fn iter(&self) -> PointIter<'_> {
+                PointIter {
+                    $first: self.$first.as_ref(),
+                    $($rest: self.$rest.as_ref(),)*
+                    index: 0,
+                }
+            }
+        }
+
+        pub struct PointIter<'a> {
+            $first: &'a [f32],
+            $($rest: &'a [f32],)*
+            index: usize,
+        }
+
+        impl Iterator for PointIter<'_> {
+            type Item = Point;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let i = self.index;
+                if i >= self.$first.len() {
+                    return None;
+                }
+                self.index += 1;
+                Some(Point {
+                    $first: self.$first[i],
+                    $($rest: self.$rest[i],)*
+                })
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let remaining = self.$first.len() - self.index;
+                (remaining, Some(remaining))
+            }
+        }
+
+        impl<'py> IntoPyObject<'py> for SrfMetadata {
+            type Target = PySrfMetadata;
+            type Output = Bound<'py, Self::Target>;
+            type Error = PyErr;
+
+            fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+                Ok(Py::new(
+                    py,
+                    PySrfMetadata {
+                        $first: PyArray1::from_vec(py, self.$first).unbind(),
+                        $($rest: PyArray1::from_vec(py, self.$rest).unbind(),)*
+                        // Not columns of the point block: an SRF carries them only
+                        // when a velocity model was written alongside it.
+                        vs: None,
+                        density: None,
+                    },
+                )?
+                .into_bound(py))
+            }
+        }
+    };
 }
 
-/// Per-point metadata in struct-of-arrays layout. Generic over storage:
-/// `Vec<f32>` (the default) when the parser builds it, `&[f32]` when viewing
-/// numpy-owned arrays for writing.
-#[derive(Debug)]
-pub struct SrfMetadata<S = Vec<f32>> {
-    pub lon: S,
-    pub lat: S,
-    pub dep: S,
-    pub stk: S,
-    pub dip: S,
-    pub area: S,
-    pub tinit: S,
-    pub dt: S,
-    pub rake: S,
-    pub slip1: S,
-    pub rise: S,
-}
+point_columns!(lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise);
 
 pub type SrfMetadataView<'a> = SrfMetadata<&'a [f32]>;
 
-impl SrfMetadata {
-    pub fn with_capacity(n: usize) -> Self {
-        SrfMetadata {
-            lon: Vec::with_capacity(n),
-            lat: Vec::with_capacity(n),
-            dep: Vec::with_capacity(n),
-            stk: Vec::with_capacity(n),
-            dip: Vec::with_capacity(n),
-            area: Vec::with_capacity(n),
-            tinit: Vec::with_capacity(n),
-            dt: Vec::with_capacity(n),
-            rake: Vec::with_capacity(n),
-            slip1: Vec::with_capacity(n),
-            rise: Vec::with_capacity(n),
-        }
-    }
-
-    pub fn push(&mut self, point: &Point) {
-        self.lon.push(point.lon);
-        self.lat.push(point.lat);
-        self.dep.push(point.dep);
-        self.stk.push(point.stk);
-        self.dip.push(point.dip);
-        self.area.push(point.area);
-        self.tinit.push(point.tinit);
-        self.dt.push(point.dt);
-        self.rake.push(point.rake);
-        self.slip1.push(point.slip1);
-        self.rise.push(point.rise);
-    }
-}
-
-impl<S: AsRef<[f32]>> SrfMetadata<S> {
-    pub fn iter(&self) -> PointIter<'_> {
-        PointIter {
-            lon: self.lon.as_ref(),
-            lat: self.lat.as_ref(),
-            dep: self.dep.as_ref(),
-            stk: self.stk.as_ref(),
-            dip: self.dip.as_ref(),
-            area: self.area.as_ref(),
-            tinit: self.tinit.as_ref(),
-            dt: self.dt.as_ref(),
-            rake: self.rake.as_ref(),
-            slip1: self.slip1.as_ref(),
-            rise: self.rise.as_ref(),
-            index: 0,
-        }
-    }
-}
-
-pub struct PointIter<'a> {
-    lon: &'a [f32],
-    lat: &'a [f32],
-    dep: &'a [f32],
-    stk: &'a [f32],
-    dip: &'a [f32],
-    area: &'a [f32],
-    tinit: &'a [f32],
-    dt: &'a [f32],
-    rake: &'a [f32],
-    slip1: &'a [f32],
-    rise: &'a [f32],
-    index: usize,
-}
-
-impl Iterator for PointIter<'_> {
-    type Item = Point;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let i = self.index;
-        if i >= self.lon.len() {
-            return None;
-        }
-        self.index += 1;
-        Some(Point {
-            lon: self.lon[i],
-            lat: self.lat[i],
-            dep: self.dep[i],
-            stk: self.stk[i],
-            dip: self.dip[i],
-            area: self.area[i],
-            tinit: self.tinit[i],
-            dt: self.dt[i],
-            rake: self.rake[i],
-            slip1: self.slip1[i],
-            rise: self.rise[i],
-        })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.lon.len() - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
 impl ExactSizeIterator for PointIter<'_> {}
-
-impl<'a, S: AsRef<[f32]>> IntoIterator for &'a SrfMetadata<S> {
-    type Item = Point;
-    type IntoIter = PointIter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl<'py> IntoPyObject<'py> for SrfMetadata {
-    type Target = PySrfMetadata;
-    type Output = Bound<'py, Self::Target>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        Ok(Py::new(
-            py,
-            PySrfMetadata {
-                lon: PyArray1::from_vec(py, self.lon).unbind(),
-                lat: PyArray1::from_vec(py, self.lat).unbind(),
-                dep: PyArray1::from_vec(py, self.dep).unbind(),
-                stk: PyArray1::from_vec(py, self.stk).unbind(),
-                dip: PyArray1::from_vec(py, self.dip).unbind(),
-                area: PyArray1::from_vec(py, self.area).unbind(),
-                tinit: PyArray1::from_vec(py, self.tinit).unbind(),
-                dt: PyArray1::from_vec(py, self.dt).unbind(),
-                rake: PyArray1::from_vec(py, self.rake).unbind(),
-                slip1: PyArray1::from_vec(py, self.slip1).unbind(),
-                rise: PyArray1::from_vec(py, self.rise).unbind(),
-                vs: None,
-                density: None,
-            },
-        )?
-        .into_bound(py))
-    }
-}
 
 #[derive(Debug, Copy, Clone)]
 pub struct PointV2 {
@@ -513,21 +405,6 @@ impl Iterator for PointV2Iter<'_> {
             density: self.density[i],
         })
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.points.size_hint()
-    }
-}
-
-impl ExactSizeIterator for PointV2Iter<'_> {}
-
-impl<'a, S: AsRef<[f32]>> IntoIterator for &'a SrfMetadataV2<S> {
-    type Item = PointV2;
-    type IntoIter = PointV2Iter<'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
 }
 
 impl<'py> IntoPyObject<'py> for SrfMetadataV2 {
@@ -580,7 +457,7 @@ impl<'py> IntoPyObject<'py> for SrfFile {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
-        let mut planes: Vec<Py<PySrfPlane>> = Vec::with_capacity(self.planes.len());
+        let mut planes: Vec<Py<SrfPlane>> = Vec::with_capacity(self.planes.len());
         for plane in self.planes {
             planes.push(plane.into_pyobject(py)?.unbind());
         }

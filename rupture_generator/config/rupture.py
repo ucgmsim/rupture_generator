@@ -2,8 +2,7 @@
 
 # The configuration *is* the compiled core's types
 
-`README.md` and `tests/harness/README.md` both state the rule this file is written
-under:
+`README.md` states the rule this file is written under:
 
     The configuration **is** the compiled core's types. [...] the moment they appear in
     the library there are two descriptions of a rupture model and they start to drift.
@@ -26,6 +25,7 @@ above it -- see ``_core.RefinedMesh.cell_index``.
 from __future__ import annotations
 
 import dataclasses
+import math
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -37,7 +37,6 @@ from mashumaro.types import Discriminator
 
 from rupture_generator import _core
 from rupture_generator.config.core import ConfigObject
-from rupture_generator.config.slip_rate import SlipRateShapeConfig
 from rupture_generator.config.validation import (
     DepthKm,
     DipDeg,
@@ -46,45 +45,44 @@ from rupture_generator.config.validation import (
     PositiveFloat,
     PositiveInt,
     RakeDeg,
+    Seconds,
     UnitInterval,
     VelocityFraction,
     non_empty,
-    positive,
 )
 
-SPECTRUM_MODELS = {
-    "somerville": _core.SpectrumModel.Somerville,
-    "mai": _core.SpectrumModel.Mai,
-    "frankel": _core.SpectrumModel.Frankel,
-    "mai_somerville": _core.SpectrumModel.MaiSomerville,
-    "suzuki": _core.SpectrumModel.Suzuki,
-    "input_corners": _core.SpectrumModel.InputCorners,
+CORNER_MODELS = {
+    "somerville": _core.CornerModel.Somerville,
+    "mai": _core.CornerModel.Mai,
+    "suzuki": _core.CornerModel.Suzuki,
+    "given": _core.CornerModel.Given,
 }
 """Spelled in the config's own lower-case, mapped once.
 
 The core's enum is `CamelCase` because it is Rust. Writing `Mai` in a TOML file would be
 carrying a language convention into a document that has no reason to know about it.
+
+Four names, not six: `CornerModel` is the relation alone, split from the spectral
+*shape* a `[slip]` section chooses -- see `SPECTRUM_SHAPES`. There is no `frankel`
+here, because genslip has no corner relation of its own for it; it shares Mai's
+(`DEFECTS.md` 11), which this config spells by writing `model = "mai"`.
 """
 
-SpectrumModelName = Literal[
-    "somerville", "mai", "frankel", "mai_somerville", "suzuki", "input_corners"
-]
+CornerModelName = Literal["somerville", "mai", "suzuki", "given"]
 
-RISE_TIME_WEIGHTINGS = {
-    "uniform": _core.RiseTimeWeighting.Uniform,
-    "by_slip": _core.RiseTimeWeighting.BySlip,
-    "by_slip_and_rupture_speed": _core.RiseTimeWeighting.BySlipAndRuptureSpeed,
+SPECTRUM_SHAPES = {
+    "somerville": _core.SpectrumShape.Somerville,
+    "von_karman": _core.SpectrumShape.VonKarman,
+    "frankel": _core.SpectrumShape.Frankel,
 }
+"""The spectral falloff a `[slip]` section chooses, independent of `CORNER_MODELS`.
 
-WeightingName = Literal["uniform", "by_slip", "by_slip_and_rupture_speed"]
+Three names for the six the port used to offer under one enum: Mai, Suzuki and the
+Mai/Somerville hybrid all take the von Karman shape, so `model = "mai"` and
+`model = "suzuki"` both become `shape = "von_karman"` here.
+"""
 
-RANDOM_ENGINES = {
-    "genslip_lcg": _core.RandomEngine.GenslipLcg,
-    "pcg": _core.RandomEngine.Pcg,
-}
-"""Spelled the config's way, mapped once -- as with the spectrum models."""
-
-EngineName = Literal["genslip_lcg", "pcg"]
+SpectrumShapeName = Literal["somerville", "von_karman", "frankel"]
 
 
 @dataclasses.dataclass
@@ -107,14 +105,10 @@ class HypocentreConfig(ConfigObject):
     ``strike_km`` from the ``i = 0`` end of the plane and ``dip_km`` from its top edge.
     Both are in-fault distances, so they mean the same thing whatever the plane is cut
     into -- which an index does not.
-
-    ``surface`` names which surface of the mesh, and may be omitted when the mesh holds
-    exactly one.
     """
 
     strike_km: DepthKm
     dip_km: DepthKm
-    surface: str | None = None
 
 
 @dataclasses.dataclass
@@ -168,17 +162,20 @@ class SourceConfig(ConfigObject):
 
 @dataclasses.dataclass
 class FiniteSourceConfig(SourceConfig):
-    """A finite fault: `_core.SourceSpec`, field for field."""
+    """A finite fault: `_core.SourceSpec`, field for field.
+
+    ``model`` is the corner relation only -- ``CORNER_MODELS``, not the spectral
+    shape a `[slip]` section chooses independently as ``shape``. There is no
+    ``frankel`` value: genslip shares Mai's corners for it, spelled here by writing
+    ``model = "mai"``.
+    """
 
     magnitude: Magnitude
     average_dip_deg: DipDeg
     average_rake_deg: RakeDeg
-    model: SpectrumModelName = "mai"
+    model: CornerModelName = "mai"
     strike_offset: float = 2.50
     dip_offset: float = 1.50
-    use_moment_magnitude: bool = True
-    modified_corners: bool = False
-    circular_average: bool = False
     saturation_magnitude: Magnitude = 6.3
     strike_exponent: float = 0.5
     dip_exponent: float = 0.5
@@ -189,14 +186,11 @@ class FiniteSourceConfig(SourceConfig):
         """The compiled spec this transliterates, argument for argument."""
         return _core.SourceSpec(
             self.magnitude,
-            SPECTRUM_MODELS[self.model],
+            CORNER_MODELS[self.model],
             self.strike_offset,
             self.dip_offset,
             average_dip_deg=self.average_dip_deg,
             average_rake_deg=self.average_rake_deg,
-            use_moment_magnitude=self.use_moment_magnitude,
-            modified_corners=self.modified_corners,
-            circular_average=self.circular_average,
             saturation_magnitude=self.saturation_magnitude,
             strike_exponent=self.strike_exponent,
             dip_exponent=self.dip_exponent,
@@ -217,7 +211,6 @@ class PointSourceConfig(SourceConfig):
     rise_time_s: PositiveFloat
     average_dip_deg: DipDeg
     average_rake_deg: RakeDeg
-    use_moment_magnitude: bool = True
     type: Literal["point"] = "point"
 
     def to_core(self) -> _core.PointSourceSpec:
@@ -227,59 +220,94 @@ class PointSourceConfig(SourceConfig):
             self.rise_time_s,
             average_dip_deg=self.average_dip_deg,
             average_rake_deg=self.average_rake_deg,
-            use_moment_magnitude=self.use_moment_magnitude,
         )
+
+
+def default_wavelength_band(strike_km: float, dip_km: float) -> tuple[float, float]:
+    """The wavelength limits genslip picks when none is given, for this grid.
+
+    No constant is right on two grids, which is why `SlipConfig` leaves both `None`
+    rather than carrying a literal: genslip derives the low end from the grid itself,
+    `2*sqrt(dstk*ddip)/0.8` -- 80% of the Nyquist wavelength of a grid whose spacing is
+    the geometric mean of the strike and dip cell sizes, so the band-pass rolls off at
+    80% of the Nyquist *wavenumber* rather than at it exactly. The high end has no
+    real bound: genslip's own is `1.0e15`, assigned after the `getpar` that reads it,
+    so nothing a config file says about it is ever seen.
+    """
+    return 2.0 * math.sqrt(strike_km * dip_km) / 0.8, 1.0e15
 
 
 @dataclasses.dataclass
 class SlipConfig(ConfigObject):
     """How the slip and rake fields are shaped and trimmed: `_core.SlipSpec`.
 
+    ``shape`` is the spectral falloff, not the relation a ``[source]`` section's
+    ``model`` chooses for the wavenumber corners -- the two used to be one vocabulary,
+    and nothing checked a `[source]` and a `[slip]` section naming different relations
+    agreed. `DEFECTS.md` 11.
+
     ``coefficient_of_variation`` is the slip field's spread and is dimensionless;
     ``rake_sigma_deg`` is the rake field's and is in **degrees**. Handing one to the
     other is `DEFECTS.md` 14, which gave every rake a spread of 0.75 degrees where the
     original gives 15 -- a factor of twenty, on every fault. They are never both bare
     numbers in the same expression here, and their names carry the difference.
+
+    ``min_wavelength_km`` and ``max_wavelength_km`` default to `None` rather than to a
+    literal, because the right value depends on the grid `to_core` is called with --
+    see `default_wavelength_band`. Either can still be set explicitly, which is
+    honoured over the derived value.
     """
 
-    model: SpectrumModelName = "mai"
+    shape: SpectrumShapeName = "von_karman"
     coefficient_of_variation: PositiveFloat = 0.75
     rake_sigma_deg: PositiveFloat = 15.0
-    min_wavelength_km: PositiveFloat = 1.5
-    max_wavelength_km: PositiveFloat = 80.0
-    strike_shift: float = 0.0
-    dip_shift: float = 0.0
+    min_wavelength_km: PositiveFloat | None = None
+    max_wavelength_km: PositiveFloat | None = None
     side_taper: UnitInterval = 0.02
     top_taper: UnitInterval = 0.0
     bottom_taper: UnitInterval = 0.0
-    truncate_negative: bool = True
-    water_level: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate the fields, then the invariants between them."""
         super().__post_init__()
-        if self.max_wavelength_km <= self.min_wavelength_km:
+        # Only checkable when both are given -- a `None` is filled in from the grid at
+        # `to_core`, too late for this constructor to see, and always self-consistent
+        # by construction (`default_wavelength_band`'s low end is kilometres, its high
+        # end is 1e15).
+        if (
+            self.min_wavelength_km is not None
+            and self.max_wavelength_km is not None
+            and self.max_wavelength_km <= self.min_wavelength_km
+        ):
             self.refuse(
                 "max_wavelength_km",
                 f"must be above min_wavelength_km ({self.min_wavelength_km}), "
                 f"got {self.max_wavelength_km}",
             )
 
-    def to_core(self) -> _core.SlipSpec:
-        """The compiled spec this transliterates, argument for argument."""
+    def to_core(self, strike_km: float, dip_km: float) -> _core.SlipSpec:
+        """The compiled spec this transliterates, argument for argument.
+
+        `strike_km` and `dip_km` are the fused grid's own subfault spacing -- the
+        fault this spec is about to generate on, not a property of the spec itself --
+        needed only to fill in whichever wavelength limit was left `None`.
+        """
+        default_min, default_max = default_wavelength_band(strike_km, dip_km)
+        min_wavelength_km = (
+            default_min if self.min_wavelength_km is None else self.min_wavelength_km
+        )
+        max_wavelength_km = (
+            default_max if self.max_wavelength_km is None else self.max_wavelength_km
+        )
         return _core.SlipSpec(
-            SPECTRUM_MODELS[self.model],
+            SPECTRUM_SHAPES[self.shape],
             coefficient_of_variation=self.coefficient_of_variation,
             rake_sigma_deg=self.rake_sigma_deg,
-            min_wavelength_km=self.min_wavelength_km,
-            max_wavelength_km=self.max_wavelength_km,
-            strike_shift=self.strike_shift,
-            dip_shift=self.dip_shift,
+            min_wavelength_km=min_wavelength_km,
+            max_wavelength_km=max_wavelength_km,
             side_taper=self.side_taper,
             top_taper=self.top_taper,
             bottom_taper=self.bottom_taper,
-            truncate_negative=self.truncate_negative,
-            water_level=self.water_level,
         )
 
 
@@ -301,7 +329,7 @@ class TimingConfig(ConfigObject):
     beta_mid_ramp: RampConfig
     rupture_time_correlation: float = 0.8
     rupture_time_sigma: PositiveFloat = 1.0
-    rupture_delay_s: DepthKm = 0.0
+    rupture_delay_s: Seconds = 0.0
     rise_time_correlation: float = 0.9
     rise_time_sigma: PositiveFloat = 0.75
     slip_exponent: float = 0.5
@@ -311,13 +339,32 @@ class TimingConfig(ConfigObject):
     deep_speed_ramp: RampConfig | None = None
     shallow_speed_factor: PositiveFloat = 0.6
     deep_speed_factor: PositiveFloat = 0.6
-    weighting: WeightingName = "by_slip_and_rupture_speed"
+    # genslip's own `stype` spelling, parsed by `_core.SlipRateShape.from_stype` --
+    # including `ucsb-T`'s numeric suffix, which is why this is a string and not a
+    # `Literal`. `defaults.yaml:213-214` advertises eight of the eleven shapes as valid
+    # `stype` values, so a config file has to be able to say one; a knob the format
+    # cannot turn is the thing `test_config_completeness.py` exists to catch. This
+    # replaced a union of eleven dataclasses that mirrored the same vocabulary at
+    # fifteen times the size and was constructed by nothing.
+    slip_rate_shape: str | None = None
     beta_shallow: PositiveFloat = 0.5
     beta_mid: PositiveFloat = 0.13
     beta_deep: PositiveFloat = 0.13
-    slip_rate_shape: SlipRateShapeConfig | None = None
     sample_interval_s: PositiveFloat = 0.005
     max_samples: PositiveInt = 100_000
+
+    def __post_init__(self) -> None:
+        """Validate the fields, then the one that only the core can adjudicate."""
+        super().__post_init__()
+        # Parsed here as well as at `to_core` so an unrecognised `stype` is refused
+        # when the file is read, naming the field, rather than partway through a
+        # generation run. The C falls through to `brune` on a name it does not know
+        # and silently produces a different rupture.
+        if self.slip_rate_shape is not None:
+            try:
+                _core.SlipRateShape.from_stype(self.slip_rate_shape)
+            except ValueError as error:
+                self.refuse("slip_rate_shape", str(error))
 
     def to_core(self) -> _core.TimingSpec:
         """The compiled spec this transliterates, argument for argument."""
@@ -344,13 +391,14 @@ class TimingConfig(ConfigObject):
             deep_speed_ramp=ramp(self.deep_speed_ramp),
             shallow_speed_factor=self.shallow_speed_factor,
             deep_speed_factor=self.deep_speed_factor,
-            weighting=RISE_TIME_WEIGHTINGS[self.weighting],
+            slip_rate_shape=(
+                None
+                if self.slip_rate_shape is None
+                else _core.SlipRateShape.from_stype(self.slip_rate_shape)
+            ),
             beta_shallow=self.beta_shallow,
             beta_mid=self.beta_mid,
             beta_deep=self.beta_deep,
-            slip_rate_shape=(
-                None if self.slip_rate_shape is None else self.slip_rate_shape.to_core()
-            ),
             sample_interval_s=self.sample_interval_s,
             max_samples=self.max_samples,
         )
@@ -373,25 +421,19 @@ class FieldConfig(ConfigObject):
 class RandomConfig(ConfigObject):
     """Which stream of numbers, and where in it.
 
-    ``engine`` selects the generator. ``genslip_lcg`` reproduces genslip v5.6.2 bit for
-    bit -- a 31-bit truncated LCG whose normals are twelve summed uniforms -- and exists
-    for comparison against it. ``pcg`` is PCG64-DXSM with a ziggurat, and is the one to
-    use for anything that is not a comparison.
+    There is one generator -- PCG64-DXSM with a ziggurat for the normals -- so this
+    names no engine. ``realisation`` selects an independent stream from the same seed,
+    which is what makes a campaign restartable.
     """
 
     seed: int = 1234
     realisation: int = 0
-    engine: EngineName = "genslip_lcg"
 
     def __post_init__(self) -> None:
         """Validate the fields, then the invariants between them."""
         super().__post_init__()
         if self.realisation < 0:
             self.refuse("realisation", f"must be 0 or more, got {self.realisation}")
-
-    def to_core(self) -> _core.RandomEngine:
-        """The compiled engine this names."""
-        return RANDOM_ENGINES[self.engine]
 
 
 @dataclasses.dataclass
@@ -401,8 +443,7 @@ class GridConfig(ConfigObject):
     Left alone unless something specifically wants otherwise. genslip rounds each padded
     extent up to even because the generators address the Nyquist row and column
     directly, and the default here is the single-plane collapse of its rule,
-    ``even(int(1.10 * n))`` -- which `tests/test_boundary.py` and
-    `tests/harness/mapping.py` already agree on.
+    ``even(int(1.10 * n))`` -- which `tests/test_boundary.py` asserts.
     """
 
     padded_strike: PositiveInt | None = None
@@ -459,7 +500,6 @@ class RuptureConfig(ConfigObject):
         beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
 
         [random]
-        engine = "pcg"
         seed = 1234
     """
 
@@ -477,7 +517,6 @@ class RuptureConfig(ConfigObject):
     def __post_init__(self) -> None:
         """Validate the fields, then the invariants between them."""
         super().__post_init__()
-        positive(self.timing.sample_interval_s)
         if isinstance(self.source, PointSourceConfig) and self.slip != SlipConfig():
             self.refuse(
                 "slip",
@@ -542,6 +581,7 @@ __all__ = [
     "SourceConfig",
     "TimingConfig",
     "VelocityModelConfig",
+    "default_wavelength_band",
     "read_config",
     "read_geometry",
     "tomllib",

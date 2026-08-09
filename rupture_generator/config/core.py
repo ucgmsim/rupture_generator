@@ -17,7 +17,7 @@ is the same exception mashumaro raises for a decode failure, so the CLI renders 
 *value* and a bad *type* through one path -- see ``scripts/errors.py``.
 
 ``forbid_extra_keys`` is on. A misspelt key is an error rather than a silently ignored
-line. `README.md` records the cost of the alternative: genslip's ``getpar`` never asks
+line. `DEFECTS.md` 10 records the cost of the alternative: genslip's ``getpar`` never asks
 for names it does not recognise, so five parameters have been *silently discarded in
 production* for as long as the workflow has pointed at a binary that does not know them.
 

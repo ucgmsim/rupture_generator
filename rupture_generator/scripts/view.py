@@ -218,9 +218,6 @@ def view(
         Path | None,
         typer.Option(help="Write a .rrd recording instead of opening a window."),
     ] = None,
-    serve: Annotated[
-        bool, typer.Option(help="Serve the viewer over HTTP instead of opening it.")
-    ] = False,
 ) -> None:
     """Show a rupture propagating, with its moment rate and slip distribution."""
     if field not in FIELDS:
@@ -241,14 +238,12 @@ def view(
             console.print(f"[red]{rupture} holds no rupture[/red]")
             raise typer.Exit(1)
 
-        rerun.init("rupture-generator", spawn=save is None and not serve)
+        rerun.init("rupture-generator", spawn=save is None)
         if save is not None:
             rerun.save(save)
-        elif serve:
-            rerun.serve_web()
 
         rerun.send_blueprint(layout(blueprint, field))
-        log_rupture(rerun, planes, tree, field, time_step, bins)
+        log_rupture(rerun, planes, field, time_step, bins)
 
     if save is not None:
         console.print(f"[green]wrote[/green] {save}")
@@ -279,7 +274,6 @@ def layout(blueprint, field: str):  # noqa: ANN001 - Rerun's types
 def log_rupture(
     rerun,  # noqa: ANN001 - Rerun's module
     planes: list[tuple[str, int, xr.Dataset]],
-    tree,  # noqa: ANN001 - an xr.DataTree
     field: str,
     time_step: float,
     bins: int,
@@ -336,10 +330,8 @@ def log_rupture(
         )
 
     slipped = {
-        path: cumulative_slip(plane, times_s)
-        for path, (_, _, plane) in zip(
-            geometry, [(s, i, p) for s, i, p in planes], strict=True
-        )
+        f"{surface}/plane_{index}": cumulative_slip(plane, times_s)
+        for surface, index, plane in planes
     }
     rate = moment_rate_of(planes, times_s)
 

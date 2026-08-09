@@ -16,15 +16,12 @@ beside the one asked for.
 from __future__ import annotations
 
 import json
-import tomllib
 from pathlib import Path
 from typing import Annotated
 
 import numpy as np
 import pyproj
 import typer
-import yaml
-from mashumaro.exceptions import InvalidFieldValue, MissingField
 from rich.table import Table
 
 from rupture_generator._core import (
@@ -40,18 +37,13 @@ from rupture_generator.config import read_geometry
 from rupture_generator.config.geometry import (
     Discretisation,
     FaultConfig,
-    GeometryConfig,
     LonLat,
     PointConfig,
 )
 from rupture_generator.formats import Format
 from rupture_generator.formats.mesh import write_mesh
 from rupture_generator.mesh import project_patch, to_projected
-from rupture_generator.scripts.errors import (
-    console,
-    print_config_error,
-    print_syntax_error,
-)
+from rupture_generator.scripts.errors import console, load_config
 
 
 def cell_counts(
@@ -185,31 +177,6 @@ def summarise(meshes: dict, crs: pyproj.CRS) -> Table:
     return table
 
 
-def load_geometry(geometry: Path) -> GeometryConfig:
-    """Read a geometry file, rendering a failure rather than raising it.
-
-    Only the decode is wrapped. Anything after it is a bug here rather than a mistake in
-    the file, and a traceback is the right thing for that.
-    """
-    try:
-        return read_geometry(geometry)
-    except (InvalidFieldValue, MissingField) as error:
-        print_config_error(error)
-        raise typer.Exit(1) from error
-    except tomllib.TOMLDecodeError as error:
-        print_syntax_error(error, geometry.read_text(), "toml")
-        raise typer.Exit(1) from error
-    except json.JSONDecodeError as error:
-        print_syntax_error(error, geometry.read_text(), "json")
-        raise typer.Exit(1) from error
-    except yaml.YAMLError as error:
-        console.print(f"[red]{geometry}: {error}[/red]")
-        raise typer.Exit(1) from error
-    except Exception as error:
-        print_config_error(error)
-        raise typer.Exit(1) from error
-
-
 def mesh(
     geometry: Annotated[
         Path,
@@ -233,7 +200,7 @@ def mesh(
     ] = False,
 ) -> None:
     """Discretise a fault geometry into a mesh."""
-    config = load_geometry(geometry)
+    config = load_config(geometry, read_geometry)
 
     meshes = {}
     for surface in config.surfaces:

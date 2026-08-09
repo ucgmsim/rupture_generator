@@ -16,10 +16,9 @@ Strike
     **Plus the grid convergence angle.** Grid north is not true north: a projection's
     northing axis points along the *central meridian*, and away from it the two diverge
     by the convergence angle, which is what `Proj.get_factors(...).meridian_convergence`
-    reports. In NZTM2000 that reaches **5.04 degrees** in Fiordland -- five times the
-    one-degree rake bound in `ENGINEERING_RULES.md`, and about the width of the whole
-    difference between a reverse and an oblique-reverse mechanism. A strike written
-    without it is wrong by more than the format can express.
+    reports. `MESH.md` has how large that gets in NZTM2000, and why it matters against
+    the rake bound in `ENGINEERING_RULES.md`. A strike written without it is wrong by
+    more than the format can express.
 
 Dip and rake cross unchanged. Both are angles *within* the fault plane, measured from
 directions that rotate together with it, so the convergence cancels.
@@ -128,11 +127,9 @@ def project_patch(mesh: RefinedMesh, patch: int, crs: pyproj.CRS) -> Located:
 
     Notes
     -----
-    The origin is added back here and nowhere else. The mesh holds offsets because a
-    projected coordinate is large (an NZTM northing reaches 5,180 km) and a subfault is
-    small, so absolute positions would round every node at CRS scale; see
-    ``crates/genslip/src/mesh.rs``. This is the one point where the large number has to
-    appear, and it appears once.
+    The origin is added back here and nowhere else -- the one point where the large
+    number has to appear, and it appears once. ``RefinedMesh`` holds offsets rather than
+    absolute positions for the reason its own docstring gives.
 
     Area is taken from the mesh unchanged. A projection does distort area -- NZTM's
     scale factor is 0.9996 on its central meridian -- but the distortion applies to the
@@ -164,34 +161,6 @@ def project_patch(mesh: RefinedMesh, patch: int, crs: pyproj.CRS) -> Located:
         strike_deg=true_strike_deg,
         dip_deg=mesh.dip_deg(patch),
         area_km2=mesh.areas_km2(patch),
-    )
-
-
-def node_positions_wgs84(
-    mesh: RefinedMesh, patch: int, crs: pyproj.CRS
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """The *corners* of one patch, in longitude, latitude and depth.
-
-    The counterpart of :func:`project_patch`, which gives cell centres. A renderer wants
-    corners -- they are the mesh -- and a format that stores geometry rather than
-    samples wants them too.
-
-    Returns
-    -------
-    tuple of FloatArray
-        Longitude, latitude and depth, each shaped ``(dip_node, strike_node)``.
-    """
-    east_km, north_km, depth_km = mesh.node_positions(patch)
-    origin = mesh.origin
-    to_wgs84 = pyproj.Transformer.from_crs(crs, WGS84, always_xy=True)
-    longitude_deg, latitude_deg = to_wgs84.transform(
-        (origin.easting_km + east_km) * M_PER_KM,
-        (origin.northing_km + north_km) * M_PER_KM,
-    )
-    return (
-        np.asarray(longitude_deg, dtype=np.float64),
-        np.asarray(latitude_deg, dtype=np.float64),
-        depth_km,
     )
 
 

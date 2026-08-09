@@ -8,15 +8,15 @@ There is no geodesy here and no projection. The subfault coordinates arrive in
 `SubfaultGeometry`, from whoever discretised the fault, because that is the only
 place that knows how the mesh became a grid. genslip instead recomputes a plane
 centre from a fault width and a dip, with a tangent-plane approximation that is off
-by 43 m on a crustal fault and 1.9 km at subduction scale — `test_corpus.py`'s
-`TestTheGeometryDivergence` measures it. The caller here already has the answer, so
+by 43 m on a crustal fault and 1.9 km at subduction scale — `README.md` records the
+measurement, which came from a corpus comparison that no longer runs. The caller here already has the answer, so
 this asks for it rather than deriving it worse.
 
 **The supplier now exists.** `rupture_generator.mesh.to_subfault_geometry` is it: a
 fault is discretised in a projected Cartesian CRS by `genslip::mesh`, where every
 derived quantity is an exact identity, and that module converts to WGS84 at a single
 seam — adding the grid convergence angle to strike, because grid north is not true
-north and in NZTM the difference reaches five degrees.
+north. `MESH.md` has how large that gets in NZTM.
 
 This docstring used to name two other things as the source, and both are gone.
 `rupture_generator.geometry` was pre-port scaffold with `pass` for a body and no
@@ -129,6 +129,18 @@ def to_srf_file(
             raise ValueError(
                 f"{name} has {len(values)} entries for {subfaults} subfaults"
             )
+    # The header's own counts, which nothing else checks and the writer trusts. It
+    # emits `POINTS strike_count * dip_count` and then `take()`s exactly that many, so
+    # a header describing fewer subfaults than were generated silently drops the rest
+    # and their whole slip-rate pulses, and the file it writes reparses cleanly -- the
+    # loss is invisible until someone sums the moment. One describing more writes a
+    # count the body cannot satisfy, and the file fails to reparse with an EOF error
+    # naming no cause.
+    if header.strike_count * header.dip_count != subfaults:
+        raise ValueError(
+            f"the plane header declares {header.strike_count}x{header.dip_count} "
+            f"subfaults and the rupture has {subfaults}"
+        )
 
     points = Points(
         longitude_deg=geometry.longitude_deg,

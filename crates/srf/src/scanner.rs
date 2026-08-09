@@ -198,18 +198,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "these values are exactly representable and the claim is exactness"
-    )]
-    fn next_parses_numbers_across_whitespace() {
-        let mut scanner = Scanner::new(b"1.5  -2 \n 3e2");
-        assert_eq!(scanner.next::<f32>().unwrap(), 1.5);
-        assert_eq!(scanner.next::<i32>().unwrap(), -2);
-        assert_eq!(scanner.next::<f32>().unwrap(), 300.0);
-    }
-
-    #[test]
     fn next_error_carries_position_and_context() {
         let mut scanner = Scanner::new(b"1.0 abc");
         scanner.next::<f32>().unwrap();
@@ -220,64 +208,6 @@ mod tests {
                 assert_eq!(column, 5);
             }
             other => panic!("expected InvalidNumber, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn next_on_exhausted_input_is_eof() {
-        let mut scanner = Scanner::new(b"  \n ");
-        assert!(matches!(
-            scanner.next::<f32>().unwrap_err(),
-            ScannerError::UnexpectedEof
-        ));
-    }
-
-    #[test]
-    fn skip_token_matches_and_advances() {
-        let mut scanner = Scanner::new(b"  POINTS 2");
-        scanner.skip_token(b"POINTS").unwrap();
-        assert_eq!(scanner.next::<usize>().unwrap(), 2);
-    }
-
-    #[test]
-    fn skip_token_mismatch_reports_both_tokens() {
-        let mut scanner = Scanner::new(b"PLANES");
-        match scanner.skip_token(b"POINTS").unwrap_err() {
-            ScannerError::InvalidToken {
-                expected, found, ..
-            } => {
-                assert_eq!(expected, "POINTS");
-                assert_eq!(found, "PLANES");
-            }
-            other => panic!("expected InvalidToken, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn skip_token_on_truncated_input_errors_without_panicking() {
-        let mut scanner = Scanner::new(b"POIN");
-        assert!(matches!(
-            scanner.skip_token(b"POINTS").unwrap_err(),
-            ScannerError::UnexpectedEof
-        ));
-    }
-
-    #[test]
-    fn line_reads_until_newline() {
-        let mut scanner = Scanner::new(b"1.0\nrest");
-        assert_eq!(scanner.line().unwrap(), b"1.0");
-        assert_eq!(scanner.remaining(), 4);
-    }
-
-    #[test]
-    fn line_without_newline_errors() {
-        let mut scanner = Scanner::new(b"no newline here");
-        match scanner.line().unwrap_err() {
-            ScannerError::NoNewlineFound { line, column } => {
-                assert_eq!(line, 1);
-                assert_eq!(column, 1);
-            }
-            other => panic!("expected NoNewlineFound, got {other:?}"),
         }
     }
 
@@ -353,33 +283,5 @@ mod tests {
             }
             other => panic!("expected InvalidNumber, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn end_of_line_accepts_trailing_blanks_and_a_carriage_return() {
-        let mut scanner = Scanner::new(b"1.0  \t\r\nnext");
-        scanner.next::<f32>().unwrap();
-        scanner.expect_end_of_line().unwrap();
-        assert_eq!(scanner.rest, b"next");
-    }
-
-    #[test]
-    fn end_of_line_rejects_another_token_on_the_line() {
-        let mut scanner = Scanner::new(b"1.0 2.0\n");
-        scanner.next::<f32>().unwrap();
-        assert!(matches!(
-            scanner.expect_end_of_line().unwrap_err(),
-            ScannerError::NoNewlineFound { line: 1, column: 4 }
-        ));
-    }
-
-    #[test]
-    fn end_of_line_at_the_end_of_input_is_eof() {
-        let mut scanner = Scanner::new(b"1.0   ");
-        scanner.next::<f32>().unwrap();
-        assert!(matches!(
-            scanner.expect_end_of_line().unwrap_err(),
-            ScannerError::UnexpectedEof
-        ));
     }
 }

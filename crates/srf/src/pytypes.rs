@@ -1,133 +1,76 @@
+//! The Python-facing mirrors of the SRF's records.
+//!
+//! Every one of them is the same shape: a `#[pyclass]` whose every field is readable
+//! and writable, and a `#[new]` taking those fields in order. Written out, that shape
+//! states each field list **three** times -- once in the struct with a `#[pyo3(get,
+//! set)]` above every line, once as the constructor's parameters, and once in the
+//! struct literal it returns. `PySrfMetadata` alone was 68 lines for thirteen fields,
+//! and adding a column to the SRF meant three edits per class with a compiler that
+//! caught only some of the omissions.
+//!
+//! Python sees exactly what it saw before: the field names are the macro's arguments,
+//! so `PySrfMetadata(lon=..., lat=...)` and `plane.dtop` are unchanged.
+
 use numpy::PyArray1;
 use pyo3::prelude::*;
 
-#[pyclass(from_py_object)]
-#[derive(Debug, Clone)]
-pub struct PySrfPlane {
-    #[pyo3(get, set)]
-    pub elon: f32,
-    #[pyo3(get, set)]
-    pub elat: f32,
-    #[pyo3(get, set)]
-    pub nstk: usize,
-    #[pyo3(get, set)]
-    pub ndip: usize,
-    #[pyo3(get, set)]
-    pub len: f32,
-    #[pyo3(get, set)]
-    pub wid: f32,
-    #[pyo3(get, set)]
-    pub stk: f32,
-    #[pyo3(get, set)]
-    pub dip: f32,
-    #[pyo3(get, set)]
-    pub dtop: f32,
-    #[pyo3(get, set)]
-    pub shyp: f32,
-    #[pyo3(get, set)]
-    pub dhyp: f32,
-}
+use crate::types::SrfPlane;
 
-#[pymethods]
-impl PySrfPlane {
-    #[new]
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
-        elon: f32,
-        elat: f32,
-        nstk: usize,
-        ndip: usize,
-        len: f32,
-        wid: f32,
-        stk: f32,
-        dip: f32,
-        dtop: f32,
-        shyp: f32,
-        dhyp: f32,
-    ) -> Self {
-        PySrfPlane {
-            elon,
-            elat,
-            nstk,
-            ndip,
-            len,
-            wid,
-            stk,
-            dip,
-            dtop,
-            shyp,
-            dhyp,
+/// A `#[pyclass]` whose `#[new]` takes every field, in declaration order.
+///
+/// The optional `signature` arm exists for the one class with defaulted arguments:
+/// `PyO3` will not infer `vs=None` from `Option<T>`, and that default is part of the
+/// Python API rather than of the Rust type.
+///
+/// `#[macro_export]` rather than textual scope: `SrfPlane` is built with it from
+/// `types.rs`. `macro_rules!` items do not accept `pub`/`pub(crate)` -- exporting
+/// is the only way one crosses a module boundary, and it lands the macro at the
+/// crate root, reachable as `crate::py_record!`.
+#[macro_export]
+macro_rules! py_record {
+    (
+        $(#[$attr:meta])*
+        $name:ident { $($field:ident: $type:ty),* $(,)? }
+    ) => {
+        py_record!($(#[$attr])* $name { $($field: $type),* } signature = ($($field),*));
+    };
+    (
+        $(#[$attr:meta])*
+        $name:ident { $($field:ident: $type:ty),* $(,)? }
+        signature = ($($signature:tt)*)
+    ) => {
+        $(#[$attr])*
+        pub struct $name {
+            $(#[pyo3(get, set)] pub $field: $type,)*
         }
-    }
+
+        #[pymethods]
+        impl $name {
+            #[new]
+            #[pyo3(signature = ($($signature)*))]
+            #[allow(clippy::too_many_arguments)]
+            #[must_use]
+            pub fn new($($field: $type),*) -> Self {
+                Self { $($field),* }
+            }
+        }
+    };
 }
 
-#[pyclass]
-#[derive(Debug)]
-pub struct PyCsrMatrix {
-    #[pyo3(get, set)]
-    pub row_ptr: Py<PyArray1<usize>>,
-    #[pyo3(get, set)]
-    pub indices: Py<PyArray1<usize>>,
-    #[pyo3(get, set)]
-    pub data: Py<PyArray1<f32>>,
-}
-
-#[pymethods]
-impl PyCsrMatrix {
-    #[new]
-    #[must_use]
-    pub fn new(
+py_record! {
+    #[pyclass]
+    #[derive(Debug)]
+    PyCsrMatrix {
         row_ptr: Py<PyArray1<usize>>,
         indices: Py<PyArray1<usize>>,
         data: Py<PyArray1<f32>>,
-    ) -> Self {
-        PyCsrMatrix {
-            row_ptr,
-            indices,
-            data,
-        }
     }
 }
 
-#[pyclass]
-#[derive(Debug)]
-pub struct PySrfMetadata {
-    #[pyo3(get, set)]
-    pub lon: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub lat: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub dep: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub stk: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub dip: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub area: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub tinit: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub dt: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub rake: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub slip1: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub rise: Py<PyArray1<f32>>,
-    #[pyo3(get, set)]
-    pub vs: Option<Py<PyArray1<f32>>>,
-    #[pyo3(get, set)]
-    pub density: Option<Py<PyArray1<f32>>>,
-}
-
-#[pymethods]
-impl PySrfMetadata {
-    #[new]
-    #[pyo3(signature = (lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise, vs=None, density=None))]
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
+py_record! {
+    #[pyclass]
+    #[derive(Debug)]
+    PySrfMetadata {
         lon: Py<PyArray1<f32>>,
         lat: Py<PyArray1<f32>>,
         dep: Py<PyArray1<f32>>,
@@ -141,49 +84,19 @@ impl PySrfMetadata {
         rise: Py<PyArray1<f32>>,
         vs: Option<Py<PyArray1<f32>>>,
         density: Option<Py<PyArray1<f32>>>,
-    ) -> Self {
-        PySrfMetadata {
-            lon,
-            lat,
-            dep,
-            stk,
-            dip,
-            area,
-            tinit,
-            dt,
-            rake,
-            slip1,
-            rise,
-            vs,
-            density,
-        }
     }
+    signature = (
+        lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise,
+        vs = None, density = None
+    )
 }
 
-#[pyclass]
-#[derive(Debug)]
-pub struct PySrfFile {
-    #[pyo3(get, set)]
-    pub planes: Vec<Py<PySrfPlane>>,
-    #[pyo3(get, set)]
-    pub metadata: Py<PySrfMetadata>,
-    #[pyo3(get, set)]
-    pub slipt1: Py<PyCsrMatrix>,
-}
-
-#[pymethods]
-impl PySrfFile {
-    #[new]
-    #[must_use]
-    pub fn new(
-        planes: Vec<Py<PySrfPlane>>,
+py_record! {
+    #[pyclass]
+    #[derive(Debug)]
+    PySrfFile {
+        planes: Vec<Py<SrfPlane>>,
         metadata: Py<PySrfMetadata>,
         slipt1: Py<PyCsrMatrix>,
-    ) -> Self {
-        PySrfFile {
-            planes,
-            metadata,
-            slipt1,
-        }
     }
 }

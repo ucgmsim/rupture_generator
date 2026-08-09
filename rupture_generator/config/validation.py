@@ -41,28 +41,6 @@ def non_negative(value: float | None) -> float | None:
     return value
 
 
-def at_least(limit: float) -> Callable[[Any], Any]:
-    """Greater than or equal to `limit`."""
-
-    def check(value: float | None) -> float | None:
-        if value is not None and value < limit:
-            raise ValueError(f"must be {limit} or more, got {value}")
-        return value
-
-    return check
-
-
-def at_most(limit: float) -> Callable[[Any], Any]:
-    """Less than or equal to `limit`."""
-
-    def check(value: float | None) -> float | None:
-        if value is not None and value > limit:
-            raise ValueError(f"must be {limit} or less, got {value}")
-        return value
-
-    return check
-
-
 def in_range(
     low: float, high: float, *, open_low: bool = False
 ) -> Callable[[Any], Any]:
@@ -97,7 +75,6 @@ def non_empty[T](value: list[T] | str | None) -> list[T] | str | None:
 # ============================================================================
 
 PositiveFloat = Annotated[float, positive]
-NonNegativeFloat = Annotated[float, non_negative]
 PositiveInt = Annotated[int, positive]
 UnitInterval = Annotated[float, in_range(0.0, 1.0)]
 NonEmptyStr = Annotated[str, non_empty]
@@ -111,6 +88,13 @@ Latitude = Annotated[float, in_range(-90.0, 90.0)]
 
 DepthKm = Annotated[float, non_negative]
 """Depth below the surface. Downwards is positive, so a negative one is in the air."""
+
+# ============================================================================
+# How long things take
+# ============================================================================
+
+Seconds = Annotated[float, non_negative]
+"""A duration or a delay. Time runs one way here, so negative is not a value."""
 
 # ============================================================================
 # What a fault is

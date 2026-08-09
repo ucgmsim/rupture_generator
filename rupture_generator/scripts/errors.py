@@ -27,9 +27,12 @@ import dataclasses
 import difflib
 import json
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
+import typer
+import yaml
 from mashumaro.exceptions import ExtraKeysError, InvalidFieldValue, MissingField
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -196,4 +199,38 @@ def print_config_error(error: Exception) -> None:
     console.print()
 
 
-__all__ = ["CONTEXT_LINES", "console", "print_config_error", "print_syntax_error"]
+def load_config[T](path: Path, read: Callable[[Path], T]) -> T:
+    """Read a config file with `read`, rendering a failure rather than raising it.
+
+    Only the decode is wrapped. Anything after it is a bug in the caller rather than a
+    mistake in the file, and a traceback is the right answer for that.
+
+    `read` is `config.read_config` or `config.read_geometry`; the two differ in nothing
+    else, which is why this is one function.
+    """
+    try:
+        return read(path)
+    except (InvalidFieldValue, MissingField) as error:
+        print_config_error(error)
+        raise typer.Exit(1) from error
+    except tomllib.TOMLDecodeError as error:
+        print_syntax_error(error, path.read_text(), "toml")
+        raise typer.Exit(1) from error
+    except json.JSONDecodeError as error:
+        print_syntax_error(error, path.read_text(), "json")
+        raise typer.Exit(1) from error
+    except yaml.YAMLError as error:
+        console.print(f"[red]{path}: {error}[/red]")
+        raise typer.Exit(1) from error
+    except Exception as error:
+        print_config_error(error)
+        raise typer.Exit(1) from error
+
+
+__all__ = [
+    "CONTEXT_LINES",
+    "console",
+    "load_config",
+    "print_config_error",
+    "print_syntax_error",
+]

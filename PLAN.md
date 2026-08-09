@@ -6,6 +6,12 @@ Nothing in it is implemented yet.
 
 **Design decisions this plan encodes** (settled with the author, 2026-08-09):
 
+0. **Units are MKS.** Slip in metres, rigidity in pascals, moment in newton-metres —
+   the CGS the C worked in survives only inside the SRF writer, where the format
+   demands centimetres. Eq. 7 is therefore its SI form,
+   `log₁₀ M₀[N·m] = 1.5·M_w + 9.05`. Geometry stays in kilometres (the mesh file
+   format is kept); the km²→m² conversion happens once, in the moment closure.
+
 1. **Python orchestrates, Rust provides kernels.** The pipeline is composed in Python;
    Rust is reduced to stateless array-in/array-out kernels behind narrow protocols.
 2. **The gate is properties, not parity.** Output is free to move relative to the current

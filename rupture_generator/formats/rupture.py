@@ -41,7 +41,7 @@ import xarray as xr
 
 from rupture_generator._core import GeneratedRupture, RefinedMesh
 from rupture_generator.formats import Format, resolve
-from rupture_generator.mesh import Located, project_patch
+from rupture_generator.mesh import project_patch
 from rupture_generator.units import CM2_PER_KM2
 
 if TYPE_CHECKING:
@@ -75,7 +75,6 @@ def to_dataset(
     patch: int,
     crs: pyproj.CRS,
     *,
-    located: Located | None = None,
     hypocentre_km: tuple[float, float] | None = None,
 ) -> xr.Dataset:
     """One plane's rupture and geometry, as a dataset.
@@ -88,8 +87,6 @@ def to_dataset(
         Where the fault is.
     crs : pyproj.CRS
         The frame the mesh is in.
-    located : Located, optional
-        The projection, if it has already been done. Recomputed when omitted.
     hypocentre_km : tuple of float, optional
         Where the rupture started, in the plane's own arc lengths.
 
@@ -99,7 +96,7 @@ def to_dataset(
         Node variables on ``(dip_node, strike_node)``, cell variables on
         ``(dip, strike)``, and the pulses as CSR on ``(sample,)`` and ``(cell_edge,)``.
     """
-    located = located or project_patch(mesh, patch, crs)
+    located = project_patch(mesh, patch, crs)
     strike_count, dip_count = mesh.cell_extents(patch)
     shape = (dip_count, strike_count)
 

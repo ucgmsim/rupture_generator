@@ -10,10 +10,9 @@ its vertices, with its topology implied by their shape, which is why there is no
 list in the file: a structured grid's connectivity *is* its shape.
 
 Positions are **offsets from the mesh's origin**, in kilometres, in the CRS named in the
-root attributes. That is the same thing the library holds, for the same reason -- an
-NZTM northing is ~5,180 km against a ~1 km subfault, so absolute coordinates would round
-every node at CRS scale. The origin is stored once, in the root attributes, and added
-back by whoever wants a coordinate rather than a shape.
+root attributes -- the same thing ``RefinedMesh`` holds, for the same reason. The origin
+is stored once, in the root attributes, and added back by whoever wants a coordinate
+rather than a shape.
 
 # Only the geometry is stored
 
@@ -29,7 +28,6 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import numcodecs
 import numpy as np
 import pyproj
 import xarray as xr
@@ -42,14 +40,6 @@ if TYPE_CHECKING:
 
 SCHEMA_VERSION = 1
 """Bumped when a reader of an older file would get the wrong answer rather than an error."""
-
-DEFAULT_ENCODING = {
-    "compressors": [
-        numcodecs.Blosc(cname="zstd", clevel=5, shuffle=numcodecs.Blosc.SHUFFLE)
-    ],
-}
-"""Lossless. A mesh is small and the positions are the geometry, so there is nothing to
-gain by rounding them and a subfault's place to lose."""
 
 NODE_VARIABLES = {
     "east_km": ("kilometres", "Easting offset from the mesh origin"),
@@ -82,14 +72,7 @@ def to_datatree(
     xr.DataTree
         With ``/<surface>/plane_<n>`` groups.
 
-    Raises
-    ------
-    ValueError
-        If two surfaces share a name, since a group would silently replace the other.
     """
-    if len(set(meshes)) != len(meshes):
-        raise ValueError("two surfaces share a name, so one would overwrite the other")
-
     groups: dict[str, xr.Dataset] = {}
     origins: dict[str, list[float]] = {}
 
@@ -175,15 +158,11 @@ def from_datatree(tree: xr.DataTree) -> tuple[dict[str, RefinedMesh], pyproj.CRS
     origins = json.loads(tree.attrs.get("origins", "{}"))
 
     # Keyed by the *stored* plane index rather than by the order the groups come back
-    # in, because **Zarr does not preserve order**. Measured: eleven groups written
-    # `plane_0` through `plane_10` come back as
-    #
-    #     plane_10, plane_8, plane_5, plane_7, plane_9, plane_6, plane_4, ...
-    #
-    # which is neither insertion nor lexicographic. HDF5 does preserve insertion, so
-    # this went unnoticed until a two-plane fault came back with its dips swapped -- and
-    # since the order varies between runs, it is the kind of thing that fails somewhere
-    # else, intermittently, long after.
+    # in, because **Zarr does not preserve order** -- see `MESH.md` for the measurement.
+    # HDF5 does preserve insertion, so trusting iteration order is green in one
+    # container and silently permutes the fault in the other -- and since the order
+    # varies between runs, it is the kind of thing that fails somewhere else,
+    # intermittently, long after.
     by_surface: dict[str, dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "east_km" not in node.dataset:
@@ -283,7 +262,6 @@ def read_mesh(
 
 
 __all__ = [
-    "DEFAULT_ENCODING",
     "SCHEMA_VERSION",
     "from_datatree",
     "read_mesh",

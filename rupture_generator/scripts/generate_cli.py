@@ -39,15 +39,11 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-import json
-import tomllib
 from pathlib import Path
 from typing import Annotated
 
 import numpy as np
 import typer
-import yaml
-from mashumaro.exceptions import InvalidFieldValue, MissingField
 
 from rupture_generator import _core
 from rupture_generator.config import read_config
@@ -60,37 +56,7 @@ from rupture_generator.formats import Format, resolve
 from rupture_generator.formats.mesh import read_mesh
 from rupture_generator.formats.rupture import to_dataset, to_datatree, write_rupture
 from rupture_generator.mesh import project_patch, to_subfault_geometry
-from rupture_generator.scripts.errors import (
-    console,
-    print_config_error,
-    print_syntax_error,
-)
-
-
-def load_config(config: Path) -> RuptureConfig:
-    """Read a rupture config, rendering a failure rather than raising it.
-
-    Only the decode is wrapped. Anything after it is a bug here rather than a mistake in
-    the file, and a traceback is the right answer for that.
-    """
-    try:
-        return read_config(config)
-    except (InvalidFieldValue, MissingField) as error:
-        print_config_error(error)
-        raise typer.Exit(1) from error
-    except tomllib.TOMLDecodeError as error:
-        print_syntax_error(error, config.read_text(), "toml")
-        raise typer.Exit(1) from error
-    except json.JSONDecodeError as error:
-        print_syntax_error(error, config.read_text(), "json")
-        raise typer.Exit(1) from error
-    except yaml.YAMLError as error:
-        console.print(f"[red]{config}: {error}[/red]")
-        raise typer.Exit(1) from error
-    except Exception as error:
-        print_config_error(error)
-        raise typer.Exit(1) from error
-
+from rupture_generator.scripts.errors import console, load_config
 
 SEAM_TOLERANCE_KM = 1.0e-6
 """How far apart two planes' shared nodes may be and still be one surface.
@@ -284,9 +250,18 @@ def fault_grid(fused: Fused, config: RuptureConfig) -> _core.FaultGrid:
     velocity fraction are constants from the config, broadcast -- the core takes them
     per subfault because a mesh may vary them, and a config that could say so per
     subfault would need a way to address subfaults.
+
+    `velocity_fraction` is divided by `alpha_t` before it crosses into the core.
+    genslip divides `rvfrac` and every subfault's rupture-speed fraction by the same
+    correction it shortens rise time with (`genslip_v5.6.2.c:1443-1445`); the core
+    applies `alpha_t` to rise time only, so a caller handing it a raw fraction gets a
+    rupture up to 10% slow on a dip-45 reverse fault.
     """
     subfaults = fused.strike_count * fused.dip_count
     padding = config.grid
+    correction = _core.alpha_t(
+        config.source.average_dip_deg, config.source.average_rake_deg
+    )
     return _core.FaultGrid(
         fused.strike_count,
         fused.dip_count,
@@ -296,7 +271,7 @@ def fault_grid(fused: Fused, config: RuptureConfig) -> _core.FaultGrid:
         fused.dip_km,
         depth_km=fused.depth_km.ravel(),
         base_rake_deg=np.full(subfaults, config.field.base_rake_deg),
-        velocity_fraction=np.full(subfaults, config.field.velocity_fraction),
+        velocity_fraction=np.full(subfaults, config.field.velocity_fraction / correction),
     )
 
 
@@ -384,7 +359,7 @@ def generate(
     quiet: Annotated[bool, typer.Option(help="Do not print the summary.")] = False,
 ) -> None:
     """Generate a rupture model on a mesh."""
-    settings = load_config(config)
+    settings = load_config(config, read_config)
     meshes, crs = read_mesh(mesh_path)
     name, mesh = choose_surface(meshes, surface)
     if plane is not None and not 0 <= plane < mesh.patch_count:
@@ -392,18 +367,23 @@ def generate(
             f"[red]{name} has planes 0..{mesh.patch_count - 1}, not {plane}[/red]"
         )
         raise typer.Exit(1)
-    fused = fuse(mesh, name, plane)
-
     # The command line wins over the file, and what actually ran is what gets recorded.
     used_seed = settings.random.seed if seed is None else seed
     used_realisation = (
         settings.random.realisation if realisation is None else realisation
     )
 
-    grid = fault_grid(fused, settings)
-    strike, dip = hypocentre_cell(mesh, fused, settings)
-
+    # The geometry is inside the `try` as well as the generation. `fuse` reads
+    # `mesh.spacing`, which refuses a non-uniform patch, and `hypocentre_cell` reads
+    # `mesh.cell_index`, which refuses a hypocentre off the fault -- both `ValueError`
+    # from the same `Refused` conversion the core uses. They used to sit above it, so a
+    # mesh file that had been hand-edited into non-uniformity came back as a raw
+    # traceback where every other refusal in this command prints one red line.
     try:
+        fused = fuse(mesh, name, plane)
+        grid = fault_grid(fused, settings)
+        strike, dip = hypocentre_cell(mesh, fused, settings)
+
         if isinstance(settings.source, PointSourceConfig):
             rupture = _core.generate_point_source(
                 grid,
@@ -418,13 +398,12 @@ def generate(
                 grid,
                 settings.velocity_model.to_core(),
                 settings.source.to_core(),
-                settings.slip.to_core(),
+                settings.slip.to_core(fused.strike_km, fused.dip_km),
                 settings.timing.to_core(),
                 seed=used_seed,
                 realisation=used_realisation,
                 hypocentre_strike=strike,
                 hypocentre_dip=dip,
-                engine=settings.random.to_core(),
             )
     except ValueError as error:
         console.print(f"[red]{error}[/red]")
@@ -441,10 +420,7 @@ def generate(
                     mesh,
                     patch,
                     crs,
-                    hypocentre_km=(
-                        settings.hypocentre.strike_km,
-                        settings.hypocentre.dip_km,
-                    ),
+                    hypocentre_km=plane_hypocentre(fused, settings, index, strike),
                 )
                 for index, patch in enumerate(fused.planes)
             },
@@ -456,7 +432,7 @@ def generate(
                 "surface": name,
                 "seed": used_seed,
                 "realisation": used_realisation,
-                "rng_engine": settings.random.engine,
+                "rng_engine": "pcg",
                 "moment_dyne_cm": rupture.moment_dyne_cm,
                 "alpha_t": rupture.alpha_t,
                 "sample_interval_s": rupture.sample_interval_s,
@@ -477,7 +453,6 @@ class PlaneRupture:
     *view* of one that already exists. `to_dataset` reads exactly these names.
     """
 
-    shape: tuple[int, int]
     sample_interval_s: float
     moment_dyne_cm: float
     alpha_t: float
@@ -487,6 +462,29 @@ class PlaneRupture:
     rise_time_s: np.ndarray
     slip_rate: np.ndarray
     slip_rate_offsets: np.ndarray
+
+
+def plane_hypocentre(
+    fused: Fused, settings: RuptureConfig, index: int, strike_cell: int
+) -> tuple[float, float] | None:
+    """Where the rupture started in *this* plane's arc lengths, or `None`.
+
+    `to_dataset` documents `hypocentre_km` as the plane's own arc lengths, and the
+    coordinate it is read against -- the group's `strike_km` -- runs from zero at each
+    plane's own edge. The config gives one arc length across the whole fused surface,
+    so writing it unchanged into every group put the hypocentre off the end of every
+    plane but one, and claimed three hypocentres for one earthquake.
+
+    A plane that does not contain the hypocentre gets no attribute rather than a wrong
+    one; `to_dataset` omits the pair when this returns `None`.
+    """
+    start, stop = fused.spans[index]
+    if not start <= strike_cell < stop:
+        return None
+    return (
+        settings.hypocentre.strike_km - start * fused.strike_km,
+        settings.hypocentre.dip_km,
+    )
 
 
 def slice_rupture(
@@ -515,7 +513,6 @@ def slice_rupture(
     lengths = np.array([len(pulse) for pulse in pulses], dtype=np.int64)
 
     return PlaneRupture(
-        shape=(stop - start, rows),
         sample_interval_s=rupture.sample_interval_s,
         moment_dyne_cm=rupture.moment_dyne_cm,
         alpha_t=rupture.alpha_t,
@@ -642,7 +639,7 @@ def report(
         ),
         ("rise time", f"mean {rupture.rise_time_s.mean():.2f} s"),
         ("onset", f"0 to {rupture.onset_s.max():.2f} s"),
-        ("engine", f"{settings.random.engine}, seed {seed}, realisation {realisation}"),
+        ("random", f"pcg, seed {seed}, realisation {realisation}"),
     ):
         table.add_row(label, value)
     console.print(table)

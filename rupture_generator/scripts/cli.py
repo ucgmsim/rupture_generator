@@ -33,9 +33,10 @@ def main() -> None:
     """Generate kinematic rupture models.
 
     The callback is not decoration. Typer folds a one-command app into its root, so
-    without it ``rupture-generator mesh`` would *be* ``rupture-generator`` -- and the
-    name would come back the moment `generate` landed, which is a moving interface for
-    no reason. It is also where a global option goes when there is one.
+    with a single command registered ``rupture-generator mesh`` would *be*
+    ``rupture-generator``. Three are registered now, so it no longer folds -- but
+    removing this would make the interface move again the next time one is taken away.
+    It is also where a global option goes when there is one.
     """
 
 

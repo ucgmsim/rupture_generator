@@ -1,9 +1,6 @@
-"""Module for handling SRF (Standard Rupture Format) files.
+"""Reading and writing SRF (Standard Rupture Format) files.
 
-This module provides classes and functions for reading and writing SRF files,
-as well as representing their contents.
-See https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
-for details on the SRF format.
+The format: https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
 
 The in-memory model is arrays, one per field, named for what they hold and in what
 unit. `SrfFile.points` is a `Points`, not a table: `points.onset_s` is a float32
@@ -11,25 +8,9 @@ array of one onset per subfault, and delaying a rupture is `points.onset_s += 1`
 The names match `GeneratedRupture` and `assemble.SubfaultGeometry` field for field,
 so assembling an SRF out of a generated rupture is a copy rather than a translation.
 
-**Why not qcore.srf?**
-
-You might use this module instead of the `qcore.srf` module because:
-
-1. The `qcore.srf` module does not support writing SRF files.
-
-2. The points are arrays, so they can be manipulated with vectorised operations.
-
-3. There is better documentation for the new module than the old one.
-
-You should use `qcore.srf` if you do not eventually intend to read all
-points of the SRF file (it is memory efficient), or you are working
-with code that already uses `qcore.srf`.
-
-Classes: ``SrfFile`` (representation of an SRF file), ``PlaneHeader`` (one segment's
-header entry), ``Points`` (the subfaults).
-
-Functions: ``read_srf`` (read an SRF file into memory), ``write_srf`` (write an SRF
-object to a filepath).
+Use `qcore.srf` instead if you will not read the whole file -- that one streams and
+this one does not -- or if you are already working with it. This module exists because
+it can *write*, which `qcore.srf` cannot.
 
 Examples
 --------
@@ -42,7 +23,7 @@ Examples
 import dataclasses
 import itertools
 import mmap
-from collections.abc import Buffer, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
 
@@ -112,33 +93,16 @@ class Points:
     They are present together or not at all, which is what distinguishes a version
     2.0 point block from a version 1.0 one.
 
-    Attributes
-    ----------
-    longitude_deg, latitude_deg : FloatArray
-        Where the subfault is.
-    depth_km : FloatArray
-        How deep it is.
-    strike_deg, dip_deg : FloatArray
-        Its local orientation, which need not equal its segment's.
-    area_cm2 : FloatArray
-        Its area, in the square centimetres the format stores and the moment sum is
-        expressed in.
-    onset_s : FloatArray
-        When it starts slipping. The SRF calls this `tinit`.
-    sample_interval_s : FloatArray
-        The timestep of its slip-rate function. The SRF calls this `dt`.
-    rake_deg : FloatArray
-        The slip direction.
-    slip_cm : FloatArray
-        Total slip.
-    rise_time_s : FloatArray
-        The duration of the slip-rate function, `nt1 * dt`. Derived on read rather
-        than stored: the file holds `nt1`.
-    shear_speed_cm_s : FloatArray | None
-        Shear-wave speed, in **centimetres** per second — the file's unit, a factor
-        of 1e5 away from the kilometres per second a velocity model is written in.
-    density_g_cm3 : FloatArray | None
-        Density.
+Each field's name says what it holds and in what unit, so only the five that are
+    not self-evident are written down:
+
+    - ``area_cm2`` is square centimetres, which is what the format stores and what the
+      moment sum is expressed in.
+    - ``onset_s`` is the SRF's ``tinit``, and ``sample_interval_s`` its ``dt``.
+    - ``rise_time_s`` is **derived** on read as ``nt1 * dt``; the file holds ``nt1``.
+      `README.md`'s first trap is comparing it against a generated rise time.
+    - ``shear_speed_cm_s`` is **centimetres** per second, a factor of 1e5 from the
+      kilometres per second a velocity model is written in.
     """
 
     longitude_deg: FloatArray
@@ -200,24 +164,7 @@ class Points:
         return len(self.longitude_deg)
 
     def __getitem__(self, subfaults: slice | np.ndarray) -> Self:
-        """Take a subset of the subfaults.
-
-        Parameters
-        ----------
-        subfaults : slice | np.ndarray
-            A slice, or an array of indices or of booleans.
-
-        Returns
-        -------
-        Self
-            The selected subfaults, as their own `Points`.
-
-        Raises
-        ------
-        TypeError
-            If given a single index. One subfault's worth of scalars is not a
-            `Points` and pretending otherwise produces arrays of rank zero.
-        """
+        """Take a subset of the subfaults."""
         if not isinstance(subfaults, slice | np.ndarray):
             raise TypeError(
                 f"points are selected by a slice or an array, not {type(subfaults).__name__}"
@@ -244,15 +191,7 @@ class Segments(Sequence):
     """
 
     def __init__(self, planes: Sequence[PlaneHeader], points: Points) -> None:
-        """Initialise the Segments object.
-
-        Parameters
-        ----------
-        planes : Sequence[PlaneHeader]
-            The header of the SRF file.
-        points : Points
-            The points of the SRF file.
-        """
+        """Initialise the Segments object."""
         self._planes = planes
         self._points = points
 
@@ -429,13 +368,13 @@ class SrfFile:
             )
 
     @classmethod
-    def from_file(cls, srf_ffp: Path | str | Buffer) -> Self:
+    def from_file(cls, srf_ffp: Path | str) -> Self:
         """Read an srf file from a filepath.
 
         Parameters
         ----------
-        srf_ffp : Path | str | Buffer
-            Either a path-like pointing to a file, or a buffer containg raw SRF bytes.
+        srf_ffp : Path | str
+            A path-like pointing to the file.
 
         Returns
         -------
@@ -448,17 +387,14 @@ class SrfFile:
             If the file is not valid SRF.
         """
         try:
-            if isinstance(srf_ffp, (Path, str)):
-                with (
-                    open(srf_ffp, "rb") as f,
-                    mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm,
-                ):
-                    # Windows doesn't have madvise
-                    if hasattr(mm, "madvise"):
-                        mm.madvise(mmap.MADV_SEQUENTIAL)
-                    py_srf = srf_parser.parse_srf(mm)
-            else:
-                py_srf = srf_parser.parse_srf(srf_ffp)
+            with (
+                open(srf_ffp, "rb") as f,
+                mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm,
+            ):
+                # Windows doesn't have madvise
+                if hasattr(mm, "madvise"):
+                    mm.madvise(mmap.MADV_SEQUENTIAL)
+                py_srf = srf_parser.parse_srf(mm)
         except ValueError as parse_error:
             raise ParseError(str(parse_error)) from parse_error
 
@@ -631,30 +567,11 @@ class SrfFile:
         return Segments(self.planes, self.points)
 
 
-def read_srf(srf_ffp: Path | str | Buffer) -> SrfFile:
-    """Read an SRF file into an SrfFile object.
-
-    Parameters
-    ----------
-    srf_ffp : Path
-        The filepath of the SRF file.
-
-    Returns
-    -------
-    SrfFile
-        The filepath of the SRF file.
-    """
+def read_srf(srf_ffp: Path | str) -> SrfFile:
+    """Read an SRF file into an SrfFile object."""
     return SrfFile.from_file(srf_ffp)
 
 
 def write_srf(srf_ffp: str | Path, srf: SrfFile) -> None:
-    """Write an SRF object to a filepath.
-
-    Parameters
-    ----------
-    srf_ffp : Path
-        The filepath to write the srf object to.
-    srf : SrfFile
-        The SRF object.
-    """
+    """Write an SRF object to a filepath."""
     srf.write_srf(srf_ffp)

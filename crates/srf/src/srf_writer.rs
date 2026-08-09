@@ -18,22 +18,27 @@ fn lexical_write<W: Write, T: ToLexical>(
 const POINTS: &[u8] = b"POINTS ";
 const EMPTY_SLIP_TAIL: &[u8] = b" 0.0 0 0.0 0";
 
+/// The eight columns of a point's first line, space-separated, in the SRF's order.
+///
+/// `rake`, `slip1` and `rise` are not here: they open the *second* line, which
+/// `write_slip_row` writes.
 fn write_point<W: Write>(writer: &mut W, point: &Point, buffer: &mut [u8]) -> Result<()> {
-    lexical_write(writer, point.lon, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.lat, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.dep, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.stk, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.dip, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.area, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.tinit, buffer)?;
-    writer.write_all(b" ")?;
-    lexical_write(writer, point.dt, buffer)?;
+    let columns = [
+        point.lon,
+        point.lat,
+        point.dep,
+        point.stk,
+        point.dip,
+        point.area,
+        point.tinit,
+        point.dt,
+    ];
+    for (index, value) in columns.into_iter().enumerate() {
+        if index > 0 {
+            writer.write_all(b" ")?;
+        }
+        lexical_write(writer, value, buffer)?;
+    }
     Ok(())
 }
 
