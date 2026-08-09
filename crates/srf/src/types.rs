@@ -38,6 +38,10 @@ impl SrfPlane {
 /// entries, `row_ptr[0] == 0`, `row_ptr[n] == data.len()`, and row i occupies
 /// `data[row_ptr[i]..row_ptr[i + 1]]`. This holds after every `add_row`, so the
 /// matrix can be handed to scipy or iterated at any point without a fixup pass.
+/// `indices` is filled by the parser, for a caller that wants to hand the result to
+/// `scipy.sparse`, and is **empty on the write path** -- writing needs `row_ptr` and
+/// `data` only, and one `usize` per sample is gigabytes on a large rupture. Nothing
+/// in [`crate::srf_writer`] reads it.
 #[derive(Debug)]
 pub struct CsrMatrix<R = Vec<usize>, D = Vec<f32>> {
     pub indices: R,
@@ -58,8 +62,9 @@ impl<'py> IntoPyObject<'py> for CsrMatrix {
             py,
             PyCsrMatrix {
                 row_ptr: PyArray1::from_vec(py, self.row_ptr).unbind(),
-                indices: PyArray1::from_vec(py, self.indices).unbind(),
                 data: PyArray1::from_vec(py, self.data).unbind(),
+                // The parse path, so a caller can rebuild a `scipy.sparse` matrix.
+                indices: Some(PyArray1::from_vec(py, self.indices).unbind()),
             },
         )?
         .into_bound(py))

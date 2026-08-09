@@ -58,13 +58,27 @@ macro_rules! py_record {
 }
 
 py_record! {
+    /// The slip-rate matrix, as compressed sparse rows.
+    ///
+    /// `indices` is optional, and the writer never wants it. Every pulse in an SRF
+    /// starts at column zero and runs contiguously, so a sample's column is
+    /// `arange(n) - repeat(row_ptr[:-1], diff(row_ptr))` -- a function of `row_ptr`
+    /// alone, carrying no information of its own. `srf_writer` walks `row_ptr` and
+    /// `data` and never looks at it.
+    ///
+    /// It is one `usize` per *sample*, so on a twenty-fault rupture materialising it
+    /// to hand over was 7.6 GB, and the widening cast that produced it was the single
+    /// largest allocation on the path to writing a file that does not contain it.
+    /// `None` is what the writer should be given; the parser still fills it in, for a
+    /// caller that wants to hand the result to `scipy.sparse`.
     #[pyclass]
     #[derive(Debug)]
     PyCsrMatrix {
         row_ptr: Py<PyArray1<usize>>,
-        indices: Py<PyArray1<usize>>,
         data: Py<PyArray1<f32>>,
+        indices: Option<Py<PyArray1<usize>>>,
     }
+    signature = (row_ptr, data, indices = None)
 }
 
 py_record! {

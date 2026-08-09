@@ -127,7 +127,6 @@ def to_srf_file(
         )
     }
     pulse_lengths: list[np.ndarray] = []
-    pulse_samples: list[np.ndarray] = []
 
     for segment, shear_speed_km_s, density_g_cm3 in zip(
         segments, shear_speeds_km_s, densities_g_cm3, strict=True
@@ -178,9 +177,7 @@ def to_srf_file(
             np.asarray(density_g_cm3, dtype=np.float64).ravel()
         )
 
-        offsets = segment["slip_rate_offset"].to_numpy()
-        pulse_lengths.append(np.diff(offsets))
-        pulse_samples.append(segment["slip_rate"].to_numpy() * CM_PER_M)
+        pulse_lengths.append(np.diff(segment["slip_rate_offset"].to_numpy()))
 
     points = Points(
         **{
@@ -193,24 +190,61 @@ def to_srf_file(
     # segment's own start at zero, and the SRF's points are one run.
     lengths = np.concatenate(pulse_lengths) if pulse_lengths else np.empty(0, np.int64)
     offsets = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
-    samples = (
-        np.concatenate(pulse_samples) if pulse_samples else np.empty(0, np.float64)
-    )
     longest = int(lengths.max()) if len(lengths) else 0
+
+    # **The samples are converted into their final buffer, not concatenated into it.**
+    # `np.concatenate` of one scaled array per segment holds the pieces and the result
+    # at once, and both in float64 -- four copies of a quantity the format stores as
+    # float32. On the shipped twenty-fault scenario that is 944 million samples, so
+    # each copy is 7.6 GB and the peak was over 20 GB for a 3.8 GB answer.
+    #
+    # `np.multiply` with `out=` does the unit conversion and the narrowing in one pass,
+    # straight into the slice that segment owns, so only the destination is ever live.
+    samples = np.empty(int(offsets[-1]), dtype=SRF_FLOAT)
+    at = 0
+    for segment in segments:
+        source = segment["slip_rate"].to_numpy()
+        np.multiply(
+            source, CM_PER_M, out=samples[at : at + source.size], casting="unsafe"
+        )
+        at += source.size
+
     # A sample's column is its position within its own pulse, which is what makes the
-    # ragged set of pulses a CSR matrix as wide as the longest of them. Written as one
-    # ramp less its own row's start rather than as a pulse-at-a-time comprehension: the
-    # comprehension built an array object per subfault and held all of them alive to
-    # concatenate, which on the shipped twenty-fault scenario is two million objects
-    # and 7.6 GB of int64 to produce a 7.6 GB result.
-    within = np.arange(len(samples), dtype=np.int64) - np.repeat(offsets[:-1], lengths)
+    # ragged set of pulses a CSR matrix as wide as the longest of them.
+    #
+    # **Built as a cumulative sum in a single buffer**, because the obvious spellings
+    # are not single-buffer. `concatenate([arange(n) for n in lengths])` builds an array
+    # object per subfault -- two million of them, all alive at once. `arange(total) -
+    # repeat(starts, lengths)` is vectorised but materialises three arrays the length of
+    # the samples, and at this size each one is 3.8 GB.
+    #
+    # Instead: every sample's column is one more than its predecessor's, except at the
+    # start of a row where it drops back to zero. So write those increments -- ones, and
+    # `1 - previous length` at each row start -- and integrate them in place.
+    #
+    # Only non-empty rows get a reset: an empty row shares its start position with the
+    # next one, and duplicate fancy-index writes keep the last, which would take the
+    # empty row's length instead of the real previous row's.
+    #
+    # int32 because a column is bounded by the longest pulse, and scipy wants `indices`
+    # and `indptr` in one dtype -- which int32 can carry as long as there are fewer
+    # than 2^31 samples in total. Past that, int64 and twice the memory is the only
+    # option, so the choice is made on the actual count rather than assumed.
+    index_dtype = np.int32 if samples.size < np.iinfo(np.int32).max else np.int64
+    within = np.ones(samples.size, dtype=index_dtype)
+    if within.size:
+        within[0] = 0
+        occupied = lengths > 0
+        starts = offsets[:-1][occupied]
+        within[starts[1:]] = 1 - lengths[occupied][:-1]
+        np.cumsum(within, out=within)
 
     return SrfFile(
         version="2.0",
         planes=headers,
         points=points,
         slip_rate=sp.sparse.csr_array(
-            (samples.astype(SRF_FLOAT), within, offsets),
+            (samples, within, offsets.astype(index_dtype)),
             shape=(len(points.longitude_deg), longest),
         ),
     )

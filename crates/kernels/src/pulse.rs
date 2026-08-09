@@ -197,30 +197,172 @@ pub fn synthesise_pulses(
         }
     }
 
+    // Pass 1: how long every pulse is, without evaluating one. A pulse's length is a
+    // function of its rise time and `dt` alone -- that is all `samples` is -- so the
+    // whole offset array is known before any sinusoid is computed.
+    //
+    // Knowing it up front buys the two things pass 2 needs: one allocation of exactly
+    // the right size, and a set of disjoint output slices that threads can fill
+    // without talking to each other.
+    //
+    // The allocation is the memory half. Appending pulse by pulse grew the buffer by
+    // doubling, so the shipped twenty-fault scenario held 1.5x its final 7.6 GB at the
+    // last reallocation, on top of a `Vec` per subfault. It is *not* a speed fix --
+    // measured, the one-allocation serial fill takes the same 17 s the appending one
+    // did, because the cost is 2.4 billion `sin` and `cos` calls and not the copying.
+    // The speed comes from the threads, and the threads come from the slices.
     let mut offsets = Vec::with_capacity(slip_m.len() + 1);
     offsets.push(0);
-    let mut all_samples = Vec::new();
+    let mut total = 0;
     for (subfault, &slip) in slip_m.iter().enumerate() {
-        if slip.abs() > MIN_SLIP_M {
+        let length = if slip.abs() > MIN_SLIP_M {
             match shape {
-                Shape::OliuP { beta } => {
-                    oliu_p(slip, rise_time_s[subfault], beta[subfault], dt_s)
-                        .map(|pulse| all_samples.extend(pulse))
-                        .ok_or(Error::UnrepresentableRiseTime {
+                Shape::Delta => SPIKE_SAMPLES,
+                Shape::OliuP { .. } => match samples(rise_time_s[subfault], dt_s) {
+                    // The loud one. `DEFECTS.md` 21: this subfault slips, and no
+                    // number of samples at this interval can say how.
+                    0 => {
+                        return Err(Error::UnrepresentableRiseTime {
                             subfault,
                             rise_time_s: rise_time_s[subfault],
                             dt_s,
-                        })?;
-                }
-                Shape::Delta => all_samples.extend([0.0, slip / dt_s, 0.0]),
+                        });
+                    }
+                    // Too short to resolve; a fixed spike stands in for the shape.
+                    1 => SPIKE_SAMPLES,
+                    // One more sample than the duration covers, so the pulse closes.
+                    count => count + 1,
+                },
             }
-        }
-        offsets.push(all_samples.len());
+        } else {
+            0
+        };
+        total += length;
+        offsets.push(total);
+    }
+
+    let mut all_samples = vec![0.0_f64; total];
+    let job = Job {
+        slip_m,
+        rise_time_s,
+        offsets: &offsets,
+        shape,
+        dt_s,
+    };
+    if let Some(subfault) = fill(job, &mut all_samples) {
+        return Err(Error::UnrepresentableRiseTime {
+            subfault,
+            rise_time_s: rise_time_s[subfault],
+            dt_s,
+        });
     }
     Ok(CsrPulses {
         offsets,
         samples: all_samples,
     })
+}
+
+/// What every pulse in a fill needs and none of it varies by subfault.
+///
+/// A record rather than eight parameters threaded through two functions, and `Copy`
+/// so a worker takes it by value: everything in it is a shared borrow or a scalar.
+#[derive(Clone, Copy)]
+struct Job<'a> {
+    slip_m: &'a [f64],
+    rise_time_s: &'a [f64],
+    offsets: &'a [usize],
+    shape: Shape<'a>,
+    dt_s: f64,
+}
+
+/// Below this many samples the threads cost more than they save.
+///
+/// Spawning is tens of microseconds; a hundred thousand samples is under a
+/// millisecond of work. Small faults -- and every test in this crate -- take the
+/// serial path, which is also the one that stays debuggable.
+const PARALLEL_FROM_SAMPLES: usize = 100_000;
+
+/// The samples in a pulse too short for its shape to mean anything: rise, peak, fall.
+const SPIKE_SAMPLES: usize = 3;
+
+/// Fill every pulse into its own slice of `out`, over as many threads as there are
+/// cores. Returns the lowest subfault whose pulse could not be normalised, if any.
+///
+/// **The split is by sample count, not by subfault count.** Rise time varies by an
+/// order of magnitude across a fault -- deep subfaults slip for far longer than
+/// shallow ones -- so equal shares of subfaults are unequal shares of work, and the
+/// slowest thread sets the time. `offsets` is already the prefix sum of the work, so
+/// the boundary that divides it evenly is one `partition_point` away.
+///
+/// Each thread then owns a contiguous, disjoint `&mut [f64]`, handed out by
+/// `split_at_mut`. No locking, no atomics, and nothing shared but immutable inputs.
+fn fill(job: Job<'_>, out: &mut [f64]) -> Option<usize> {
+    let subfaults = job.slip_m.len();
+    let threads = if out.len() < PARALLEL_FROM_SAMPLES {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    };
+
+    let mut bounds = Vec::with_capacity(threads + 1);
+    bounds.push(0);
+    for thread in 1..threads {
+        let target = out.len() * thread / threads;
+        let at = job.offsets.partition_point(|&offset| offset < target);
+        // Monotone and in range whatever `partition_point` says: empty ranges are
+        // fine, overlapping ones would alias the output.
+        bounds.push(at.clamp(bounds[thread - 1], subfaults));
+    }
+    bounds.push(subfaults);
+
+    let mut remaining = out;
+    let mut pieces = Vec::with_capacity(threads);
+    for window in bounds.windows(2) {
+        let (start, end) = (window[0], window[1]);
+        let (mine, rest) = remaining.split_at_mut(job.offsets[end] - job.offsets[start]);
+        pieces.push((start, end, mine));
+        remaining = rest;
+    }
+
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = pieces
+            .into_iter()
+            .map(|(start, end, mine)| scope.spawn(move || fill_range(job, mine, start, end)))
+            .collect();
+        workers
+            .into_iter()
+            .filter_map(|worker| worker.join().expect("a pulse worker panicked"))
+            .min()
+    })
+}
+
+/// One thread's share: subfaults `start..end`, whose samples are exactly `mine`.
+fn fill_range(job: Job<'_>, mine: &mut [f64], start: usize, end: usize) -> Option<usize> {
+    let base = job.offsets[start];
+    for subfault in start..end {
+        let pulse = &mut mine[job.offsets[subfault] - base..job.offsets[subfault + 1] - base];
+        if pulse.is_empty() {
+            continue;
+        }
+        let slip = job.slip_m[subfault];
+        let written = match job.shape {
+            Shape::OliuP { beta } => oliu_p_into(
+                pulse,
+                slip,
+                job.rise_time_s[subfault],
+                beta[subfault],
+                job.dt_s,
+            ),
+            Shape::Delta => {
+                pulse.copy_from_slice(&[0.0, slip / job.dt_s, 0.0]);
+                true
+            }
+        };
+        if !written {
+            return Some(subfault);
+        }
+    }
+    None
 }
 
 /// The `OliuP` slip-rate function: a piecewise sinusoid after Liu, Archuleta &
@@ -240,28 +382,29 @@ pub fn synthesise_pulses(
 ///
 /// A duration of about one sample gives a fixed three-point spike rather than
 /// anything computed — the shape is meaningless at that resolution, so a triangle
-/// stands in, which is also what [`Shape::Delta`] is. A duration under half a sample
-/// gives `None`: that pulse cannot exist, and the caller decides how loud to be
-/// about it.
+/// stands in, which is also what [`Shape::Delta`] is.
+///
+/// `values` is the caller's slice of the output buffer, already the length pass 1
+/// worked out for this subfault, and already zero. Writing into it rather than
+/// returning a `Vec` is what keeps the whole synthesis to one allocation: a fault of
+/// two million subfaults was two million heap allocations and a copy of every sample
+/// out of each. `false` means the pulse could not be normalised.
 ///
 /// (orig. `gen_OliuP_stf`, `gslip_sliprate_subs.c`)
-fn oliu_p(slip: f64, duration_s: f64, beta: f64, dt_s: f64) -> Option<Vec<f64>> {
+fn oliu_p_into(values: &mut [f64], slip: f64, duration_s: f64, beta: f64, dt_s: f64) -> bool {
     let count = samples(duration_s, dt_s);
-    if count == 0 {
-        return None;
-    }
     if count == 1 {
         // Too short to resolve. A fixed spike, not a computed shape.
-        return normalise(vec![0.0, 1.0, 0.0], slip, dt_s);
+        values.copy_from_slice(&[0.0, 1.0, 0.0]);
+        return normalise(values, slip, dt_s);
     }
 
     let rise_end = beta * duration_s;
     let peak_end = 2.0 * rise_end;
     let decay_span = duration_s - rise_end;
 
-    // One more sample than the duration covers, left at the zero it was allocated
+    // One more sample than the duration covers, left at the zero the buffer arrived
     // with, so the pulse closes.
-    let mut values = vec![0.0_f64; count + 1];
     for (index, value) in values.iter_mut().enumerate().take(count).skip(1) {
         let time = exact(index) * dt_s;
         *value = if time < rise_end {
@@ -285,17 +428,17 @@ fn oliu_p(slip: f64, duration_s: f64, beta: f64, dt_s: f64) -> Option<Vec<f64>> 
 ///
 /// Shared so that "conserves slip" is one line of code rather than a property each
 /// shape has to remember to have. A non-positive integral means the shape
-/// degenerated at this resolution; `None` here becomes
+/// degenerated at this resolution; `false` here becomes
 /// [`Error::UnrepresentableRiseTime`] at the subfault that owns the pulse, because
 /// only the caller knows which one that is.
-fn normalise(mut values: Vec<f64>, slip: f64, dt_s: f64) -> Option<Vec<f64>> {
+fn normalise(values: &mut [f64], slip: f64, dt_s: f64) -> bool {
     let integral: f64 = values.iter().map(|value| dt_s * value).sum();
     if !integral.is_finite() || integral <= 0.0 {
-        return None;
+        return false;
     }
     let scale = slip / integral;
-    for value in &mut values {
+    for value in values {
         *value *= scale;
     }
-    Some(values)
+    true
 }

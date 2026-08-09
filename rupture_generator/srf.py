@@ -497,10 +497,18 @@ class SrfFile:
             else None,
         )
 
+        # **No `indices`.** The writer walks `row_ptr` and `data`
+        # (`crates/srf/src/srf_writer.rs`) and never asks a sample which column it is
+        # in -- every pulse starts at column zero, so `indptr` already says. Widening
+        # `indices` to `uint64` to hand it over was one `uint64` per sample: 7.6 GB on
+        # the twenty-fault scenario, allocated to be ignored, and the largest single
+        # thing standing between that rupture and an SRF.
+        #
+        # `asarray` rather than `astype` for the data, which already arrives as float32
+        # from `assemble.to_srf_file`; `astype` would copy 3.8 GB to change nothing.
         slipt1 = srf_parser.PyCsrMatrix(
             row_ptr=self.slip_rate.indptr.astype(np.uint64),
-            indices=self.slip_rate.indices.astype(np.uint64),
-            data=self.slip_rate.data.astype(np.float32),
+            data=np.asarray(self.slip_rate.data, dtype=np.float32),
         )
 
         py_srf_file = srf_parser.PySrfFile(planes, metadata, slipt1)
@@ -544,7 +552,11 @@ class SrfFile:
             h5file.attrs.create("VERSION", np.float32(self.version))
             h5file.attrs.create("PLANE", plane_data)
             h5file.create_dataset("POINTS", data=points_data)
-            h5file.create_dataset("SR1", data=self.slip_rate.data.astype(np.float32))
+            # `asarray`, not `astype`: already float32, and a copy here is 3.8 GB on a
+            # twenty-fault rupture.
+            h5file.create_dataset(
+                "SR1", data=np.asarray(self.slip_rate.data, dtype=np.float32)
+            )
 
     @property
     def nt(self):  # numpydoc ignore=RT01
