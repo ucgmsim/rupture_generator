@@ -1,16 +1,15 @@
 # A crustal M6.2, in the shape `rupture-generator generate` reads.
 #
-# Every field here carries the same name and unit as the argument it feeds in the
-# compiled core -- `tests/test_config_completeness.py` checks that mechanically, in both
-# directions, so a knob the generator has is always reachable and a key here is never
-# read and dropped.
+# This is the only description of a rupture model in the package: the stages take
+# frozen parameter objects built from these classes, and the kernels take arrays, so
+# there is nothing for a second copy to disagree with.
 
 schema_version = 1
 title = "Crustal M6.2"
 
-# Where the rupture starts, in the plane's own coordinates: along strike from the i = 0
+# Where the rupture starts, in the fault's own coordinates: along strike from the j = 0
 # end, and down dip from the top edge. Arc lengths rather than cell indices, so they mean
-# the same thing whatever the plane is cut into.
+# the same thing whatever the fault is cut into.
 [hypocentre]
 strike_km = 12.0
 dip_km = 6.0
@@ -25,12 +24,15 @@ density_g_cm3    = [2.1, 2.5, 2.7, 3.2]
 [source]
 type = "finite"
 magnitude = 6.2
+# The corner relation. `mai` is what production selects and the only one left; the
+# others are refused by name, saying they were removed.
 model = "mai"
 average_dip_deg = 70.0
 average_rake_deg = 175.0
 
 [slip]
-model = "mai"
+# The spectral falloff. von Karman is Mai's own, and the only one left.
+shape = "von_karman"
 # Dimensionless: the slip field's spread. `rake_sigma_deg` below is the rake field's and
 # is in degrees -- handing one to the other is DEFECTS.md 14, a factor of twenty on every
 # fault, which is why they never appear as bare numbers in the same expression.
@@ -38,6 +40,7 @@ coefficient_of_variation = 0.75
 rake_sigma_deg = 15.0
 
 [timing]
+# Seconds, and negative: high-slip patches rupture systematically earlier.
 rupture_time_scale = -0.35
 rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
 shallow_ramp      = { centre_km = 6.5,  half_width_km = 1.5 }
@@ -46,8 +49,8 @@ beta_shallow_ramp = { centre_km = 2.0,  half_width_km = 1.0 }
 beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
 
 [random]
-# `pcg` is PCG64-DXSM. `genslip_lcg` reproduces genslip v5.6.2 bit for bit and is the
-# default, so a config that says nothing keeps producing what it always has.
-engine = "pcg"
+# One event seed; every stage draws from its own named substream of it, so changing one
+# stage's parameters cannot change another stage's noise. `realisation` selects an
+# independent stream from the same seed, which is what makes a campaign restartable.
 seed = 1234
 realisation = 0

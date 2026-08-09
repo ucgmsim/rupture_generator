@@ -28,6 +28,17 @@ error here, whatever else changes.
 from __future__ import annotations
 
 import dataclasses
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from rupture_generator import _kernels
+from rupture_generator.stages import DepthRamp
+
+if TYPE_CHECKING:
+    from rupture_generator.mesh import RuptureMesh
+
+FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
 REMOVED_SHAPES = ("brune", "urs", "esg2006", "cos", "seki")
 """Shapes the rewrite removed. Refused by name, not treated as typos, because the
@@ -123,4 +134,90 @@ def from_stype(stype: str) -> ResolvedShape:
     )
 
 
-__all__ = ["REMOVED_SHAPES", "ResolvedShape", "from_stype"]
+@dataclasses.dataclass(frozen=True)
+class PulseParams:
+    """How each subfault's slip-rate pulse is shaped and sampled.
+
+    Attributes
+    ----------
+    shape : ResolvedShape
+        Already resolved from the config's ``stype`` spelling by :func:`from_stype`,
+        so the kernel never sees a name it has to interpret.
+    shallow_ramp, mid_ramp : DepthRamp
+    beta_shallow, beta_mid, beta_deep : float
+        The rising fraction of the pulse, by depth. Shallow subfaults get the
+        largest value -- a longer rising limb, so a less impulsive pulse near the
+        free surface. Ignored when the shape carries its own fixed beta.
+    sample_interval_s : float
+        The pulse's own sample rate, and the SRF's ``dt``.
+    """
+
+    shape: ResolvedShape
+    shallow_ramp: DepthRamp = DepthRamp(2.0, 1.0)  # noqa: RUF009
+    mid_ramp: DepthRamp = DepthRamp(6.5, 1.5)  # noqa: RUF009
+    beta_shallow: float = 0.5
+    beta_mid: float = 0.13
+    beta_deep: float = 0.13
+    sample_interval_s: float = 0.005
+
+    def beta_at(self, depth_km: FloatArray) -> FloatArray:
+        """The rising fraction at each depth, ramping between the three values."""
+        shallow_weight = self.shallow_ramp.weight(depth_km)
+        mid_weight = self.mid_ramp.weight(depth_km)
+        return (
+            self.beta_shallow
+            + (self.beta_mid - self.beta_shallow) * shallow_weight
+            + (self.beta_deep - self.beta_mid) * mid_weight
+        )
+
+
+def synthesise(
+    mesh: RuptureMesh,
+    slip_m: FloatArray,
+    rise_time_s: FloatArray,
+    params: PulseParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """S9: a slip-rate pulse for every subfault, as CSR rows.
+
+    The kernel guarantees ``dt * sum(pulse) == slip`` exactly, whatever the shape, and
+    refuses -- naming the subfault -- a subfault that slips at a rise time its shape
+    cannot sample at this interval. That refusal is `DEFECTS.md` 21: silently emitting
+    nothing there dropped 0.63% of the moment on the seed-1234 fixture, and nothing
+    downstream could tell the difference between a subfault that did not slip and one
+    whose pulse was thrown away.
+
+    Returns
+    -------
+    tuple of np.ndarray
+        Offsets (length subfaults + 1) and concatenated samples in metres per second,
+        flattened along strike fastest.
+    """
+    flat_slip = np.ascontiguousarray(slip_m, dtype=np.float64).ravel()
+    flat_rise = np.ascontiguousarray(rise_time_s, dtype=np.float64).ravel()
+
+    if params.shape.kernel == "delta":
+        return _kernels.synthesise_pulses(
+            flat_slip, flat_rise, params.sample_interval_s, "delta"
+        )
+
+    if params.shape.beta is None:
+        beta = params.beta_at(mesh.centres()[..., 2]).ravel()
+    else:
+        beta = np.full(flat_slip.shape, params.shape.beta, dtype=np.float64)
+
+    return _kernels.synthesise_pulses(
+        flat_slip,
+        flat_rise * params.shape.duration_scale,
+        params.sample_interval_s,
+        "oliu_p",
+        beta,
+    )
+
+
+__all__ = [
+    "REMOVED_SHAPES",
+    "PulseParams",
+    "ResolvedShape",
+    "from_stype",
+    "synthesise",
+]

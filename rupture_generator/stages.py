@@ -463,7 +463,21 @@ def onset_times(
         scaled = scaled.copy()
         scaled[hypocentre] = 0.0
 
-    return travel_time_s + params.scale_s * scaled + params.delay_s
+    onset = travel_time_s + params.scale_s * scaled + params.delay_s
+
+    if hypocentre is None:
+        return onset
+
+    # Nothing ruptures before the earthquake starts. The perturbation is signed and
+    # the scale is negative, so a high-slip patch close to the hypocentre can be
+    # pulled earlier than the hypocentre itself -- measured at -0.04 s on the shipped
+    # example, which is a subfault radiating before the event it belongs to.
+    #
+    # Clamping is also what makes the pinning assertable both ways: with it, the
+    # hypocentre's onset is exactly the delay *and* the delay is the minimum of the
+    # field. Without it only the first is true, and "the rupture starts at the
+    # hypocentre" stops being a statement about the file.
+    return np.maximum(onset, params.delay_s)
 
 
 __all__ = [

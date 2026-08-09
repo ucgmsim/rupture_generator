@@ -18,6 +18,7 @@ asserted at the origin and nowhere else would have missed it entirely.
 from __future__ import annotations
 
 import hypothesis.strategies as st
+import numpy as np
 
 from rupture_generator.config.geometry import (
     Discretisation,
@@ -26,6 +27,9 @@ from rupture_generator.config.geometry import (
     PlaneConfig,
     PointConfig,
 )
+from rupture_generator.mesh import RuptureMesh
+from rupture_generator.sampling import CovarianceSpec
+from rupture_generator.stages import DepthRamp
 
 # New Zealand, where EPSG:2193 is valid and where the convergence angle is worth
 # something. The latitude band is what keeps a generated trace inside the projection's
@@ -173,6 +177,78 @@ def point_sources(draw: st.DrawFn) -> PointConfig:
         dip_deg=dip_deg,
         size_km=size_km,
     )
+
+
+@st.composite
+def planar_charts(
+    draw: st.DrawFn,
+    *,
+    min_cells: int = 4,
+    max_cells: int = 24,
+    at_crs_scale: bool | None = None,
+) -> RuptureMesh:
+    """A single planar chart, built from nodes rather than from a config.
+
+    The field stages do not care how a chart was digitised -- only that it is a
+    regular grid with a depth at every subfault -- so building one directly is both
+    cheaper than routing through `build_fault` and able to reach shapes a trace
+    cannot conveniently produce (a very long thin fault, a nearly square one).
+
+    The plane strikes due north and dips east, which is a choice with no content:
+    every stage here reads depths, spacings and cell counts, and none of them reads
+    an azimuth.
+    """
+    cells_j = draw(st.integers(min_value=min_cells, max_value=max_cells))
+    cells_i = draw(st.integers(min_value=min_cells, max_value=max_cells))
+    strike_km = draw(st.floats(min_value=0.5, max_value=3.0, allow_nan=False))
+    dip_km = draw(st.floats(min_value=0.5, max_value=3.0, allow_nan=False))
+    dip_deg = draw(DIPS)
+    top_depth_km = draw(st.floats(min_value=0.0, max_value=4.0, allow_nan=False))
+
+    if at_crs_scale is None:
+        at_crs_scale = draw(st.booleans())
+    origin = (1500.0, 5180.0) if at_crs_scale else (0.0, 0.0)
+
+    along = np.arange(cells_j + 1) * strike_km
+    down = np.arange(cells_i + 1) * dip_km
+    east = np.tile(down[:, None] * _cos_deg(dip_deg), (1, cells_j + 1))
+    north = np.tile(along[None, :], (cells_i + 1, 1))
+    depth = top_depth_km + np.tile(down[:, None] * _sin_deg(dip_deg), (1, cells_j + 1))
+
+    return RuptureMesh.from_nodes(
+        east,
+        north,
+        depth,
+        origin_east_km=origin[0],
+        origin_north_km=origin[1],
+        surface="generated",
+    )
+
+
+@st.composite
+def covariances(draw: st.DrawFn) -> CovarianceSpec:
+    """A field structure, over the range magnitudes 5 to 8 produce."""
+    return CovarianceSpec(
+        correlation_length_strike_km=draw(
+            st.floats(min_value=1.0, max_value=40.0, allow_nan=False)
+        ),
+        correlation_length_dip_km=draw(
+            st.floats(min_value=1.0, max_value=20.0, allow_nan=False)
+        ),
+    )
+
+
+@st.composite
+def depth_ramps(draw: st.DrawFn) -> DepthRamp:
+    """A linear depth transition, always with a positive width."""
+    return DepthRamp(
+        centre_km=draw(st.floats(min_value=1.0, max_value=30.0, allow_nan=False)),
+        half_width_km=draw(st.floats(min_value=0.25, max_value=5.0, allow_nan=False)),
+    )
+
+
+MAGNITUDES = st.floats(min_value=5.0, max_value=8.5, allow_nan=False)
+SEEDS = st.integers(min_value=0, max_value=2**32 - 1)
 
 
 def _sin_deg(degrees: float) -> float:

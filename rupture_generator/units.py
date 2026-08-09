@@ -38,6 +38,11 @@ CM2_PER_KM2 = M2_PER_KM2 * CM2_PER_M2
 """Square centimetres per square kilometre: the mesh's area unit straight to the
 SRF's, composed from the two conversions above rather than being a third fact."""
 
+CM_PER_KM = CM_PER_M * M_PER_KM
+"""Centimetres per kilometre. A velocity model writes shear speed in km/s and an SRF
+version 2.0 point stores it in cm/s -- a factor of 1e5 that crosses at the SRF
+assembler and nowhere else."""
+
 SRF_FLOAT = np.float32
 """What an SRF file's numbers are.
 

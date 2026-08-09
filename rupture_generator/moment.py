@@ -25,11 +25,18 @@ from rupture_generator.units import M2_PER_KM2
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
-MAGNITUDE_COEFFICIENT = 6.0333003
-"""The constant in eq. 7's SI form.
+MAGNITUDE_COEFFICIENT = 10.699967 - 7.0 / 1.5
+"""The constant in eq. 7's SI form, at full precision.
 
-The CGS literature writes 10.699967 for dyne-centimetres; the two differ by the
-``1e7`` between the units, and this is the one the paper published.
+The seismological literature and genslip both write **10.699967** for the
+dyne-centimetre form. Newton-metres are ``1e7`` larger, and the relation's slope is
+1.5, so the SI constant is exactly that much smaller -- about 6.0333003, which is the
+6.03 the paper rounds to.
+
+Written as the derivation rather than as its decimal expansion because rounding it at
+the seventh figure moves the moment by 1.2e-7 relative: harmless, and needless, and
+the kind of gratuitous disagreement between two forms of one constant that makes a
+later comparison ambiguous.
 """
 
 

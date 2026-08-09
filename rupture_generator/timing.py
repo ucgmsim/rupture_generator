@@ -169,8 +169,11 @@ def speed_field(
 
     if not np.all(speed > 0.0):
         worst = np.unravel_index(int(np.argmin(speed)), speed.shape)
+        # Plain ints: numpy's own scalars repr as `np.int64(2)`, which turns a
+        # subfault's coordinates into something nobody wants to read in an error.
+        located = tuple(int(index) for index in worst)
         raise ValueError(
-            f"the rupture speed at subfault {worst} is {float(speed[worst]):.4g} "
+            f"the rupture speed at subfault {located} is {float(speed[worst]):.4g} "
             "km/s, which the front can never travel at. Check the velocity model's "
             "shear speeds and the depth ramps"
         )
