@@ -244,8 +244,19 @@ def _from_rupture_file(path: Path) -> list[Segment]:
 
         origin = None
         for name, dataset in found:
-            east = dataset["node_east_km"].to_numpy() * 1000.0
-            north = dataset["node_north_km"].to_numpy() * 1000.0
+            # **Each segment's nodes are offsets from that segment's own origin**, so
+            # the origin goes back on before anything is compared or drawn across
+            # segments. Without it every fault is placed about its own datum and the
+            # twenty of them land on top of each other -- the same trap
+            # `propagation.causal_jump` names when it differences two charts.
+            east = (
+                dataset["node_east_km"].to_numpy()
+                + float(dataset.attrs["origin_east_km"])
+            ) * 1000.0
+            north = (
+                dataset["node_north_km"].to_numpy()
+                + float(dataset.attrs["origin_north_km"])
+            ) * 1000.0
             up = -dataset["node_depth_km"].to_numpy() * 1000.0
             nodes = np.stack([east, north, up], axis=-1)
             if origin is None:
@@ -541,12 +552,20 @@ class CumulativeSlip:
         # of a pulse here, which is nine digits more than a colour ramp can show.
         self.integral = segment.pulse_samples
         np.cumsum(self.integral, out=self.integral)
+        # Where a row starts partway through, its own zero is the value just before it.
+        # Clipped because a row that starts at zero has nothing before it, and a segment
+        # on which nothing slips has no integral to read at all.
+        last = max(self.integral.size - 1, 0)
         self.before = np.where(
-            self.starts > 0, self.integral[self.starts - 1], 0.0
+            self.starts > 0,
+            self.integral[np.clip(self.starts - 1, 0, last)] if self.integral.size else 0.0,
+            0.0,
         )
 
     def _sampled(self, index: np.ndarray) -> np.ndarray:
         """Each row's running total at its own `index`, zero where it has no pulse."""
+        if not self.integral.size:
+            return np.zeros(self.lengths.size, dtype=np.float64)
         # A row with no pulse is read at position zero and masked out afterwards. It
         # cannot be read at its own start: a subfault that does not slip has none, and
         # if it is the last one that start is one sample past the end of the integral.
@@ -590,6 +609,44 @@ def strided(segment: Segment, stride: int) -> np.ndarray:
     rows = np.arange(0, cells_i, stride)
     columns = np.arange(0, cells_j, stride)
     return (rows[:, None] * cells_j + columns[None, :]).ravel()
+
+
+def strided_corners(segment: Segment, stride: int) -> np.ndarray:
+    """The drawn quads: one per `stride` x `stride` block, spanning the whole block.
+
+    **The colour is one subfault's; the extent is the block's.** Drawing the sampled
+    subfault at its own size instead leaves the other ``stride**2 - 1`` as holes, and
+    on a 100 m mesh strided by seven that is a 100 m quad every 700 m -- which reads
+    as a point cloud rather than as a fault. Neighbouring blocks take their shared
+    edge from the same cell corners, so the drawn surface closes.
+
+    This still paints no value that no subfault has, which is what `stride_for`
+    refuses to give up: `strided` picks the one real subfault each block is coloured
+    by, and nothing here averages.
+    """
+    cells_i, cells_j = segment.cells
+    rows = np.arange(0, cells_i, stride)
+    columns = np.arange(0, cells_j, stride)
+    # The last cell each block reaches; the final block is short where the stride does
+    # not divide the grid.
+    row_ends = np.minimum(rows + stride - 1, cells_i - 1)
+    column_ends = np.minimum(columns + stride - 1, cells_j - 1)
+
+    def flat(down: np.ndarray, along: np.ndarray) -> np.ndarray:
+        return (down[:, None] * cells_j + along[None, :]).ravel()
+
+    corners = segment.corners_m
+    # Corner k of the block is corner k of the cell that sits at that corner of it --
+    # the ordering `load` builds, anticlockwise from the shallow near corner.
+    return np.stack(
+        [
+            corners[flat(rows, columns), 0],
+            corners[flat(rows, column_ends), 1],
+            corners[flat(row_ends, column_ends), 2],
+            corners[flat(row_ends, columns), 3],
+        ],
+        axis=1,
+    )
 
 
 def slip_direction(segment: Segment, keep: np.ndarray) -> np.ndarray:
@@ -771,13 +828,15 @@ def log_rupture(
     """Log every panel, over the rupture's own timeline."""
     stride = stride_for(segments, max_cells)
     kept = {segment.name: strided(segment, stride) for segment in segments}
+    quads = {segment.name: strided_corners(segment, stride) for segment in segments}
 
     summary, _, _, _ = statistics(segments)
     drawn = sum(len(indices) for indices in kept.values())
     total = sum(segment.slip_m.size for segment in segments)
     note = f"\n\nRead from a {provenance}." + (
-        f"\n\n**Displayed at 1 cell in {stride}²** — {drawn:,} of {total:,} "
-        "subfaults drawn. Every statistic and histogram above uses all of them."
+        f"\n\n**Coloured by 1 subfault in {stride}²** — {drawn:,} of {total:,} "
+        f"sampled, each drawn over the {stride}×{stride} block it stands for. No value "
+        "is averaged, and every statistic and histogram above uses all of them."
         if stride > 1
         else ""
     )
@@ -794,7 +853,7 @@ def log_rupture(
     ]
     times_s = np.arange(min(starts), max(ends) + time_step, time_step)
 
-    _log_static_fields(rerun, segments, kept, bins)
+    _log_static_fields(rerun, segments, kept, quads, bins)
     _log_hypocentre(rerun, segments)
 
     # `moment_release` reads the slip *rates*; building the clocks overwrites them with
@@ -816,9 +875,7 @@ def log_rupture(
             current = slipped[segment.name].at(float(moment_s))
             rerun.log(
                 f"/fault/slip/{segment.name}",
-                _mesh(
-                    rerun, segment.corners_m[indices], hot(current[indices], 0.0, peak)
-                ),
+                _mesh(rerun, quads[segment.name], hot(current[indices], 0.0, peak)),
             )
             frame.append(current)
         rerun.log(
@@ -833,6 +890,7 @@ def _log_static_fields(
     rerun,  # noqa: ANN001
     segments: list[Segment],
     kept: dict[str, np.ndarray],
+    quads: dict[str, np.ndarray],
     bins: int,
 ) -> None:
     """Rise time and rake, which are properties of the finished rupture."""
@@ -846,7 +904,7 @@ def _log_static_fields(
             f"/fault/rise_time/{segment.name}",
             _mesh(
                 rerun,
-                segment.corners_m[indices],
+                quads[segment.name],
                 viridis(segment.rise_time_s.ravel()[indices], low, high),
             ),
             static=True,
@@ -926,6 +984,7 @@ __all__ = [
     "rose",
     "statistics",
     "stride_for",
+    "strided_corners",
     "view",
     "viridis",
 ]
