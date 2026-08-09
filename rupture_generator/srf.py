@@ -5,8 +5,9 @@ The format: https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On
 The in-memory model is arrays, one per field, named for what they hold and in what
 unit. `SrfFile.points` is a `Points`, not a table: `points.onset_s` is a float32
 array of one onset per subfault, and delaying a rupture is `points.onset_s += 1`.
-The names match `GeneratedRupture` and `assemble.SubfaultGeometry` field for field,
-so assembling an SRF out of a generated rupture is a copy rather than a translation.
+`assemble.py` fills these from a generated segment, converting SI into the
+centimetres and dyne-centimetres the format stores -- which is the only place in the
+package that conversion happens.
 
 Use `qcore.srf` instead if you will not read the whole file -- that one streams and
 this one does not -- or if you are already working with it. This module exists because

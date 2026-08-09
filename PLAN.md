@@ -1,8 +1,9 @@
 # PLAN — the pipeline rewrite
 
-This document is the basis for a ground-up restructure of this repository. It is written
-to be executed in phases by agents; each phase has a deliverable and acceptance criteria.
-Nothing in it is implemented yet.
+This document is the basis for a ground-up restructure of this repository. It was
+written to be executed in phases, each with a deliverable and acceptance criteria, and
+it has been. **Section 10 records what happened**, including the four places the plan
+turned out to be wrong -- read it alongside anything above, which is left as written.
 
 **Design decisions this plan encodes** (settled with the author, 2026-08-09):
 
@@ -468,3 +469,86 @@ It is not a port. Where this document and genslip disagree, this document wins; 
 this document and a measured property disagree, the property wins and the document gets
 corrected. The C is a historical reference for *what defects exist*, not for what the
 code should look like — and a second reading of it is still not a reference.
+
+---
+
+## 10. What happened
+
+Written after the fact, because §9 says a measured property beats this document and
+several did. Line counts are Rust and Python, excluding tests.
+
+| | planned | delivered |
+| --- | --- | --- |
+| crates | 2 | 2 (`kernels`, `srf`) |
+| library | ~13k, "half of 26k" | **10.8k** (7.9k Python, 2.9k Rust) |
+| tests | — | 4.3k, for 110 Python properties and 28 Rust contracts |
+
+The survey counted ~26k lines against a budget of "roughly half"; the library is 10.8k,
+of which 2.5k is the `srf` crate carried over untouched. §7.5 warned that consolidation
+estimates run over and only whole-file deletions hit theirs. Here the deletions were
+most of it.
+
+### Where the plan was wrong
+
+**S8's hypocentre pinning was not a property of the model it described.** §2 said "the
+hypocentre's onset is pinned to its travel time" and §6 named "the hypocentre cell's
+onset is the minimum of the onset field" as the tier-2 property. genslip does neither:
+it subtracts the perturbed field's *global minimum*, which with a non-zero perturbation
+leaves some other cell earliest. The stage now pins the seed cell's perturbation to zero
+and clamps the field at the delay, which makes both halves assertable — and the clamp
+turned out to be load-bearing rather than tidy, because without it onsets came out
+**negative** (−0.043 s on the shipped example): a subfault radiating before the
+earthquake it belongs to.
+
+**The causal jump needed a distance bound, and the bound is physics.** §2 said the
+minimisation domain "may be restricted to the near-approach region" as an implementation
+choice and that the exhaustive cost should be measured first. That framing treats the
+restriction as an optimisation. It is not: a rupture crosses a gap at roughly the shear
+speed but travels along a fault at a *fraction* of it, so an unbounded search discovers
+that leaving the hypocentre and crossing tens of kilometres of intact rock beats
+propagating there. Measured at a **28 km "jump"** on the two-segment example, arriving
+before the front had covered a third of the first fault. The search is now bounded by
+the same distance that decides whether two faults are connected at all.
+
+**A bend skews by the dip's horizontal reach, not by its own stretch.** The
+one-over-cosine stretch that places a shared seam column is bounded by the 120° trace
+limit, and §2 implicitly treated that as bounding the *surface*. It does not. Rotating
+the down-dip direction by half the deflection swings the bottom edge by
+`depth_span / tan(dip)` — 46 km on a fault dipping 5° — so a shallow fault turning
+sharply produces a chart with a 27.8 km top edge and an 11.2 km bottom one. Still
+planar, still evenly divided line by line, and with no single spacing. S3 bounds the
+measured spread rather than the deflection.
+
+**`source_modelling.rupture_propagation` came in without its dependency.** §2 said to
+reuse the module. Extracting it instead removed `networkx` and `qcore` — Wilson's
+algorithm and Kruskal's are forty lines and twenty-five for graphs with single-digit
+node counts — and bought a sharper test: the exponential tree enumeration that module
+carries in production is not needed at runtime and is a *genuine reference* for the
+sampler, being a different algorithm. They agree to within four standard errors over
+sixty thousand draws.
+
+### Decisions taken that the plan left open
+
+- **Units are MKS** (decision 0, added during the work). The magnitude constant is now
+  Hanks & Kanamori's own published SI coefficient rather than a conversion of the
+  dyne-centimetre form, and is written as the derivation so the two cannot drift.
+- **The edge taper is separable.** genslip has two profiles that agree while the ramps
+  stay apart and disagree once they overlap; the separable form is the one a taper
+  should be, and overlapping tapers are refused so the disagreement region is
+  unrepresentable.
+- **The sampler protocol has three methods, not two.** §3.4's `correlated_pair` would
+  have correlated each field against a *freshly drawn* slip distribution rather than the
+  one the rupture has — right in every marginal statistic and wrong in the only way that
+  matters. `sample_with_reference` and `correlated_with` carry one reference across
+  stages.
+- **The spectral sampler pads by at least two cells.** genslip's `even(floor(1.10 n))`
+  returns `n` itself for every extent below ten, and for exactly 4 and 8 — no wraparound
+  margin at all. Reproduced faithfully by the port; not defensible.
+- **Fusion produces segments rather than refusals**, and the causality tree is over
+  segments. A surface whose planes do not all share a seam becomes `surface:0`,
+  `surface:1`, because those parts are what rupture.
+
+### Still open
+
+`KernelSampler` and deleting S3; curved charts; stochastic jump gating. All three are
+where §8 left them, and the seams they enter through are the ones it named.
