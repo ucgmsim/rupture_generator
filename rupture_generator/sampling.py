@@ -96,27 +96,42 @@ class CovarianceSpec:
 
 
 def correlation_lengths(
-    magnitude: float, *, strike_offset: float = 2.50, dip_offset: float = 1.50
+    magnitude: float,
+    *,
+    strike_offset: float = 2.50,
+    dip_offset: float = 1.50,
+    strike_exponent: float = 0.5,
+    dip_exponent: float = 0.3333,
 ) -> CovarianceSpec:
-    """Mai & Beroza (2002)'s correlation lengths for a magnitude.
+    """A corner relation's correlation lengths for a magnitude, in kilometres.
 
     .. math::
 
-        \\lambda_{strike} = 10^{0.5 M_w - a}, \\qquad
-        \\lambda_{dip}    = 10^{0.3333 M_w - b}
+        \\lambda_{strike} = 10^{c_{s} M_w - a}, \\qquad
+        \\lambda_{dip}    = 10^{c_{d} M_w - b}
 
-    in kilometres. **0.3333, not one third**: the difference is in the fourth decimal
-    of the exponent, which at M8 is about a percent of the corner, and the literal is
-    what the relation was fitted and published with.
+    A corner relation is a straight line in log-length against magnitude, so those
+    four numbers are the whole of one: an exponent and an offset per axis. **The
+    defaults are Mai & Beroza (2002)** -- ``c = 0.5, 0.3333`` and ``a, b = 2.50,
+    1.50`` -- which is what a config naming ``mai`` takes, and stating four of your
+    own is what a config naming ``custom`` does.
 
-    The three relations this replaced -- Somerville, Suzuki, Given -- are refused by
-    name in the config, because output cannot adjudicate between them: `DEFECTS.md`
-    11 records that Mai and Somerville cross over at M7.37, so a comparison below
-    that magnitude says whichever one you started from is right.
+    **0.3333, not one third**: the difference is in the fourth decimal of the
+    exponent, which at M8 is about a percent of the corner, and the literal is what
+    the relation was fitted and published with.
+
+    The three named relations this replaced -- Somerville, Suzuki, Given -- are still
+    refused by name in the config rather than re-spelled here as coefficients,
+    because a name is a claim output cannot adjudicate: `DEFECTS.md` 11 records that
+    Mai and Somerville cross over at M7.37, so a comparison below that magnitude says
+    whichever one you started from is right. A reader who has the coefficients and a
+    reason can still state them as a ``custom`` relation, where the file says the
+    numbers rather than a name that stands in for them.
     """
     return CovarianceSpec(
-        correlation_length_strike_km=10.0 ** (0.5 * magnitude - strike_offset),
-        correlation_length_dip_km=10.0 ** (0.3333 * magnitude - dip_offset),
+        correlation_length_strike_km=10.0
+        ** (strike_exponent * magnitude - strike_offset),
+        correlation_length_dip_km=10.0 ** (dip_exponent * magnitude - dip_offset),
     )
 
 
@@ -226,7 +241,7 @@ class SpectralSampler:
         # `i` is down dip and `j` along strike, so the row frequencies are the dip
         # ones. The outer product below carries that.
         k_dip = np.fft.fftfreq(padded_i, d=dip_km)[:, None]
-        k_strike = np.fft.fftfreq(padded_j, d=strike_km)[None, :]
+        k_strike = np.fft.rfftfreq(padded_j, d=strike_km)[None, :]
 
         normalised = (k_strike * covariance.correlation_length_strike_km) ** 2 + (
             k_dip * covariance.correlation_length_dip_km
@@ -236,86 +251,46 @@ class SpectralSampler:
         # origin, `2 ** -(H+1)` on the corner ellipse, and `a ** -(H+1)` far above.
         shape = (1.0 + normalised) ** (-(covariance.hurst + 1.0) / 2.0)
 
-        # The band-pass keeps the field off the grid's own resolution limit, whose
-        # wavelength is derived here and never written down as a constant: no
-        # constant is right on two grids, and a fixed band was one of the four wrong
-        # numbers -- measured at 80% per-subfault slip differences on the shipped
-        # example, because band-limiting a spectrum genslip leaves alone is a
-        # different earthquake with the same moment.
         shortest_wavelength_km = 2.0 * math.sqrt(strike_km * dip_km) / NYQUIST_FRACTION
         squared = k_strike**2 + k_dip**2
         high_cut = 1.0 + (squared * shortest_wavelength_km**2) ** BAND_PASS_ORDER
 
-        # genslip pairs this with a low-wavenumber cut whose limit it then assigns a
-        # value so large the term is exactly 1 everywhere. It is not reproduced: an
-        # inert factor that underflows if anyone ever gives it a real limit is worse
-        # than no factor. Structure longer than the fault is removed by the crop.
         return shape / high_cut
 
     def _noise(self, extents: tuple[int, int], rng: np.random.Generator) -> np.ndarray:
-        """Unit-variance complex white noise over the padded grid.
+        padded_i, padded_j = extents
+        half_extents = (padded_i, padded_j // 2 + 1)
 
-        Split evenly between the real and imaginary parts, so ``E|W|^2 = 1``.
-        """
-        real = rng.standard_normal(extents)
-        imaginary = rng.standard_normal(extents)
+        real = rng.standard_normal(half_extents)
+        imaginary = rng.standard_normal(half_extents)
         return (real + 1j * imaginary) / np.sqrt(2.0)
 
-    def _symmetrise(self, spectrum: np.ndarray) -> np.ndarray:
-        """Impose ``F(-k) = conj(F(k))``, so the inverse transform is real.
-
-        The four self-conjugate points -- the origin and the three Nyquist corners --
-        map to themselves under conjugation, so they carry one real degree of freedom
-        rather than two. The quadrature split took half their variance, and this
-        gives it back before discarding their imaginary parts; without it the field's
-        longest-wavelength components are systematically weak.
-
-        Afterwards exactly one real degree of freedom survives per grid point, which
-        is what a real field of that many points must have.
-        """
-        padded_i, padded_j = spectrum.shape
+    def _symmetrise(
+        self, half_spectrum: np.ndarray, extents: tuple[int, int]
+    ) -> np.ndarray:
+        padded_i, padded_j = extents
         half_i, half_j = padded_i // 2, padded_j // 2
 
-        spectrum = spectrum.copy()
+        spectrum = half_spectrum.copy()
+
+        # Restore variance to the 4 real degrees of freedom.
+        # (padded_i and padded_j are guaranteed even by _padded_extents).
         for point in ((0, 0), (0, half_j), (half_i, 0), (half_i, half_j)):
             spectrum[point] = complex(spectrum[point].real * np.sqrt(2.0), 0.0)
 
-        # Reflect the whole grid through the origin, then keep the half that was
-        # drawn and take the conjugate reflection for the half that was not. The
-        # kept half is rows 1..half_i-1 entire, plus rows 0 and half_i up to their
-        # own Nyquist column.
-        mirrored = np.conj(
-            spectrum[
-                np.ix_(
-                    (-np.arange(padded_i)) % padded_i, (-np.arange(padded_j)) % padded_j
-                )
-            ]
-        )
-        rows = np.arange(padded_i)[:, None]
-        columns = np.arange(padded_j)[None, :]
-        drawn = ((rows >= 1) & (rows < half_i)) | (
-            ((rows == 0) | (rows == half_i)) & (columns <= half_j)
-        )
-        return np.where(drawn, spectrum, mirrored)
+        return spectrum
 
     def _to_fault(
-        self, spectrum: np.ndarray, cell_counts: tuple[int, int]
+        self,
+        spectrum: np.ndarray,
+        extents: tuple[int, int],
+        cell_counts: tuple[int, int],
     ) -> FloatArray:
-        """Inverse-transform, take the fault's corner of the padded grid.
+        # Pass the target shape explicitly
+        field = np.fft.irfft2(spectrum, s=extents)
 
-        No normalisation constant: genslip's forward and inverse spacing factors --
-        a discrete approximation to a continuous Fourier integral -- multiply out to
-        exactly one, and the caller standardises anyway.
-        """
-        field = np.fft.ifft2(spectrum)
-        largest = np.abs(field.real).max()
-        if largest > 0.0 and np.abs(field.imag).max() > 1.0e-9 * largest:
-            raise AssertionError(
-                "the inverse transform is not real, so the spectrum was not "
-                "Hermitian -- this is a bug in the symmetrisation, not in any input"
-            )
         cells_i, cells_j = cell_counts
-        return np.ascontiguousarray(field.real[:cells_i, :cells_j])
+        return np.ascontiguousarray(field[:cells_i, :cells_j])
 
     def _standardise(self, field: FloatArray) -> FloatArray:
         """Zero mean, unit population variance -- the sampler's output contract.
@@ -336,12 +311,13 @@ class SpectralSampler:
         mesh: RuptureMesh,
         covariance: CovarianceSpec,
         rng: np.random.Generator,
-    ) -> tuple[np.ndarray, tuple[int, int]]:
-        """White noise shaped by the envelope, on the padded grid."""
+    ) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
         cells_i, cells_j = mesh.cell_counts
         extents = self._padded_extents(cells_i, cells_j)
         envelope = self._envelope(extents, mesh.spacing_km(), covariance)
-        return self._noise(extents, rng) * envelope, (cells_i, cells_j)
+
+        # Returns: half_spectrum, extents, cell_counts
+        return self._noise(extents, rng) * envelope, extents, (cells_i, cells_j)
 
     def sample(
         self, mesh: RuptureMesh, covariance: CovarianceSpec, rng: np.random.Generator
@@ -352,10 +328,9 @@ class SpectralSampler:
     def sample_with_reference(
         self, mesh: RuptureMesh, covariance: CovarianceSpec, rng: np.random.Generator
     ) -> tuple[FloatArray, SpectralReference]:
-        """A field, and the shaped spectrum later fields blend against."""
-        spectrum, cell_counts = self._draw(mesh, covariance, rng)
-        symmetric = self._symmetrise(spectrum)
-        field = self._to_fault(symmetric, cell_counts)
+        spectrum, extents, cell_counts = self._draw(mesh, covariance, rng)
+        symmetric = self._symmetrise(spectrum, extents)
+        field = self._to_fault(symmetric, extents, cell_counts)
         return self._standardise(field), SpectralReference(symmetric, field)
 
     def correlated_with(
@@ -400,12 +375,14 @@ class SpectralSampler:
         if not (-1.0 <= rho <= 1.0):
             raise ValueError(f"a correlation must be in [-1, 1], got {rho}")
 
-        spectrum, cell_counts = self._draw(mesh, covariance, rng)
-        independent = self._symmetrise(spectrum)
+        spectrum, extents, cell_counts = self._draw(mesh, covariance, rng)
+        independent = self._symmetrise(spectrum, extents)
+
         blended = rho * reference.spectrum + math.sqrt(1.0 - rho * rho) * independent
+
         return (
-            self._to_fault(blended, cell_counts),
-            self._to_fault(independent, cell_counts),
+            self._to_fault(blended, extents, cell_counts),
+            self._to_fault(independent, extents, cell_counts),
         )
 
 
