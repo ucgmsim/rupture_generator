@@ -42,7 +42,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import numpy as np
 import typer
@@ -52,6 +52,14 @@ from rupture_generator.formats import Format, from_path
 from rupture_generator.formats.rupture import read_rupture, segments_in
 from rupture_generator.moment import cumulative_moment, moment_rate, rigidity_pa
 from rupture_generator.scripts.errors import console
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    # A colour map already closed over its limits -- `hot` or `viridis` with the same
+    # `low` and `high` the fault is drawn at, so a bar and a patch of fault showing the
+    # same value show the same colour.
+    Colouring = Callable[[np.ndarray], np.ndarray]
 
 FIELDS = {
     "slip": ("slip_m", "metres", "hot"),
@@ -79,6 +87,13 @@ Chosen from what a viewer can usefully show rather than from what it can survive
 further would discard detail the screen could have resolved, and drawing more would
 paint several subfaults into one pixel.
 """
+
+AXIS_LINE = (90, 96, 104)
+"""Grey enough to read as furniture rather than as data."""
+
+AXIS_TEXT = (196, 202, 210)
+"""A label is text: Rerun draws it in the entity's own colour, so a transparent point
+carries an invisible label -- the background chip renders and the glyphs do not."""
 
 MAX_ARROWS = 3_000
 """How many rake arrows to draw. Beyond this they overlap into a solid mass and stop
@@ -705,6 +720,42 @@ def rose(values_deg: np.ndarray, bins: int = 36) -> list[np.ndarray]:
     return wedges
 
 
+def rose_axis(bins: int = 36) -> tuple[list[np.ndarray], np.ndarray, list[str]]:
+    """The reference circle a rake rose is read against, marked in degrees.
+
+    :func:`rose` draws wedges whose angle is the rake and whose radius is a count
+    normalised to the largest bin, and a bare set of wedges is a plot with no axis at
+    all -- there is nothing on screen saying which way is zero, which way is positive,
+    or how far round a wedge sits. That is the angular form of the same complaint as
+    a bar chart indexed by bin number.
+
+    So: the unit circle the longest wedge touches, a half-way circle, spokes on the
+    eights, and a degree label against each. The wrap stays where :func:`rose` put it,
+    which is nowhere.
+
+    Returns
+    -------
+    tuple
+        The guide polylines, the label positions, and the labels.
+    """
+    ticks = np.arange(-180.0, 180.0, 45.0)
+    guides = []
+    for radius in (0.5, 1.0):
+        angles = np.radians(np.linspace(-180.0, 180.0, 4 * bins + 1))
+        guides.append(
+            np.stack([radius * np.cos(angles), -radius * np.sin(angles)], axis=-1)
+        )
+    for degrees in ticks:
+        angle = math.radians(degrees)
+        guides.append(
+            np.array([[0.0, 0.0], [math.cos(angle), -math.sin(angle)]], dtype=float)
+        )
+
+    radians = np.radians(ticks)
+    positions = np.stack([1.18 * np.cos(radians), -1.18 * np.sin(radians)], axis=-1)
+    return guides, positions, [f"{int(degrees)}\N{DEGREE SIGN}" for degrees in ticks]
+
+
 def require_rerun():
     """Import Rerun, or say how to get it.
 
@@ -735,8 +786,11 @@ def layout(blueprint):  # noqa: ANN001 - Rerun's types
             blueprint.Vertical(
                 blueprint.TextDocumentView(origin="/statistics", name="statistics"),
                 blueprint.Tabs(
-                    blueprint.BarChartView(origin="/histogram/slip", name="slip"),
-                    blueprint.BarChartView(
+                    # Spatial rather than bar-chart views: a bar chart takes one
+                    # colour for the whole chart, and these are coloured per bin to
+                    # match the fault. See `_histogram`.
+                    blueprint.Spatial2DView(origin="/histogram/slip", name="slip"),
+                    blueprint.Spatial2DView(
                         origin="/histogram/rise_time", name="rise time"
                     ),
                     blueprint.Spatial2DView(origin="/histogram/rake", name="rake"),
@@ -862,6 +916,9 @@ def log_rupture(
     # `moment_release` reads the slip *rates*; building the clocks overwrites them with
     # their running sum. That order is a requirement, not a preference.
     rate, cumulative = moment_release(segments, times_s)
+    rate_scale = _engineering_scale(rate)
+    cumulative_scale = _engineering_scale(cumulative)
+    _label_moment_axes(rerun, rate_scale, cumulative_scale)
     slipped = {segment.name: CumulativeSlip(segment) for segment in segments}
     peak = (
         max([float(clock.total().max()) for clock in slipped.values()] + [0.0]) or 1.0
@@ -869,8 +926,11 @@ def log_rupture(
 
     for step, moment_s in enumerate(times_s):
         rerun.set_time("rupture", duration=float(moment_s))
-        rerun.log("/moment/rate", rerun.Scalars(float(rate[step])))
-        rerun.log("/moment/cumulative", rerun.Scalars(float(cumulative[step])))
+        rerun.log("/moment/rate", rerun.Scalars(float(rate[step]) / rate_scale))
+        rerun.log(
+            "/moment/cumulative",
+            rerun.Scalars(float(cumulative[step]) / cumulative_scale),
+        )
 
         frame = []
         for segment in segments:
@@ -881,11 +941,15 @@ def log_rupture(
                 _mesh(rerun, quads[segment.name], hot(current[indices], 0.0, peak)),
             )
             frame.append(current)
-        rerun.log(
+        # The same map and the same limits the slip mesh is drawn with, a few lines up.
+        _histogram(
+            rerun,
             "/histogram/slip",
-            rerun.BarChart(
-                np.histogram(np.concatenate(frame), bins=bins, range=(0.0, peak))[0]
-            ),
+            np.concatenate(frame),
+            (0.0, peak),
+            bins,
+            lambda values: hot(values, 0.0, peak),
+            "slip (m)",
         )
 
 
@@ -933,9 +997,32 @@ def _log_static_fields(
             static=True,
         )
 
-    rerun.log(
+    _histogram(
+        rerun,
         "/histogram/rise_time",
-        rerun.BarChart(np.histogram(rise, bins=bins, range=(low, high))[0]),
+        rise,
+        (low, high),
+        bins,
+        lambda values: viridis(values, low, high),
+        "rise time (s)",
+        static=True,
+    )
+    # The axis first, so the wedges draw over it rather than under it.
+    guides, label_positions, labels = rose_axis()
+    rerun.log(
+        "/histogram/rake/axis",
+        rerun.LineStrips2D(guides, colors=[(90, 96, 104)], radii=[0.004]),
+        static=True,
+    )
+    rerun.log(
+        "/histogram/rake/axis/labels",
+        rerun.Points2D(
+            label_positions,
+            colors=[AXIS_TEXT],
+            labels=labels,
+            show_labels=True,
+            radii=[0.004],
+        ),
         static=True,
     )
     rerun.log(
@@ -960,6 +1047,189 @@ def _log_hypocentre(rerun, segments: list[Segment]) -> None:  # noqa: ANN001
             ),
             static=True,
         )
+
+
+def _engineering_scale(values: np.ndarray) -> float:
+    """The power of a thousand these numbers are most readable in.
+
+    A moment is around ``1e19`` newton-metres and a moment rate around ``1e18`` per
+    second, and Rerun 0.35 has no hook for formatting a tick label -- `ScalarAxis`
+    carries a range and a zoom lock and nothing else. So the axis reads
+    ``6.000000e18`` where it wants to read ``6.0``, and the only lever left is the
+    number that goes in. Divide by the enclosing power of a thousand and say which one
+    in the series name: the same information, in the two places a reader looks.
+
+    A thousand rather than ten so the exponent is one an SI reader already has a word
+    for, and so it stays put while the curve grows through an order of magnitude.
+    """
+    peak = float(np.max(np.abs(values))) if np.size(values) else 0.0
+    if not np.isfinite(peak) or peak <= 0.0:
+        return 1.0
+    return float(10.0 ** (3 * math.floor(math.log10(peak) / 3)))
+
+
+def _label_moment_axes(rerun, rate_scale: float, cumulative_scale: float) -> None:  # noqa: ANN001
+    """Name each moment series for the units it is actually plotted in.
+
+    The scaling in :func:`_engineering_scale` is only honest if the exponent it
+    removed is visible, and the series name is where a time-series view shows it.
+    """
+
+    def units(scale: float, unit: str) -> str:
+        return unit if scale == 1.0 else f"1e{round(math.log10(scale))} {unit}"
+
+    rerun.log(
+        "/moment/rate",
+        rerun.SeriesLines(names=[f"moment rate ({units(rate_scale, 'N m/s')})"]),
+        static=True,
+    )
+    rerun.log(
+        "/moment/cumulative",
+        rerun.SeriesLines(
+            names=[f"cumulative moment ({units(cumulative_scale, 'N m')})"]
+        ),
+        static=True,
+    )
+
+
+def _ticks(low: float, high: float, count: int = 5) -> np.ndarray:
+    """Round positions to label an axis at, spanning ``low`` to ``high``."""
+    if not np.isfinite([low, high]).all() or high <= low:
+        return np.array([low])
+    step = (high - low) / count
+    magnitude = 10.0 ** math.floor(math.log10(step))
+    for multiple in (1.0, 2.0, 2.5, 5.0, 10.0):
+        if step <= multiple * magnitude:
+            step = multiple * magnitude
+            break
+    first = math.ceil(low / step) * step
+    return np.arange(first, high + step / 2.0, step)
+
+
+def _histogram(
+    rerun,  # noqa: ANN001
+    path: str,
+    values: np.ndarray,
+    limits: tuple[float, float],
+    bins: int,
+    colours: Colouring,
+    unit: str,
+    *,
+    static: bool = False,
+) -> None:
+    """A histogram drawn as boxes, on the quantity's axis, in the fault's own colours.
+
+    **Why this is drawn rather than logged as a `BarChart`.** Rerun's bar chart takes
+    one colour for the whole chart -- its own documentation says "the color of the bar
+    chart" -- and the component batch accepts an array of them without complaint while
+    the visualiser draws only the first. So a `BarChart` coloured per bin comes out
+    uniformly `hot(0)`, which is black, or uniformly `viridis(low)`, which is purple:
+    the bars vanish rather than saying they could not be coloured. `Boxes2D` colours
+    per box, so the histogram is assembled here and the panel is a 2-D view.
+
+    That costs the axis a bar chart draws for itself, so one is drawn too -- and it is
+    the axis that was the point. Counts against *bin number* read as a distribution
+    over the quantity while meaning something that changes when the bin count does; a
+    slip peak "at 7" means seven metres here.
+
+    Each bar takes the colour its own bin centre has on the fault, from the same map
+    at the same limits, which is what makes the two panels one instrument: a band of
+    colour on the fault is findable in the distribution by its colour rather than by
+    reading a number off one panel and hunting for it in the other.
+
+    Drawn in a unit box with the real values on the labels, so the two axes stay
+    legible against each other however far apart their magnitudes are -- slip runs to
+    single-figure metres against counts in the tens of thousands.
+
+    **Subfaults at rest are counted, not binned.** A cell the front has not reached
+    has no slip and no rise time, and there are tens of thousands of them -- so they
+    pile into the first bin and make a spike several times the height of the
+    distribution, which then flattens everything that was worth looking at. They are
+    not part of the distribution of slip on a slipping fault; they are the fault that
+    has not slipped. Dropping them silently would be a lie about the sample size, so
+    the count goes on the panel.
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    moving = values > 0.0
+    resting = int(values.size - np.count_nonzero(moving))
+    counts, edges = np.histogram(values[moving], bins=bins, range=limits)
+
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    low, high = float(edges[0]), float(edges[-1])
+    tallest = float(counts.max()) or 1.0
+    span = (high - low) or 1.0
+
+    # Counts on a log height. The tail of a slip distribution is a handful of cells
+    # against tens of thousands in the mode, and on a linear axis every bin outside the
+    # mode is a line one pixel high -- present, unreadable, and easy to mistake for
+    # empty. `log10(count + 1)` rather than `log10(count)` so that a bin holding a
+    # single cell still stands above the baseline instead of vanishing into it.
+    def height_of(count: np.ndarray | float) -> np.ndarray | float:
+        return np.log10(np.asarray(count, dtype=np.float64) + 1.0) / math.log10(
+            tallest + 1.0
+        )
+
+    across = (centres - low) / span
+    heights = height_of(counts)
+    width = float(edges[1] - edges[0]) / span
+
+    # Screen coordinates run y downwards, so a bar of height h spans 0 to -h.
+    rerun.log(
+        path,
+        rerun.Boxes2D(
+            centers=np.stack([across, -heights / 2.0], axis=-1),
+            half_sizes=np.stack(
+                [np.full(len(counts), width / 2.0), heights / 2.0], axis=-1
+            ),
+            colors=colours(centres),
+        ),
+        static=static,
+    )
+
+    guides = [
+        np.array([[0.0, 0.0], [1.0, 0.0]]),
+        np.array([[0.0, 0.0], [0.0, -1.0]]),
+    ]
+    positions, labels = [], []
+    for value in _ticks(low, high):
+        x = (value - low) / span
+        guides.append(np.array([[x, 0.0], [x, 0.02]]))
+        positions.append([x, 0.07])
+        labels.append(f"{value:.3g}")
+    decades = [0.0] + [
+        10.0**power for power in range(math.ceil(math.log10(tallest)) + 1)
+    ]
+    for value in decades:
+        if value > tallest:
+            break
+        y = -float(height_of(value))
+        guides.append(np.array([[0.0, y], [-0.015, y]]))
+        positions.append([-0.075, y])
+        labels.append(f"{value:,.0f}")
+    positions.append([0.5, 0.15])
+    labels.append(unit)
+    positions.append([-0.075, -1.04])
+    labels.append("count (log)")
+    if resting:
+        positions.append([0.5, -1.09])
+        labels.append(f"{resting:,} subfaults at rest, not shown")
+
+    rerun.log(
+        f"{path}/axis",
+        rerun.LineStrips2D(guides, colors=[AXIS_LINE], radii=[0.0015]),
+        static=static,
+    )
+    rerun.log(
+        f"{path}/axis/labels",
+        rerun.Points2D(
+            np.array(positions),
+            colors=[AXIS_TEXT],
+            labels=labels,
+            show_labels=True,
+            radii=[0.002],
+        ),
+        static=static,
+    )
 
 
 def _mesh(rerun, corners: np.ndarray, colours: np.ndarray):  # noqa: ANN001
