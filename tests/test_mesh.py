@@ -147,9 +147,7 @@ def test_fusing_conserves_area_and_counts_the_seam_once(fault: FaultConfig) -> N
     assert segment.areas_km2().sum() == pytest.approx(
         sum(chart.areas_km2().sum() for chart in charts), rel=EXACT
     )
-    assert segment.dataset.sizes["j_node"] == 1 + sum(
-        chart.cell_counts[1] for chart in charts
-    )
+    assert segment.cell_counts[1] == sum(chart.cell_counts[1] for chart in charts)
 
 
 @SETTINGS
@@ -162,8 +160,7 @@ def test_nodes_outnumber_cells_by_one_on_each_axis(fault: FaultConfig) -> None:
     """
     for chart in [*build_fault(fault, NZTM), *fuse(build_fault(fault, NZTM))]:
         cells_i, cells_j = chart.cell_counts
-        assert chart.dataset.sizes["i_node"] == cells_i + 1
-        assert chart.dataset.sizes["j_node"] == cells_j + 1
+        assert chart.nodes().shape == (cells_i + 1, cells_j + 1, 3)
         assert chart.centres().shape == (cells_i, cells_j, 3)
         assert chart.areas_km2().shape == (cells_i, cells_j)
         assert chart.strike_arc_km().shape == (cells_j + 1,)
@@ -691,6 +688,194 @@ def test_a_point_source_whose_top_edge_is_in_the_air_is_refused() -> None:
 
 
 # ============================================================================
+# The fields a stage attaches
+# ============================================================================
+
+
+def _chart() -> RuptureMesh:
+    """One small planar chart, not square, for the field API's own assertions.
+
+    Not square on purpose: a transposed field is only detectable on a chart whose two
+    cell counts differ, and that is the check `with_fields` exists for.
+    """
+    (chart,) = build_fault(
+        FaultConfig(
+            name="hope",
+            origin=LonLat(longitude_deg=172.0, latitude_deg=-42.0),
+            planes=[_plane(LonLat(longitude_deg=172.3, latitude_deg=-42.0), size_km=2.0)],
+        ),
+        NZTM,
+    )
+    return chart
+
+
+def test_a_chart_starts_with_no_fields() -> None:
+    """Geometry is not a field. What `fields` reports is what a stage put there."""
+    chart = _chart()
+
+    assert chart.fields() == frozenset()
+    assert "depth_km" not in chart
+    assert "slip_m" not in chart
+
+
+def test_attaching_a_field_leaves_the_chart_it_came_from_alone() -> None:
+    """Functional, never in place -- what lets stages share geometry rather than copy it."""
+    chart = _chart()
+    slip = np.ones(chart.cell_counts)
+
+    annotated = chart.with_fields(slip_m=slip)
+
+    assert annotated.fields() == {"slip_m"}
+    assert chart.fields() == frozenset()
+    assert np.array_equal(annotated["slip_m"], slip)
+    # The geometry is the same geometry, not a copy that could drift from it.
+    assert np.array_equal(annotated.areas_km2(), chart.areas_km2())
+
+
+def test_a_field_is_handed_back_read_only() -> None:
+    """An array a caller could write through is a way around an immutable chart.
+
+    Not hypothetical: every stage takes arrays and returns arrays, so one that
+    modified its input in place would edit a chart some other stage is still reading.
+    """
+    chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
+
+    with pytest.raises(ValueError, match="read-only"):
+        chart["slip_m"][0, 0] = 5.0
+
+
+def test_a_field_the_chart_does_not_carry_says_what_it_does() -> None:
+    """The list of what *is* attached is most of the diagnosis.
+
+    A stage asking for a field nobody drew is a pipeline written in the wrong order,
+    and that is the message that says so.
+    """
+    chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
+
+    with pytest.raises(KeyError, match="rise_time_s.*carries slip_m"):
+        chart["rise_time_s"]
+
+
+def test_a_transposed_field_is_refused() -> None:
+    """The check that earns the method.
+
+    xarray objects only when dimension *sizes* disagree, so on a square patch a
+    transposed field is assigned without complaint and every quantity derived from it
+    is quietly wrong -- an (i, j) / (j, i) mix-up that no downstream assertion sees.
+    """
+    chart = _chart()
+    cells_i, cells_j = chart.cell_counts
+    assert cells_i != cells_j, "this test needs a chart that is not square"
+
+    with pytest.raises(ValueError, match="shaped"):
+        chart.with_fields(slip_m=np.ones((cells_j, cells_i)))
+
+
+def test_a_non_finite_field_is_refused() -> None:
+    """`from_nodes`' argument, one stage later: a NaN here reaches the SRF silently."""
+    chart = _chart()
+    slip = np.ones(chart.cell_counts)
+    slip[0, 0] = np.nan
+
+    with pytest.raises(ValueError, match="non-finite"):
+        chart.with_fields(slip_m=slip)
+
+
+@pytest.mark.parametrize("name", ["depth_km", "east_km", "plane", "slip_rate"])
+def test_a_field_may_not_be_given_the_geometrys_own_name(name: str) -> None:
+    """A field called ``depth_km`` would sit beside the geometry under its name.
+
+    It would not even collide -- the nodes are on ``(i_node, j_node)`` and a field is
+    on ``(i, j)`` -- so nothing would raise, and the next reader of ``depth_km`` would
+    get whichever xarray handed back.
+    """
+    chart = _chart()
+
+    with pytest.raises(ValueError, match="the chart's own"):
+        chart.with_fields(**{name: np.ones(chart.cell_counts)})
+
+
+def test_a_recomputed_field_replaces_its_earlier_value() -> None:
+    """The moment fold sizes `slip_pattern` into `slip_m`: one quantity, twice stated."""
+    chart = _chart()
+    ones = np.ones(chart.cell_counts)
+
+    twice = chart.with_fields(slip_m=ones).with_fields(slip_m=2.0 * ones)
+
+    assert np.array_equal(twice["slip_m"], 2.0 * ones)
+    assert twice.fields() == {"slip_m"}
+
+
+def test_dropping_a_field_that_is_not_there_is_not_an_error() -> None:
+    """Dropping states something about the result, not a claim about the history."""
+    chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
+
+    assert chart.without("slip_pattern").fields() == {"slip_m"}
+    assert chart.without("slip_m").fields() == frozenset()
+
+
+def test_attrs_are_read_only_and_the_chart_keeps_its_own() -> None:
+    """A mutable attrs view is a mutable chart."""
+    chart = _chart().with_attrs(truncated_fraction=0.09)
+
+    assert chart.attrs["truncated_fraction"] == 0.09
+    assert chart.attrs["surface"] == "hope"
+    with pytest.raises(TypeError):
+        chart.attrs["truncated_fraction"] = 0.5  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize("name", ["surface", "origin_east_km", "origin_north_km"])
+def test_an_attr_that_says_what_the_chart_is_may_not_be_rewritten(name: str) -> None:
+    """Rewriting one would move the fault, and every derived quantity with it."""
+    with pytest.raises(ValueError, match="says what this chart is"):
+        _chart().with_attrs(**{name: "elsewhere"})
+
+
+def test_the_node_dataset_carries_the_geometry_and_nothing_else() -> None:
+    """The one way out, and what it hands out is the surface, not the rupture."""
+    chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
+
+    nodes = chart.node_dataset()
+
+    assert set(nodes.data_vars) == {"east_km", "north_km", "depth_km"}
+    assert "slip_m" not in nodes
+    assert "plane" not in nodes.coords
+    # The units are written down once, in `from_nodes`, and reach a file through here.
+    assert nodes["depth_km"].attrs["units"] == "kilometres"
+
+
+def test_pulses_have_to_be_one_per_subfault() -> None:
+    """A CSR indptr that is not one makes some subfault's pulse another's.
+
+    Which is a plausible-looking rupture: every subfault still has slip, still has a
+    rise time, and radiates something. Nothing downstream could question it.
+    """
+    chart = _chart()
+    cells = chart.cell_counts[0] * chart.cell_counts[1]
+    samples = np.ones(3 * cells)
+
+    good = np.arange(cells + 1) * 3
+    assert chart.with_pulses(good, samples).pulses is not None
+
+    with pytest.raises(ValueError, match="wants"):
+        chart.with_pulses(good[:-1], samples)
+    with pytest.raises(ValueError, match="decrease"):
+        chart.with_pulses(good[::-1], samples)
+    with pytest.raises(ValueError, match="samples"):
+        chart.with_pulses(good, samples[:-1])
+
+
+def test_a_chart_prints_as_its_shape_rather_than_its_arrays() -> None:
+    """One failed assertion should not be a screenful of dataset."""
+    chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
+    cells_i, cells_j = chart.cell_counts
+
+    assert repr(chart) == (
+        f"RuptureMesh('hope', {cells_i}x{cells_j} cells, fields: slip_m)"
+    )
+
+
+# ============================================================================
 # Precision, projection and the file
 # ============================================================================
 
@@ -708,10 +893,11 @@ def test_the_geometry_is_the_same_at_crs_scale_as_at_the_origin(
     Charts hold offsets, so moving the origin must change nothing at all.
     """
     (chart,) = build_fault(fault, NZTM)
+    nodes = chart.nodes()
     moved = RuptureMesh.from_nodes(
-        chart.dataset["east_km"].to_numpy(),
-        chart.dataset["north_km"].to_numpy(),
-        chart.dataset["depth_km"].to_numpy(),
+        nodes[..., 0],
+        nodes[..., 1],
+        nodes[..., 2],
         origin_east_km=1500.0,
         origin_north_km=5180.0,
         surface=chart.surface,

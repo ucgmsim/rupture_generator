@@ -61,13 +61,7 @@ def _brief(value: object) -> str:
 
 
 def _closest(unknown: str, known: Iterable[str]) -> str | None:
-    """The real field name a misspelling is nearest to, if it is near one.
-
-    A near miss is the common case -- `dipp_deg` for `dip_deg`, `rake_deg` for
-    `average_rake_deg` -- and naming the intended key turns a rejection into an
-    instruction. Cut off at 0.6 so an unrelated word gets no suggestion rather than a
-    confusing one.
-    """
+    """The real field name a misspelling is nearest to, if it is near one."""
     matches = difflib.get_close_matches(unknown, list(known), n=1, cutoff=0.6)
     return matches[0] if matches else None
 

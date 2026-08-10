@@ -48,7 +48,9 @@ rebuilds them where `scipy.sparse` insists on having them.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,7 @@ import xarray as xr
 
 from rupture_generator.formats import Format, resolve
 from rupture_generator.mesh import RuptureMesh, project_cells
+from rupture_generator.realisation import Realisation
 from rupture_generator.units import M2_PER_KM2
 
 if TYPE_CHECKING:
@@ -98,53 +101,79 @@ NODE_VARIABLES = {
 }
 
 
+FILE_FIELDS = (
+    "rigidity_pa",
+    "shear_speed_kms",
+    "slip_m",
+    "rake_deg",
+    "onset_s",
+    "rise_time_s",
+)
+"""The fields a rupture file stores, read off the chart by name.
+
+The whitelist is what keeps the pipeline's *working* fields out of the file. A stage
+may attach whatever it needs -- the unit-mean slip pattern, the onset perturbation,
+the solved wavefront -- and a file is a rupture rather than a trace of how one was
+made, so only these cross.
+"""
+
+
 def to_dataset(
     mesh: RuptureMesh,
     crs: pyproj.CRS,
     *,
-    slip_m: np.ndarray,
-    shear_speed_kms: np.ndarray,
-    rigidity_pa: np.ndarray,
-    rake_deg: np.ndarray,
-    onset_s: np.ndarray,
-    rise_time_s: np.ndarray,
-    pulse_offsets: np.ndarray,
-    pulse_samples: np.ndarray,
+    segment_name: str | None = None,
     sample_interval_s: float,
     moment_newton_m: float,
-    segment_name: str | None = None,
-    hypocentre_km: tuple[float, float] | None = None,
 ) -> xr.Dataset:
     """One segment's rupture and geometry, as a dataset.
+
+    The fields are **on the chart**, so this reads them off rather than being told
+    them. That is not only brevity: a field the pipeline stops producing now fails
+    here, naming the segment and the field, instead of being a ``TypeError`` at a call
+    site the pipeline no longer has.
+
+    The hypocentre is not a parameter either. Only the segment the rupture nucleated on
+    carries one, and it carries it in its own attrs, so this copies what the chart
+    records -- writing it into every group claimed three hypocentres for one
+    earthquake, and the old signature made every call site decide per segment.
 
     Parameters
     ----------
     mesh : RuptureMesh
-        The chart the fields live on.
+        A chart the pipeline has finished with: the file's fields, and its pulses.
     crs : pyproj.CRS
-        The frame its nodes are in.
-    slip_m, rigidity_pa, rake_deg, onset_s, rise_time_s : np.ndarray
-        Cell fields on ``(i, j)``.
-    pulse_offsets, pulse_samples : np.ndarray
-        The CSR pulses from the kernel: ``pulse_samples[offsets[k]:offsets[k+1]]`` is
-        subfault ``k``'s, flattened along strike fastest.
-    sample_interval_s, moment_newton_m : float
+        The frame its nodes are in -- the one projection seam.
     segment_name : str, optional
         What the causality tree calls this segment. Stored because a surface can
         yield several segments and they would otherwise be distinguishable only by
         the group name -- a convention rather than a record, and one the tree in the
         root attributes refers to by a name the groups did not carry.
-    hypocentre_km : tuple of float, optional
-        Where the rupture started, in **this segment's own** arc lengths. Omitted on
-        a segment that does not hold it -- writing it into every group claimed three
-        hypocentres for one earthquake.
+    sample_interval_s, moment_newton_m : float
 
     Returns
     -------
     xr.Dataset
+
+    Raises
+    ------
+    KeyError
+        If a field the file stores is not on the chart. A realisation that has not been
+        all the way through the pipeline is not a rupture, and writing one with holes in
+        it produces a file whose readers fail instead.
+    ValueError
+        If the chart carries no pulses.
     """
     located = project_cells(mesh, crs)
     cells_i, cells_j = mesh.cell_counts
+
+    pulses = mesh.pulses
+    if pulses is None:
+        raise ValueError(
+            f"{mesh.surface} has no slip-rate pulses, so it has not been through the "
+            "whole pipeline"
+        )
+    offsets, pulse_samples = pulses
 
     cells = {
         "centre_longitude_deg": located["centre_longitude_deg"].to_numpy(),
@@ -153,15 +182,10 @@ def to_dataset(
         "strike_deg": located["strike_deg"].to_numpy(),
         "dip_deg": located["dip_deg"].to_numpy(),
         "area_m2": located["area_km2"].to_numpy() * M2_PER_KM2,
-        "rigidity_pa": rigidity_pa,
-        "shear_speed_kms": shear_speed_kms,
-        "slip_m": slip_m,
-        "rake_deg": rake_deg,
-        "onset_s": onset_s,
-        "rise_time_s": rise_time_s,
+        **{name: mesh[name] for name in FILE_FIELDS},
     }
 
-    offsets = np.asarray(pulse_offsets, dtype=np.int64)
+    offsets = np.asarray(offsets, dtype=np.int64)
 
     nodes = mesh.nodes()
     data_vars: dict[str, Any] = {
@@ -227,36 +251,71 @@ def to_dataset(
             "moment_newton_m": moment_newton_m,
             "origin_east_km": mesh.origin_km[0],
             "origin_north_km": mesh.origin_km[1],
-            **(
-                {
-                    "hypocentre_strike_km": hypocentre_km[0],
-                    "hypocentre_dip_km": hypocentre_km[1],
-                }
-                if hypocentre_km
-                else {}
-            ),
+            # Whatever the chart recorded about itself: the truncation diagnostic, and
+            # -- on the one segment that nucleated -- the hypocentre, already under the
+            # names the file uses. `RESERVED_ATTRS` is what makes this splat safe.
+            **{
+                name: value
+                for name, value in mesh.attrs.items()
+                if name not in ("surface", "origin_east_km", "origin_north_km")
+            },
         },
     )
     return dataset
 
 
 def to_datatree(
-    segments: Mapping[str, xr.Dataset],
-    crs: pyproj.CRS,
+    realisation: Realisation,
     *,
     attrs: Mapping[str, Any] | None = None,
 ) -> xr.DataTree:
-    """Assemble segment datasets into an event tree.
+    """A generated rupture as an event tree: one group per segment.
 
-    Keys are ``"<surface>/segment_<n>"``. The root carries the CRS and whatever the
-    caller records about the run -- the config verbatim, the seed, and (once there is
-    more than one segment) the causality tree.
+    **The seam the pipeline does not cross.** `pipeline.generate` produces a
+    `Realisation` and stops. Which fields the file stores, what the groups are called,
+    and which working fields are dropped are decided here -- which removes the
+    inversion the pipeline used to carry, where it imported this module, called it once
+    per segment, and so made the file layout something you had to read in order to read
+    the stage order.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        A rupture that has been through the pipeline.
+    attrs : Mapping, optional
+        The **caller's** provenance: a title, the config verbatim, the seed and the
+        realisation index. What the rupture *is* -- the frame, the causality tree, the
+        jumps, the event moment -- comes off the realisation and is written whether
+        this is given or not, because a rupture file that does not say which segment
+        triggered which is a set of faults that happen to be in one place.
     """
-    tree = xr.DataTree.from_dict(dict(segments))
+    tree = xr.DataTree.from_dict(
+        {
+            # A colon is a path separator to a datatree, and a fused surface's parts
+            # are called `kaikoura:0`. The segment's own name is in its attrs, which is
+            # what `segments_in` reads it back by.
+            f"{name.replace(':', '_')}/segment": to_dataset(
+                mesh,
+                realisation.crs,
+                segment_name=name,
+                sample_interval_s=float(mesh.attrs["sample_interval_s"]),
+                moment_newton_m=realisation.moment_newton_m or 0.0,
+            )
+            for name, mesh in realisation.items()
+        }
+    )
     tree.attrs = {
         "schema_version": SCHEMA_VERSION,
         "created": datetime.datetime.now(tz=datetime.UTC).isoformat(),
-        "crs": crs.to_string(),
+        "crs": realisation.crs.to_string(),
+        "causality_tree": json.dumps(realisation.tree),
+        "jumps": json.dumps(
+            {
+                name: dataclasses.asdict(jump)
+                for name, jump in realisation.jumps.items()
+            }
+        ),
+        "moment_newton_m": realisation.moment_newton_m or 0.0,
         **dict(attrs or {}),
     }
     return tree
@@ -304,14 +363,10 @@ def read_rupture(path: Path | str, *, format: Format = Format.INFERRED) -> xr.Da
             raise ValueError(f"a rupture is not read from {chosen.value}")
 
 
-def segments_in(tree: xr.DataTree) -> list[tuple[str, int, xr.Dataset]]:
+def segments_in(tree: xr.DataTree) -> list[tuple[str, xr.Dataset]]:
     """Every segment in a rupture tree, in a stable order.
 
-    Sorted on the group's own name rather than on iteration order, because **Zarr does
-    not preserve order**: eleven groups written in sequence come back in neither
-    insertion nor lexicographic order, while HDF5 preserves insertion. A reader that
-    trusted iteration order is green in one container and silently permutes the fault
-    in the other.
+    Zarr does not preserve order when saved.
 
     Returns
     -------
@@ -324,7 +379,10 @@ def segments_in(tree: xr.DataTree) -> list[tuple[str, int, xr.Dataset]]:
             continue
         segment = node.attrs.get("segment") or node.attrs.get("surface") or path
         found.append((str(segment), path, node.dataset))
-    return [entry[:1] + entry[2:] for entry in sorted(found, key=lambda e: e[1])]
+    return [
+        (segment, dataset)
+        for (segment, _, dataset) in sorted(found, key=lambda e: e[1])
+    ]
 
 
 def mesh_of(dataset: xr.Dataset) -> RuptureMesh:
@@ -346,6 +404,7 @@ def mesh_of(dataset: xr.Dataset) -> RuptureMesh:
 
 __all__ = [
     "CELL_VARIABLES",
+    "FILE_FIELDS",
     "NODE_VARIABLES",
     "SCHEMA_VERSION",
     "mesh_of",

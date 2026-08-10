@@ -4,7 +4,7 @@ title = "Beavan_BF15"
 [hypocentre]
 fault = "Charing_Cross"
 strike_km = 9.0
-dip_km = 0.0
+dip_km = 10.0
 
 [velocity_model]
 bottom_depth_km = [

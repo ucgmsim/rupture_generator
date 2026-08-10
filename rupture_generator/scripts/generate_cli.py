@@ -11,31 +11,32 @@ What is here is the I/O, the option handling and the summary. The pipeline is
 
 from __future__ import annotations
 
-import dataclasses
-import json
 from pathlib import Path
 from typing import Annotated
 
 import numpy as np
+import pyproj
 import typer
 from rich.table import Table
 
-from rupture_generator import assemble, moment, pipeline
+from rupture_generator import assemble, pipeline
 from rupture_generator.config import read_config
 from rupture_generator.config.rupture import RuptureConfig
 from rupture_generator.formats import Format, resolve
 from rupture_generator.formats.mesh import read_mesh
 from rupture_generator.formats.rupture import to_datatree, write_rupture
 from rupture_generator.mesh import RuptureMesh, fuse, validate_chart
+from rupture_generator.realisation import Realisation
 from rupture_generator.scripts.errors import console, load_config
 from rupture_generator.srf import write_srf
 
 
 def named_segments(
     meshes: dict[str, list[RuptureMesh]],
+    crs: pyproj.CRS,
     surface: str | None,
     plane: int | None,
-) -> dict[str, RuptureMesh]:
+) -> Realisation:
     """The validated segments to generate on, named as the causality tree names them.
 
     Without ``--surface`` every surface in the mesh takes part, which is what a
@@ -80,17 +81,13 @@ def named_segments(
 
         for part in parts:
             validate_chart(part)
-        if len(parts) == 1:
-            segments[name] = parts[0]
-        else:
-            for index, part in enumerate(parts):
-                segments[f"{name}:{index}"] = part
-    return segments
+        segments |= pipeline.named(name, parts)
+    return Realisation(segments, crs)
 
 
 def report(
     config: RuptureConfig,
-    realisation: pipeline.Realisation,
+    realisation: Realisation,
     *,
     seed: int,
     realisation_index: int,
@@ -110,27 +107,16 @@ def report(
     table.add_column("quantity", justify="left")
     table.add_column("value", justify="right")
 
-    slip_m = np.concatenate(
-        [
-            segment["slip_m"].to_numpy().ravel()
-            for segment in realisation.segments.values()
-        ]
-    )
-    rise_s = np.concatenate(
-        [
-            segment["rise_time_s"].to_numpy().ravel()
-            for segment in realisation.segments.values()
-        ]
-    )
-    onset_s = np.concatenate(
-        [
-            segment["onset_s"].to_numpy().ravel()
-            for segment in realisation.segments.values()
-        ]
-    )
+    def everywhere(field: str) -> np.ndarray:
+        """One field over every subfault of the rupture, faults run together."""
+        return np.concatenate([mesh[field].ravel() for mesh in realisation.values()])
+
+    slip_m = everywhere("slip_m")
+    rise_s = everywhere("rise_time_s")
+    onset_s = everywhere("onset_s")
 
     for name, value in (
-        ("segments", ", ".join(realisation.segments)),
+        ("segments", ", ".join(realisation)),
         ("subfaults", f"{slip_m.size}"),
         ("magnitude", f"{config.source.magnitude:.2f}"),
         ("moment", f"{realisation.moment_newton_m:.4g} N m"),
@@ -212,9 +198,9 @@ def generate(
     # any of it renders the same way -- one red line naming the cause, rather than a
     # traceback for a mistake in a file.
     try:
-        segments = named_segments(meshes, surface, plane)
+        geometry = named_segments(meshes, crs, surface, plane)
         result = pipeline.generate(
-            rupture_config, segments, crs, propagation_config=propagation
+            rupture_config, geometry, propagation_config=propagation
         )
     except ValueError as error:
         console.print(f"[red]{error}[/red]")
@@ -222,33 +208,25 @@ def generate(
 
     chosen = resolve(output, output_format)
     if chosen in (Format.SRF, Format.SRF_HDF5):
-        _write_srf(rupture_config, result, output)
+        write_srf(output, assemble.to_srf_file(result))
     else:
-        tree = to_datatree(
-            {
-                f"{name.replace(':', '_')}/segment": segment
-                for name, segment in result.segments.items()
-            },
-            crs,
-            attrs={
-                "title": rupture_config.title or config.stem,
-                "config": config.read_text(),
-                # The causality tree, as JSON: which segment triggered which, and
-                # where the front crossed onto each. Without it a multi-fault
-                # rupture file is a set of faults that happen to be in one place.
-                "causality_tree": json.dumps(result.tree),
-                "jumps": json.dumps(
-                    {
-                        name: dataclasses.asdict(jump)
-                        for name, jump in result.jumps.items()
-                    }
-                ),
-                "seed": rupture_config.random.seed,
-                "realisation": rupture_config.random.realisation,
-                "moment_newton_m": result.moment_newton_m,
-            },
+        # Only the provenance is the caller's. What the rupture *is* -- the frame, the
+        # causality tree, the jumps, the moment -- the writer reads off the realisation,
+        # because a file that does not say which segment triggered which is a set of
+        # faults that happen to be in one place.
+        write_rupture(
+            to_datatree(
+                result,
+                attrs={
+                    "title": rupture_config.title or config.stem,
+                    "config": config.read_text(),
+                    "seed": rupture_config.random.seed,
+                    "realisation": rupture_config.random.realisation,
+                },
+            ),
+            output,
+            format=output_format,
         )
-        write_rupture(tree, output, format=output_format)
 
     if not quiet:
         console.print(
@@ -260,35 +238,6 @@ def generate(
             )
         )
         console.print(f"[green]wrote[/green] {output}")
-
-
-def _write_srf(
-    config: RuptureConfig, result: pipeline.Realisation, output: Path
-) -> None:
-    """The SRF path, which needs the material properties the rupture file does not
-    store -- an SRF version 2.0 point carries shear speed and density, and the
-    velocity model is the only thing that knows them."""
-    shear_speeds = []
-    densities = []
-    bottoms = np.asarray(config.velocity_model.bottom_depth_km)
-    speeds = np.asarray(config.velocity_model.shear_speed_km_s)
-    layer_densities = np.asarray(config.velocity_model.density_g_cm3)
-
-    for segment in result.segments.values():
-        depth_km = segment["centre_depth_km"].to_numpy()
-        shear_speed, _ = moment.sample_velocity_model(
-            depth_km, bottoms, speeds, layer_densities
-        )
-        layer = np.minimum(
-            np.searchsorted(bottoms, depth_km, side="left"), len(bottoms) - 1
-        )
-        shear_speeds.append(shear_speed.ravel())
-        densities.append(layer_densities[layer].ravel())
-
-    write_srf(
-        output,
-        assemble.to_srf_file(list(result.segments.values()), shear_speeds, densities),
-    )
 
 
 __all__ = ["generate", "named_segments", "report"]

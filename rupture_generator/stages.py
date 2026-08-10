@@ -58,11 +58,6 @@ class DepthRamp:
         )
 
 
-def _attach(mesh: RuptureMesh, name: str, values: FloatArray, **attrs) -> RuptureMesh:
-    """Return the chart with one more cell variable on it. Functional, never in place."""
-    return RuptureMesh(mesh.dataset.assign({name: (("i", "j"), values, attrs)}))
-
-
 # ============================================================================
 # S4 -- slip
 # ============================================================================
@@ -397,33 +392,55 @@ class OnsetParams:
         negative scale makes them rupture systematically *earlier*. A sign error here
         produces a perfectly plausible rupture that is physically backwards.
     correlation : float
-        How strongly the perturbation follows slip.
+        How strongly the perturbation follows slip. Read by
+        :func:`onset_perturbation`, which draws the field; the other two are read by
+        :func:`apply_perturbation`, which spends it. One object because they are one
+        model, split across two functions because the draw needs a sampler and the
+        application needs the travel times.
     sigma : float
         The perturbation field's standard deviation, dimensionless; its product with
         ``scale_s`` is the perturbation's spread in seconds.
-    delay_s : float
-        A constant offset added to every subfault -- what the hypocentre's own onset
-        becomes.
     """
 
     scale_s: float
     correlation: float = 0.8
     sigma: float = 1.0
-    delay_s: float = 0.0
 
 
-def onset_times(
+def onset_perturbation(
     mesh: RuptureMesh,
-    travel_time_s: FloatArray,
     slip_reference: Reference,
     params: OnsetParams,
     rng: np.random.Generator,
     sampler: FieldSampler,
     covariance: CovarianceSpec,
+) -> FloatArray:
+    """S8's draw: the shape of the onset perturbation, correlated with slip.
+
+    Dimensionless and standardised. The seconds, the pinning and the clamp belong to
+    :func:`apply_perturbation`, which needs the travel times and the hypocentre; this
+    needs the sampler and slip's reference. Splitting there is what lets every drawn
+    field be drawn in one pass over the segments while the wavefront is solved later,
+    in causal order, drawing nothing.
+
+    Correlated against slip's **Gaussian**, through the reference, rather than against
+    the slip itself -- the same argument :func:`rise_time_field` makes, and the reason
+    both take a reference rather than a field.
+    """
+    return sampler.correlated_with(
+        mesh, covariance, slip_reference, params.correlation, rng
+    )
+
+
+def apply_perturbation(
+    travel_time_s: FloatArray,
+    perturbation: FloatArray,
+    params: OnsetParams,
     *,
     hypocentre: tuple[int, int] | None,
+    delay_s: float,
 ) -> FloatArray:
-    """S8: onset from travel time plus a slip-correlated perturbation.
+    """S8: onset from travel time plus an already-drawn perturbation.
 
     .. math:: t_{ij} = T_{ij} + c\\,\\sigma\\,Z_{p,ij} + \\mathrm{delay}
 
@@ -441,17 +458,23 @@ def onset_times(
     perturbed field. It is not, and cannot be without clamping every other cell.
     Causality is a property of the travel times, which S7 owns.
 
+    A pure function of its arguments: given the perturbation, nothing here draws. That
+    is what makes the causal traversal deterministic, and it is why a point source --
+    whose perturbation is a field of zeros rather than a missing one -- needs no branch
+    of its own here.
+
     Parameters
     ----------
     hypocentre : tuple of int, or None
         The ``(i, j)`` cell the rupture starts from, or ``None`` for a segment
         triggered from elsewhere -- whose onsets stay absolute, which is what lets a
         multi-segment rupture propagate rather than restart on every fault.
+    delay_s : float
+        A constant offset added to every subfault -- what the hypocentre's own onset
+        becomes. Passed rather than carried on ``params`` because it is the *caller's*
+        per-segment decision: the root takes the configured delay, and a segment
+        triggered from elsewhere takes zero.
     """
-    perturbation = sampler.correlated_with(
-        mesh, covariance, slip_reference, params.correlation, rng
-    )
-
     spread = float(perturbation.std())
     scaled = (
         np.zeros_like(perturbation)
@@ -463,7 +486,7 @@ def onset_times(
         scaled = scaled.copy()
         scaled[hypocentre] = 0.0
 
-    onset = travel_time_s + params.scale_s * scaled + params.delay_s
+    onset = travel_time_s + params.scale_s * scaled + delay_s
 
     if hypocentre is None:
         return onset
@@ -477,7 +500,7 @@ def onset_times(
     # hypocentre's onset is exactly the delay *and* the delay is the minimum of the
     # field. Without it only the first is true, and "the rupture starts at the
     # hypocentre" stops being a statement about the file.
-    return np.maximum(onset, params.delay_s)
+    return np.maximum(onset, delay_s)
 
 
 __all__ = [
@@ -486,8 +509,9 @@ __all__ = [
     "RakeParams",
     "RiseTimeParams",
     "SlipParams",
+    "apply_perturbation",
     "average_rise_time_s",
-    "onset_times",
+    "onset_perturbation",
     "rake_field",
     "rise_time_field",
     "slip_pattern",

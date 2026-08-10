@@ -45,10 +45,6 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 1
 """Bumped when a reader of an older file would get the wrong answer rather than an error."""
 
-NODE_VARIABLES = ("east_km", "north_km", "depth_km")
-"""What a group holds. Units and descriptions travel on the variables themselves,
-attached when the chart is built."""
-
 
 def to_datatree(
     meshes: Mapping[str, list[RuptureMesh]],
@@ -83,7 +79,7 @@ def to_datatree(
         for index, chart in enumerate(charts):
             dip_cells, strike_cells = chart.cell_counts
             dataset = (
-                chart.dataset[list(NODE_VARIABLES)]
+                chart.node_dataset()
                 .rename({"i_node": "dip_node", "j_node": "strike_node"})
                 .assign_coords(
                     strike_km=(

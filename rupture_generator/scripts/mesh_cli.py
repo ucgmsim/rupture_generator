@@ -64,7 +64,7 @@ def summarise(meshes: dict[str, list[RuptureMesh]], crs: pyproj.CRS) -> Table:
             dip_cells, strike_cells = chart.cell_counts
             strike_km, dip_km = chart.spacing_km()
             located = project_cells(chart, crs)
-            depth_km = chart.dataset["depth_km"].to_numpy()
+            depth_km = chart.nodes()[..., 2]
             table.add_row(
                 name if index == 0 else "",
                 str(index),

@@ -37,10 +37,11 @@ stage's output is the input to the next, and nothing else flows between them.
 | **S8** | travel time, rng → onset | perturbed so high-slip patches rupture early |
 | **S9** | slip, rise, onset → pulses | a slip-rate function per subfault |
 
-`pipeline.py` is the only file where that order is written down, and it is a
-**convention rather than a contract**: every stage draws from its own substream, named
-for the stage and the segment, so reordering them or changing one stage's parameters
-cannot change another's noise.
+`pipeline.py` is the only file where that order is written down — as the body of
+`generate`, a line per stage, each taking a `Realisation` and returning one. It is a
+**convention rather than a contract**: every calculation draws from its own substream,
+keyed by its own name and its segment's, so reordering them or changing one's
+parameters cannot change another's noise.
 
 ```python
 from rupture_generator.config import read_config, read_geometry
@@ -52,10 +53,20 @@ config = read_config("examples/crustal.toml")
 realisation = generate(
     config,
     segments_of(geometry),
-    geometry.crs,
     propagation_config=geometry.propagation,
 )
-realisation.segments["hope"]["slip_m"]   # an xarray.Dataset per segment
+realisation["hope"]["slip_m"]   # a numpy array on the segment's own chart
+```
+
+A `Realisation` is a mapping of segment name to annotated chart, and `generate` takes
+one and returns one — the geometry going in is the same type as the rupture coming
+out. Writing it is a separate step, because what a file stores is the format's
+business rather than the pipeline's:
+
+```python
+from rupture_generator.formats.rupture import to_datatree, write_rupture
+
+write_rupture(to_datatree(realisation), "hope.h5")
 ```
 
 ## Several faults, one earthquake
@@ -201,7 +212,11 @@ load-bearing RNG contract that two dead fields were drawn and discarded to prese
   was deleted rather than ported.
 - **The physics vocabulary shrank to what production selects** — one corner relation, one
   spectral shape, one slip-rate family. Each removed name is refused *by name, saying it
-  was removed*, because the workflow's defaults file advertises them.
+  was removed*, because the workflow's defaults file advertises them. The corner relation
+  has a second option and it is not a second name: `model = "custom"` states the four
+  coefficients (an exponent and an offset per axis) in the file itself, which is how a
+  removed relation comes back — as numbers a reader can check, rather than as a name
+  asserting a fit that nothing checks.
 - **Segments, not refusals.** Planes that do not share a seam used to be an error
   ("multi-segment is not written"); they are now two segments, and whether a rupture
   crosses between them is the propagation stage's question.

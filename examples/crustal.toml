@@ -24,8 +24,20 @@ density_g_cm3    = [2.1, 2.5, 2.7, 3.2]
 [source]
 type = "finite"
 magnitude = 6.2
-# The corner relation. `mai` is what production selects and the only one left; the
-# others are refused by name, saying they were removed.
+# The corner relation, which sets how big the slip patches are at this magnitude:
+# `lambda = 10 ** (exponent * Mw - offset)` km, along strike and down dip. `mai` is
+# Mai & Beroza (2002), what production selects, and carries no coefficients -- they
+# are the published fit. The alternative is a relation of your own:
+#
+#     model = "custom"
+#     strike_offset = 2.50
+#     dip_offset = 1.50
+#     strike_exponent = 0.5
+#     dip_exponent = 0.3333   # those four are Mai, spelled out
+#
+# which takes all four, so the file says what the relation is rather than naming one
+# and trusting this package to remember it. The relations the rewrite removed by name
+# -- somerville, suzuki, given -- come back this way, coefficients first.
 model = "mai"
 average_dip_deg = 70.0
 average_rake_deg = 175.0

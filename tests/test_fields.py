@@ -50,7 +50,8 @@ from rupture_generator.stages import (
     RakeParams,
     RiseTimeParams,
     SlipParams,
-    onset_times,
+    apply_perturbation,
+    onset_perturbation,
     rake_field,
     rise_time_field,
     slip_pattern,
@@ -283,6 +284,67 @@ def test_a_bigger_earthquake_has_bigger_patches(smaller: float, larger: float) -
     big = correlation_lengths(larger)
     assert big.correlation_length_strike_km >= small.correlation_length_strike_km
     assert big.correlation_length_dip_km >= small.correlation_length_dip_km
+
+
+@given(magnitude=MAGNITUDES)
+def test_mai_is_a_value_of_the_four_coefficients(magnitude: float) -> None:
+    """Stating Mai's own numbers as a custom relation reproduces Mai exactly.
+
+    The property the ``custom`` option rests on: the defaults are a *value* of the
+    parameterisation rather than a branch beside it. If they were not -- if the
+    published relation reached the corner by a path the four coefficients cannot
+    express -- then a config stating Somerville's coefficients would not be
+    Somerville either, and the option would be advertising more than it does.
+
+    Exact equality rather than a tolerance, because it is the same expression
+    evaluated on the same numbers, not a re-derivation.
+    """
+    assert correlation_lengths(
+        magnitude,
+        strike_offset=2.50,
+        dip_offset=1.50,
+        strike_exponent=0.5,
+        dip_exponent=0.3333,
+    ) == correlation_lengths(magnitude)
+
+
+@given(
+    magnitude=MAGNITUDES,
+    strike_offset=st.floats(-1.0, 4.0),
+    dip_offset=st.floats(-1.0, 4.0),
+    strike_exponent=st.floats(0.0, 1.0),
+    dip_exponent=st.floats(0.0, 1.0),
+)
+def test_a_corner_relation_is_a_line_in_log_length(
+    magnitude: float,
+    strike_offset: float,
+    dip_offset: float,
+    strike_exponent: float,
+    dip_exponent: float,
+) -> None:
+    """Whatever the coefficients, ``log10 lambda == exponent * Mw - offset``.
+
+    Asserted against the formula rather than against Mai's numbers, because this is
+    the claim a config file makes when it states four coefficients of its own: the
+    file's numbers are the ones the field is drawn with, on both axes, and the axes
+    do not share a coefficient. Swapping the strike and dip coefficients is the
+    failure this catches and the shipped relation cannot -- both of Mai's axes are
+    positive and similar in size.
+    """
+    covariance = correlation_lengths(
+        magnitude,
+        strike_offset=strike_offset,
+        dip_offset=dip_offset,
+        strike_exponent=strike_exponent,
+        dip_exponent=dip_exponent,
+    )
+
+    assert np.log10(covariance.correlation_length_strike_km) == pytest.approx(
+        strike_exponent * magnitude - strike_offset, abs=CONSTRUCTION
+    )
+    assert np.log10(covariance.correlation_length_dip_km) == pytest.approx(
+        dip_exponent * magnitude - dip_offset, abs=CONSTRUCTION
+    )
 
 
 # ============================================================================
@@ -914,15 +976,13 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
         SpeedParams(velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0),
         [(*hypocentre, 0.0)],
     )
-    onset = onset_times(
-        mesh,
+    params = OnsetParams(scale_s=-0.35)
+    onset = apply_perturbation(
         travel,
-        reference,
-        OnsetParams(scale_s=-0.35, delay_s=delay_s),
-        rng,
-        sampler,
-        covariance,
+        onset_perturbation(mesh, reference, params, rng, sampler, covariance),
+        params,
         hypocentre=hypocentre,
+        delay_s=delay_s,
     )
 
     assert float(onset[hypocentre]) == pytest.approx(delay_s, abs=CONSTRUCTION)
@@ -951,25 +1011,23 @@ def test_onset_is_travel_time_plus_its_perturbation(
         [(cells_i // 2, cells_j // 2, 0.0)],
     )
 
-    params = OnsetParams(scale_s=-0.35, delay_s=1.0)
+    params = OnsetParams(scale_s=-0.35)
+    delay_s = 1.0
     # No hypocentre: no pin, no clamp, so the relation is exact everywhere and the
     # perturbation is recoverable.
-    onset = onset_times(
-        mesh,
+    onset = apply_perturbation(
         travel,
-        reference,
+        onset_perturbation(mesh, reference, params, _rng(seed + 1), sampler, covariance),
         params,
-        _rng(seed + 1),
-        sampler,
-        covariance,
         hypocentre=None,
+        delay_s=delay_s,
     )
-    perturbation = (onset - travel - params.delay_s) / params.scale_s
+    perturbation = (onset - travel - delay_s) / params.scale_s
 
     assert float(perturbation.mean()) == pytest.approx(0.0, abs=CONSTRUCTION)
     assert float(perturbation.std()) == pytest.approx(params.sigma, rel=CONSTRUCTION)
     assert np.allclose(
-        onset, travel + params.scale_s * perturbation + params.delay_s, rtol=IDENTITY
+        onset, travel + params.scale_s * perturbation + delay_s, rtol=IDENTITY
     )
 
 
@@ -1020,19 +1078,17 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
             ),
             [(*hypocentre, 0.0)],
         )
-        onset = onset_times(
-            mesh,
+        params = OnsetParams(scale_s=-0.35)
+        onset = apply_perturbation(
             travel,
-            reference,
-            OnsetParams(scale_s=-0.35),
-            _rng(7),
-            sampler,
-            covariance,
+            onset_perturbation(mesh, reference, params, _rng(7), sampler, covariance),
+            params,
             # No hypocentre, so no clamp: the onset is the wavefront plus the
             # perturbation exactly, and subtracting recovers the perturbation. With
             # the clamp in the way the difference would carry the wavefront's own
             # shape wherever it bound, and this test would be about the clamp.
             hypocentre=None,
+            delay_s=0.0,
         )
         return onset - travel
 

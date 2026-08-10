@@ -23,6 +23,13 @@ and one slip-rate family (``OliuP2``). The others were documented knobs, so they
 that the config, not the output, is what adjudicates this selection is `DEFECTS.md`
 11: the Mai/Somerville crossover at M7.37 makes output comparison unable to tell them
 apart below that magnitude.
+
+The corner relation is the one of the three that has a second option, and it is not a
+second name: ``custom`` states the four coefficients in the file. That is deliberate.
+A name asserts a published fit and nothing checks the assertion -- which is how
+`DEFECTS.md` 11 happened -- whereas coefficients are what the pipeline actually uses
+and are readable off the file. Anyone who needs a relation the rewrite removed writes
+its numbers down rather than asking this package to remember them.
 """
 
 from __future__ import annotations
@@ -31,8 +38,9 @@ import dataclasses
 import math
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 from mashumaro.codecs.json import JSONDecoder
 from mashumaro.codecs.toml import TOMLDecoder
 from mashumaro.codecs.yaml import YAMLDecoder
@@ -52,11 +60,24 @@ from rupture_generator.config.validation import (
     non_empty,
 )
 from rupture_generator.pulses import from_stype
+from rupture_generator.sampling import CovarianceSpec, correlation_lengths
+
+if TYPE_CHECKING:
+    from rupture_generator.mesh import RuptureMesh
 
 REMOVED_CORNER_MODELS = ("somerville", "suzuki", "given")
 """Corner relations the rewrite removed. Production's `defaults.yaml` sets
-``srf.kmodel: 2`` -- Mai -- with no override on any path, so the others go until
-someone asks for one with a reason."""
+``srf.kmodel: 2`` -- Mai -- with no override on any path, so the others go by name.
+What replaces them is ``custom``, which states the coefficients instead: a name is a
+claim about a fit that output cannot check, and four numbers are checkable."""
+
+CORNER_MODELS = ("mai", "custom")
+"""The corner relations a source may name. ``mai`` is the published relation and takes
+no coefficients; ``custom`` takes all four and no name."""
+
+CORNER_COEFFICIENTS = ("strike_offset", "dip_offset", "strike_exponent", "dip_exponent")
+"""What a corner relation *is*: an exponent and an offset per axis, in
+``lambda = 10 ** (exponent * Mw - offset)`` -- see `sampling.correlation_lengths`."""
 
 REMOVED_SPECTRUM_SHAPES = ("somerville", "frankel")
 """Spectral falloffs the rewrite removed. Von Karman (Hurst 0.75) is Mai's own
@@ -126,10 +147,75 @@ class VelocityModelConfig(ConfigObject):
 @dataclasses.dataclass
 class SourceConfig(ConfigObject):
     """What the earthquake is. Tagged: a finite fault and a point source enter the
-    pipeline differently -- one draws fields, the other is the constant case."""
+    pipeline differently -- one draws fields, the other is the constant case.
+
+    # The source answers per segment
+
+    A rupture over several faults asks the same five questions of each of them: what
+    magnitude does this fault carry, which way does it slip, how does it dip, what
+    patch structure does it have, and what does its rake field centre on. Two of the
+    three sources answer from one number for the whole event, and the third answers
+    from a dictionary -- so the *questions* are the same and only the answers differ,
+    which is what makes them methods here rather than branches in the pipeline.
+
+    The base answers all five from ``magnitude``, ``average_rake_deg`` and
+    ``average_dip_deg``; :class:`PerFaultSourceConfig` overrides every one. The rule
+    that keeps this from growing: the source answers **values**, and the pipeline does
+    the arithmetic. ``alpha_t`` is physics, so it stays in `timing`, even though it is
+    computed from two numbers that come from here.
+    """
 
     class Config(ConfigObject.Config):
         discriminator = Discriminator(field="type", include_subtypes=True)
+
+    def check_segments(self, segments: list[str]) -> None:
+        """Refuse a source that does not describe this rupture's faults.
+
+        A no-op for a source stating one magnitude for the event, which describes any
+        number of faults by construction. Overridden where the source names faults and
+        so can name the wrong ones.
+        """
+
+    def magnitude_of(self, segment: str) -> float:
+        """The magnitude this segment carries."""
+        return float(self.magnitude)  # ty: ignore[unresolved-attribute]
+
+    def rake_of(self, segment: str) -> float:
+        """This segment's mean rake, in degrees -- the mechanism, not the field.
+
+        What `timing.alpha_t` and the rupture speed read. The rake *field*'s centre is
+        :meth:`base_rake_deg_of`, which is a different number.
+        """
+        return float(self.average_rake_deg)  # ty: ignore[unresolved-attribute]
+
+    def dip_of(self, segment: str, mesh: RuptureMesh) -> float:
+        """This segment's mean dip, in degrees.
+
+        Takes the chart because a source that does not state a dip reads it off the
+        geometry, which is exact and one fewer thing written down twice.
+        """
+        return float(self.average_dip_deg)  # ty: ignore[unresolved-attribute]
+
+    def base_rake_deg_of(self, segment: str, default_deg: float) -> float:
+        """What this segment's rake *field* is centred on.
+
+        Deliberately not :meth:`rake_of`. For a source stating one average rake, the
+        field's centre is the ``[field]`` section's ``base_rake_deg`` and the average
+        rake is what the geometric correction uses -- two numbers that happen to be
+        175 degrees in every shipped example, so collapsing them would change every
+        finite rupture's rake field with nothing going red.
+        """
+        return default_deg
+
+    def covariance_of(self, segment: str) -> CovarianceSpec:
+        """The patch structure this segment's magnitude implies.
+
+        Per segment rather than per event, because correlation lengths scale with
+        magnitude: a fault carrying an Mw 6.3 has smaller asperities than one carrying
+        an Mw 7.9, and the event's summed magnitude would give the small fault patches
+        larger than itself.
+        """
+        return correlation_lengths(self.magnitude_of(segment))
 
 
 @dataclasses.dataclass
@@ -140,14 +226,24 @@ class FiniteSourceConfig(SourceConfig):
     chooses independently as ``shape`` -- the two used to be one vocabulary, and
     nothing checked that a `[source]` and a `[slip]` section naming different
     relations agreed (`DEFECTS.md` 11).
+
+    Two relations. ``mai`` is Mai & Beroza (2002) and carries no coefficients: they
+    are the published fit, they live in `sampling.correlation_lengths`, and a file
+    that overrode one of them would still be *called* mai while no longer being it.
+    ``custom`` is the other way round -- no published name, and all four coefficients
+    stated in the file, so what it is is readable from the file rather than from the
+    version of this package that read it. That is the seam a removed relation comes
+    back through: whoever has Somerville's coefficients and a reason writes them down.
     """
 
     magnitude: Magnitude
     average_dip_deg: DipDeg
     average_rake_deg: RakeDeg
     model: str = "mai"
-    strike_offset: float = 2.50
-    dip_offset: float = 1.50
+    strike_offset: float | None = None
+    dip_offset: float | None = None
+    strike_exponent: float | None = None
+    dip_exponent: float | None = None
     rise_time_coefficient: PositiveFloat = 1.6
     type: Literal["finite"] = "finite"
 
@@ -158,11 +254,59 @@ class FiniteSourceConfig(SourceConfig):
             self.refuse(
                 "model",
                 f"the corner relation {self.model!r} was removed in the pipeline "
-                "rewrite: production selects 'mai', and the others go until someone "
-                "asks for one with a reason",
+                "rewrite: production selects 'mai', and a relation of your own is "
+                f"model = 'custom' with {', '.join(CORNER_COEFFICIENTS)} stated",
             )
-        if self.model != "mai":
+        if self.model not in CORNER_MODELS:
             self.refuse("model", f"no corner relation is spelled {self.model!r}")
+        missing = [name for name in CORNER_COEFFICIENTS if getattr(self, name) is None]
+        if self.model == "mai":
+            for name in CORNER_COEFFICIENTS:
+                if getattr(self, name) is not None:
+                    self.refuse(
+                        name,
+                        f"{name} is part of Mai & Beroza's published fit, so a 'mai' "
+                        "relation does not take one -- overriding it would leave the "
+                        "file naming a relation it is no longer using. Coefficients "
+                        "of your own are model = 'custom', which takes all four",
+                    )
+        elif missing:
+            self.refuse(
+                missing[0],
+                "a custom corner relation states all four of its coefficients, so "
+                "that which relation it is does not depend on this package's "
+                f"defaults; missing: {', '.join(missing)}",
+            )
+        else:
+            for name in CORNER_COEFFICIENTS:
+                value = getattr(self, name)
+                if not math.isfinite(value):
+                    self.refuse(name, f"must be a finite number, got {value}")
+            for name in ("strike_exponent", "dip_exponent"):
+                if getattr(self, name) < 0.0:
+                    self.refuse(
+                        name,
+                        f"must be 0 or more, got {getattr(self, name)}: a negative "
+                        "exponent gives a larger earthquake smaller asperities. Zero "
+                        "is allowed, and is a correlation length of 10 ** -offset km "
+                        "at every magnitude",
+                    )
+
+    def corner_coefficients(self) -> dict[str, float]:
+        """The coefficients `sampling.correlation_lengths` should take, if any.
+
+        Empty for ``mai``, which is what keeps the published numbers in exactly one
+        place -- that function's own defaults -- rather than restating them here where
+        the two copies could drift. Every one of the four wrong numbers the reduction
+        sweep found was a disagreement between copies.
+        """
+        if self.model != "custom":
+            return {}
+        return {name: getattr(self, name) for name in CORNER_COEFFICIENTS}
+
+    def covariance_of(self, segment: str) -> CovarianceSpec:
+        """One structure for the whole event: one magnitude, one corner relation."""
+        return correlation_lengths(self.magnitude, **self.corner_coefficients())
 
 
 @dataclasses.dataclass
@@ -179,6 +323,14 @@ class PointSourceConfig(SourceConfig):
     average_dip_deg: DipDeg
     average_rake_deg: RakeDeg
     type: Literal["point"] = "point"
+
+    def covariance_of(self, segment: str) -> CovarianceSpec:
+        """Any positive lengths will do: a point source draws no fields.
+
+        One cell has no structure to describe. The stages still want a spec, so this
+        is the shape of "the question does not arise" -- not a claim about a spectrum.
+        """
+        return CovarianceSpec(1.0, 1.0)
 
 
 @dataclasses.dataclass
@@ -240,6 +392,54 @@ class PerFaultSourceConfig(SourceConfig):
             10.0 ** (1.5 * (value + 6.0333003)) for value in self.magnitudes.values()
         )
         return (math.log10(total) - 9.0499505) / 1.5
+
+    def check_segments(self, segments: list[str]) -> None:
+        """Refuse magnitudes that do not name this rupture's faults, in either direction.
+
+        Both ways round, because they are different mistakes. A magnitude for a fault
+        that is not here is a name that did not match -- usually a surface that fused
+        into ``name:0`` and ``name:1``. A fault with no magnitude would otherwise
+        rupture carrying none, which is a fault that appears in the file and radiates
+        nothing.
+
+        Raises
+        ------
+        ValueError
+        """
+        unknown = set(self.magnitudes) - set(segments)
+        if unknown:
+            self.refuse(
+                "magnitudes",
+                f"the source gives magnitudes for {', '.join(sorted(unknown))}, which "
+                f"are not segments of this rupture ({', '.join(segments)})",
+            )
+        missing = set(segments) - set(self.magnitudes)
+        if missing:
+            self.refuse(
+                "magnitudes",
+                f"{', '.join(sorted(missing))} has no magnitude, and a fault that "
+                "ruptures carries moment",
+            )
+
+    def magnitude_of(self, segment: str) -> float:
+        """This fault's own stated magnitude."""
+        return float(self.magnitudes[segment])
+
+    def rake_of(self, segment: str) -> float:
+        """This fault's own stated rake."""
+        return float(self.rakes[segment])
+
+    def dip_of(self, segment: str, mesh: RuptureMesh) -> float:
+        """This fault's mean dip, read off its chart.
+
+        Dip is a property of the geometry and is not stated here -- see the class
+        docstring. Exact, and one fewer thing written down twice.
+        """
+        return float(np.mean(mesh.strike_dip_deg()[1]))
+
+    def base_rake_deg_of(self, segment: str, default_deg: float) -> float:
+        """The fault's own rake. A system with two mechanisms centres two fields."""
+        return self.rakes[segment]
 
 
 def default_wavelength_band(strike_km: float, dip_km: float) -> tuple[float, float]:
@@ -509,6 +709,8 @@ def read_geometry(path: Path | str, format: str | None = None):
 
 
 __all__ = [
+    "CORNER_COEFFICIENTS",
+    "CORNER_MODELS",
     "DECODERS",
     "REMOVED_CORNER_MODELS",
     "REMOVED_SPECTRUM_SHAPES",

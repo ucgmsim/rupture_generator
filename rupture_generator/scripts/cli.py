@@ -30,14 +30,7 @@ app = typer.Typer(
 
 @app.callback()
 def main() -> None:
-    """Generate kinematic rupture models.
-
-    The callback is not decoration. Typer folds a one-command app into its root, so
-    with a single command registered ``rupture-generator mesh`` would *be*
-    ``rupture-generator``. Three are registered now, so it no longer folds -- but
-    removing this would make the interface move again the next time one is taken away.
-    It is also where a global option goes when there is one.
-    """
+    """Generate kinematic rupture models."""
 
 
 # Single commands rather than sub-groups: each does one thing, and

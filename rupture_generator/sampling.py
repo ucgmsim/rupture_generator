@@ -355,23 +355,6 @@ class SpectralSampler:
         enormous against an identity and under one standard error against a sample
         correlation coefficient -- and :meth:`blend_on_fault` exposes it.
         """
-        return self._standardise(
-            self.blend_on_fault(mesh, covariance, reference, rho, rng)[0]
-        )
-
-    def blend_on_fault(
-        self,
-        mesh: RuptureMesh,
-        covariance: CovarianceSpec,
-        reference: SpectralReference,
-        rho: float,
-        rng: np.random.Generator,
-    ) -> tuple[FloatArray, FloatArray]:
-        """The blended field and its independent part, **before** standardising.
-
-        Where the blend identity is still exact: standardising divides each field by
-        its own sample spread, which perturbs the relation by the estimator error.
-        """
         if not (-1.0 <= rho <= 1.0):
             raise ValueError(f"a correlation must be in [-1, 1], got {rho}")
 
@@ -379,11 +362,8 @@ class SpectralSampler:
         independent = self._symmetrise(spectrum, extents)
 
         blended = rho * reference.spectrum + math.sqrt(1.0 - rho * rho) * independent
-
-        return (
-            self._to_fault(blended, extents, cell_counts),
-            self._to_fault(independent, extents, cell_counts),
-        )
+        realised = self._to_fault(blended, extents, cell_counts)
+        return self._standardise(realised)
 
 
 __all__ = [

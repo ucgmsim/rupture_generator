@@ -1,41 +1,4 @@
-"""``rupture-generator view``: watch a rupture happen.
-
-Opens a Rerun viewer showing the fault in three dimensions, coloured by a field, with a
-time scrub that plays the rupture at real speed -- and beside it the moment release,
-the distribution of whichever field is selected, and the numbers that say what kind of
-earthquake this is.
-
-# Why Rerun rather than a plot
-
-The thing worth looking at is *propagation*, and a still image cannot show it. A viewer
-that can is a time-aware one, and Rerun's timeline gives play, pause, loop and a rate
-multiplier for free, synchronised across every panel, provided the time is logged as a
-**duration in seconds** rather than a frame number.
-
-# The render mesh has unshared vertices
-
-Rerun colours by *vertex*, so a vertex shared between neighbouring cells would
-interpolate a piecewise-constant field and draw values that were never computed -- a
-slip of 0.4 m blended into its neighbour's 3 m across the seam between them. So this
-draws four vertices per cell with one flat colour each. That is a display list rather
-than a mesh, and the difference matters exactly here.
-
-# Large ruptures are decimated for display, and say so
-
-A 100 m rupture of a whole fault system is millions of subfaults and tens of millions
-of vertices; Rerun cannot animate that, and neither can a screen resolve it. Above a
-cell budget the *displayed* mesh is strided down and a banner says by how much.
-Histograms and statistics are always computed from every subfault, so only the picture
-is coarsened -- which is the honest way round, because a decimated statistic would be
-wrong where a decimated picture is merely coarse.
-
-# What animates
-
-`slip` is **cumulative slip at t**, integrated from each subfault's own pulse, and it
-is the propagation. Rise time and rake are properties of the finished rupture rather
-than of a moment in it, so they are drawn once and the cursor drives the moment release
-instead.
-"""
+"""``rupture-generator view``: watch a rupture happen."""
 
 from __future__ import annotations
 
@@ -185,8 +148,6 @@ def _ramp(
     return blended.round().astype(np.uint8)
 
 
-# A 16-entry viridis, linearly interpolated. Vendored rather than importing matplotlib
-# for a lookup table: it is the only thing that would have been used from it.
 _VIRIDIS_16 = np.array(
     [
         (68, 1, 84),
@@ -259,11 +220,6 @@ def _from_rupture_file(path: Path) -> list[Segment]:
 
         origin = None
         for name, dataset in found:
-            # **Each segment's nodes are offsets from that segment's own origin**, so
-            # the origin goes back on before anything is compared or drawn across
-            # segments. Without it every fault is placed about its own datum and the
-            # twenty of them land on top of each other -- the same trap
-            # `propagation.causal_jump` names when it differences two charts.
             east = (
                 dataset["node_east_km"].to_numpy()
                 + float(dataset.attrs["origin_east_km"])
@@ -446,7 +402,7 @@ NOMINAL_RIGIDITY_PA = 3.0e10
 generator sampled, and the panel says when that is."""
 
 
-def statistics(segments: list[Segment]) -> tuple[str, np.ndarray, np.ndarray, bool]:
+def statistics(segments: list[Segment]) -> str:
     """The numbers that say what kind of earthquake this is, and the moment release.
 
     Returns
@@ -481,12 +437,15 @@ def statistics(segments: list[Segment]) -> tuple[str, np.ndarray, np.ndarray, bo
     duration_s = max(ends) - min(starts)
 
     slip = np.concatenate([segment.slip_m.ravel() for segment in segments])
+    caveat = (
+        ""
+        if exact
+        else f" (at a nominal μ = {NOMINAL_RIGIDITY_PA / 1e9:.0f} GPa because rupture does not carry rigidity) "
+    )
     lines = [
-        "# Rupture",
-        "",
         "| | |",
         "| --- | --- |",
-        f"| moment magnitude | **{magnitude:.2f}** |",
+        f"| moment magnitude | **{magnitude:.2f}** {caveat}|",
         f"| seismic moment | {moment_nm:.3e} N m |",
         f"| fault area | {area_m2 / 1.0e6:,.0f} km² |",
         f"| rupture duration | {duration_s:.1f} s |",
@@ -495,14 +454,8 @@ def statistics(segments: list[Segment]) -> tuple[str, np.ndarray, np.ndarray, bo
         f"| mean slip | {slip.mean():.2f} m |",
         f"| peak slip | {slip.max():.2f} m |",
         "",
-        (
-            "Moment from the file's own rigidity."
-            if exact
-            else f"Moment at a nominal {NOMINAL_RIGIDITY_PA / 1e9:.0f} GPa: this "
-            "format does not carry the rigidity the generator sampled."
-        ),
     ]
-    return "\n".join(lines), np.array([]), np.array([]), exact
+    return "\n".join(lines)
 
 
 def moment_release(
@@ -887,19 +840,10 @@ def log_rupture(
     kept = {segment.name: strided(segment, stride) for segment in segments}
     quads = {segment.name: strided_corners(segment, stride) for segment in segments}
 
-    summary, _, _, _ = statistics(segments)
-    drawn = sum(len(indices) for indices in kept.values())
-    total = sum(segment.slip_m.size for segment in segments)
-    note = f"\n\nRead from a {provenance}." + (
-        f"\n\n**Coloured by 1 subfault in {stride}²** — {drawn:,} of {total:,} "
-        f"sampled, each drawn over the {stride}×{stride} block it stands for. No value "
-        "is averaged, and every statistic and histogram above uses all of them."
-        if stride > 1
-        else ""
-    )
+    summary = statistics(segments)
     rerun.log(
         "/statistics",
-        rerun.TextDocument(summary + note, media_type="text/markdown"),
+        rerun.TextDocument(summary, media_type="text/markdown"),
         static=True,
     )
 

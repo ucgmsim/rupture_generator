@@ -40,7 +40,9 @@ designs in now.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
+import types
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyproj
@@ -213,18 +215,88 @@ def grid_convergence_deg(
 # ============================================================================
 
 
-@dataclasses.dataclass(frozen=True)
+NODE_VARIABLES = ("east_km", "north_km", "depth_km")
+"""The chart's own geometry, on ``(i_node, j_node)``. What :meth:`RuptureMesh.node_dataset`
+hands out, and what a mesh file stores."""
+
+CELL_DIMS = ("i", "j")
+"""The dims a stage's field lives on: ``i`` down dip, ``j`` along strike."""
+
+RESERVED_FIELDS = frozenset({*NODE_VARIABLES, "plane", "slip_rate", "slip_rate_offset"})
+"""Names a stage may not attach a field under.
+
+Not tidiness. The node variables live on ``(i_node, j_node)`` and a field lives on
+``(i, j)``, so ``with_fields(depth_km=...)`` would not *collide* -- it would sit beside
+the geometry under the geometry's own name, and the next reader of ``depth_km`` would
+get whichever xarray handed back.
+"""
+
+RESERVED_ATTRS = frozenset({"surface", "origin_east_km", "origin_north_km"})
+"""What the chart *is*, as against what a stage found out about it.
+
+A stage that rewrote one of these would move the fault, and every derived quantity
+after it would describe somewhere else.
+"""
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
 class RuptureMesh:
-    """One chart of a fault surface: node positions, with everything else derived.
+    """One chart of a fault surface, and whatever has been attached to it.
 
     The dataset holds ``east_km``, ``north_km`` and ``depth_km`` on dims
     ``(i_node, j_node)`` -- offsets from the surface origin in ``attrs`` -- plus a
     ``plane`` coordinate on the cell dim ``j`` recording which config plane each cell
-    column came from. Pipeline stages attach their fields on the cell dims
-    ``(i, j)``; this class never stores what it can compute.
+    column came from.
+
+    # Two vocabularies, one chart
+
+    Geometry is **derived**: nodes in, methods out, and nothing stored that could be
+    computed. Fields are **given**: a stage draws an ``(i, j)`` array, hands it back
+    under a name, and no later stage can tell which stage put it there. The mapping
+    protocol is over the fields alone -- ``mesh["slip_m"]`` is something a stage
+    remembered, ``mesh.areas_km2()`` is something this class computes, and they are
+    spelled differently because they are different kinds of thing.
+
+    # The dataset is private
+
+    Its dims, coordinate names and variable attributes are the file formats' business
+    and nobody else's. A stage reaching through it could write on the wrong dims, or
+    attach a field under a geometry variable's name and quietly replace the fault --
+    which is what a bare ``dataset.assign`` allows. :meth:`node_dataset` is the one way
+    out, and what it hands out is the geometry.
+
+    Equality is identity (``eq=False``). The generated ``__eq__`` would compare two
+    datasets with ``==``, which returns a dataset rather than a bool, so every
+    ``mesh_a == mesh_b`` raised "truth value of an array is ambiguous". Use
+    :meth:`equals` for a structural comparison.
     """
 
-    dataset: xr.Dataset
+    _dataset: xr.Dataset
+
+    def __repr__(self) -> str:
+        """The chart's name, shape and fields -- not the dataset behind it.
+
+        The dataclass default prints every array, which turns one failed assertion
+        into a screenful.
+        """
+        cells_i, cells_j = self.cell_counts
+        fields = ", ".join(sorted(self.fields())) or "none"
+        return (
+            f"{type(self).__name__}({self.surface!r}, "
+            f"{cells_i}x{cells_j} cells, fields: {fields})"
+        )
+
+    def equals(self, other: RuptureMesh) -> bool:
+        """Whether two charts hold the same geometry, fields and attrs."""
+        return self._dataset.equals(other._dataset)
+
+    def _with(self, dataset: xr.Dataset) -> RuptureMesh:
+        """This chart, behind a different dataset.
+
+        The single place a chart is made from another, so "functional, never in place"
+        is one line rather than a rule every method has to remember.
+        """
+        return type(self)(dataset)
 
     @classmethod
     def from_nodes(
@@ -332,38 +404,38 @@ class RuptureMesh:
     @property
     def surface(self) -> str:
         """The surface this chart belongs to."""
-        return str(self.dataset.attrs["surface"])
+        return str(self._dataset.attrs["surface"])
 
     @property
     def origin_km(self) -> tuple[float, float]:
         """The surface origin (easting, northing), in the CRS, kilometres."""
         return (
-            float(self.dataset.attrs["origin_east_km"]),
-            float(self.dataset.attrs["origin_north_km"]),
+            float(self._dataset.attrs["origin_east_km"]),
+            float(self._dataset.attrs["origin_north_km"]),
         )
 
     @property
     def cell_counts(self) -> tuple[int, int]:
         """Cells ``(n_i, n_j)`` -- one fewer than nodes on each axis."""
         return (
-            self.dataset.sizes["i_node"] - 1,
-            self.dataset.sizes["j_node"] - 1,
+            self._dataset.sizes["i_node"] - 1,
+            self._dataset.sizes["j_node"] - 1,
         )
 
     def nodes(self) -> FloatArray:
         """Node positions, shape ``(n_i+1, n_j+1, 3)``, components (east, north, depth)."""
         return np.stack(
             [
-                self.dataset["east_km"].to_numpy(),
-                self.dataset["north_km"].to_numpy(),
-                self.dataset["depth_km"].to_numpy(),
+                self._dataset["east_km"].to_numpy(),
+                self._dataset["north_km"].to_numpy(),
+                self._dataset["depth_km"].to_numpy(),
             ],
             axis=-1,
         )
 
     def planes(self) -> FloatArray:
         """Which config plane each cell column came from, length ``n_j``."""
-        return self.dataset["plane"].to_numpy()
+        return self._dataset["plane"].to_numpy()
 
     def blocks(self) -> list[tuple[int, int, int]]:
         """Contiguous constant-plane runs, as ``(plane, start, stop)`` cell columns.
@@ -379,6 +451,215 @@ class RuptureMesh:
             (int(plane[start]), int(start), int(stop))
             for start, stop in zip(starts, stops, strict=True)
         ]
+
+    # -------------------------------------------------------------- the fields
+
+    def fields(self) -> frozenset[str]:
+        """Every attached field's name.
+
+        Defined as the variables whose dims are exactly the cell dims, so the dims are
+        the discriminator and no second list of names has to be kept in step. Geometry
+        is not in here; geometry is computed.
+        """
+        return frozenset(
+            str(name)
+            for name, variable in self._dataset.data_vars.items()
+            if variable.dims == CELL_DIMS
+        )
+
+    def __contains__(self, name: object) -> bool:
+        """Whether a field of that name has been attached."""
+        return isinstance(name, str) and name in self.fields()
+
+    def __getitem__(self, name: str) -> FloatArray:
+        """A field a stage attached, shaped :attr:`cell_counts`.
+
+        Returned **read-only**: the chart is immutable, and an array that could be
+        written through is a way around that which nothing would report. A caller who
+        wants to change one wants a new field, and spells it ``np.array(mesh[name])``.
+
+        Raises
+        ------
+        KeyError
+            Naming the field and listing what this chart does carry. A stage asking
+            for a field nobody drew is a pipeline written in the wrong order, and the
+            list of what *is* there is most of the diagnosis.
+        """
+        if name not in self.fields():
+            attached = ", ".join(sorted(self.fields())) or "nothing"
+            raise KeyError(
+                f"{self.surface!r} carries no field called {name!r}; it carries "
+                f"{attached}"
+            )
+        values: FloatArray = self._dataset[name].to_numpy()
+        view = values.view()
+        view.flags.writeable = False
+        return view
+
+    def with_fields(self, **arrays: FloatArray) -> RuptureMesh:
+        """This chart with more cell fields on it. Functional, never in place.
+
+        Keyword arguments because a field name is an identifier, so the call site
+        reads as the assignment it is::
+
+            mesh.with_fields(slip_m=slip, rake_deg=rake)
+
+        Never in place is what lets stages *share* geometry rather than copy it: the
+        returned chart holds the same node arrays as this one, and the only new objects
+        are the fields themselves.
+
+        A field of the same name is replaced, because a stage that recomputes one --
+        the moment fold, sizing ``slip_pattern`` into ``slip_m`` -- is making a second
+        statement about one quantity rather than adding a second quantity.
+
+        Raises
+        ------
+        ValueError
+            For an array that is not the chart's shape, one carrying a non-finite
+            value, or a name in :data:`RESERVED_FIELDS`.
+
+            The shape check is the one that earns its keep. xarray objects only when
+            dimension *sizes* disagree, so a transposed field on a square patch is
+            assigned without complaint and every quantity derived from it is quietly
+            wrong. The finiteness check is `from_nodes`' argument one stage later: a
+            NaN drawn here reaches the SRF with nothing having raised.
+        """
+        cell_counts = self.cell_counts
+        prepared = {}
+        for name, values in arrays.items():
+            if name in RESERVED_FIELDS:
+                raise ValueError(
+                    f"{name!r} is the chart's own, not a field to attach; "
+                    f"reserved names are {', '.join(sorted(RESERVED_FIELDS))}"
+                )
+            array = np.asarray(values, dtype=np.float64)
+            if array.shape != cell_counts:
+                raise ValueError(
+                    f"{name} is shaped {array.shape}, and this chart has "
+                    f"{cell_counts} cells (i down dip, j along strike)"
+                )
+            if not np.isfinite(array).all():
+                raise ValueError(f"{name} carries a non-finite value")
+            prepared[name] = (CELL_DIMS, array)
+
+        return self._with(self._dataset.assign(prepared))
+
+    def without(self, *names: str) -> RuptureMesh:
+        """This chart with those fields dropped. Functional, never in place.
+
+        For a working field a stage is finished with -- the unit-mean slip pattern,
+        once the moment has sized it. A name that is not there is not an error:
+        dropping is a statement about the result, not a claim about the history.
+        """
+        return self._with(self._dataset.drop_vars(names, errors="ignore"))
+
+    @property
+    def attrs(self) -> Mapping[str, Any]:
+        """What this chart records about itself, read-only.
+
+        What a stage learns that is not one value per subfault: the fraction of the
+        slip field truncation clipped, and -- on the one segment that holds it -- where
+        the rupture nucleated, in this chart's own arc lengths. Read-only, because a
+        mutable view is a mutable chart.
+        """
+        return types.MappingProxyType(dict(self._dataset.attrs))
+
+    def with_attrs(self, **values: Any) -> RuptureMesh:
+        """This chart with more recorded about it. Functional, never in place.
+
+        Scalars by convention: these are written straight into a file's group
+        attributes, and an attribute is a scalar or an array, never a mapping.
+
+        Raises
+        ------
+        ValueError
+            For a name in :data:`RESERVED_ATTRS`, which say what the chart *is*.
+        """
+        reserved = RESERVED_ATTRS & set(values)
+        if reserved:
+            raise ValueError(
+                f"{', '.join(sorted(reserved))} says what this chart is, and is not "
+                "a stage's to rewrite"
+            )
+        return self._with(self._dataset.assign_attrs(**values))
+
+    def with_pulses(self, offsets: np.ndarray, samples: FloatArray) -> RuptureMesh:
+        """This chart with its slip-rate pulses attached. Functional, never in place.
+
+        The one thing a stage produces that is not a cell field: a pulse per subfault,
+        each its own length, so the array is ragged and no ``(i, j)`` shape describes
+        it. It gets a method of its own rather than a widened :meth:`with_fields`
+        because there is exactly one such quantity, it has an exact meaning, and the
+        checks it wants are checks nothing else wants.
+
+        Stored as CSR under the names the rupture file uses, so the writer copies
+        rather than translates. The CSR *indices* are not stored: a pulse is
+        contiguous, so they are ``arange`` and the file says so.
+
+        Parameters
+        ----------
+        offsets : np.ndarray
+            Where each subfault's pulse starts, length ``n_i * n_j + 1``, strike
+            fastest -- the CSR indptr, so the last entry is the sample count.
+        samples : FloatArray
+            Every pulse, concatenated.
+
+        Raises
+        ------
+        ValueError
+            For an indptr that is not one: the wrong length for this chart, decreasing
+            anywhere, or not ending at ``samples.size``. Each would make some
+            subfault's pulse another's, which is a plausible-looking rupture nothing
+            downstream could question.
+        """
+        cells_i, cells_j = self.cell_counts
+        offsets = np.asarray(offsets, dtype=np.int64)
+        samples = np.asarray(samples, dtype=np.float64)
+
+        if offsets.shape != (cells_i * cells_j + 1,):
+            raise ValueError(
+                f"the pulse offsets are shaped {offsets.shape}, and this chart has "
+                f"{cells_i * cells_j} subfaults, so it wants "
+                f"{cells_i * cells_j + 1} (one per subfault, plus the end)"
+            )
+        if np.any(np.diff(offsets) < 0):
+            raise ValueError("the pulse offsets decrease, so some subfault has none")
+        if offsets[0] != 0 or offsets[-1] != samples.size:
+            raise ValueError(
+                f"the pulse offsets run {offsets[0]} to {offsets[-1]}, and there are "
+                f"{samples.size} samples"
+            )
+
+        return self._with(
+            self._dataset.assign(
+                {
+                    "slip_rate": ("sample", samples),
+                    "slip_rate_offset": ("cell_edge", offsets),
+                }
+            )
+        )
+
+    @property
+    def pulses(self) -> tuple[np.ndarray, FloatArray] | None:
+        """The slip-rate pulses as ``(offsets, samples)``, or ``None`` if unset."""
+        if "slip_rate" not in self._dataset:
+            return None
+        return (
+            self._dataset["slip_rate_offset"].to_numpy(),
+            self._dataset["slip_rate"].to_numpy(),
+        )
+
+    def node_dataset(self) -> xr.Dataset:
+        """The node positions with their units, and nothing else.
+
+        The **one** place the private dataset is handed out, and what it hands out is
+        the geometry: three variables on ``(i_node, j_node)``, no attached fields, no
+        pulses, no ``plane``. It exists for the mesh file, which stores a *surface*
+        rather than a rupture and renames the dims to its own spelling at that seam.
+        The units and long names are written down once, in :meth:`from_nodes`; this is
+        how they reach a file without being written down a second time.
+        """
+        return self._dataset[list(NODE_VARIABLES)].drop_vars("plane", errors="ignore")
 
     # ------------------------------------------------------- derived quantities
 
@@ -664,6 +945,7 @@ def cell_counts(
             max(1, round(length_km / size)),
             max(1, round(width_km / size)),
         )
+    assert discretisation.strike_count and discretisation.dip_count
     return discretisation.strike_count, discretisation.dip_count
 
 
