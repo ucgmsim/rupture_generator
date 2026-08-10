@@ -24,6 +24,7 @@ import numpy as np
 from rupture_generator.units import M2_PER_KM2
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 MAGNITUDE_COEFFICIENT = 10.699967 - 7.0 / 1.5
 """The constant in eq. 7's SI form, at full precision.
@@ -71,13 +72,8 @@ def rigidity_pa(shear_speed_km_s: FloatArray, density_g_cm3: FloatArray) -> Floa
     return np.asarray(density_g_cm3) * np.asarray(shear_speed_km_s) ** 2 * 1.0e9
 
 
-def sample_velocity_model(
-    depth_km: FloatArray,
-    bottom_depth_km: FloatArray,
-    shear_speed_km_s: FloatArray,
-    density_g_cm3: FloatArray,
-) -> tuple[FloatArray, FloatArray]:
-    """Shear speed and rigidity at each subfault's depth.
+def layer_of(depth_km: FloatArray, bottom_depth_km: FloatArray) -> IntArray:
+    """Which layer of a 1-D velocity model each depth falls in.
 
     Two conventions that are choices rather than consequences, both kept:
 
@@ -89,6 +85,29 @@ def sample_velocity_model(
     extrapolating. A subfault below the model is a modelling error, not a reason to
     invent properties for it.
 
+    Both conventions live here rather than at each lookup, because a second copy is a
+    second thing to disagree with -- and the callers are in different modules: the
+    materials of a subfault, and the shear speed of the rock a jump crosses.
+
+    Returns
+    -------
+    IntArray
+        Layer indices, shaped like ``depth_km``.
+    """
+    bottoms = np.asarray(bottom_depth_km, dtype=np.float64)
+    return np.minimum(
+        np.searchsorted(bottoms, np.asarray(depth_km), side="left"), len(bottoms) - 1
+    )
+
+
+def sample_velocity_model(
+    depth_km: FloatArray,
+    bottom_depth_km: FloatArray,
+    shear_speed_km_s: FloatArray,
+    density_g_cm3: FloatArray,
+) -> tuple[FloatArray, FloatArray]:
+    """Shear speed and rigidity at each subfault's depth.
+
     Sampled **per subfault**, not per row: one lookup per dip row broadcast along
     strike is exact for a plane and for nothing else, and a bent chart has a
     different depth at every subfault in a row.
@@ -98,10 +117,7 @@ def sample_velocity_model(
     tuple of FloatArray
         Shear speed in km/s and rigidity in pascals, shaped like ``depth_km``.
     """
-    bottoms = np.asarray(bottom_depth_km, dtype=np.float64)
-    layer = np.minimum(
-        np.searchsorted(bottoms, np.asarray(depth_km), side="left"), len(bottoms) - 1
-    )
+    layer = layer_of(depth_km, bottom_depth_km)
     shear_speed = np.asarray(shear_speed_km_s, dtype=np.float64)[layer]
     density = np.asarray(density_g_cm3, dtype=np.float64)[layer]
     return shear_speed, rigidity_pa(shear_speed, density)
@@ -319,6 +335,7 @@ def cumulative_moment(times_s: FloatArray, rate_newton_m_s: FloatArray) -> Float
 __all__ = [
     "MAGNITUDE_COEFFICIENT",
     "cumulative_moment",
+    "layer_of",
     "moment_of",
     "moment_rate",
     "rigidity_pa",

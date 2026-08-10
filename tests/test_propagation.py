@@ -103,7 +103,12 @@ def _graph() -> JumpGraph:
 
 
 def _chart(
-    *, east_km: float = 0.0, north_km: float = 0.0, cells: int = 6, name: str = "f"
+    *,
+    east_km: float = 0.0,
+    north_km: float = 0.0,
+    cells: int = 6,
+    name: str = "f",
+    depth_km: float = 5.0,
 ) -> RuptureMesh:
     """A flat unit-spaced chart, offset to wherever the test wants a fault."""
     across, down = np.meshgrid(
@@ -112,11 +117,38 @@ def _chart(
     return RuptureMesh.from_nodes(
         down + east_km,
         across + north_km,
-        np.full_like(across, 5.0),
+        np.full_like(across, depth_km),
         origin_east_km=0.0,
         origin_north_km=0.0,
         surface=name,
     )
+
+
+def _vertical_chart(
+    *, east_km: float = 0.0, cells: int = 6, name: str = "f"
+) -> RuptureMesh:
+    """A chart hanging straight down, so ``i`` is depth and the edges differ in it.
+
+    What the flat :func:`_chart` cannot express: a fault whose top edge is at the
+    surface and whose bottom edge is deep, which is the geometry every depth question
+    here is about.
+    """
+    across, down = np.meshgrid(
+        np.arange(cells + 1, dtype=float), np.arange(cells + 1, dtype=float)
+    )
+    return RuptureMesh.from_nodes(
+        np.full_like(across, east_km),
+        across,
+        down,
+        origin_east_km=0.0,
+        origin_north_km=0.0,
+        surface=name,
+    )
+
+
+def _uniform_speed(speed_km_s: float = 3.0) -> DistanceOverVelocity:
+    """A one-layer velocity model, for tests whose subject is not the depth dependence."""
+    return DistanceOverVelocity(np.array([100.0]), np.array([speed_km_s]))
 
 
 # ============================================================================
@@ -379,7 +411,7 @@ def test_a_delay_moves_the_jump_towards_the_shorter_gap() -> None:
     onset_s = np.tile(np.arange(6, dtype=float)[::-1], (6, 1))
 
     instant = causal_jump(parent, onset_s, child, Instantaneous())
-    delayed = causal_jump(parent, onset_s, child, DistanceOverVelocity(3.0))
+    delayed = causal_jump(parent, onset_s, child, _uniform_speed(3.0))
 
     assert delayed.arrival_s > instant.arrival_s
     assert delayed.distance_km <= instant.distance_km
@@ -418,23 +450,140 @@ def test_a_jump_never_arrives_before_it_leaves() -> None:
     rng = np.random.default_rng(3)
     onset_s = rng.random((6, 6)) * 5.0
 
-    for delay in (Instantaneous(), DistanceOverVelocity(3.2)):
+    for delay in (Instantaneous(), _uniform_speed(3.2)):
         jump = causal_jump(parent, onset_s, child, delay)
         assert jump.arrival_s >= jump.departure_s
         assert jump.departure_s == pytest.approx(onset_s[jump.parent_cell])
 
 
+def test_the_jump_leaves_from_where_the_front_arrests() -> None:
+    """An interior cell does not trigger a jump, however early the front reaches it.
+
+    The trigger is the stress concentration of an *arrested* rupture tip -- Oglesby
+    (2008) -- not the wavefront sweeping past. So a cell in the middle of the parent,
+    handed an onset far earlier than anything on the perimeter, still loses: the
+    rupture does not stop there, and a front that does not stop does not radiate the
+    stopping phase that starts the next segment.
+
+    This is the whole change. Without it the minimisation takes exactly that cell,
+    because a chord through rock at the shear speed beats the front crawling along the
+    fault at a fraction of it, and every jump comes out too early.
+    """
+    parent = _chart(cells=6, name="parent")
+    child = _chart(east_km=10.0, cells=6, name="child")
+
+    onset_s = np.full((6, 6), 10.0)
+    onset_s[3, 3] = 0.0  # deep in the interior, and the earliest cell by far
+
+    jump = causal_jump(parent, onset_s, child, Instantaneous())
+
+    assert jump.parent_cell != (3, 3)
+    assert 0 in jump.parent_cell or 5 in jump.parent_cell
+    assert jump.from_edge
+
+
+def test_the_choice_of_departure_is_not_made_on_the_perturbation() -> None:
+    """Chosen on the wavefront; timed on the onset.
+
+    An argmin over a hundred thousand perturbed cells is an order statistic: it finds
+    the perturbation's negative tail rather than the shape of the front, which biased
+    every jump early by however far the noise reached. So the cell is chosen on the
+    smooth wavefront -- but *when* the rupture reached that cell is still the onset's
+    to report, because the perturbation is part of when it actually got there.
+    """
+    parent = _chart(cells=6, name="parent")
+    child = _chart(east_km=10.0, cells=6, name="child")
+
+    wavefront_s = np.tile(np.arange(6, dtype=float)[::-1], (6, 1))
+    onset_s = wavefront_s.copy()
+    onset_s[0, 0] = -50.0  # the noise tail: early in the onset, late in the wavefront
+
+    jump = causal_jump(
+        parent, wavefront_s, child, Instantaneous(), parent_onset_s=onset_s
+    )
+
+    assert jump.parent_cell != (0, 0)
+    assert jump.parent_cell[1] == 5
+    assert jump.departure_s == pytest.approx(onset_s[jump.parent_cell])
+
+
+def test_a_child_off_a_fault_face_still_gets_a_jump() -> None:
+    """A splay, or a fault under the middle of another, is not a refusal.
+
+    Nothing arrests within reach, so there is no arrest to leave from and the search
+    falls back to the whole chart. The fallback is recorded on the jump rather than
+    passed over, because a second model running silently is worse than either model.
+    """
+    parent = _chart(cells=20, name="parent", depth_km=0.0)
+    # Directly beneath the middle of the parent, and far from any of its edges.
+    child = _chart(east_km=9.0, north_km=9.0, cells=2, name="child", depth_km=5.0)
+
+    jump = causal_jump(
+        parent, np.zeros((20, 20)), child, Instantaneous(), max_distance_km=6.0
+    )
+
+    assert not jump.from_edge
+    # It left from the interior, which is the only thing in reach.
+    assert all(index not in (0, 19) for index in jump.parent_cell)
+    assert jump.distance_km <= 6.0
+
+
+def test_a_deeper_edge_wins_without_a_depth_rule() -> None:
+    """The jump goes deep because the shallow rock is slow, not because it was told to.
+
+    A vertical parent whose front reaches its surface trace and its bottom edge at the
+    same time, with a child level with both. The only thing separating them is the
+    crossing speed, which is read at the departure depth -- so the deep edge wins, and
+    nothing in the code mentions a minimum depth. This is what retires the old stack's
+    ``min_connected_depth``.
+    """
+    parent = _vertical_chart(cells=6, name="parent")
+    child = _vertical_chart(east_km=4.0, cells=6, name="child")
+    # Equidistant in time from the top and bottom edges.
+    wavefront_s = np.zeros((6, 6))
+
+    delay = DistanceOverVelocity(np.array([2.0, 100.0]), np.array([1.0, 4.0]))
+    jump = causal_jump(parent, wavefront_s, child, delay)
+
+    depth_km = float(parent.centres()[jump.parent_cell][2])
+    assert depth_km > 2.0
+    assert jump.from_edge
+
+
 def test_a_delay_needs_a_speed_the_front_can_travel_at() -> None:
     """A zero or negative crossing speed never arrives."""
     with pytest.raises(ValueError, match="never arrives"):
-        DistanceOverVelocity(0.0)
+        DistanceOverVelocity(np.array([100.0]), np.array([0.0]))
+
+
+def test_a_delay_needs_a_speed_for_every_layer() -> None:
+    """A velocity model that runs out of speeds would silently reuse the wrong one."""
+    with pytest.raises(ValueError, match="shear speeds"):
+        DistanceOverVelocity(np.array([5.0, 100.0]), np.array([3.0]))
 
 
 def test_the_default_delay_is_distance_over_velocity() -> None:
     """And it is what its name says, elementwise."""
-    delay = DistanceOverVelocity(4.0)
-    assert delay(np.array([0.0, 8.0, 12.0])).tolist() == [0.0, 2.0, 3.0]
-    assert Instantaneous()(np.array([0.0, 8.0])).tolist() == [0.0, 0.0]
+    delay = _uniform_speed(4.0)
+    depth_km = np.zeros(3)
+    assert delay(np.array([0.0, 8.0, 12.0]), depth_km).tolist() == [0.0, 2.0, 3.0]
+    assert Instantaneous()(np.array([0.0, 8.0]), depth_km[:2]).tolist() == [0.0, 0.0]
+
+
+def test_the_gap_is_crossed_at_the_speed_of_the_depth_it_left_from() -> None:
+    """The same gap takes longer to cross from the surface than from depth.
+
+    A slow shallow layer over fast rock, which is every crustal velocity model. A
+    delay that ignored its depth argument -- as the mean-over-both-faults model it
+    replaces effectively did -- would return the same number for both.
+    """
+    delay = DistanceOverVelocity(np.array([4.0, 100.0]), np.array([1.0, 4.0]))
+    distance_km = np.array([8.0, 8.0])
+
+    shallow, deep = delay(distance_km, np.array([1.0, 10.0]))
+
+    assert shallow == pytest.approx(8.0)
+    assert deep == pytest.approx(2.0)
 
 
 # ============================================================================

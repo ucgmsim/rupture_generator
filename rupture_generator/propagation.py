@@ -18,6 +18,20 @@ fitted jumps by closest approach. Closest approach is a statement about geometry
 arrival is a statement about the earthquake, and only one of them knows which way the
 front was travelling.
 
+# A jump leaves from where the front stops
+
+Arriving somewhere is necessary for a jump and nowhere near sufficient. What triggers
+the next segment is the stress concentration of an *arrested* rupture tip -- its
+stopping phase -- rather than the wavefront that swept past earlier, so :func:`causal_jump`
+searches only the parent's edge cells, where the front runs out of fault. The
+citations are at the function.
+
+Between them those two rules bracket the failure modes of the models on either side.
+Closest approach jumps too late and at the surface, where the fault is nearest and the
+rupture slowest; earliest arrival over every cell jumps too early, from somewhere in
+the wake of the front that never stopped. Neither needs a minimum jump depth to fix,
+and none is configured here.
+
 # Distances are measured in the projected frame
 
 Every chart is built in a projected Cartesian CRS where a distance is an exact
@@ -48,12 +62,15 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
+from rupture_generator import moment
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from rupture_generator.mesh import RuptureMesh
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 Tree = dict[str, str | None]
 """A rupture causality tree: each fault mapped to the fault that triggered it, and
@@ -476,22 +493,28 @@ def in_topological_order(tree: Tree) -> Iterator[str]:
 
 
 class JumpDelay(Protocol):
-    """How long a rupture takes to cross a gap of a given width.
+    """How long a rupture takes to cross a gap of a given width, from a given depth.
 
-    One argument, because a model that needs more closes over it when it is built --
-    which is what :class:`DistanceOverVelocity` does with the shear speed. A context
-    parameter that every implementation ignored would be speculative generality; a
-    stochastic delay, when one is wanted, holds its own generator the same way.
+    Two arguments, because the rock in the gap is not the same rock at every depth and
+    a model that pretends otherwise makes a shallow crossing look as fast as a deep
+    one. Anything else a model needs it closes over when it is built -- which is what
+    :class:`DistanceOverVelocity` does with the velocity model; a stochastic delay,
+    when one is wanted, holds its own generator the same way.
     """
 
-    def __call__(self, distance_km: FloatArray) -> FloatArray:
-        """Seconds, elementwise over an array of gap widths.
+    def __call__(self, distance_km: FloatArray, depth_km: FloatArray) -> FloatArray:
+        """Seconds, elementwise over gap widths and the depths they are left from.
 
-        Must be **non-negative and monotone**: a wider gap never crosses faster than
-        a narrower one. That is not a tidiness rule -- :func:`causal_jump` relies on
-        it to search nearest neighbours rather than every pair, which is what makes a
-        million-subfault rupture tractable. A model that violated it would need the
-        exhaustive search back.
+        ``depth_km`` is the **departure** depth: the front leaves an arrested tip at
+        that depth and crosses rock described by it.
+
+        Must be **non-negative, and monotone in distance at fixed depth**: from one
+        departure point, a wider gap never crosses faster than a narrower one. That is
+        not a tidiness rule -- :func:`causal_jump` relies on it to search nearest
+        neighbours rather than every pair, which is what makes a million-subfault
+        rupture tractable. Depth being fixed per departure point is what leaves the
+        argument intact now that there are two arguments: one candidate has one depth,
+        so along its own row the delay is a function of distance alone.
         """
         ...
 
@@ -505,32 +528,53 @@ class Instantaneous:
     makes it the control case for testing that a delay model changed something.
     """
 
-    def __call__(self, distance_km: FloatArray) -> FloatArray:
-        """Zero, shaped like the input."""
+    def __call__(self, distance_km: FloatArray, depth_km: FloatArray) -> FloatArray:
+        """Zero, shaped like the distances."""
+        del depth_km
         return np.zeros_like(distance_km)
 
 
 @dataclasses.dataclass(frozen=True)
 class DistanceOverVelocity:
-    """The gap is crossed at a fixed speed.
+    """The gap is crossed at the shear speed of the depth the front left from.
 
-    The default model. ``speed_km_s`` is the shear speed of the rock between the two
-    faults -- the pipeline uses the mean over the pair, since the gap is by
-    definition not on either fault and neither velocity model covers it.
+    The default model, and the only one with a speed in it. The gap is by definition
+    on neither fault, so neither fault's *sampled* materials describe it; the shared
+    1-D velocity model does, and it is read at the departure depth -- the front leaves
+    an arrested tip and crosses the rock that tip is in.
+
+    There is no constant-speed variant. One existed, taking the mean shear speed over
+    both whole faults, and that average -- over parts of both faults nowhere near the
+    gap -- is exactly what let a crossing at the surface trace look as fast as one at
+    seismogenic depth. Keeping it as an option would keep that as an option.
     """
 
-    speed_km_s: float
+    bottom_depth_km: FloatArray
+    shear_speed_km_s: FloatArray
 
     def __post_init__(self) -> None:
-        """Refuse a speed the front cannot cross a gap at."""
-        if not self.speed_km_s > 0.0:
+        """Refuse a model the front cannot cross a gap at."""
+        speeds = np.asarray(self.shear_speed_km_s, dtype=np.float64)
+        if speeds.shape != np.asarray(self.bottom_depth_km, dtype=np.float64).shape:
             raise ValueError(
-                f"a jump crosses the gap at {self.speed_km_s} km/s, which never arrives"
+                f"the velocity model has {speeds.size} shear speeds for "
+                f"{np.size(self.bottom_depth_km)} layer bottoms"
+            )
+        if not speeds.size:
+            raise ValueError(
+                "a jump crosses rock, and this velocity model has no layers"
+            )
+        if not (speeds > 0.0).all():
+            raise ValueError(
+                f"a jump crosses the gap at {float(speeds.min())} km/s, which never "
+                "arrives"
             )
 
-    def __call__(self, distance_km: FloatArray) -> FloatArray:
-        """Seconds: the gap width over the speed."""
-        return np.asarray(distance_km) / self.speed_km_s
+    def __call__(self, distance_km: FloatArray, depth_km: FloatArray) -> FloatArray:
+        """Seconds: the gap width over the shear speed at the departure depth."""
+        layer = moment.layer_of(depth_km, self.bottom_depth_km)
+        speed = np.asarray(self.shear_speed_km_s, dtype=np.float64)[layer]
+        return np.asarray(distance_km) / speed
 
 
 # ============================================================================
@@ -553,6 +597,13 @@ class Jump:
     arrival_s : float
         When it reached the child -- the departure plus the delay, and the seed time
         the child's wavefront is solved from.
+    from_edge : bool
+        Whether the front left from an edge of the parent, which is where it arrests
+        and the only place :func:`causal_jump` looks first. ``False`` records that no
+        edge cell was within reach and the search fell back to the whole chart -- a
+        child sitting off the *face* of its parent rather than off an end. Carried on
+        the jump rather than logged, because a fallback nobody can see is a second
+        model running silently.
     """
 
     parent_cell: tuple[int, int]
@@ -560,27 +611,70 @@ class Jump:
     distance_km: float
     departure_s: float
     arrival_s: float
+    from_edge: bool = True
+
+
+def _edge_cells(cell_counts: tuple[int, int]) -> IntArray:
+    """Flat indices of a chart's perimeter -- where a front runs out of fault.
+
+    All four edges. The rupture arrests wherever the fault ends, and which edge a jump
+    actually leaves from is settled by arrival time in :func:`causal_jump` rather than
+    stated here. In particular the surface trace is *not* excluded: it is a real
+    arrest, and excluding it would be the depth floor this rule exists to retire,
+    wearing a different name.
+    """
+    rows, columns = cell_counts
+    on_edge = np.zeros((rows, columns), dtype=bool)
+    on_edge[(0, rows - 1), :] = True
+    on_edge[:, (0, columns - 1)] = True
+    return np.flatnonzero(on_edge.reshape(-1))
 
 
 def causal_jump(
     parent: RuptureMesh,
-    parent_onset_s: FloatArray,
+    parent_wavefront_s: FloatArray,
     child: RuptureMesh,
     delay: JumpDelay,
     *,
+    parent_onset_s: FloatArray | None = None,
     max_distance_km: float = MAX_JUMP_KM,
 ) -> Jump:
     """Where the front crosses to the child fault, and when it gets there.
 
     .. math::
-        (p^*, c^*) = \\arg\\min_{p \\in P,\\; c \\in C}
-        \\left[\\, t_P(p) + \\mathrm{delay}\\left(\\|X_P(p) - X_C(c)\\|\\right) \\right]
+        (p^*, c^*) = \\arg\\min_{p \\in \\partial P,\\; c \\in C}
+        \\left[\\, t_P(p) + \\mathrm{delay}\\left(\\|X_P(p) - X_C(c)\\|,\\;
+        z_P(p)\\right) \\right]
 
-    **Not the closest pair.** The minimisation is over arrival time, so a front that
-    reaches a distant part of the parent early will jump from there in preference to
-    a nearer point it reaches late. Closest approach is a fact about the geometry;
-    this is a fact about the earthquake, and only one of them knows which way the
-    front was travelling.
+    **The front jumps from where it arrests, not from wherever it passes.** That is
+    the ``\\partial``: candidates are the parent's edge cells, the places the rupture
+    runs out of fault and stops. The trigger for a jump is the stress concentration of
+    an arrested rupture tip -- its stopping phase -- rather than the wavefront sweeping
+    by earlier. Oglesby (2008), *BSSA* **98**, 440, found jumps succeed when donor slip
+    terminates abruptly and fail when it tapers; Kase & Kuge (2001), *GJI* **147**, 330,
+    found triggering follows the front reaching the fault edge by about a second; Fliss,
+    Bhat, Dmowska & Rice (2005), *JGR* **110**, B06312, work the mechanism out for the
+    Landers backward branch, where the rupture arrests, radiates, and re-nucleates.
+
+    Without the restriction the minimisation takes a cell deep in the wake of the
+    front -- far from anywhere the rupture stops, and radiating essentially nothing
+    towards the child -- because a chord through intact rock at the shear speed always
+    beats the front crawling along the fault at a fraction of it. First arrival is
+    necessary for a jump and nowhere near sufficient, and treating it as sufficient is
+    what made every jump too early.
+
+    **No depth rule, and none is needed.** All four edges are candidates, the surface
+    trace included, and the arrival time decides between them: the shallow reduction in
+    :mod:`rupture_generator.timing` already makes the surface trace a late arrival, and
+    the delay is charged at the shear speed of the depth the front leaves from, which is
+    lowest there too. A jump that goes deep does so because the earthquake got there
+    first, not because a minimum depth was configured.
+
+    **Not the closest pair either.** The minimisation is over arrival time, so a front
+    that reaches a distant edge of the parent early will jump from there in preference
+    to a nearer edge it reaches late. Closest approach is a fact about the geometry;
+    this is a fact about the earthquake, and only one of them knows which way the front
+    was travelling.
 
     **Only pairs within the jump limit are candidates**, and that bound is physics
     rather than an optimisation. A rupture crosses a gap at roughly the shear speed
@@ -593,11 +687,12 @@ def causal_jump(
     connected at all, so any pair the tree contains has at least one candidate.
 
     The search is over nearest neighbours rather than over pairs, and that is exact
-    rather than an approximation: a delay never decreases with distance, so a given
-    departure point's earliest arrival is always to the closest point on the other
-    fault. It is also what makes the stage tractable -- the two largest faults of the
-    shipped scenario have 145 billion pairs between them and 37,740 nearest
-    neighbours.
+    rather than an approximation: from one departure point the delay never decreases
+    with distance, so that point's earliest arrival is always to the closest point on
+    the other fault. It is also what makes the stage tractable -- the two largest
+    faults of the shipped scenario have 145 billion pairs between them and 37,740
+    nearest neighbours, and restricting to edges cuts even that by two orders of
+    magnitude.
 
     Parameters
     ----------
@@ -605,9 +700,18 @@ def causal_jump(
         The two charts. Both hold offsets from their own surface origins, so the
         origins are added back here before differencing -- two faults digitised
         against different origins would otherwise be compared in different frames.
-    parent_onset_s : FloatArray
-        When the front reached each of the parent's subfaults.
+    parent_wavefront_s : FloatArray
+        When the front reached each of the parent's subfaults. **The field the choice
+        is made on**, and it should be the solved wavefront rather than the perturbed
+        onset: an argmin over a hundred thousand perturbed cells is an order statistic
+        that selects the perturbation's negative tail, not the shape of the front.
     delay : JumpDelay
+    parent_onset_s : FloatArray, optional
+        **The field the clock is read from**, when it differs from the one the choice
+        is made on. Choosing *where* the front left is a question about the wavefront;
+        choosing *when* it left is a question about that one cell, and there the
+        perturbation is part of the answer. Defaults to the wavefront, so a caller
+        with one field passes one field.
     max_distance_km : float
         The widest gap a jump may cross.
 
@@ -621,32 +725,44 @@ def causal_jump(
         If no pair is within the limit, which means these two faults are not close
         enough to be part of one rupture at all.
     """
-    parent_centres = parent.centres()
-    child_centres = child.centres()
-
     parent_origin = np.array([*parent.origin_km, 0.0])
     child_origin = np.array([*child.origin_km, 0.0])
 
-    departures = np.asarray(parent_onset_s, dtype=np.float64).reshape(-1)
-    from_points = (parent_centres + parent_origin).reshape(-1, 3)
-    to_points = (child_centres + child_origin).reshape(-1, 3)
+    wavefront = np.asarray(parent_wavefront_s, dtype=np.float64).reshape(-1)
+    departures = (
+        wavefront
+        if parent_onset_s is None
+        else np.asarray(parent_onset_s, dtype=np.float64).reshape(-1)
+    )
+    all_points = (parent.centres() + parent_origin).reshape(-1, 3)
+    to_points = (child.centres() + child_origin).reshape(-1, 3)
 
-    # **Only each parent subfault's nearest child can win.** A delay never decreases
-    # with distance, so for a given departure point the earliest arrival is always to
-    # the closest point on the other fault:
+    # **Only each candidate's nearest child can win.** From one departure point the
+    # depth is fixed, so the delay there is a function of distance alone and never
+    # decreases with it:
     #
-    #     min_c [ t_P(p) + delay(d(p, c)) ]  =  t_P(p) + delay( min_c d(p, c) )
+    #     min_c [ t_P(p) + delay(d(p, c), z(p)) ]
+    #         =  t_P(p) + delay( min_c d(p, c), z(p) )
     #
     # which turns a search over every pair into one nearest-neighbour query per
-    # parent subfault. That is the difference between tractable and not: the two
-    # largest faults of the shipped scenario have 145 billion pairs between them and
-    # 37,740 nearest neighbours.
-    #
-    # Exact for any delay monotone in distance, which is the one thing
-    # :class:`JumpDelay` asks of an implementation.
+    # candidate. Exact for any delay monotone in distance at fixed depth, which is the
+    # one thing :class:`JumpDelay` asks of an implementation.
     from scipy.spatial import cKDTree
 
-    nearest_km, nearest = cKDTree(to_points).query(from_points, k=1, workers=-1)
+    tree = cKDTree(to_points)
+    candidates = _edge_cells(parent.cell_counts)
+    candidate_points = all_points[candidates]
+    nearest_km, nearest = tree.query(candidate_points, k=1, workers=-1)
+    from_edge = bool((nearest_km <= max_distance_km).any())
+
+    if not from_edge:
+        # A child off the *face* of its parent rather than off an end -- a splay, or a
+        # fault passing beneath the middle of another. The front never arrests within
+        # reach, so there is no arrest to jump from and the whole chart is searched
+        # instead. Recorded on the Jump rather than passed over in silence.
+        candidates = np.arange(all_points.shape[0])
+        candidate_points = all_points
+        nearest_km, nearest = tree.query(candidate_points, k=1, workers=-1)
 
     reachable = nearest_km <= max_distance_km
     if not reachable.any():
@@ -656,9 +772,16 @@ def causal_jump(
             "rupture jumps, so the front never crosses between them"
         )
 
-    arrivals_s = np.where(reachable, departures + delay(nearest_km), np.inf)
-    from_cell = int(np.argmin(arrivals_s))
-    to_cell = int(nearest[from_cell])
+    delays_s = delay(nearest_km, candidate_points[:, 2])
+
+    # Chosen on the wavefront, timed on the onset. The argmin picks the cell; the cell
+    # is then asked when the rupture actually got there.
+    chosen = int(
+        np.argmin(np.where(reachable, wavefront[candidates] + delays_s, np.inf))
+    )
+    from_cell = int(candidates[chosen])
+    to_cell = int(nearest[chosen])
+    departure_s = float(departures[from_cell])
 
     return Jump(
         parent_cell=tuple(
@@ -667,9 +790,10 @@ def causal_jump(
         child_cell=tuple(
             int(index) for index in np.unravel_index(to_cell, child.cell_counts)
         ),
-        distance_km=float(nearest_km[from_cell]),
-        departure_s=float(departures[from_cell]),
-        arrival_s=float(arrivals_s[from_cell]),
+        distance_km=float(nearest_km[chosen]),
+        departure_s=departure_s,
+        arrival_s=departure_s + float(delays_s[chosen]),
+        from_edge=from_edge,
     )
 
 

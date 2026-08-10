@@ -85,8 +85,22 @@ early jumps from there, rather than from wherever the two faults happen to be cl
 Closest approach is a fact about geometry, and only arrival knows which way the front
 was travelling.
 
-The jump delay is a model rather than a formula: `Instantaneous`, `DistanceOverVelocity`,
-and room for a stochastic one.
+**The front jumps from where it arrests.** Candidates are the parent's edge cells, the
+places the rupture runs out of fault and stops, because what triggers the next segment
+is the stress concentration of an arrested rupture tip rather than the wavefront
+sweeping past earlier (Oglesby 2008; Kase & Kuge 2001). Arriving somewhere is necessary
+for a jump and nowhere near sufficient — searching every cell instead takes one deep in
+the wake of the front, and makes every jump too early.
+
+All four edges are candidates, the surface trace included, and there is no minimum jump
+depth. None is needed: the shallow rupture-speed reduction makes the surface trace a
+late arrival, and the gap is crossed at the shear speed of the depth the front left
+from, which is lowest there too. A jump goes deep because the earthquake got there
+first.
+
+The jump delay is a model rather than a formula: `Instantaneous`, `DistanceOverVelocity`
+— which reads the shared velocity model at the departure depth, since the gap is on
+neither fault — and room for a stochastic one.
 
 ## Units
 

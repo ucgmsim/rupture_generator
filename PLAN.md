@@ -136,21 +136,42 @@ Given segments `{F_k}` and their sources:
    is solved from the configured hypocentre. For each edge `P → C`, the jump pair is
    chosen **causally**:
 
-       (p*, c*) = argmin_{p ∈ ∂P-region, c ∈ C}  [ t_P(p) + delay(‖X_P(p) − X_C(c)‖) ]
+       (p*, c*) = argmin_{p ∈ ∂P, c ∈ C}  [ t_P(p) + delay(‖X_P(p) − X_C(c)‖, z_P(p)) ]
 
    The child's hypocentre is `c*`; its seed time is `t_P(p*) + delay(·)`; its wavefront
    is then solved with that seed. The hypocentre on a subsequent fault is where
    causality says the rupture arrives, not where the faults happen to be closest.
-3. **Jump delay** is a protocol, not a formula: `JumpDelay(distance_km, context) →
-   seconds`, with `Instantaneous`, `DistanceOverVelocity(v)`, and room for stochastic
-   models. Configured, defaulted to `DistanceOverVelocity` with the local shear speed.
+
+   **The `∂` is load-bearing, and was implemented late.** Candidates are the parent's
+   edge cells — where the front runs out of fault and *arrests* — because the trigger
+   is the stopping phase of an arrested rupture tip, not the wavefront passing by
+   (Oglesby 2008, BSSA 98, 440; Kase & Kuge 2001, GJI 147, 330; Fliss et al. 2005, JGR
+   110, B06312). The first implementation searched every cell, and every jump came out
+   too early: a chord through intact rock at the shear speed beats the front crawling
+   along the fault at a fraction of it, so the minimisation took a cell deep in the
+   wake of the front. All four edges are candidates and no minimum jump depth is
+   configured; measured on `examples/beavan.toml`, restricting to `∂P` moved the six
+   departure depths from 0.05–2.7 km to 0.4–10.8 km on faults 10 km deep.
+
+   `t_P` is the solved **wavefront**, not the perturbed onset: an argmin over a hundred
+   thousand perturbed cells is an order statistic that finds the perturbation's
+   negative tail. The onset still supplies the departure *time* once the cell is
+   chosen.
+3. **Jump delay** is a protocol, not a formula: `JumpDelay(distance_km, depth_km) →
+   seconds`, with `Instantaneous`, `DistanceOverVelocity`, and room for stochastic
+   models. The depth is the departure depth, and `DistanceOverVelocity` reads the
+   shared velocity model at it — the gap is on neither fault, so neither fault's
+   sampled materials describe it. There is no constant-speed variant: a scalar speed
+   for the gap is what let a crossing at the surface look as fast as one at depth.
 4. Each fault has exactly one triggering parent (the rupture is a tree). Fields (S4–S6)
    are sampled per segment with independent substreams; only the moment scaling in S4
    is global.
 
-The minimisation domain in step 2 may be restricted to the near-approach region of each
-pair (the closest-point machinery in `source_modelling.sources` bounds it); exhaustive
-`N_P × N_C` search is an implementation choice, not part of the contract.
+The minimisation domain in step 2 is `∂P` and a nearest-neighbour query per candidate,
+which is exact rather than an approximation: from one departure point the depth is
+fixed, so the delay there is monotone in distance and that point's earliest arrival is
+always to the closest point on the child. Exhaustive `N_P × N_C` search is an
+implementation choice, not part of the contract.
 
 ---
 

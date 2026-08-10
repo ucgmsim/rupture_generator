@@ -487,7 +487,11 @@ def generate(
     hypocentre = segments[root].cell_index(
         config.hypocentre.strike_km, config.hypocentre.dip_km
     )
+    jump_delay = _jump_delay(config)
     onsets: dict[str, np.ndarray] = {}
+    # The solved wavefront, kept alongside the perturbed onset because the two answer
+    # different questions for a jump: see `causal_jump`.
+    wavefronts: dict[str, np.ndarray] = {}
     jumps: dict[str, propagation.Jump] = {}
 
     for name in order:
@@ -499,14 +503,17 @@ def generate(
             pinned: tuple[int, int] | None = hypocentre
             delay_s = onset_params.delay_s
         else:
-            # The parent's *arrival* is what the front jumps from -- its onset, not
-            # its unperturbed wavefront, because the perturbation is part of when the
-            # rupture actually got there.
+            # Chosen on the parent's wavefront and timed on its onset. Choosing the
+            # cell from the perturbed field would be an argmin over a hundred thousand
+            # perturbed values -- an order statistic that finds the perturbation's
+            # negative tail rather than the shape of the front -- while the time the
+            # rupture actually reached the chosen cell is the onset's to report.
             jump = propagation.causal_jump(
                 segments[parent],
-                onsets[parent],
+                wavefronts[parent],
                 mesh,
-                _jump_delay(config, materials, parent, name),
+                jump_delay,
+                parent_onset_s=onsets[parent],
                 max_distance_km=max_jump_km,
             )
             jumps[name] = jump
@@ -520,6 +527,7 @@ def generate(
         travel_time_s = timing.travel_times(
             mesh, materials[name][0], speed_params_for(name), seeds
         )
+        wavefronts[name] = travel_time_s + delay_s
         reference = references[name]
         if reference is None:
             onsets[name] = travel_time_s + delay_s
@@ -586,23 +594,18 @@ def generate(
     )
 
 
-def _jump_delay(
-    config: RuptureConfig,
-    materials: dict[str, tuple[np.ndarray, np.ndarray]],
-    parent: str,
-    child: str,
-) -> propagation.JumpDelay:
+def _jump_delay(config: RuptureConfig) -> propagation.JumpDelay:
     """How long the front takes to cross from one segment to the next.
 
-    The gap is by definition on neither fault, so neither segment's own shear speeds
-    describe the rock in it; the mean over the two is the nearest thing available and
-    is what the default model uses.
+    The gap is by definition on neither fault, so neither segment's own *sampled*
+    materials describe the rock in it -- the shared velocity model does, read at the
+    depth the front leaves from. One delay serves every edge of the tree, because the
+    velocity model is one model and nothing here depends on which pair is crossing.
     """
-    del config
-    speed_km_s = 0.5 * (
-        float(np.mean(materials[parent][0])) + float(np.mean(materials[child][0]))
+    return propagation.DistanceOverVelocity(
+        np.asarray(config.velocity_model.bottom_depth_km),
+        np.asarray(config.velocity_model.shear_speed_km_s),
     )
-    return propagation.DistanceOverVelocity(speed_km_s)
 
 
 def _ramp(config_ramp: RampConfig) -> stages.DepthRamp:
