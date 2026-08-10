@@ -1,0 +1,111 @@
+# The Beavan rupture, converted from a workflow realisation.
+
+schema_version = 1
+crs = "EPSG:2193"
+title = "Beavan_BF15"
+
+[[surfaces]]
+type = "fault"
+name = "Greendale_NW_SE"
+origin = { longitude_deg = 172.118646, latitude_deg = -43.620990 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.952029, latitude_deg = -43.542617 }
+dip_deg = 75.050
+bottom_depth_km = 10.625
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Greendale_East"
+origin = { longitude_deg = 172.274995, latitude_deg = -43.578997 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.436032, latitude_deg = -43.570837 }
+dip_deg = 78.067
+bottom_depth_km = 9.782
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Greendale_central"
+origin = { longitude_deg = 172.070061, latitude_deg = -43.597001 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.304080, latitude_deg = -43.585428 }
+dip_deg = 80.054
+bottom_depth_km = 10.833
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Fault_Near_Hororata"
+origin = { longitude_deg = 171.968498, latitude_deg = -43.557758 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 171.917393, latitude_deg = -43.608685 }
+dip_deg = 50.018
+bottom_depth_km = 7.395
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Charing_Cross"
+origin = { longitude_deg = 172.091728, latitude_deg = -43.605105 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.155839, latitude_deg = -43.538806 }
+dip_deg = 70.018
+bottom_depth_km = 10.837
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Fault_NNW"
+origin = { longitude_deg = 172.156304, latitude_deg = -43.473182 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.212205, latitude_deg = -43.543265 }
+dip_deg = 53.989
+bottom_depth_km = 8.281
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+[[surfaces]]
+type = "fault"
+name = "Fault_NE"
+origin = { longitude_deg = 172.262726, latitude_deg = -43.591689 }
+top_depth_km = 0.0
+
+[[surfaces.planes]]
+end = { longitude_deg = 172.358511, latitude_deg = -43.509015 }
+dip_deg = 80.012
+bottom_depth_km = 10.848
+dip_direction = "right"
+discretisation = { subfault_size_km = 0.1 }
+
+# Who triggers whom. The jump *points* are not carried across: this
+# generator finds them from the solved wavefront rather than by closest
+# approach, so importing them would import an answer to a question it asks
+# itself, and asks differently.
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Greendale_NW_SE" = "Charing_Cross"
+"Fault_NNW" = "Charing_Cross"
+"Greendale_central" = "Greendale_NW_SE"
+"Fault_Near_Hororata" = "Greendale_NW_SE"
+"Greendale_East" = "Greendale_central"
+"Fault_NE" = "Greendale_East"
