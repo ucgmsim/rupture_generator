@@ -57,6 +57,7 @@ from rupture_generator.config.rupture import (
 )
 from rupture_generator.formats import rupture as rupture_format
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse, validate_chart
+from rupture_generator.moment import rigidity_pa
 from rupture_generator.sampling import (
     CovarianceSpec,
     FieldSampler,
@@ -559,6 +560,7 @@ def generate(
         offsets, samples = pulses.synthesise(
             mesh, slips[name], rise_times[name], pulse_params
         )
+        shear_speed, rigidity = materials[name]
         datasets[name] = rupture_format.to_dataset(
             mesh,
             crs,
@@ -568,6 +570,8 @@ def generate(
             rise_time_s=rise_times[name],
             pulse_offsets=offsets,
             pulse_samples=samples,
+            rigidity_pa=rigidity,
+            shear_speed_kms=shear_speed,
             sample_interval_s=config.timing.sample_interval_s,
             moment_newton_m=target_moment,
             segment_name=name,

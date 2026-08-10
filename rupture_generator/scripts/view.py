@@ -294,6 +294,7 @@ def _from_rupture_file(path: Path) -> list[Segment]:
                     dip_deg=dataset["dip_deg"].to_numpy(),
                     pulse_offsets=dataset["slip_rate_offset"].to_numpy(),
                     pulse_samples=dataset["slip_rate"].to_numpy(),
+                    rigidity_pa=dataset["rigidity_pa"].to_numpy(),
                     sample_interval_s=float(dataset.attrs["sample_interval_s"]),
                     hypocentre_m=hypocentre,
                 )
@@ -558,7 +559,9 @@ class CumulativeSlip:
         last = max(self.integral.size - 1, 0)
         self.before = np.where(
             self.starts > 0,
-            self.integral[np.clip(self.starts - 1, 0, last)] if self.integral.size else 0.0,
+            self.integral[np.clip(self.starts - 1, 0, last)]
+            if self.integral.size
+            else 0.0,
             0.0,
         )
 
@@ -860,9 +863,9 @@ def log_rupture(
     # their running sum. That order is a requirement, not a preference.
     rate, cumulative = moment_release(segments, times_s)
     slipped = {segment.name: CumulativeSlip(segment) for segment in segments}
-    peak = max(
-        [float(clock.total().max()) for clock in slipped.values()] + [0.0]
-    ) or 1.0
+    peak = (
+        max([float(clock.total().max()) for clock in slipped.values()] + [0.0]) or 1.0
+    )
 
     for step, moment_s in enumerate(times_s):
         rerun.set_time("rupture", duration=float(moment_s))

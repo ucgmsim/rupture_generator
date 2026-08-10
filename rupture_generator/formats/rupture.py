@@ -81,6 +81,8 @@ CELL_VARIABLES = {
     "rake_deg": ("degrees", "Slip direction within the plane"),
     "onset_s": ("seconds", "When the rupture front arrives"),
     "rise_time_s": ("seconds", "How long the subfault slips for"),
+    "rigidity_pa": ("pascals", "Shear rigidity at subfault"),
+    "shear_speed_kms": ("kilometres per second", "Shear wave speed at subfault"),
 }
 """Every variable carries its unit and a sentence.
 
@@ -101,6 +103,8 @@ def to_dataset(
     crs: pyproj.CRS,
     *,
     slip_m: np.ndarray,
+    shear_speed_kms: np.ndarray,
+    rigidity_pa: np.ndarray,
     rake_deg: np.ndarray,
     onset_s: np.ndarray,
     rise_time_s: np.ndarray,
@@ -119,7 +123,7 @@ def to_dataset(
         The chart the fields live on.
     crs : pyproj.CRS
         The frame its nodes are in.
-    slip_m, rake_deg, onset_s, rise_time_s : np.ndarray
+    slip_m, rigidity_pa, rake_deg, onset_s, rise_time_s : np.ndarray
         Cell fields on ``(i, j)``.
     pulse_offsets, pulse_samples : np.ndarray
         The CSR pulses from the kernel: ``pulse_samples[offsets[k]:offsets[k+1]]`` is
@@ -149,6 +153,8 @@ def to_dataset(
         "strike_deg": located["strike_deg"].to_numpy(),
         "dip_deg": located["dip_deg"].to_numpy(),
         "area_m2": located["area_km2"].to_numpy() * M2_PER_KM2,
+        "rigidity_pa": rigidity_pa,
+        "shear_speed_kms": shear_speed_kms,
         "slip_m": slip_m,
         "rake_deg": rake_deg,
         "onset_s": onset_s,
