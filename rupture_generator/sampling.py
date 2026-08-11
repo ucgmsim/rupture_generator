@@ -1,10 +1,8 @@
-"""Correlated Gaussian random fields with von Karman correlations.
+"""Gaussian random fields with von Karman correlations.
 
-Sampled by **circulant embedding** (Dietrich & Newsam 1993; Wood & Chan 1994), which
-is exact: on the fault's own grid the drawn field has precisely the target covariance,
-to floating point, rather than an approximation of it.
+Sampled using the **circulant embedding method** (Dietrich & Newsam 1993; Wood & Chan 1994).
 
-# The model is a covariance, not a spectrum
+# The model
 
 Mai & Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
 
@@ -15,32 +13,7 @@ Mai & Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
 
 ``r`` is a **dimensionless** distance -- the separation measured in correlation
 lengths, one per axis -- and ``C`` is the standard Matern correlation of smoothness
-``H``. That expression is what this module implements, and implementing it is what
-makes ``a_x`` and ``a_z`` unambiguous.
-
-The paper also states the matching power spectrum,
-``P(k) = a_x a_z / (1 + k^2)^{H+1}`` with ``k`` the dimensionless wavenumber
-``sqrt(a_x^2 k_x^2 + a_z^2 k_z^2)``. Sampling *that* instead requires deciding whether
-``k_x`` is angular or in cycles, and the two answers differ by a factor of ``2*pi`` in
-the delivered correlation length -- an ambiguity no output can adjudicate, because both
-give plausible-looking slip. Working from ``C(r)`` removes the question rather than
-answering it.
-
-# Why circulant embedding rather than shaping noise with a spectrum
-
-Multiplying white noise by a sampled spectrum and inverse-transforming is cheaper, and
-it is what this module used to do. Its field is only approximately the target: the
-covariance it delivers is the target *wrapped* by the periodic grid and *aliased* by
-the discrete spectrum, and nothing in the method reports how large either error is --
-the padding that controls the first was a fraction of the fault, which is not a scale
-the covariance knows about.
-
-Circulant embedding instead writes the covariance down at the grid's own lags, embeds
-it in a circulant matrix whose eigenvalues are that array's DFT, and draws by
-multiplying their square roots into complex white noise. Exactness costs a padded grid
-at least twice the fault on each axis, and carries one failure mode -- an embedding
-whose eigenvalues are not all non-negative is not a covariance matrix, so it raises
-rather than sampling something else.
+``H``.
 """
 
 from __future__ import annotations
@@ -63,7 +36,7 @@ if TYPE_CHECKING:
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
 HURST = 0.75
-"""The von Karman roughness exponent, and the only correlation shape left.
+"""The von Karman roughness exponent.
 
 Mai & Beroza (2002) figure 11: the median over their 44 finite-source models is 0.75
 for the circular average, with 0.71 along strike and 0.77 down dip and no dependence
@@ -93,13 +66,11 @@ lengths, past which the covariance is not one this fault can carry.
 """
 
 DECAY_LENGTHS = 3.0
-"""How many correlation lengths of margin to try first.
-
-The wrap has to land where the covariance has faded, and that distance is set by the
-**correlation length**, not by the fault. Three is where the measured error comes in
-around ``5e-3`` on the grids this package meets; it is a starting point, not a bound,
-because :func:`_embed` measures what it actually got and enlarges if that was
-optimistic.
+"""
+How many correlation lengths of margin to try first. The aim of this parameter
+is to reduce the number of doublings we require. By guessing a reasonable
+margin, we hope to one-shot the right padding that embeds correctly the first
+time which reduces allocations.
 """
 
 CORRELATION_LENGTH_TOLERANCE = 0.02
@@ -107,17 +78,6 @@ CORRELATION_LENGTH_TOLERANCE = 0.02
 
 A fraction, per axis: 0.02 is "the fault you get has correlation lengths within two
 percent of the ones the magnitude implies".
-
-Stated this way because it is the quantity a seismologist can weigh. The natural
-alternative -- the largest difference between the delivered and target correlation
-functions -- is a number in correlation units that says nothing about how wrong the
-resulting earthquake is. What the model is parameterised by is ``a``, so what a
-tolerance should bound is ``a``.
-
-Two percent is far inside what the relation itself knows: Mai & Beroza's scatter about
-equation (5) is ``sigma`` of 0.18 in log-length, a factor of 1.5, and figure 4 puts the
-error on an individual measured correlation length at 13% for long ones and 55% for
-short. The sampler is not the uncertain step.
 """
 
 MAI_MAXIMUM_RATIO = 0.6
@@ -131,20 +91,13 @@ relations describe -- whether or not the grid can reproduce it.
 """
 
 MAXIMUM_EMBEDDING_CELLS = 1 << 26
-"""The largest padded grid worth transforming: 67 million cells, about a gigabyte.
-
-A budget rather than a doubling count, because what makes an embedding impossible is
-its absolute size and not how many times it was enlarged. Checked before any Bessel
-function is evaluated, so a covariance that cannot fit is refused in arithmetic rather
-than discovered after several transforms.
+"""The largest padded grid to transform before giving up. This is roughly 1GB.
 """
 
 EIGENVALUE_TOLERANCE = 1.0e-10
 """How negative an eigenvalue may be, relative to the largest, and still be round-off.
 
-The DFT of a valid covariance is non-negative exactly; what comes back is that
-arithmetic in floating point, so the smallest eigenvalues scatter about zero. Ten
-orders below the largest is round-off; anything deeper is the embedding failing.
+Any eigenvalue larger than this is used to reject the sampling on the grounds of failing to embed.
 """
 
 
@@ -159,9 +112,7 @@ class VonKarmanFilterParameters:
         ellipse through the reciprocals of these, so structure larger than them is
         flat and structure smaller falls off.
     hurst : float
-        The von Karman roughness exponent. 0.75 is the only value production
-        selects, and the same number is a Matern smoothness for the sampler that
-        replaces this one.
+        The von Karman roughness exponent.
     """
 
     correlation_length_strike_km: float
@@ -184,10 +135,10 @@ class VonKarmanFilterParameters:
 def correlation_lengths(
     magnitude: float,
     *,
-    strike_offset: float = 2.50,
-    dip_offset: float = 1.50,
-    strike_exponent: float = 0.5,
-    dip_exponent: float = 1.0 / 3.0,
+    strike_offset: float,
+    dip_offset: float,
+    strike_exponent: float,
+    dip_exponent: float,
 ) -> VonKarmanFilterParameters:
     """A corner relation's correlation lengths for a magnitude, in kilometres.
 
@@ -195,34 +146,6 @@ def correlation_lengths(
 
         \\lambda_{strike} = 10^{c_{s} M_w - a}, \\qquad
         \\lambda_{dip}    = 10^{c_{d} M_w - b}
-
-    A corner relation is a straight line in log-length against magnitude, so those
-    four numbers are the whole of one: an exponent and an offset per axis. **The
-    defaults are Mai & Beroza (2002) equation (5)**, which reads
-
-    .. math::
-
-        \\log(a_{s}) \\approx -2.5 + \\tfrac{1}{2} M_w, \\qquad
-        \\log(a_{z}) \\approx -1.5 + \\tfrac{1}{3} M_w
-
-    -- what a config naming ``mai`` takes, where stating four of your own is what a
-    config naming ``custom`` does. The exponents are the paper's own ``1/2`` and
-    ``1/3``, written as fractions because that is how equation (5) writes them; the
-    measured regressions they simplify are in its table 3, at 0.53 and 0.37 for all
-    mechanisms together.
-
-    These are a *simplification* the paper offers, and it says so: the same table
-    gives coefficients per faulting style, and the scatter about equation (5) is
-    ``sigma`` of 0.19 and 0.18 in log-length -- a factor of 1.5. A ``custom`` relation
-    is how a caller who wants the strike-slip or dip-slip row states it.
-
-    The three named relations this replaced -- Somerville, Suzuki, Given -- are still
-    refused by name in the config rather than re-spelled here as coefficients,
-    because a name is a claim output cannot adjudicate: `DEFECTS.md` 11 records that
-    Mai and Somerville cross over at M7.37, so a comparison below that magnitude says
-    whichever one you started from is right. A reader who has the coefficients and a
-    reason can still state them as a ``custom`` relation, where the file says the
-    numbers rather than a name that stands in for them.
     """
     return VonKarmanFilterParameters(
         correlation_length_strike_km=10.0
@@ -239,8 +162,7 @@ def von_karman_correlation(
     .. math:: C(r) = \\frac{G_H(r)}{G_H(0)} = \\frac{2^{1-H}}{\\Gamma(H)} r^H K_H(r)
 
     ``G_H(r) = r^H K_H(r)`` with ``K_H`` the modified Bessel function of the second
-    kind; the normalisation is its own limit at the origin, ``G_H(0) = 2^{H-1}
-    \\Gamma(H)``, which is what makes ``C(0) = 1`` rather than infinite.
+    kind.
 
     The argument is a **distance in correlation lengths**, not in kilometres -- the
     anisotropy lives in how that distance is formed (see :func:`_wrapped_distance`),
@@ -321,47 +243,29 @@ def _quadrant_distance(
 
 
 class DegradedCorrelation(UserWarning):
-    """The delivered correlation lengths are not the ones the model asked for.
-
-    Raised as a warning rather than an error because a rupture generator has to
-    generate: a fault whose structure this grid cannot carry still has to appear in the
-    file, and a caller who wants the refusal can turn this into one with
-    ``warnings.simplefilter("error", DegradedCorrelation)``.
-
-    What it means, physically, is that the segment is outside the range Mai & Beroza
-    fitted -- their 44 models all have a correlation length between 0.25 and 0.6 of the
-    source dimension, and a segment shorter than its own correlation length is not one
-    of them. The field it gets is the closest this grid can carry, which is a fault
-    whose slip patches are as large as it can make them.
-    """
+    """A warning provided if the correlation fails to converge."""
 
 
 @dataclasses.dataclass(frozen=True)
 class Embedding:
-    """A circulant embedding of one covariance on one grid, and what it cost.
+    """A circulant embedding of one covariance on one grid.
 
     Attributes
     ----------
     extents : tuple of int
         The padded grid, ``(i, j)``.
     eigenvalues : FloatArray
-        Non-negative, on that grid. The negatives a real embedding carries have been
-        clipped -- see :attr:`correlation_length_error` for what that cost.
-    delivered_km : tuple of float
-        The correlation lengths the field will actually have, ``(strike, dip)``,
-        measured off the covariance this embedding delivers.
+        Non-negative eigenvalues.
+    correlation_lengths : tuple of float
+        The correlation lengths the field will actually have, ``(strike, dip)``.
     correlation_length_error : float
-        How far :attr:`delivered_km` sits from what was asked for, as a fraction, worst
-        of the two axes.
-
-        **Measured, not bounded.** Clipping is the standard remedy when an embedding is
-        not quite non-negative (Wood & Chan 1994; Stein 2002), and its cost is one
-        inverse transform to find out rather than an argument to trust.
+        How far :attr:`correlation_lengths` sits from what was asked for, as a
+        fraction, worst of the two axes.
     """
 
     extents: tuple[int, int]
     eigenvalues: FloatArray
-    delivered_km: tuple[float, float]
+    correlation_lengths: tuple[float, float]
     correlation_length_error: float
 
 
@@ -373,34 +277,23 @@ def _embed(
 ) -> Embedding:
     """Embed this covariance on this grid, as closely as the grid allows.
 
-    The covariance is written down at the padded grid's wrapped lags and its 2-D DFT is
-    the circulant matrix's eigenvalues, real by construction because the covariance is
-    symmetric. Where those are all non-negative the embedding is exact and sampling from
-    it reproduces the covariance to floating point.
-
-    Where they are not -- the ordinary case for a smooth covariance on a fine grid --
-    **the negatives are clipped and the resulting error is measured**, in the delivered
-    correlation length. That is the difference between demanding a positive-definite
-    matrix and demanding an accurate covariance, and only the second is what a rupture
-    needs: insisting on the first refuses grids that deliver the covariance to a part in
-    a thousand.
-
-    Larger embeddings are tried until the error is inside
-    :data:`CORRELATION_LENGTH_TOLERANCE`. **It never refuses.** A generator has to
-    generate, so a segment whose structure no affordable grid can carry gets the closest
-    the grid allows and a :class:`DegradedCorrelation` warning saying what it got
-    instead. Cached, so that warning is raised once per segment rather than once per
-    field drawn on it.
-
     Returns
     -------
     Embedding
+
+    Warns
+    -----
+    DegradedCorrelation
+        If the embedding fails to reproduce the correlation structure precisely.
     """
     best: Embedding | None = None
     for extents in _candidate_extents(cell_counts, spacing_km, parameters):
         candidate = _attempt(extents, cell_counts, spacing_km, parameters)
         # Not assumed monotone in the margin, though it is in practice.
-        if best is None or candidate.correlation_length_error < best.correlation_length_error:
+        if (
+            best is None
+            or candidate.correlation_length_error < best.correlation_length_error
+        ):
             best = candidate
         if candidate.correlation_length_error <= CORRELATION_LENGTH_TOLERANCE:
             break
@@ -416,21 +309,6 @@ def _warn_if_degraded(
     parameters: VonKarmanFilterParameters,
     best: Embedding,
 ) -> None:
-    """Say so when the field will not have the structure the model asked for.
-
-    Two independent things can be wrong, and they are not the same thing:
-
-    **The grid could not deliver it.** The embedding is as large as the budget allows
-    and the correlation length still comes out wrong by more than the tolerance.
-
-    **The model was never fitted here.** Mai & Beroza's 44 models all have a
-    correlation length between 0.25 and 0.6 of the source dimension; past
-    :data:`MAI_MAXIMUM_RATIO` a segment is shorter than the structure it is being asked
-    to carry, and the field is close to constant across it. That can happen with *no*
-    numerical error at all -- a covariance far longer than the fault is reproduced
-    perfectly, as a fault that barely varies -- which is why it is checked separately
-    rather than inferred from the error.
-    """
     strike_km, dip_km = spacing_km
     length_km = cell_counts[1] * strike_km
     width_km = cell_counts[0] * dip_km
@@ -466,18 +344,12 @@ def _attempt(
     spacing_km: tuple[float, float],
     parameters: VonKarmanFilterParameters,
 ) -> Embedding:
-    """One embedding at one size: eigenvalues, and what they deliver."""
-    # Evaluated on the quadrant and gathered, which is the same array as
-    # `von_karman_correlation(_wrapped_distance(...))` at a quarter of the Bessel
-    # calls -- see `_quadrant_distance`.
     quadrant = von_karman_correlation(
         _quadrant_distance(extents, spacing_km, parameters), parameters.hurst
     )
     target = quadrant[np.ix_(*(_wrapped_lag_index(extent) for extent in extents))]
 
     eigenvalues = np.maximum(np.fft.fft2(target).real, 0.0)
-    # What clipping actually delivered, read at the lags the fault spans. Longer lags
-    # exist on the padded grid and never occur between two of its subfaults.
     delivered = np.fft.ifft2(eigenvalues).real
     lengths = _delivered_lengths(delivered, cell_counts, spacing_km, parameters)
     wanted = _delivered_lengths(target, cell_counts, spacing_km, parameters)
@@ -485,7 +357,7 @@ def _attempt(
     return Embedding(
         extents=extents,
         eigenvalues=eigenvalues,
-        delivered_km=lengths,
+        correlation_lengths=lengths,
         correlation_length_error=_relative_error(lengths, wanted),
     )
 
@@ -533,8 +405,8 @@ def _degraded_message(
         f"{parameters.correlation_length_strike_km / length_km:.2g} and "
         f"{parameters.correlation_length_dip_km / width_km:.2g} of the segment, where "
         "Mai & Beroza (2002) figure 13 puts every model they fitted between 0.25 and "
-        f"0.6. The field it gets has {best.delivered_km[0]:.3g} x "
-        f"{best.delivered_km[1]:.3g} km instead, off by "
+        f"0.6. The field it gets has {best.correlation_lengths[0]:.3g} x "
+        f"{best.correlation_lengths[1]:.3g} km instead, off by "
         f"{best.correlation_length_error * 100:.0f}%: the largest patches this grid can "
         "carry. Slip, moment and timing are unaffected; what is degraded is how the "
         "slip is distributed"
@@ -676,9 +548,7 @@ def von_karman_field(
     """
     embedding = _embed(mesh.cell_counts, mesh.spacing_km(), covariance)
     seed = int(rng.integers(1 << 63, dtype=np.int64))
-    return _kernels.von_karman_draw(
-        embedding.eigenvalues, mesh.cell_counts, seed
-    )
+    return _kernels.von_karman_draw(embedding.eigenvalues, mesh.cell_counts, seed)
 
 
 def correlate_fields(
