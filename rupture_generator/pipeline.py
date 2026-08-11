@@ -74,15 +74,6 @@ from rupture_generator.mesh import RuptureMesh, build_surface, fuse, validate_ch
 from rupture_generator.random import Streams
 from rupture_generator.realisation import Realisation
 
-CALCULATIONS = ("propagation", "slip", "rise_time", "rake", "onset")
-"""Every calculation that draws, by name.
-
-Documentation rather than machinery -- `random.Streams` hashes the name, so this list
-is not an index into anything and adding to it changes nothing. That is the point: a
-calculation's noise is a function of the seed, the realisation, its own name and its
-segment's name, and of nothing else.
-"""
-
 
 def _streams(config: RuptureConfig) -> Streams:
     """The event's randomness, split by name."""
@@ -699,7 +690,6 @@ def _rise_time_params(config: RuptureConfig, average_s: float) -> stages.RiseTim
 
 
 __all__ = [
-    "CALCULATIONS",
     "Realisation",
     "attach_materials",
     "causality_tree",
