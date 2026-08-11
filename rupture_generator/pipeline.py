@@ -197,8 +197,6 @@ def causality_tree(
 def generate(
     config: RuptureConfig,
     geometry: Realisation,
-    *,
-    propagation_config: PropagationConfig | None = None,
 ) -> Realisation:
     """Run the pipeline over a fault system.
 
@@ -238,7 +236,12 @@ def generate(
     source.check_segments(list(geometry))
     propagation_config = propagation_config or ComputedPropagation()
 
-    realisation = propagate(geometry, propagation_config, config.hypocentre, config)
+    realisation = propagate(
+        geometry,
+        propagation_config,
+        config.hypocentre,
+        config.random.stream("propagation"),
+    )
     realisation = attach_materials(realisation, config.velocity_model)
 
     if isinstance(source, PointSourceConfig):
@@ -255,7 +258,7 @@ def propagate(
     realisation: Realisation,
     propagation_config: PropagationConfig,
     hypocentre: HypocentreConfig,
-    config: RuptureConfig,
+    rng: np.random.Generator,
 ) -> Realisation:
     """Decide which segment triggers which, before any field is drawn.
 
@@ -277,12 +280,7 @@ def propagate(
     """
     root = _root_of(realisation, hypocentre)
     return realisation.with_tree(
-        causality_tree(
-            dict(realisation),
-            propagation_config,
-            root,
-            _streams(config).stream("propagation"),
-        )
+        causality_tree(dict(realisation), propagation_config, root, rng)
     )
 
 
@@ -347,26 +345,9 @@ def attach_materials(
 
 
 def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
-    """S4 to S6, and the onset perturbation: every field the rupture draws.
 
-    One batch, one visit per segment, one covariance spec. They are together because
-    three of the four are drawn *against slip's own Gaussian* -- and that Gaussian and
-    the draw it was standardised from are local to this function, so nothing else in
-    the pipeline has to carry them. Keeping it local is what stops it
-    becoming a side channel: nothing outside this function needs the field slip was
-    drawn from, only the fields drawn against it.
-
-    What leaves is four fields on each chart. The onset perturbation is *drawn* here
-    and *spent* in :func:`solve_onsets`, which is what lets the causal traversal be
-    deterministic: every random choice this rupture makes has been made by the time
-    this returns.
-
-    ``slip_pattern`` is deliberately not ``slip_m``. Its size is the moment fold's to
-    set, and calling it something else until then is what stops a stage reading an
-    unscaled field as if it were slip.
-    """
     source = config.source
-    streams = _streams(config)
+    random = config.random
 
     def draw(name: str, mesh: RuptureMesh) -> RuptureMesh:
         covariance = source.covariance_of(name)
@@ -378,7 +359,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             bottom_taper=config.slip.bottom_taper,
         )
         pattern, gaussian, slip_draw = stages.slip_pattern(
-            mesh, slip_params, streams.stream("slip", name)
+            mesh, slip_params, random.stream("slip", name)
         )
 
         average_s = stages.average_rise_time_s(
@@ -391,7 +372,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             gaussian,
             slip_draw,
             _rise_time_params(config, average_s),
-            streams.stream("rise_time", name),
+            random.stream("rise_time", name),
             covariance,
             sample_interval_s=config.timing.sample_interval_s,
         )
@@ -406,14 +387,14 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
                 base_rake_deg=source.base_rake_deg_of(name, config.field.base_rake_deg),
                 sigma_deg=config.slip.rake_sigma_deg,
             ),
-            streams.stream("rake", name),
+            random.stream("rake", name),
         )
 
         perturbation = stages.onset_perturbation(
             mesh,
             slip_draw,
             _onset_params(config),
-            streams.stream("onset", name),
+            random.stream("onset", name),
             covariance,
         )
 

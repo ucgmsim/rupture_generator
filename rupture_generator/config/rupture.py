@@ -35,6 +35,7 @@ its numbers down rather than asking this package to remember them.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import math
 import tomllib
 from pathlib import Path
@@ -588,14 +589,24 @@ class RandomConfig(ConfigObject):
     makes a campaign restartable.
     """
 
-    seed: int = 1234
-    realisation: int = 0
+    seed: int
+    realisation: int
 
     def __post_init__(self) -> None:
         """Validate the fields, then the invariants between them."""
         super().__post_init__()
         if self.realisation < 0:
             self.refuse("realisation", f"must be 0 or more, got {self.realisation}")
+
+    def stream(self, *args: str) -> np.random.Generator:
+        spawn_key = [self.realisation]
+        for arg in args:
+            spawn_key.append(
+                int.from_bytes(hashlib.blake2b(arg.encode(), digest_size=8).digest())
+            )
+        return np.random.default_rng(
+            np.random.SeedSequence(entropy=self.seed, spawn_key=spawn_key)
+        )
 
 
 DECODERS = {
