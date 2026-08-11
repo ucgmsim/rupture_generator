@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
 import warnings
 from typing import TYPE_CHECKING
 
@@ -419,13 +418,7 @@ def _delivered_lengths(
     spacing_km: tuple[float, float],
     parameters: VonKarmanFilterParameters,
 ) -> tuple[float, float]:
-    """The correlation lengths a covariance array actually has, ``(strike, dip)``.
-
-    Read the way a correlation length is defined: the separation at which the
-    correlation falls to ``C(1)``, which at ``H = 0.75`` is 0.5005 -- the distance over
-    which the field forgets half of itself. Infinite on an axis where it never falls
-    that far, which is a field that stays correlated across the whole segment.
-    """
+    """The correlation lengths a covariance array actually has, ``(strike, dip)``."""
     strike_km, dip_km = spacing_km
     half = float(von_karman_correlation(np.array([1.0]), parameters.hurst)[0])
     return (
@@ -461,11 +454,7 @@ def _relative_error(
 
 
 def _crossing_km(profile: FloatArray, level: float, spacing_km: float) -> float:
-    """Where a covariance profile first falls to ``level``, interpolated, in kilometres.
-
-    Infinite when it never does: the field then has no correlation length this fault
-    can express, because it stays correlated across the whole of it.
-    """
+    """Where a covariance profile first falls to ``level``, interpolated, in kilometres."""
     below = np.flatnonzero(profile <= level)
     if below.size == 0 or below[0] == 0:
         return np.inf
@@ -486,23 +475,18 @@ def _predicted_extents(
     covariance has faded -- and never less than :data:`MINIMUM_EMBEDDING` times the
     fault, which is what a Toeplitz matrix of this many lags needs whatever its
     covariance. Rounded to a length the transform likes.
-
-    The margin is in **correlation lengths**, which is the only scale the wraparound
-    knows about. A fraction of the fault -- the rule this replaced -- is a statement
-    about the wrong quantity: it gives a 240 km fault twenty times the margin of a
-    12 km one carrying exactly the same structure.
     """
     strike_km, dip_km = spacing_km
     wanted = (
         max(
             MINIMUM_EMBEDDING * cell_counts[0],
             cell_counts[0]
-            + math.ceil(margin * parameters.correlation_length_dip_km / dip_km),
+            + np.ceil(margin * parameters.correlation_length_dip_km / dip_km),
         ),
         max(
             MINIMUM_EMBEDDING * cell_counts[1],
             cell_counts[1]
-            + math.ceil(margin * parameters.correlation_length_strike_km / strike_km),
+            + np.ceil(margin * parameters.correlation_length_strike_km / strike_km),
         ),
     )
     return (int(next_fast_len(wanted[0])), int(next_fast_len(wanted[1])))
@@ -529,23 +513,7 @@ def von_karman_field(
     covariance: VonKarmanFilterParameters,
     rng: np.random.Generator,
 ) -> FloatArray:
-    """Draw a field with this covariance on this chart.
-
-    Returned **unstandardised**, on the fault's own cells. The caller standardises when
-    it wants sample statistics and correlates first when it wants a related field --
-    :func:`correlate_fields` is exact on these, so nothing has to travel in the
-    wavenumber domain.
-
-    The draw itself is `_kernels.von_karman_draw`: the noise is generated straight into
-    the transform's buffer already scaled by the square-rooted eigenvalues, so one
-    allocation does what the numpy spelling needed six for. On a large embedding that is
-    the difference between moving a gigabyte per field and moving a sixth of it.
-
-    The seed is drawn from ``rng`` rather than passed through, because the kernel has a
-    generator of its own. Reproducibility is unaffected: the seed is a pure function of
-    the event seed, the realisation, the calculation and the segment, which is what
-    `random.Streams` guarantees and all this pipeline ever relied on.
-    """
+    """Draw a field with this covariance on this chart."""
     embedding = _embed(mesh.cell_counts, mesh.spacing_km(), covariance)
     seed = int(rng.integers(1 << 63, dtype=np.int64))
     return _kernels.von_karman_draw(embedding.eigenvalues, mesh.cell_counts, seed)
@@ -560,11 +528,6 @@ def correlate_fields(
     weights are the cosine and sine of one angle, so the result has it too: the
     correlation is set without disturbing the covariance, which is what makes the blend
     composable with whatever rescaling a stage applies afterwards.
-
-    Done **on the fault** rather than in the wavenumber domain. The inverse transform is
-    linear and the crop is a restriction, so the two are the same expression -- and this
-    way a drawn field never has to exist as a padded spectrum, which is what lets every
-    draw go straight to a cropped array.
 
     Both fields must be unstandardised draws of the same covariance. Standardising first
     divides each by its own sample spread, which perturbs the relation by the
