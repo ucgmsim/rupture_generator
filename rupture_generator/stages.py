@@ -30,10 +30,8 @@ import numpy as np
 
 from rupture_generator.mesh import RuptureMesh
 from rupture_generator.sampling import (
-    ComplexField,
     VonKarmanFilterParameters,
     correlate_fields,
-    realise_field,
     standardise,
     von_karman_field,
 )
@@ -159,7 +157,7 @@ def slip_pattern(
     mesh: RuptureMesh,
     params: SlipParams,
     rng: np.random.Generator,
-) -> tuple[FloatArray, FloatArray, ComplexField]:
+) -> tuple[FloatArray, FloatArray, FloatArray]:
     """S4, up to the moment: a non-negative, tapered, unit-ish slip pattern.
 
     .. code-block:: text
@@ -182,10 +180,12 @@ def slip_pattern(
     Returns
     -------
     tuple
-        The pattern, the Gaussian it came from, and the **spectrum** that Gaussian
-        was realised from. Later stages correlate against the spectrum rather than
-        redrawing, which is what makes "rise time follows slip" a statement about the
-        slip this rupture actually has.
+        The pattern, the standardised Gaussian it came from, and that Gaussian
+        **before standardising**. Later stages correlate against the unstandardised
+        draw rather than redrawing, which is what makes "rise time follows slip" a
+        statement about the slip this rupture actually has -- and they take the
+        unstandardised one because standardising divides by a sample spread, which
+        perturbs the blend by the estimator's error.
 
         Later stages correlate against **the Gaussian**, not against the
         truncated tapered pattern, because truncation is what breaks the affine
@@ -193,11 +193,11 @@ def slip_pattern(
         *this* Gaussian rather than a freshly drawn one, which is what makes "rise
         time follows slip" a statement about the slip this rupture actually has.
     """
-    spectrum = von_karman_field(mesh, params.covariance, rng)
-    gaussian = standardise(realise_field(spectrum))
+    drawn = von_karman_field(mesh, params.covariance, rng)
+    gaussian = standardise(drawn)
     pattern = 1.0 + params.coefficient_of_variation * gaussian
     pattern = np.maximum(pattern, 0.0)
-    return taper_edges(pattern, params), gaussian, spectrum
+    return taper_edges(pattern, params), gaussian, drawn
 
 
 def truncated_fraction(gaussian: FloatArray, params: SlipParams) -> float:
@@ -290,7 +290,7 @@ def average_rise_time_s(
 def rise_time_field(
     mesh: RuptureMesh,
     slip_gaussian: FloatArray,
-    slip_spectrum: ComplexField,
+    slip_draw: FloatArray,
     params: RiseTimeParams,
     rng: np.random.Generator,
     covariance: VonKarmanFilterParameters,
@@ -317,7 +317,7 @@ def rise_time_field(
     # through the truncation.
     independent = von_karman_field(mesh, covariance, rng)
     correlated = standardise(
-        realise_field(correlate_fields(slip_spectrum, independent, params.correlation))
+        correlate_fields(slip_draw, independent, params.correlation)
     )
 
     # Near the surface, blend toward slip's own Gaussian.
@@ -378,9 +378,7 @@ def rake_field(
     family. **Not correlated with slip**: a patch that slips more has no reason to
     slip in a different direction.
     """
-    field = standardise(
-        realise_field(von_karman_field(mesh, params.covariance, rng))
-    )
+    field = standardise(von_karman_field(mesh, params.covariance, rng))
     return params.base_rake_deg + params.sigma_deg * field
 
 
@@ -404,7 +402,7 @@ class OnsetParams:
         How strongly the perturbation follows slip. Read by
         :func:`onset_perturbation`, which draws the field; the other two are read by
         :func:`apply_perturbation`, which spends it. One object because they are one
-        model, split across two functions because the draw needs a spectrum and the
+        model, split across two functions because the draw needs slip's own field
         application needs the travel times.
     sigma : float
         The perturbation field's standard deviation, dimensionless; its product with
@@ -418,7 +416,7 @@ class OnsetParams:
 
 def onset_perturbation(
     mesh: RuptureMesh,
-    slip_spectrum: ComplexField,
+    slip_draw: FloatArray,
     params: OnsetParams,
     rng: np.random.Generator,
     covariance: VonKarmanFilterParameters,
@@ -427,17 +425,17 @@ def onset_perturbation(
 
     Dimensionless and standardised. The seconds, the pinning and the clamp belong to
     :func:`apply_perturbation`, which needs the travel times and the hypocentre; this
-    needs slip's own spectrum. Splitting there is what lets every drawn field be drawn
+    needs slip's own draw. Splitting there is what lets every drawn field be drawn
     in one pass over the segments while the wavefront is solved later, in causal order,
     drawing nothing.
 
-    Correlated against slip's **spectrum**, rather than against the slip itself -- the
-    same argument :func:`rise_time_field` makes, and the reason both take the spectrum
-    the Gaussian came from rather than the field.
+    Correlated against slip's own **draw**, rather than against the slip itself -- the
+    same argument :func:`rise_time_field` makes, and the reason both take the field the
+    Gaussian was standardised from rather than the tapered pattern.
     """
     independent = von_karman_field(mesh, covariance, rng)
     return standardise(
-        realise_field(correlate_fields(slip_spectrum, independent, params.correlation))
+        correlate_fields(slip_draw, independent, params.correlation)
     )
 
 

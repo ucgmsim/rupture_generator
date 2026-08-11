@@ -34,7 +34,7 @@ onto it.
 
 Every random choice is made in `draw_fields` -- including the onset perturbation, which
 is drawn there because it correlates against slip's own Gaussian, and *spent* in
-`solve_onsets`. So slip's spectrum never leaves the function that made it, and the
+`solve_onsets`. So slip's own draw never leaves the function that made it, and the
 causal traversal is a pure function of its inputs. A point source takes the same
 path with constant fields and a perturbation of zeros, which is why no stage below ever
 asks what kind of source it has.
@@ -360,10 +360,10 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
 
     One batch, one visit per segment, one covariance spec. They are together because
     three of the four are drawn *against slip's own Gaussian* -- and that Gaussian and
-    the spectrum it was realised from are local to this function, so nothing else in
-    the pipeline has to carry them. The spectrum is on the padded grid, not
-    representable as a cell field and not recoverable from one; drawing everything that
-    needs it here is what keeps it from becoming a side channel.
+    the draw it was standardised from are local to this function, so nothing else in
+    the pipeline has to carry them. Keeping it local is what stops it
+    becoming a side channel: nothing outside this function needs the field slip was
+    drawn from, only the fields drawn against it.
 
     What leaves is four fields on each chart. The onset perturbation is *drawn* here
     and *spent* in :func:`solve_onsets`, which is what lets the causal traversal be
@@ -386,7 +386,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             top_taper=config.slip.top_taper,
             bottom_taper=config.slip.bottom_taper,
         )
-        pattern, gaussian, spectrum = stages.slip_pattern(
+        pattern, gaussian, slip_draw = stages.slip_pattern(
             mesh, slip_params, streams.stream("slip", name)
         )
 
@@ -398,7 +398,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
         rise_time_s = stages.rise_time_field(
             mesh,
             gaussian,
-            spectrum,
+            slip_draw,
             _rise_time_params(config, average_s),
             streams.stream("rise_time", name),
             covariance,
@@ -420,7 +420,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
 
         perturbation = stages.onset_perturbation(
             mesh,
-            spectrum,
+            slip_draw,
             _onset_params(config),
             streams.stream("onset", name),
             covariance,

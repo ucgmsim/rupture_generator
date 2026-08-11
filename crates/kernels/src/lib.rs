@@ -17,6 +17,7 @@
 
 mod counts;
 pub mod eikonal;
+pub mod field;
 pub mod pulse;
 
 use numpy::ndarray::Array2;
@@ -136,5 +137,6 @@ fn synthesise_pulses<'py>(
 fn kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eikonal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(synthesise_pulses, m)?)?;
+    m.add_function(wrap_pyfunction!(field::von_karman_draw, m)?)?;
     Ok(())
 }
