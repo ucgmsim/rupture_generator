@@ -550,8 +550,6 @@ def solve_onsets(
             seeds,
         )
         solved[name] = mesh.with_fields(
-            # The solved wavefront, kept beside the perturbed onset because the two
-            # answer different questions for a jump: see `causal_jump`.
             wavefront_s=travel_time_s + delay_s,
             onset_s=stages.apply_perturbation(
                 travel_time_s,
