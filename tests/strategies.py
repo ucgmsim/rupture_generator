@@ -28,7 +28,7 @@ from rupture_generator.config.geometry import (
     PointConfig,
 )
 from rupture_generator.mesh import RuptureMesh
-from rupture_generator.sampling import CovarianceSpec
+from rupture_generator.sampling import VonKarmanFilterParameters
 from rupture_generator.stages import DepthRamp
 
 # New Zealand, where EPSG:2193 is valid and where the convergence angle is worth
@@ -226,16 +226,43 @@ def planar_charts(
 
 
 @st.composite
-def covariances(draw: st.DrawFn) -> CovarianceSpec:
-    """A field structure, over the range magnitudes 5 to 8 produce."""
-    return CovarianceSpec(
-        correlation_length_strike_km=draw(
-            st.floats(min_value=1.0, max_value=40.0, allow_nan=False)
-        ),
-        correlation_length_dip_km=draw(
-            st.floats(min_value=1.0, max_value=20.0, allow_nan=False)
-        ),
+def covariances(
+    draw: st.DrawFn, mesh: RuptureMesh | None = None
+) -> VonKarmanFilterParameters:
+    """A field structure a real earthquake could have on a fault this size.
+
+    Mai & Beroza (2002) figure 13: across all 44 finite-source models the correlation
+    length is **0.25 to 0.6 of the source dimension** on each axis, with a median near
+    0.4 and no dependence on magnitude. So a correlation length is not free of the
+    fault it sits on, and drawing the two independently generates earthquakes that do
+    not exist -- a 20 km down-dip correlation length on a 4 km-wide fault, whose field
+    is constant over the whole rupture.
+
+    That pairing is not merely unrealistic, it is unsamplable: a covariance whose
+    structure outruns its grid has no circulant embedding, and `sampling._embed`
+    refuses it. Tying the two here is what keeps the property tests inside the model
+    the paper describes, rather than testing the refusal path by accident.
+
+    Passing no chart gives the range for a fault of about 20 km, which is what a test
+    that does not have a chart to hand wants.
+    """
+    strike_km, dip_km = mesh.spacing_km() if mesh is not None else (1.0, 1.0)
+    cells_i, cells_j = mesh.cell_counts if mesh is not None else (20, 20)
+
+    fraction = st.floats(min_value=0.25, max_value=0.6, allow_nan=False)
+    return VonKarmanFilterParameters(
+        correlation_length_strike_km=draw(fraction) * cells_j * strike_km,
+        correlation_length_dip_km=draw(fraction) * cells_i * dip_km,
     )
+
+
+@st.composite
+def charts_with_covariances(
+    draw: st.DrawFn, **chart_arguments: object
+) -> tuple[RuptureMesh, VonKarmanFilterParameters]:
+    """A chart and a field structure that belong to the same earthquake."""
+    mesh = draw(planar_charts(**chart_arguments))  # ty: ignore[invalid-argument-type]
+    return mesh, draw(covariances(mesh))
 
 
 @st.composite

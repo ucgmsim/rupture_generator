@@ -420,7 +420,7 @@ def test_a_custom_relation_stating_mais_coefficients_is_the_mai_rupture() -> Non
         strike_offset=2.50,
         dip_offset=1.50,
         strike_exponent=0.5,
-        dip_exponent=0.3333,
+        dip_exponent=1.0 / 3.0,
     )
     stated = generate(config, segments)
 
@@ -432,9 +432,15 @@ def test_a_custom_relation_stating_mais_coefficients_is_the_mai_rupture() -> Non
 def test_a_custom_relation_with_its_own_coefficients_is_a_different_rupture() -> None:
     """Moving the corner moves the slip, which is what makes the option worth having.
 
-    A one-decade shift in both correlation lengths at a fixed seed: the white noise
-    the field is shaped from is unchanged, so any difference in the slip is the
-    spectrum's, and there is one.
+    A one-decade shift in both correlation lengths at a fixed seed: the noise the field
+    is drawn from is unchanged, so any difference in the slip is the covariance's, and
+    there is one.
+
+    Shifted **downward**, to shorter correlation lengths. Upward by a decade would put
+    a 40 km patch size on a 27 km fault, which `sampling._embed` refuses -- a
+    correlation length larger than the rupture it sits on has no circulant embedding,
+    and is not an earthquake either: Mai & Beroza's own figure 13 puts the ratio
+    between 0.25 and 0.6.
     """
     segments = _single_plane()
 
@@ -442,10 +448,10 @@ def test_a_custom_relation_with_its_own_coefficients_is_a_different_rupture() ->
     config.source = dataclasses.replace(
         config.source,
         model="custom",
-        strike_offset=1.50,
-        dip_offset=0.50,
+        strike_offset=3.50,
+        dip_offset=2.50,
         strike_exponent=0.5,
-        dip_exponent=0.3333,
+        dip_exponent=1.0 / 3.0,
     )
 
     assert not np.allclose(
@@ -502,7 +508,7 @@ def test_a_negative_exponent_is_refused() -> None:
         "strike_offset": 2.50,
         "dip_offset": 1.50,
         "strike_exponent": 0.5,
-        "dip_exponent": 0.3333,
+        "dip_exponent": 1.0 / 3.0,
     }
     with pytest.raises(ValueError, match="0 or more"):
         FiniteSourceConfig(

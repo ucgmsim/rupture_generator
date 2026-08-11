@@ -34,8 +34,8 @@ onto it.
 
 Every random choice is made in `draw_fields` -- including the onset perturbation, which
 is drawn there because it correlates against slip's own Gaussian, and *spent* in
-`solve_onsets`. So the sampler reference never leaves the function that made it, and
-the causal traversal is a pure function of its inputs. A point source takes the same
+`solve_onsets`. So slip's spectrum never leaves the function that made it, and the
+causal traversal is a pure function of its inputs. A point source takes the same
 path with constant fields and a perturbation of zeros, which is why no stage below ever
 asks what kind of source it has.
 
@@ -73,14 +73,13 @@ from rupture_generator.config.rupture import (
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse, validate_chart
 from rupture_generator.random import Streams
 from rupture_generator.realisation import Realisation
-from rupture_generator.sampling import FieldSampler, SpectralSampler
 
 CALCULATIONS = ("propagation", "slip", "rise_time", "rake", "onset")
 """Every calculation that draws, by name.
 
 Documentation rather than machinery -- `random.Streams` hashes the name, so this list
-is not an index into anything and adding to it changes nothing. That is the point:
-a calculation's noise is a function of the seed, the realisation, its own name and its
+is not an index into anything and adding to it changes nothing. That is the point: a
+calculation's noise is a function of the seed, the realisation, its own name and its
 segment's name, and of nothing else.
 """
 
@@ -361,8 +360,8 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
 
     One batch, one visit per segment, one covariance spec. They are together because
     three of the four are drawn *against slip's own Gaussian* -- and that Gaussian and
-    the sampler reference it came with are local to this function, so nothing else in
-    the pipeline has to carry them. The reference is a padded-grid spectrum, not
+    the spectrum it was realised from are local to this function, so nothing else in
+    the pipeline has to carry them. The spectrum is on the padded grid, not
     representable as a cell field and not recoverable from one; drawing everything that
     needs it here is what keeps it from becoming a side channel.
 
@@ -377,7 +376,6 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
     """
     source = config.source
     streams = _streams(config)
-    sampler: FieldSampler = SpectralSampler()
 
     def draw(name: str, mesh: RuptureMesh) -> RuptureMesh:
         covariance = source.covariance_of(name)
@@ -388,8 +386,8 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             top_taper=config.slip.top_taper,
             bottom_taper=config.slip.bottom_taper,
         )
-        pattern, gaussian, reference = stages.slip_pattern(
-            mesh, slip_params, streams.stream("slip", name), sampler
+        pattern, gaussian, spectrum = stages.slip_pattern(
+            mesh, slip_params, streams.stream("slip", name)
         )
 
         average_s = stages.average_rise_time_s(
@@ -400,10 +398,9 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
         rise_time_s = stages.rise_time_field(
             mesh,
             gaussian,
-            reference,
+            spectrum,
             _rise_time_params(config, average_s),
             streams.stream("rise_time", name),
-            sampler,
             covariance,
             sample_interval_s=config.timing.sample_interval_s,
         )
@@ -419,15 +416,13 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
                 sigma_deg=config.slip.rake_sigma_deg,
             ),
             streams.stream("rake", name),
-            sampler,
         )
 
         perturbation = stages.onset_perturbation(
             mesh,
-            reference,
+            spectrum,
             _onset_params(config),
             streams.stream("onset", name),
-            sampler,
             covariance,
         )
 

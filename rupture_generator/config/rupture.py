@@ -60,7 +60,7 @@ from rupture_generator.config.validation import (
     non_empty,
 )
 from rupture_generator.pulses import from_stype
-from rupture_generator.sampling import CovarianceSpec, correlation_lengths
+from rupture_generator.sampling import VonKarmanFilterParameters, correlation_lengths
 
 if TYPE_CHECKING:
     from rupture_generator.mesh import RuptureMesh
@@ -207,7 +207,7 @@ class SourceConfig(ConfigObject):
         """
         return default_deg
 
-    def covariance_of(self, segment: str) -> CovarianceSpec:
+    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
         """The patch structure this segment's magnitude implies.
 
         Per segment rather than per event, because correlation lengths scale with
@@ -304,7 +304,7 @@ class FiniteSourceConfig(SourceConfig):
             return {}
         return {name: getattr(self, name) for name in CORNER_COEFFICIENTS}
 
-    def covariance_of(self, segment: str) -> CovarianceSpec:
+    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
         """One structure for the whole event: one magnitude, one corner relation."""
         return correlation_lengths(self.magnitude, **self.corner_coefficients())
 
@@ -324,13 +324,13 @@ class PointSourceConfig(SourceConfig):
     average_rake_deg: RakeDeg
     type: Literal["point"] = "point"
 
-    def covariance_of(self, segment: str) -> CovarianceSpec:
+    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
         """Any positive lengths will do: a point source draws no fields.
 
         One cell has no structure to describe. The stages still want a spec, so this
         is the shape of "the question does not arise" -- not a claim about a spectrum.
         """
-        return CovarianceSpec(1.0, 1.0)
+        return VonKarmanFilterParameters(1.0, 1.0)
 
 
 @dataclasses.dataclass

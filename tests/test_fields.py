@@ -40,9 +40,16 @@ from rupture_generator.moment import (
     seismic_moment_nm,
 )
 from rupture_generator.sampling import (
-    CovarianceSpec,
-    SpectralSampler,
+    MINIMUM_EMBEDDING,
+    VonKarmanFilterParameters,
+    _embed,
+    _wrapped_distance,
+    correlate_fields,
     correlation_lengths,
+    realise_field,
+    standardise,
+    von_karman_correlation,
+    von_karman_field,
 )
 from rupture_generator.stages import (
     DepthRamp,
@@ -61,7 +68,7 @@ from rupture_generator.timing import SpeedParams, alpha_t, speed_field, travel_t
 from tests.strategies import (
     MAGNITUDES,
     SEEDS,
-    covariances,
+    charts_with_covariances,
     depth_ramps,
     planar_charts,
 )
@@ -101,24 +108,40 @@ def _flat_chart(cells_i: int, cells_j: int, *, depth_km: float = 5.0) -> Rupture
     )
 
 
+def _sample(
+    mesh: RuptureMesh,
+    covariance: VonKarmanFilterParameters,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """One standardised field on a chart -- the three primitives, composed.
+
+    Spelled out here rather than hidden behind a helper in the package, because the
+    composition *is* the sampler: draw the embedding's eigenvalues into complex noise,
+    inverse-transform and crop to the fault, standardise. A stage that wanted a field
+    of its own would write these same three calls.
+    """
+    return standardise(realise_field(von_karman_field(mesh, covariance, rng)))
+
+
 # ============================================================================
 # The sampler
 # ============================================================================
 
 
 @SETTINGS
-@given(mesh=planar_charts(), covariance=covariances(), seed=SEEDS)
+@given(drawn=charts_with_covariances(), seed=SEEDS)
 def test_a_sampled_field_is_standardised(
-    mesh: RuptureMesh, covariance: CovarianceSpec, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters], seed: int
 ) -> None:
     """The sampler's output contract: zero mean, unit population variance.
 
-    Exact by construction -- the last thing the sampler does is subtract the mean and
-    divide by the spread -- so this is asserted at the arithmetic tolerance rather
-    than at an estimator's. It is what lets every stage downstream write ``1 + cov*Z``
-    and mean it, instead of carrying its own normalisation.
+    Exact by construction -- `standardise` subtracts the mean and divides by the
+    spread -- so this is asserted at the arithmetic tolerance rather than at an
+    estimator's. It is what lets every stage downstream write ``1 + cov*Z`` and mean
+    it, instead of carrying its own normalisation.
     """
-    field = SpectralSampler().sample(mesh, covariance, _rng(seed))
+    mesh, covariance = drawn
+    field = _sample(mesh, covariance, _rng(seed))
 
     assert field.shape == mesh.cell_counts
     assert float(field.mean()) == pytest.approx(0.0, abs=CONSTRUCTION)
@@ -127,6 +150,7 @@ def test_a_sampled_field_is_standardised(
 
 def test_a_one_cell_chart_gives_the_zero_field_rather_than_nan() -> None:
     """A constant field has no structure to scale, so scaling it is not defined.
+    mesh, covariance = drawn
 
     Not a hypothetical: the mesh CLI produces a one-cell chart for any plane shorter
     than half the requested subfault size. Dividing by the spread there gave infinity,
@@ -134,9 +158,7 @@ def test_a_one_cell_chart_gives_the_zero_field_rather_than_nan() -> None:
     samples was written with no error raised anywhere -- which is the worst possible
     failure, because every consumer downstream accepted the file.
     """
-    field = SpectralSampler().sample(
-        _flat_chart(1, 1), CovarianceSpec(5.0, 5.0), _rng()
-    )
+    field = _sample(_flat_chart(1, 1), VonKarmanFilterParameters(5.0, 5.0), _rng())
 
     assert field.shape == (1, 1)
     assert np.isfinite(field).all()
@@ -144,77 +166,190 @@ def test_a_one_cell_chart_gives_the_zero_field_rather_than_nan() -> None:
 
 
 @SETTINGS
-@given(mesh=planar_charts(), covariance=covariances(), seed=SEEDS)
-def test_the_inverse_transform_is_real(
-    mesh: RuptureMesh, covariance: CovarianceSpec, seed: int
+@given(drawn=charts_with_covariances(), seed=SEEDS)
+def test_a_realised_field_is_real_and_finite(
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters], seed: int
 ) -> None:
-    """The symmetrised spectrum inverse-transforms to a real field.
+    """The spectrum inverse-transforms to a real field of the chart's own shape.
 
-    The sampler raises rather than silently taking the real part of something with a
-    meaningful imaginary component, so this asserts that the guard never fires. It is
-    the check that the Hermitian mirror covered *both* interior diagonals: omitting
-    the second leaves half the negative-dip half an unmirrored draw, and the field
-    that falls out still looks like a slip distribution.
+    The real part of the inverse transform is one of the two independent fields the
+    complex draw carries, so realness is structural rather than checked -- what is
+    worth asserting is that nothing infinite survives, and that the crop takes the
+    fault's own corner of the padded grid rather than some other rectangle. A chart of
+    the wrong shape here is a field silently transposed or offset from the geometry it
+    is meant to describe.
     """
-    SpectralSampler().sample(mesh, covariance, _rng(seed))
+    mesh, covariance = drawn
+    field = realise_field(von_karman_field(mesh, covariance, _rng(seed)))
+
+    assert field.shape == mesh.cell_counts
+    assert not np.iscomplexobj(field)
+    assert np.isfinite(field).all()
+
+
+@SETTINGS
+@given(drawn=charts_with_covariances())
+def test_the_embedding_delivers_the_target_covariance_exactly(
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters]
+) -> None:
+    """The property the old spectral sampler could not have: no approximation at all.
+    mesh, covariance = drawn
+
+    Circulant embedding's whole claim is that the field it draws has *the* target
+    covariance on the grid, not one wrapped by the period and aliased by a discrete
+    spectrum. That is checkable without drawing anything: the covariance the sampler
+    will deliver is the inverse transform of the eigenvalues it is about to use, and it
+    must equal Mai & Beroza equation (1) evaluated at the same lags.
+
+    Asserted as an identity rather than statistically, which is the point -- a Monte
+    Carlo estimate of a covariance over one fault carries an error of order 1/sqrt of
+    the patch count, around 0.2, and would accept a badly wrong sampler.
+    """
+    mesh, covariance = drawn
+    extents, eigenvalues = _embed(
+        mesh.cell_counts, mesh.spacing_km(), covariance
+    )
+    delivered = np.fft.ifft2(eigenvalues).real
+    target = von_karman_correlation(
+        _wrapped_distance(extents, mesh.spacing_km(), covariance), covariance.hurst
+    )
+
+    assert np.abs(delivered - target).max() <= IDENTITY
+    assert delivered[0, 0] == pytest.approx(1.0, abs=IDENTITY)
+    assert eigenvalues.min() >= 0.0
+
+
+@given(hurst=st.floats(min_value=0.2, max_value=0.9))
+def test_a_correlation_length_is_where_the_field_has_forgotten_half_of_itself(
+    hurst: float,
+) -> None:
+    """What ``a`` *means*, pinned against the paper rather than against this code.
+
+    Mai & Beroza equation (1) makes the argument of the ACF a distance in correlation
+    lengths, so ``C(1)`` is the correlation at a separation of exactly one ``a``. At
+    the paper's ``H = 0.75`` that is 0.5005 -- so a correlation length is, to within a
+    rounding, the separation at which the field has forgotten half of itself.
+
+    This is the assertion that a wavenumber convention cannot slip past. The same model
+    written as a power spectrum needs ``k`` declared angular or in cycles, and getting
+    it wrong scales every correlation length by ``2*pi`` while leaving the fields
+    entirely plausible. Stated as a covariance there is nothing to declare.
+    """
+    assert float(von_karman_correlation(np.array([0.0]), hurst)[0]) == pytest.approx(
+        1.0, abs=IDENTITY
+    )
+    assert float(von_karman_correlation(np.array([1.0]), 0.75)[0]) == pytest.approx(
+        0.5005, abs=1.0e-4
+    )
+    # Monotone in separation, whatever the roughness: structure only decorrelates.
+    distances = np.linspace(0.0, 8.0, 64)
+    assert np.all(np.diff(von_karman_correlation(distances, hurst)) <= 0.0)
+
+
+@SETTINGS
+@given(drawn=charts_with_covariances())
+def test_the_embedding_pads_to_at_least_twice_the_fault(
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters]
+) -> None:
+    """A Toeplitz matrix of n lags needs 2n-2 to embed, so a fraction will not do.
+
+    The old rule padded by ten percent, which is a statement about the fault rather
+    than about the covariance -- and the covariance is the thing that wraps.
+    """
+    mesh, covariance = drawn
+    extents, _ = _embed(mesh.cell_counts, mesh.spacing_km(), covariance)
+
+    for padded, cells in zip(extents, mesh.cell_counts, strict=True):
+        assert padded >= MINIMUM_EMBEDDING * cells
+
+
+def test_a_covariance_too_large_for_its_fault_is_refused() -> None:
+    """A correlation length the grid cannot carry raises, rather than sampling something else.
+    mesh, covariance = drawn
+
+    The failure mode circulant embedding buys: an embedding whose eigenvalues go
+    negative is not a covariance matrix. Clipping them would sample a different
+    covariance and nothing downstream could tell.
+    """
+    mesh = _flat_chart(4, 4)
+    with pytest.raises(ValueError, match="does not embed"):
+        _embed(mesh.cell_counts, mesh.spacing_km(), VonKarmanFilterParameters(1e6, 1e6))
 
 
 @SETTINGS
 @given(
-    mesh=planar_charts(),
-    covariance=covariances(),
+    drawn=charts_with_covariances(),
     rho=st.floats(min_value=-1.0, max_value=1.0, allow_nan=False),
     seed=SEEDS,
 )
 def test_the_correlation_blend_is_an_identity_on_the_fault(
-    mesh: RuptureMesh, covariance: CovarianceSpec, rho: float, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters], rho: float, seed: int
 ) -> None:
-    """``blended == rho*reference + sqrt(1 - rho^2)*independent``, pointwise.
+    """``blended == rho*a + sqrt(1 - rho^2)*b``, pointwise, on the fault itself.
 
     The inverse transform is linear and the crop is a restriction, so a relation
     imposed in the wavenumber domain survives to the fault exactly. Asserting the
     identity rather than a sample correlation coefficient is the whole point: a rho of
     0.8 implemented as 0.5 misses this by a factor of a million, and misses a Pearson
-    coefficient computed over a fault by well under one standard error.
+    coefficient computed over one fault by well under a standard error.
 
-    Standardising each field afterwards divides by its own sample spread, which
-    perturbs the relation by the estimator error -- which is why the sampler exposes
-    the fields before that step.
+    Asserted **before** standardising, which divides each field by its own sample
+    spread and so perturbs the relation by the estimator's error. Nothing special is
+    needed to see it: `realise_field` is linear, so it can simply be applied to each
+    operand as well as to the blend.
     """
-    sampler = SpectralSampler()
+    mesh, covariance = drawn
     rng = _rng(seed)
-    reference_field, reference = sampler.sample_with_reference(mesh, covariance, rng)
-    blended, independent = sampler.blend_on_fault(mesh, covariance, reference, rho, rng)
+    first = von_karman_field(mesh, covariance, rng)
+    second = von_karman_field(mesh, covariance, rng)
 
-    expected = rho * reference.field + np.sqrt(1.0 - rho * rho) * independent
+    blended = realise_field(correlate_fields(first, second, rho))
+    expected = rho * realise_field(first) + np.sqrt(1.0 - rho * rho) * realise_field(
+        second
+    )
+
     scale = max(float(np.abs(expected).max()), 1.0e-300)
     assert np.abs(blended - expected).max() <= IDENTITY * scale
-    # And the reference the blend used is the field the caller was handed, up to the
-    # standardisation applied to one and not the other.
-    assert reference.field.shape == reference_field.shape
 
 
 @SETTINGS
-@given(mesh=planar_charts(min_cells=6), covariance=covariances(), seed=SEEDS)
+@given(drawn=charts_with_covariances(min_cells=6), seed=SEEDS)
 def test_a_field_correlated_at_one_is_the_reference(
-    mesh: RuptureMesh, covariance: CovarianceSpec, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters], seed: int
 ) -> None:
-    """rho = 1 reproduces the reference exactly, and rho = 0 discards it.
+    """rho = 1 reproduces the first field exactly, and rho = 0 discards it.
+    mesh, covariance = drawn
 
     The two ends of the blend, which between them pin its orientation: a
-    ``sqrt(1-rho^2)`` written as ``sqrt(rho)`` or a swapped pair of weights passes
+    ``sqrt(1-rho^2)`` written as ``sqrt(rho)``, or a swapped pair of weights, passes
     every statistical check in the middle of the range and fails here.
     """
-    sampler = SpectralSampler()
+    mesh, covariance = drawn
     rng = _rng(seed)
-    _, reference = sampler.sample_with_reference(mesh, covariance, rng)
+    first = von_karman_field(mesh, covariance, rng)
+    second = von_karman_field(mesh, covariance, rng)
 
-    same, _ = sampler.blend_on_fault(mesh, covariance, reference, 1.0, rng)
-    scale = max(float(np.abs(reference.field).max()), 1.0e-300)
-    assert np.abs(same - reference.field).max() <= IDENTITY * scale
+    on_the_fault = realise_field(first)
+    scale = max(float(np.abs(on_the_fault).max()), 1.0e-300)
 
-    none, independent = sampler.blend_on_fault(mesh, covariance, reference, 0.0, rng)
-    assert np.abs(none - independent).max() <= IDENTITY * scale
+    same = realise_field(correlate_fields(first, second, 1.0))
+    assert np.abs(same - on_the_fault).max() <= IDENTITY * scale
+
+    none = realise_field(correlate_fields(first, second, 0.0))
+    assert np.abs(none - realise_field(second)).max() <= IDENTITY * scale
+
+
+@pytest.mark.parametrize("rho", [-1.5, 1.5, np.inf])
+def test_a_correlation_outside_the_unit_interval_is_refused(rho: float) -> None:
+    """``sqrt(1 - rho^2)`` is not a real number there, so the blend is not one."""
+    mesh = _flat_chart(4, 4)
+    covariance = VonKarmanFilterParameters(4.0, 4.0)
+    rng = _rng()
+    first = von_karman_field(mesh, covariance, rng)
+    second = von_karman_field(mesh, covariance, rng)
+
+    with pytest.raises(ValueError, match="correlation must be in"):
+        correlate_fields(first, second, rho)
 
 
 @pytest.mark.slow
@@ -232,32 +367,33 @@ def test_the_realised_correlation_follows_the_requested_one() -> None:
     fields a *caller* receives are correlated at all -- the standardisation, and the
     fact that each is cropped from a padded grid, sit between.
     """
-    mesh = _flat_chart(20, 20)
-    covariance = CovarianceSpec(4.0, 4.0)
-    sampler = SpectralSampler()
+    mesh = _flat_chart(24, 24)
+    covariance = VonKarmanFilterParameters(4.0, 4.0)
 
     for rho in (0.0, 0.5, 0.9):
         realised = []
         for seed in range(40):
             rng = _rng(seed)
-            reference_field, reference = sampler.sample_with_reference(
-                mesh, covariance, rng
+            reference = von_karman_field(mesh, covariance, rng)
+            independent = von_karman_field(mesh, covariance, rng)
+            first = standardise(realise_field(reference))
+            other = standardise(
+                realise_field(correlate_fields(reference, independent, rho))
             )
-            other = sampler.correlated_with(mesh, covariance, reference, rho, rng)
-            realised.append(
-                float(np.corrcoef(reference_field.ravel(), other.ravel())[0, 1])
-            )
+            realised.append(float(np.corrcoef(first.ravel(), other.ravel())[0, 1]))
         assert float(np.mean(realised)) == pytest.approx(rho, abs=0.06)
+
 
 
 @given(magnitude=MAGNITUDES)
 def test_correlation_lengths_follow_the_published_relation(magnitude: float) -> None:
     """Mai & Beroza's own formula, evaluated independently of the implementation.
 
-    ``0.3333`` rather than a third is carried deliberately: the difference is in the
-    fourth decimal of the exponent, which reaches about a percent of the down-dip
-    corner at M8, and the literal is what the relation was fitted and published with.
-    A reference that re-derived it as ``1/3`` would be asserting a different relation.
+    The exponents are the paper's own fractions. Equation (5) reads ``log(a_z) ~
+    -1.5 + (1/3) Mw``, so a third is what was published and ``0.3333`` would be a
+    transcription of it -- a difference of 0.06% at M8, far inside the paper's own
+    scatter, but there is no reason to carry an approximation of a number the source
+    states exactly.
     """
     covariance = correlation_lengths(magnitude)
 
@@ -265,7 +401,7 @@ def test_correlation_lengths_follow_the_published_relation(magnitude: float) -> 
         10.0 ** (0.5 * magnitude - 2.50), rel=CONSTRUCTION
     )
     assert covariance.correlation_length_dip_km == pytest.approx(
-        10.0 ** (0.3333 * magnitude - 1.50), rel=CONSTRUCTION
+        10.0 ** (magnitude / 3.0 - 1.50), rel=CONSTRUCTION
     )
 
 
@@ -304,7 +440,7 @@ def test_mai_is_a_value_of_the_four_coefficients(magnitude: float) -> None:
         strike_offset=2.50,
         dip_offset=1.50,
         strike_exponent=0.5,
-        dip_exponent=0.3333,
+        dip_exponent=1.0 / 3.0,
     ) == correlation_lengths(magnitude)
 
 
@@ -387,9 +523,11 @@ def test_rigidity_of_crustal_rock_is_about_thirty_gigapascals() -> None:
 
 
 @SETTINGS
-@given(mesh=planar_charts(), magnitude=MAGNITUDES, seed=SEEDS)
+@given(drawn=charts_with_covariances(), magnitude=MAGNITUDES, seed=SEEDS)
 def test_the_scaled_slip_carries_the_target_moment(
-    mesh: RuptureMesh, magnitude: float, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters],
+    magnitude: float,
+    seed: int,
 ) -> None:
     """``sum(mu * A * s) == M0``.
 
@@ -400,9 +538,9 @@ def test_the_scaled_slip_carries_the_target_moment(
     single precision, which on a hundred thousand subfaults costs about 6e-5 relative
     -- six missing subfaults' worth, where in float64 one missing subfault is visible.
     """
-    covariance = correlation_lengths(magnitude)
+    mesh, covariance = drawn
     pattern, _, _ = slip_pattern(
-        mesh, SlipParams(covariance=covariance), _rng(seed), SpectralSampler()
+        mesh, SlipParams(covariance=covariance), _rng(seed)
     )
     depth_km = mesh.centres()[..., 2]
     _, rigidity = sample_velocity_model(
@@ -507,9 +645,11 @@ def test_a_depth_on_a_layer_boundary_takes_the_layer_above() -> None:
 
 
 @SETTINGS
-@given(mesh=planar_charts(), magnitude=MAGNITUDES, seed=SEEDS)
+@given(drawn=charts_with_covariances(), magnitude=MAGNITUDES, seed=SEEDS)
 def test_a_slip_pattern_is_never_negative(
-    mesh: RuptureMesh, magnitude: float, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters],
+    magnitude: float,
+    seed: int,
 ) -> None:
     """Slip is truncated at zero, because this is a model of slip and not of deficit.
 
@@ -517,11 +657,11 @@ def test_a_slip_pattern_is_never_negative(
     which the pipeline reports as a diagnostic: a large fraction says the requested
     variation was not really achievable and the delivered spectrum is distorted.
     """
+    mesh, covariance = drawn
     pattern, _, _ = slip_pattern(
         mesh,
-        SlipParams(covariance=correlation_lengths(magnitude)),
+        SlipParams(covariance=covariance),
         _rng(seed),
-        SpectralSampler(),
     )
     assert (pattern >= 0.0).all()
 
@@ -546,7 +686,7 @@ def test_the_taper_is_the_product_of_two_one_dimensional_ramps(
     what the name says.
     """
     params = SlipParams(
-        covariance=CovarianceSpec(5.0, 5.0),
+        covariance=VonKarmanFilterParameters(5.0, 5.0),
         side_taper=side,
         top_taper=top,
         bottom_taper=bottom,
@@ -579,7 +719,7 @@ def test_slip_reaches_the_free_surface_at_full_amplitude() -> None:
     every event as buried. The sides are tapered because the fault's along-strike ends
     are where it stops, which is a different statement about a different edge.
     """
-    params = SlipParams(covariance=CovarianceSpec(5.0, 5.0))
+    params = SlipParams(covariance=VonKarmanFilterParameters(5.0, 5.0))
     assert params.top_taper == 0.0
 
     # Long enough along strike that a 2% taper is a whole cell: the width rounds to
@@ -600,7 +740,7 @@ def test_overlapping_tapers_are_refused() -> None:
     Refusing makes the region where genslip's two profiles disagree unrepresentable,
     which is preferable to picking one of them silently.
     """
-    params = SlipParams(covariance=CovarianceSpec(5.0, 5.0), side_taper=0.8)
+    params = SlipParams(covariance=VonKarmanFilterParameters(5.0, 5.0), side_taper=0.8)
     with pytest.raises(ValueError, match="overlap"):
         taper_edges(np.ones((6, 10)), params)
 
@@ -611,9 +751,11 @@ def test_overlapping_tapers_are_refused() -> None:
 
 
 @SETTINGS
-@given(mesh=planar_charts(min_cells=6), magnitude=MAGNITUDES, seed=SEEDS)
+@given(drawn=charts_with_covariances(min_cells=6), magnitude=MAGNITUDES, seed=SEEDS)
 def test_the_mean_rise_time_is_the_requested_average(
-    mesh: RuptureMesh, magnitude: float, seed: int
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters],
+    magnitude: float,
+    seed: int,
 ) -> None:
     """The normalisation closes the mean by construction, except where the floor binds.
 
@@ -623,11 +765,10 @@ def test_the_mean_rise_time_is_the_requested_average(
     floor is physics rather than slack: a pulse shorter than one sample cannot be
     represented at all.
     """
-    covariance = correlation_lengths(magnitude)
-    sampler = SpectralSampler()
+    mesh, covariance = drawn
     rng = _rng(seed)
     _, gaussian, reference = slip_pattern(
-        mesh, SlipParams(covariance=covariance), rng, sampler
+        mesh, SlipParams(covariance=covariance), rng
     )
 
     average_s = 1.5
@@ -638,7 +779,6 @@ def test_the_mean_rise_time_is_the_requested_average(
         reference,
         RiseTimeParams(average_s=average_s),
         rng,
-        sampler,
         covariance,
         sample_interval_s=interval_s,
     )
@@ -690,10 +830,9 @@ def test_a_slip_exponent_below_the_floor_is_refused() -> None:
     original's early return amounts to.
     """
     mesh = _flat_chart(6, 6)
-    sampler = SpectralSampler()
     rng = _rng()
     _, gaussian, reference = slip_pattern(
-        mesh, SlipParams(covariance=CovarianceSpec(5.0, 5.0)), rng, sampler
+        mesh, SlipParams(covariance=VonKarmanFilterParameters(5.0, 5.0)), rng
     )
 
     with pytest.raises(ValueError, match="slip exponent"):
@@ -703,8 +842,7 @@ def test_a_slip_exponent_below_the_floor_is_refused() -> None:
             reference,
             RiseTimeParams(average_s=1.0, slip_exponent=0.05),
             rng,
-            sampler,
-            CovarianceSpec(5.0, 5.0),
+                VonKarmanFilterParameters(5.0, 5.0),
             sample_interval_s=0.005,
         )
 
@@ -726,8 +864,8 @@ def test_the_rake_field_carries_degrees(mesh: RuptureMesh, seed: int) -> None:
     numbers in the same expression, and their names carry the difference; this asserts
     the units actually arrive.
     """
-    params = RakeParams(covariance=CovarianceSpec(6.0, 6.0))
-    rake = rake_field(mesh, params, _rng(seed), SpectralSampler())
+    params = RakeParams(covariance=VonKarmanFilterParameters(6.0, 6.0))
+    rake = rake_field(mesh, params, _rng(seed))
 
     assert float(rake.mean()) == pytest.approx(params.base_rake_deg, abs=CONSTRUCTION)
     assert float(rake.std()) == pytest.approx(params.sigma_deg, rel=CONSTRUCTION)
@@ -931,15 +1069,14 @@ def test_a_speed_the_front_cannot_travel_at_is_refused_by_name() -> None:
 
 def _onset_setup(
     mesh: RuptureMesh, seed: int
-) -> tuple[np.ndarray, object, SpectralSampler, np.random.Generator, CovarianceSpec]:
-    covariance = CovarianceSpec(6.0, 5.0)
-    sampler = SpectralSampler()
+) -> tuple[np.ndarray, object, np.random.Generator, VonKarmanFilterParameters]:
+    covariance = VonKarmanFilterParameters(6.0, 5.0)
     rng = _rng(seed)
     _, _, reference = slip_pattern(
-        mesh, SlipParams(covariance=covariance), rng, sampler
+        mesh, SlipParams(covariance=covariance), rng
     )
     shear_speed = np.full(mesh.cell_counts, 3.3)
-    return shear_speed, reference, sampler, rng, covariance
+    return shear_speed, reference, rng, covariance
 
 
 @SETTINGS
@@ -966,7 +1103,7 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
     started at zero, so every diagnostic that asked whether the shape was right said
     yes.
     """
-    shear_speed, reference, sampler, rng, covariance = _onset_setup(mesh, seed)
+    shear_speed, reference, rng, covariance = _onset_setup(mesh, seed)
     cells_i, cells_j = mesh.cell_counts
     hypocentre = (cells_i // 3, cells_j // 2)
 
@@ -979,7 +1116,7 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
     params = OnsetParams(scale_s=-0.35)
     onset = apply_perturbation(
         travel,
-        onset_perturbation(mesh, reference, params, rng, sampler, covariance),
+        onset_perturbation(mesh, reference, params, rng, covariance),
         params,
         hypocentre=hypocentre,
         delay_s=delay_s,
@@ -1002,7 +1139,7 @@ def test_onset_is_travel_time_plus_its_perturbation(
     gets neither the pin nor the clamp, so its onsets stay absolute, which is what
     lets a multi-segment rupture propagate rather than restart on every fault.
     """
-    shear_speed, reference, sampler, _, covariance = _onset_setup(mesh, seed)
+    shear_speed, reference, _, covariance = _onset_setup(mesh, seed)
     cells_i, cells_j = mesh.cell_counts
     travel = travel_times(
         mesh,
@@ -1017,7 +1154,7 @@ def test_onset_is_travel_time_plus_its_perturbation(
     # perturbation is recoverable.
     onset = apply_perturbation(
         travel,
-        onset_perturbation(mesh, reference, params, _rng(seed + 1), sampler, covariance),
+        onset_perturbation(mesh, reference, params, _rng(seed + 1), covariance),
         params,
         hypocentre=None,
         delay_s=delay_s,
@@ -1037,13 +1174,14 @@ def test_onset_is_travel_time_plus_its_perturbation(
 
 
 @SETTINGS
-@given(mesh=planar_charts(), seed=SEEDS)
-def test_the_same_seed_gives_the_same_field(mesh: RuptureMesh, seed: int) -> None:
+@given(drawn=charts_with_covariances(), seed=SEEDS)
+def test_the_same_seed_gives_the_same_field(
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters], seed: int
+) -> None:
     """Reproducibility, asserted bit for bit rather than approximately."""
-    covariance = CovarianceSpec(8.0, 5.0)
-    sampler = SpectralSampler()
-    first = sampler.sample(mesh, covariance, _rng(seed))
-    second = sampler.sample(mesh, covariance, _rng(seed))
+    mesh, covariance = drawn
+    first = _sample(mesh, covariance, _rng(seed))
+    second = _sample(mesh, covariance, _rng(seed))
     assert np.array_equal(first, second)
 
 
@@ -1058,15 +1196,14 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
     identical, so the two stages can be reordered, retried or tested alone.
     """
     mesh = _flat_chart(8, 16, depth_km=9.0)
-    covariance = CovarianceSpec(6.0, 5.0)
-    sampler = SpectralSampler()
+    covariance = VonKarmanFilterParameters(6.0, 5.0)
     shear_speed = np.full(mesh.cell_counts, 3.3)
     hypocentre = (4, 8)
 
     def onset_for(velocity_fraction: float) -> np.ndarray:
         rng = _rng(99)
         _, _, reference = slip_pattern(
-            mesh, SlipParams(covariance=covariance), rng, sampler
+            mesh, SlipParams(covariance=covariance), rng
         )
         travel = travel_times(
             mesh,
@@ -1081,7 +1218,7 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
         params = OnsetParams(scale_s=-0.35)
         onset = apply_perturbation(
             travel,
-            onset_perturbation(mesh, reference, params, _rng(7), sampler, covariance),
+            onset_perturbation(mesh, reference, params, _rng(7), covariance),
             params,
             # No hypocentre, so no clamp: the onset is the wavefront plus the
             # perturbation exactly, and subtracting recovers the perturbation. With
