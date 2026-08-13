@@ -104,28 +104,106 @@ Setup grows by 130x per 4x vertices -- that is fill-in, and it puts 400 m
 (1.19 M vertices) out of reach by this route: extrapolating the same exponent
 gives roughly 14 hours and 50 GB.
 
-**The iterative alternative, and what actually limits it.** A draw needs *solves*
-with ``P_l``, not a factorisation of it, and every shifted operator is SPD, so
-conjugate gradients is admissible and its memory is linear. What it costs is set
-by the mesh's element quality, not by the equation. Measured at Mw 8.5, Jacobi
-preconditioned, per shifted factor:
+**The iterative route, which is what ships.** A draw needs *solves* with ``P_l``,
+not a factorisation of it, and every shifted operator is SPD, so conjugate
+gradients preconditioned by a geometric V-cycle is admissible and its memory is
+the operator's -- linear. The hierarchy is free: 1-to-4 subdivision is already a
+multigrid hierarchy (:func:`subdivided`). Pass ``coarser=`` to
+:class:`MaternOperator` and it takes this route; omit it and it factorises.
 
-===============================  =========  ==============  =================
-mesh                             ``h``      area max/min    CG iterations
-===============================  =========  ==============  =================
-regular triangulation, 66 k      0.088      1.0             540, 108, 19
-CFM Hikurangi refined, 76 k      0.187      4.3e4           3214, 1961, 940
-===============================  =========  ==============  =================
+Measured on a **well-shaped** hierarchy, Mw 8.5, outer iterations for the three
+chained solves:
 
--- an order of magnitude more iterations on the CFM triangulation at *half* the
-resolution, because its worst elements set the largest eigenvalue. On a
-well-shaped mesh the count grows as ``1/h``, which is the textbook rate and is
-affordable; on a mesh with a four-decade area spread it is not. `MESH.md`
-Component 1 triangulates the parameter domain with Delaunay, which produces the
-well-shaped case, so this is an argument for building the mesh rather than
-refining the supplied one. An incomplete-Cholesky preconditioner was tried and
-abandoned: `spilu` inherits the same fill-in and did not finish 300 k vertices in
-nine minutes.
+=========  ===========  ===============  =========  ========
+vertices   ``h``        iterations       draw       peak
+=========  ===========  ===============  =========  ========
+4,225      0.354        11, 8, 5         0.008 s    0.08 GB
+16,641     0.177        12, 10, 6        0.031 s    0.09 GB
+66,049     0.088        12, 11, 6        0.122 s    0.16 GB
+263,169    0.044        12, 12, 8        0.612 s    0.40 GB
+1,050,625  0.022        12, 12, 9        3.20 s     1.37 GB
+4,198,401  0.011        12, 12, 10       39.9 s     5.01 GB
+=========  ===========  ===============  =========  ========
+
+**Flat at twelve iterations across a thousandfold range of vertices**, and memory
+linear (a factor of 3.7 per factor of 4.0). That is what makes production
+resolution reachable at all.
+
+**What limits it is the mesh, not the equation.** The same V-cycle on the CFM
+Hikurangi triangulation *refined* instead of rebuilt:
+
+=========  ===========  ===============  =========  ========
+vertices   edge         iterations       draw       peak
+=========  ===========  ===============  =========  ========
+19,671     3.70 km      43, 41, 39       0.69 s     0.11 GB
+76,285     1.79 km      90, 88, 74       2.94 s     0.19 GB
+300,345    0.87 km      173, 171, 159    75.6 s     0.53 GB
+1,191,793  0.43 km      320, 315, 287    263-517 s  1.85 GB
+=========  ===========  ===============  =========  ========
+
+The last row is 400 m on the real interface, and the solver *works* there -- 1.19
+million vertices in 1.85 GB on one machine, every solve converged, which is the
+resolution an end-to-end curved rupture needs. The **field** it produces is not
+usable, for the reason two paragraphs down. But it costs 517 seconds a draw against the 3.2 seconds a
+well-shaped mesh of the same size takes, and the whole of that factor is the
+iteration count: 312 against 12. Iterations roughly double per refinement rather
+than staying flat, because subdivision preserves element shape and that mesh's
+areas span 4.3e4 -- against 1.67e-1 for a mesh built in the parameter domain.
+
+**So 100 m is reachable, but only from a built mesh.** Extrapolating the
+well-shaped column to 18.9 million vertices gives 23 GB, memory having been
+measured linear over three octaves, and three to ten minutes a draw depending on
+whether the time stays linear (it did not between 1.05 and 4.2 million, where four
+times the vertices cost twelve times the time as the working set left cache).
+Extrapolating the refined column instead gives iteration counts in the thousands
+and no useful answer at all. No smoother repairs that; the
+Chebyshev smoother of :data:`SMOOTHER_SPECTRAL_RATIO` halves the count and does
+not change its growth, and a Galerkin coarse operator is indistinguishable from
+rediscretisation. **So the production mesh has to be built rather than refined**,
+which is what `MESH.md` Component 1's lattice builder does.
+
+There is a second, sharper reason, and it is the decisive one. Refining that
+triangulation breeds **variance outliers**, and
+:data:`MINIMUM_LUMPED_MASS_RATIO` cannot see them coming -- subdivision divides
+every area by four, so the ratio it gates on is invariant. Measured on Hikurangi,
+one draw per level:
+
+=======  =========  ======  ============  =======  ==========  ======================
+level    vertices   std     median ``|f|``  p99      max         ``|f| > 10``
+=======  =========  ======  ============  =======  ==========  ======================
+0        5,218      1.43    0.885         4.09     6.3         none
+1        19,671     1.44    1.026         3.61     4.6         none
+2        76,285     1.46    0.856         3.61     96.8        6 vertices
+3        300,345    4.63    0.820         2.99     1187        60 vertices
+4        1,191,793  318     --            --       --          --
+=======  =========  ======  ============  =======  ==========  ======================
+
+The bulk of the field stays healthy at every level -- the median and the 99th
+percentile barely move -- but sixty vertices out of three hundred thousand carry
+enough variance to set the sample spread, and `sampling.standardise` divides by
+that spread. The healthy part of the field comes out at 0.959 of its proper
+amplitude at level 2 and **0.266 at level 3**, heading for 0.003 at level 4.
+
+Those sixty vertices sit at a mass ratio of 7.19e-5, *fourteen times above* the
+floor, while the level-0 mesh's smallest vertex sits at 2.36e-5 *below* it and is
+harmless. So no threshold on lumped mass separates the two cases: the ratio is
+simply the wrong invariant once a mesh is refined, and the gate is a backstop for
+the coarse case rather than a guarantee. What would catch it is a check on the
+*outcome* -- one draw's largest value against its own 99th percentile flags levels
+2 and 3 and passes 0 and 1 -- and what avoids it entirely is building the mesh.
+
+**Where the time actually goes.** Not the allocator and not Python. At 4.2 million
+vertices the sparse matvec runs at 9.0 GB/s against 11.5 GB/s for a pure array
+copy of the same working set -- **78% of streaming bandwidth** -- so it is
+memory-bound and close to optimal. Writing the matvec into a preallocated buffer
+is *slower* (-7% at 4.2 M, -19% at 1.05 M), because zeroing the output costs an
+extra pass; making the whole smoothing sweep in-place with ``out=`` saves 3.1%;
+and reordering the vertices for locality with reverse Cuthill-McKee changes
+nothing, because a lattice is already band-optimal. The one real gain available to
+a compiled kernel is *fusing* the smoother so that ``A x`` is never materialised,
+worth about 1.4x since the matvec is 64% of the sweep and vector traffic the rest.
+Set against 15x from a well-shaped mesh and 20x from not oversampling the field,
+that is not where the leverage is.
 
 **But the field does not need a fine mesh.** The correlation length at Mw 8.5 is
 21.5 km down dip, and the delivered covariance is already within ~1% of the ACF
@@ -192,19 +270,25 @@ from __future__ import annotations
 import dataclasses
 import functools
 import warnings
+from collections.abc import Callable, Sequence
 
 import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as sparse_linalg
 
 from rupture_generator.sampling import (
+    CORRELATION_LENGTH_TOLERANCE,
     MAI_MAXIMUM_RATIO,
+    MAXIMUM_DOUBLINGS,
     DegradedCorrelation,
     VonKarmanFilterParameters,
+    von_karman_correlation,
 )
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
+BoolArray = np.ndarray[tuple[int, ...], np.dtype[np.bool_]]
+PaddedMesh = tuple[FloatArray, IntArray, FloatArray, BoolArray]
 
 MANIFOLD_DIMENSION = 2
 """The ``d`` of the SPDE: a fault surface is a 2-manifold, whatever it is embedded in.
@@ -1166,6 +1250,184 @@ def _warn_if_folded(
         )
 
 
+SMOOTHING_SWEEPS = 2
+"""Chebyshev smoothing sweeps either side of each coarse-grid correction.
+
+Two is the textbook V(2,2) cycle. One measurably under-smooths on the meshes here
+and three does not pay for itself: on a well-shaped hierarchy the outer iteration
+count is 12 either way, so the extra sweep is 50% more work per cycle for nothing.
+"""
+
+SMOOTHER_SPECTRAL_RATIO = 30.0
+"""How far below the top of the spectrum the Chebyshev smoother starts working.
+
+A smoother's job is the modes the coarse grid cannot see, which is the top of the
+spectrum; the coarse-grid correction handles the rest. Targeting
+``[lambda_max / 30, lambda_max]`` is the standard choice and it is what makes this
+robust where damped Jacobi is not: Jacobi assumes the upper spectrum is narrow,
+and a triangulation with a wide spread of element areas makes it anything but.
+
+Measured on the CFM Hikurangi interface refined twice (76 thousand vertices, area
+ratio 4.3e4), outer iterations for the three shifted solves: damped Jacobi 213,
+206, 168; Chebyshev 90, 88, 74. On a well-shaped mesh of the same size the two
+agree, because there the assumption Jacobi makes is true.
+"""
+
+SPECTRAL_BOUND_ITERATIONS = 15
+"""Power iterations used to bound the diagonally-scaled spectrum from above.
+
+The Chebyshev smoother needs ``lambda_max`` and is safe if it overestimates and
+unstable if it underestimates, so the estimate is inflated by 10% and taken from
+enough iterations to be converged: measured, 15 iterations reach within 0.2% of
+the value 200 give, on every level of every mesh tested here.
+"""
+
+
+def subdivided(
+    vertices_km: FloatArray, faces: IntArray
+) -> tuple[FloatArray, IntArray, sparse.csr_matrix]:
+    """One 1-to-4 refinement, and the prolongation from the coarse mesh to it.
+
+    **The multigrid hierarchy is free.** Splitting every triangle at its edge
+    midpoints keeps each coarse vertex at its own index and appends one vertex per
+    edge, so the prolongation is the identity on the coarse block and one
+    half-and-half row per midpoint -- which is exactly linear interpolation, the
+    natural transfer for a piecewise-linear basis. Restriction is its transpose.
+
+    The midpoints lie on the coarse faces, so the *geometry* is unchanged: areas,
+    normals and the Monge patch are identical. This refines the discretisation,
+    not the surface.
+
+    This is solver infrastructure rather than meshing -- it builds the levels a
+    V-cycle needs beneath a mesh that already exists, and never invents a fault.
+    A container that can emit the same surface at several resolutions may pass its
+    own levels instead, provided the prolongation is consistent.
+
+    Parameters
+    ----------
+    vertices_km : FloatArray
+        ``(V, 3)``.
+    faces : IntArray
+        ``(F, 3)``.
+
+    Returns
+    -------
+    tuple
+        The refined vertices ``(V', 3)``, the refined faces ``(4F, 3)``, and the
+        prolongation ``(V', V)``.
+    """
+    vertices_km = np.asarray(vertices_km, dtype=np.float64)
+    faces = np.asarray(faces, dtype=np.int64)
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    unique, inverse = np.unique(np.sort(edges, axis=1), axis=0, return_inverse=True)
+    coarse = vertices_km.shape[0]
+    count = faces.shape[0]
+    midpoint = [
+        inverse[index * count : (index + 1) * count] + coarse for index in range(3)
+    ]
+    first, second, third = faces[:, 0], faces[:, 1], faces[:, 2]
+    refined = np.concatenate(
+        [
+            np.stack([first, midpoint[0], midpoint[2]], axis=-1),
+            np.stack([midpoint[0], second, midpoint[1]], axis=-1),
+            np.stack([midpoint[2], midpoint[1], third], axis=-1),
+            np.stack([midpoint[0], midpoint[1], midpoint[2]], axis=-1),
+        ]
+    )
+    fine = coarse + unique.shape[0]
+    rows = np.concatenate(
+        [np.arange(coarse), coarse + np.arange(unique.shape[0]).repeat(2)]
+    )
+    columns = np.concatenate([np.arange(coarse), unique.ravel()])
+    data = np.concatenate([np.ones(coarse), np.full(2 * unique.shape[0], 0.5)])
+    prolongation = sparse.csr_matrix((data, (rows, columns)), shape=(fine, coarse))
+    midpoints = 0.5 * (vertices_km[unique[:, 0]] + vertices_km[unique[:, 1]])
+    return np.vstack([vertices_km, midpoints]), refined, prolongation
+
+
+class _VCycle:
+    """A geometric multigrid V-cycle, used as a preconditioner for one shifted solve.
+
+    Why this rather than a factorisation: the direct route's fill-in grows about
+    130-fold per fourfold refinement (this module's docstring measures it), which
+    puts production resolution out of reach whatever the constant. A V-cycle's
+    memory is the operator's, so it is linear, and on a well-shaped hierarchy its
+    iteration count does not grow at all -- measured flat at 12 outer iterations
+    from 4 thousand to 4.2 million vertices.
+
+    The coarse operators are formed by **rediscretising** on each level rather
+    than by the Galerkin triple product. Both were measured and they are
+    indistinguishable here (12, 10, 6 against 12, 9, 5 at 17 thousand vertices),
+    and rediscretisation costs no matrix product and keeps each level's anisotropy
+    faded by its own geometry.
+    """
+
+    def __init__(
+        self,
+        operators: list[sparse.csr_matrix],
+        prolongations: list[sparse.csr_matrix],
+    ) -> None:
+        """Take the operator on each level, coarsest first, and the transfers."""
+        self._operators = operators
+        self._prolongations = prolongations
+        self._inverse_diagonal = [1.0 / matrix.diagonal() for matrix in operators]
+        self._bounds = [0.0] + [
+            self._spectral_bound(level) for level in range(1, len(operators))
+        ]
+        self._coarsest = sparse_linalg.splu(
+            operators[0].tocsc(),
+            permc_spec="MMD_AT_PLUS_A",
+            diag_pivot_thresh=0.0,
+            options={"SymmetricMode": True},
+        )
+
+    def _spectral_bound(self, level: int) -> float:
+        """An upper bound on the spectrum of ``diag(A)^-1 A``, by power iteration."""
+        matrix = self._operators[level]
+        inverse = self._inverse_diagonal[level]
+        vector = np.random.default_rng(0).standard_normal(matrix.shape[0])
+        vector /= np.linalg.norm(vector)
+        value = 1.0
+        for _ in range(SPECTRAL_BOUND_ITERATIONS):
+            product = inverse * (matrix @ vector)
+            value = float(np.linalg.norm(product))
+            vector = product / value
+        return 1.1 * value
+
+    def _smooth(self, level: int, right: FloatArray, guess: FloatArray) -> FloatArray:
+        """Chebyshev smoothing on the top of the spectrum. One matvec per step."""
+        matrix = self._operators[level]
+        inverse = self._inverse_diagonal[level]
+        high = self._bounds[level]
+        low = high / SMOOTHER_SPECTRAL_RATIO
+        centre, half = 0.5 * (high + low), 0.5 * (high - low)
+        residual = right - matrix @ guess
+        sigma = centre / half
+        rho = 1.0 / sigma
+        step = inverse * residual / centre
+        for _ in range(SMOOTHING_SWEEPS * 2):
+            guess = guess + step
+            residual = residual - matrix @ step
+            following = 1.0 / (2.0 * sigma - rho)
+            step = following * rho * step + (2.0 * following / half) * (
+                inverse * residual
+            )
+            rho = following
+        return guess
+
+    def solve(self, right: FloatArray, level: int | None = None) -> FloatArray:
+        """One V-cycle from a zero guess: the preconditioner's action."""
+        if level is None:
+            level = len(self._operators) - 1
+        if level == 0:
+            return self._coarsest.solve(right)
+        guess = self._smooth(level, right, np.zeros_like(right))
+        residual = right - self._operators[level] @ guess
+        transfer = self._prolongations[level - 1]
+        guess = guess + transfer @ self.solve(transfer.T @ residual, level - 1)
+        return self._smooth(level, right, guess)
+
+
 def _refuse_starved_vertices(lumped_mass: FloatArray) -> None:
     """Refuse a mesh with a vertex whose sliver leaves it almost no area.
 
@@ -1226,6 +1488,132 @@ def _refuse_starved_vertices(lumped_mass: FloatArray) -> None:
     )
 
 
+ITERATIVE_TOLERANCE = 1.0e-12
+"""Relative residual the multigrid-preconditioned solves are driven to.
+
+Not a free parameter so much as a floor: the three shifted solves are *chained*,
+and the chain amplifies -- measured, a 1e-12 perturbation in one intermediate
+solve moves the drawn field by order one, which is Bolin & Kirchner remark 4.2's
+ill-conditioning made concrete. Loosening this does not blur the field, it
+changes which draw comes out.
+
+What survives that is the field's *statistics*, which is all a sampler owes: at
+this tolerance the direct and iterative routes agree on the median and 95th
+percentile marginal variance to four significant figures (1.1986 and 2.665
+against 2.666 on the CFM Hikurangi interface), differing only at the handful of
+near-degenerate vertices where the problem is ill-conditioned anyway. Two draws
+from the same seed are not expected to match pointwise across solvers, and
+`test_multigrid_matches_the_direct_solver_statistically` asserts the thing that
+does.
+"""
+
+
+MAXIMUM_ITERATIONS = 5000
+"""How many iterations a single shifted solve may take before it is called failed.
+
+Two orders above the ~12 a well-shaped hierarchy needs, and above the ~170
+measured on the worst real mesh tried (the CFM Hikurangi triangulation refined
+three times, area ratio 4.3e4). Reaching this means the mesh is pathological
+rather than merely awkward.
+"""
+
+
+def _multigrid_solvers(
+    coarser: list[tuple[FloatArray, IntArray, sparse.csr_matrix]],
+    vertices_km: FloatArray,
+    faces: IntArray,
+    covariance: VonKarmanFilterParameters,
+    roots: FloatArray,
+    tolerance: float,
+) -> list[_IterativeSolver]:
+    """One multigrid-preconditioned solver per shifted factor.
+
+    ``coarser`` is coarsest-first: each entry is that level's mesh and the
+    prolongation *from* it to the next level up, the finest of which lands on the
+    mesh given to :class:`MaternOperator`. :func:`subdivided` produces exactly
+    this, and asserting the shapes line up is cheap insurance against a hierarchy
+    assembled in the wrong order.
+    """
+    levels = [*coarser, (vertices_km, faces, None)]
+    prolongations = [transfer for _, _, transfer in coarser]
+    for index, transfer in enumerate(prolongations):
+        expected = (levels[index + 1][0].shape[0], levels[index][0].shape[0])
+        if transfer.shape != expected:
+            raise ValueError(
+                f"the prolongation from level {index} is shaped {transfer.shape} and "
+                f"the meshes either side of it want {expected}. The hierarchy is "
+                "coarsest-first, and each entry carries the transfer *from* its own "
+                "level to the next finer one"
+            )
+
+    stacks: list[list[sparse.csr_matrix]] = [[] for _ in roots]
+    for level_vertices, level_faces, _ in levels:
+        level_mass, level_stiffness, _ = _assemble(
+            level_vertices, level_faces, covariance
+        )
+        mass = sparse.diags(level_mass, format="csr")
+        weak = (mass + level_stiffness).tocsr()
+        for index, root in enumerate(roots):
+            stacks[index].append((mass - root * weak).tocsr())
+    return [
+        _IterativeSolver(stack[-1], _VCycle(stack, prolongations), tolerance)
+        for stack in stacks
+    ]
+
+
+class _IterativeSolver:
+    """`splu`'s ``solve`` interface, backed by multigrid-preconditioned CG.
+
+    Interchangeable with a factorisation from the caller's side, which is what
+    lets :meth:`MaternOperator._forward` and :meth:`MaternOperator._adjoint` not
+    know which route they are on. The operator is symmetric, so the same object
+    serves the adjoint.
+    """
+
+    def __init__(
+        self, matrix: sparse.csr_matrix, cycle: _VCycle, tolerance: float
+    ) -> None:
+        """Hold the finest operator, its V-cycle, and the residual target."""
+        self._matrix = matrix
+        self._cycle = cycle
+        self._tolerance = tolerance
+        self._preconditioner = sparse_linalg.LinearOperator(
+            matrix.shape, matvec=cycle.solve
+        )
+        self.iterations: list[int] = []
+
+    def solve(self, right: FloatArray) -> FloatArray:
+        """Solve to :data:`ITERATIVE_TOLERANCE`, recording the iteration count.
+
+        Raises
+        ------
+        ValueError
+            If the solve does not converge. A sampler that quietly returned a
+            half-solved field would produce a plausible one with the wrong
+            covariance, which is the failure this whole module is written to
+            avoid.
+        """
+        tally = [0]
+        result, info = sparse_linalg.cg(
+            self._matrix,
+            right,
+            rtol=self._tolerance,
+            maxiter=MAXIMUM_ITERATIONS,
+            M=self._preconditioner,
+            callback=lambda _x: tally.__setitem__(0, tally[0] + 1),
+        )
+        self.iterations.append(tally[0])
+        if info != 0:
+            raise ValueError(
+                f"the multigrid-preconditioned solve did not converge in "
+                f"{tally[0]} iterations (scipy reports {info}). On a well-shaped "
+                "mesh this takes about 12; a count in the hundreds means the "
+                "triangulation has a wide spread of element areas, which no "
+                "smoother repairs -- check the mesh before the solver"
+            )
+        return result
+
+
 class MaternOperator:
     """One assembled, factorised SPDE operator: a mesh, a covariance, and its solvers.
 
@@ -1284,15 +1672,29 @@ class MaternOperator:
         The two correlation lengths and the Hurst exponent.
     order : int, optional
         The rational order ``m``. Defaults to :data:`RATIONAL_ORDER`.
+    coarser : sequence, optional
+        A multigrid hierarchy, **coarsest first**: each entry is
+        ``(vertices_km, faces, prolongation)`` for one level, carrying the
+        transfer *from* that level to the next finer one, the last of which lands
+        on this mesh. Given one, the shifted solves are conjugate gradients
+        preconditioned by a V-cycle, whose memory is linear in the mesh; omit it
+        and they are sparse factorisations, whose fill-in is not. Build it with
+        :func:`subdivided`. This module's docstring measures both routes and says
+        which to use when.
+    tolerance : float, optional
+        Relative residual for the iterative route. See
+        :data:`ITERATIVE_TOLERANCE`, which explains why this is a floor rather
+        than a dial.
 
     Raises
     ------
     ValueError
         For arrays that disagree in shape or carry non-finite values, for a face
-        index off the end of the vertex array, for a face with no area, or for a
-        vertex starved of area by a sliver (:func:`_refuse_starved_vertices`). A
-        non-finite vertex would travel silently into every matrix entry and come
-        back out as a field of NaN.
+        index off the end of the vertex array, for a face with no area, for a
+        vertex starved of area by a sliver (:func:`_refuse_starved_vertices`), for
+        a hierarchy whose levels do not line up, or for an iterative solve that
+        does not converge. A non-finite vertex would travel silently into every
+        matrix entry and come back out as a field of NaN.
 
     Warns
     -----
@@ -1308,6 +1710,8 @@ class MaternOperator:
         parameters_uv: FloatArray | None = None,
         covariance: VonKarmanFilterParameters | None = None,
         order: int = RATIONAL_ORDER,
+        coarser: Sequence[tuple[FloatArray, IntArray, sparse.csr_matrix]] = (),
+        tolerance: float = ITERATIVE_TOLERANCE,
     ) -> None:
         """Assemble and factorise. See the class docstring."""
         if covariance is None:
@@ -1361,18 +1765,30 @@ class MaternOperator:
         spectrum_floor = float(1.0 / max(scaled_rows.max(), 1.0))
         approximation = rational_approximation(beta, order, _interval_floor(order))
 
+        self._faces = faces
         self._lumped_mass = lumped_mass
         self._root_mass = np.sqrt(lumped_mass)
         self._approximation = approximation
-        self._solvers = [
-            sparse_linalg.splu(
-                (mass - root * weak_operator).tocsc(),
-                permc_spec="MMD_AT_PLUS_A",
-                diag_pivot_thresh=0.0,
-                options={"SymmetricMode": True},
+        self._tolerance = tolerance
+        if coarser:
+            self._solvers = _multigrid_solvers(
+                list(coarser),
+                vertices_km,
+                faces,
+                covariance,
+                approximation.denominator_roots,
+                tolerance,
             )
-            for root in approximation.denominator_roots
-        ]
+        else:
+            self._solvers = [
+                sparse_linalg.splu(
+                    (mass - root * weak_operator).tocsc(),
+                    permc_spec="MMD_AT_PLUS_A",
+                    diag_pivot_thresh=0.0,
+                    options={"SymmetricMode": True},
+                )
+                for root in approximation.denominator_roots
+            ]
         # P_r is only ever applied, never solved, so it is kept as the shifted
         # matrices themselves.
         self._numerator_factors = [
@@ -1402,6 +1818,13 @@ class MaternOperator:
     def vertex_count(self) -> int:
         """How many vertices the field will have."""
         return int(self._lumped_mass.size)
+
+    @property
+    def faces(self) -> IntArray:
+        """The triangulation this was assembled on, ``(F, 3)``, read-only."""
+        view = self._faces.view()
+        view.flags.writeable = False
+        return view
 
     def _forward(self, noise: FloatArray) -> FloatArray:
         """The map ``A`` from unit white noise to the field, ``A = s P_r P_l^-1 M^(1/2)``.
@@ -1487,6 +1910,263 @@ class MaternOperator:
         indicator = np.zeros(self.vertex_count)
         indicator[vertex] = 1.0
         return self._forward(self._adjoint(indicator))
+
+
+MAXIMUM_PADDED_VERTICES = 1 << 21
+"""The largest padded mesh to build before the padding search gives up.
+
+The counterpart of `sampling.MAXIMUM_EMBEDDING_CELLS`, and set by the same kind of
+reasoning: what the solver can actually carry. Two million vertices is past what
+the direct factorisation manages (300 thousand already costs 392 s and 6.16 GB --
+see this module's docstring) and squarely in the range the iterative route is for,
+so it bounds the *search* rather than the method. A pad refused here is reported,
+not silently shrunk.
+"""
+
+
+@dataclasses.dataclass(frozen=True)
+class Padding:
+    """A padded solve: the operator on the extended domain, and which of it is fault.
+
+    Attributes
+    ----------
+    operator : MaternOperator
+        Built on the **padded** mesh. Draw from this, then keep the fault.
+    fault_faces : BoolArray
+        ``(F,)`` true on the faces that are the fault rather than the pad. The
+        container marks the pad ``plane_of_face = -1`` and offers
+        ``fault_faces()``; this is that predicate's answer.
+    pad_lengths : float
+        How many correlation lengths of pad were used, per axis.
+    pad_km : tuple of float
+        The same, in kilometres along strike and down dip.
+    delivered_correlation_length : float
+        What the field on the fault actually has, in units of the target -- 1.0 is
+        exact. Read from :meth:`MaternOperator.covariance_column`, so it is the
+        operator's own covariance and carries no Monte Carlo error.
+    correlation_length_error : float
+        ``abs(delivered - 1)``. Judged against
+        `sampling.CORRELATION_LENGTH_TOLERANCE`, which is the same yardstick the
+        circulant sampler is held to.
+    """
+
+    operator: MaternOperator
+    fault_faces: BoolArray
+    pad_lengths: float
+    pad_km: tuple[float, float]
+    delivered_correlation_length: float
+    correlation_length_error: float
+
+    def draw_on_faces(self, rng: np.random.Generator) -> FloatArray:
+        """One field, one value per **fault** face, pad discarded.
+
+        Returns
+        -------
+        FloatArray
+            ``(fault_faces.sum(),)`` in the order the fault faces appear.
+        """
+        vertex_field = self.operator.draw(rng)
+        return face_values(vertex_field, self.operator.faces[self.fault_faces])
+
+
+def _delivered_correlation_length(
+    operator: MaternOperator,
+    parameters_uv: FloatArray,
+    fault_faces: BoolArray,
+    faces: IntArray,
+    covariance: VonKarmanFilterParameters,
+) -> float:
+    """Where the delivered covariance falls to ``C(1)``, in units of the target.
+
+    The counterpart of `sampling._delivered_lengths`, and for the same reason: the
+    question "is this domain big enough" is answered by what covariance the
+    sampler actually delivers, not by a rule about the domain. Here it is *exact*
+    -- :meth:`MaternOperator.covariance_column` costs about two draws and carries
+    no estimator error, where the circulant path needs an inverse transform of the
+    whole embedding.
+
+    Measured from the fault's own centre, which is where the folding has to be
+    beaten: on a domain of two correlation lengths the centre's correlation at one
+    correlation length is 0.878 against 0.5005, so the centre is sensitive rather
+    than sheltered.
+
+    Separation is the dimensionless ``r`` of Mai & Beroza equation (1), taken in
+    the parameter coordinates. That is exact on a planar fault, which is where
+    padding is needed -- the measured interfaces are 8 to 16 correlation lengths
+    across and never fold -- and on a curved one it understates separation by the
+    metric factor, which was measured at 1.002 to 1.079 area-weighted.
+
+    Returns
+    -------
+    float
+        The delivered correlation length as a fraction of the one asked for, or
+        infinity if the covariance never decays over the fault.
+    """
+    fault_vertices = np.unique(faces[fault_faces])
+    centre = parameters_uv[fault_vertices].mean(axis=0)
+    probe = int(
+        fault_vertices[
+            np.argmin(np.linalg.norm(parameters_uv[fault_vertices] - centre, axis=1))
+        ]
+    )
+    column = operator.covariance_column(probe)
+    correlation = column / column[probe]
+
+    offset = parameters_uv - parameters_uv[probe]
+    radius = np.sqrt(
+        (offset[:, 0] / covariance.correlation_length_strike_km) ** 2
+        + (offset[:, 1] / covariance.correlation_length_dip_km) ** 2
+    )
+    # Binned in the dimensionless radius rather than read along a lattice axis, so
+    # an irregular mesh is no different from a regular one.
+    level = float(von_karman_correlation(np.array([1.0]), covariance.hurst)[0])
+    inside = np.isin(np.arange(radius.size), fault_vertices) & (radius <= 2.5)
+    if inside.sum() < 8:
+        return np.inf
+    edges = np.arange(0.0, 2.55, 0.05)
+    which = np.digitize(radius[inside], edges) - 1
+    profile, centres = [], []
+    for index in range(edges.size - 1):
+        chosen = which == index
+        if chosen.any():
+            profile.append(float(correlation[inside][chosen].mean()))
+            centres.append(float(radius[inside][chosen].mean()))
+    profile, centres = np.asarray(profile), np.asarray(centres)
+    below = np.flatnonzero(profile <= level)
+    if below.size == 0 or below[0] == 0:
+        return np.inf
+    crossed = int(below[0])
+    high, low = profile[crossed - 1], profile[crossed]
+    return float(
+        centres[crossed - 1]
+        + (high - level) / (high - low) * (centres[crossed] - centres[crossed - 1])
+    )
+
+
+def _pad_candidates(covariance: VonKarmanFilterParameters) -> list[float]:
+    """Progressively wider pads to try, in correlation lengths.
+
+    `sampling._candidate_extents`' shape exactly: a first guess, doubled up to
+    `sampling.MAXIMUM_DOUBLINGS` times, and always at least one entry so that a
+    covariance no domain can carry still gets a field. The first guess is
+    :data:`BOUNDARY_FOLDING_LENGTHS`, which is Lindgren et al. appendix A.4's own
+    statement of how far the reflection reaches -- so this is a *correction* to a
+    reasoned guess rather than a search, which is what
+    `sampling.DECAY_LENGTHS`' docstring asks of the pattern.
+
+    Deliberately *not* padded by `sampling.DECAY_LENGTHS = 3.0`. That number is
+    how far a periodic wrap has to be pushed for a Toeplitz covariance to embed;
+    this one is how far a *reflection* has to be pushed, which appendix A.4 puts
+    at twice the range. Reusing the circulant number would be borrowing an
+    argument that does not apply.
+    """
+    del covariance
+    return [
+        BOUNDARY_FOLDING_LENGTHS * 2.0**doubling
+        for doubling in range(MAXIMUM_DOUBLINGS + 1)
+    ]
+
+
+def padded_operator(
+    build: Callable[[float, float], PaddedMesh],
+    covariance: VonKarmanFilterParameters,
+    order: int = RATIONAL_ORDER,
+) -> Padding:
+    """Solve on a domain padded far enough that the boundary reflection is beaten.
+
+    The SPDE's natural boundary condition reflects the covariance (Lindgren et al.
+    2011 appendix A.4), and a fault is small enough for that to *be* the field --
+    Mai & Beroza figure 13 puts a fault between 1.7 and 4 correlation lengths
+    across by construction of the model. The remedy is the circulant sampler's:
+    extend the domain, solve there, keep the fault. This is `sampling._embed`'s
+    loop with a mesh in place of an embedding.
+
+    **Solve, check, repad.** Each candidate pad is built, solved, and the
+    covariance it delivers on the fault measured
+    (:func:`_delivered_correlation_length`); the first pad within
+    `sampling.CORRELATION_LENGTH_TOLERANCE` wins, and if none qualify the best is
+    kept and a warning issued. The check is affordable because
+    :meth:`MaternOperator.covariance_column` is exact and costs about two draws --
+    the whole reason this is "solve and check" rather than a rule.
+
+    The tolerance bounds the pad's error and the discretisation's **together**,
+    because unlike `sampling._delivered_lengths` there is no second estimator for
+    the finite element bias to cancel against. That is the useful quantity for a
+    caller -- it is the total error in the delivered correlation length -- but it
+    means a mesh too coarse to represent the covariance cannot be rescued by
+    padding, and will exhaust the doublings saying so.
+
+    Parameters
+    ----------
+    build : callable
+        ``build(pad_strike_km, pad_dip_km)`` returning
+        ``(vertices_km, faces, parameters_uv, fault_faces)`` for a mesh extended by
+        that much on every side, with ``fault_faces`` true on the fault's own
+        faces. Injected rather than imported so that the sampler does not depend
+        on the container; `TriangleMesh.from_patches`' docstring specifies the
+        three things the padded builder has to get right.
+    covariance : VonKarmanFilterParameters
+        The correlation lengths and roughness.
+    order : int, optional
+        The rational order ``m``.
+
+    Returns
+    -------
+    Padding
+
+    Warns
+    -----
+    DegradedCorrelation
+        If no pad within the doublings delivers the covariance asked for.
+    """
+    best: Padding | None = None
+    for lengths in _pad_candidates(covariance):
+        pad_km = (
+            lengths * covariance.correlation_length_strike_km,
+            lengths * covariance.correlation_length_dip_km,
+        )
+        vertices_km, faces, parameters_uv, fault_faces = build(*pad_km)
+        if vertices_km.shape[0] > MAXIMUM_PADDED_VERTICES and best is not None:
+            break
+        operator = MaternOperator(
+            vertices_km, faces, parameters_uv, covariance, order=order
+        )
+        delivered = _delivered_correlation_length(
+            operator, parameters_uv, fault_faces, faces, covariance
+        )
+        candidate = Padding(
+            operator=operator,
+            fault_faces=fault_faces,
+            pad_lengths=lengths,
+            pad_km=pad_km,
+            delivered_correlation_length=delivered,
+            correlation_length_error=abs(delivered - 1.0),
+        )
+        # Not assumed monotone in the pad, though it is in practice.
+        if best is None or candidate.correlation_length_error < (
+            best.correlation_length_error
+        ):
+            best = candidate
+        if candidate.correlation_length_error <= CORRELATION_LENGTH_TOLERANCE:
+            break
+
+    assert best is not None, "_pad_candidates never returns an empty list"
+    if best.correlation_length_error > CORRELATION_LENGTH_TOLERANCE:
+        warnings.warn(
+            f"padding this segment by {best.pad_lengths:.3g} correlation lengths "
+            f"({best.pad_km[0]:.3g} x {best.pad_km[1]:.3g} km) leaves it delivering "
+            f"{best.delivered_correlation_length:.3g} of the correlation length asked "
+            f"for, off by {best.correlation_length_error:.0%} against the "
+            f"{CORRELATION_LENGTH_TOLERANCE:.0%} the circulant sampler is held to. "
+            "The boundary reflection of Lindgren et al. (2011) appendix A.4 is what "
+            "widening the pad removes; what it cannot remove is a mesh too coarse to "
+            "carry the covariance, so check the reported mesh width first. Slip, "
+            "moment and timing are unaffected; what is degraded is how the slip is "
+            "distributed",
+            DegradedCorrelation,
+            stacklevel=2,
+        )
+    return best
 
 
 def matern_field(
@@ -1610,14 +2290,22 @@ def face_values(vertex_values: FloatArray, faces: IntArray) -> FloatArray:
 
 __all__ = [
     "BOUNDARY_FOLDING_LENGTHS",
+    "ITERATIVE_TOLERANCE",
     "MANIFOLD_DIMENSION",
+    "MAXIMUM_ITERATIONS",
+    "MAXIMUM_PADDED_VERTICES",
     "MODEL_ERROR_CONSTANT",
     "RATIONAL_ORDER",
+    "SMOOTHER_SPECTRAL_RATIO",
+    "SMOOTHING_SWEEPS",
     "MaternOperator",
     "ModelError",
+    "Padding",
     "RationalApproximation",
     "face_values",
     "matern_exponent",
     "matern_field",
+    "padded_operator",
     "rational_approximation",
+    "subdivided",
 ]

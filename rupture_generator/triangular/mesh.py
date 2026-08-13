@@ -54,6 +54,16 @@ as *every triangle is positively oriented in the parameter plane* -- no folds.
 goes with it; the former's docstring carries the measurements, on the shipped geometry
 and on three real subduction interfaces, and says what the check does **not** catch.
 
+**Element shape is the production constraint, so the mesh is built rather than
+refined.** The multigrid sampler's cost is set by element shape, not resolution, and
+one-to-four subdivision preserves shape exactly -- it splits each triangle into four
+similar ones -- so a badly shaped source stays badly shaped at every level. Measured at
+matched vertex count, a built lattice draws in 1.71 s against 61.4 s for a subdivided CFM
+interface, a 36-fold penalty, with V-cycle counts flat at 12 against doubling per level.
+:func:`remesh` is therefore the production path: it samples the parameter domain at a
+target spacing, lifts onto the supplied surface, and reaches 100 m on full Hikurangi at
+17.6 M vertices. Its docstring carries the measurements.
+
 **The connectivity always comes from the surface, never from the projection**, and
 there are exactly two ways in. :meth:`TriangleMesh.from_patches` takes a quad lattice
 and splits every quad; :meth:`TriangleMesh.from_triangulation` takes faces that already
@@ -102,29 +112,25 @@ does not suffer it because it pads and crops. The fix is the same one: triangula
 parameter rectangle **extended past the fault** on all sides, sample on that, and crop
 back to the fault.
 
-Nothing here forecloses that, and most of it falls out. The frame is fitted to the
-fault's corners and a pad is not a corner, so the reference plane does not move; the
-builder triangulates whatever 2-D point set it is handed; ``vertices_km`` and ``faces``
-go to the sampler unchanged; :func:`check_admissible`, :meth:`~TriangleMesh.slope` and
-the boundary machinery are all indifferent to where the points came from. The test that
-says which faces are on the fault is *already computed* -- see :meth:`~TriangleMesh
-.from_patches`, whose docstring lists the three small changes that would still be
-needed, at the site that would need them.
+:func:`padded_builder` is that, handed to the sampler as a callable so it never imports
+this module: ``build(pad_strike_km, pad_dip_km)`` returns ``(vertices_km, faces,
+parameters_uv, fault_faces)``, with the fault's own mesh and parameter coordinates
+untouched and the pad a frame around it. The pad may be **coarser** than the fault, and
+usually should be -- its only job is to move the boundary away, and resolving it at fault
+resolution multiplies the vertex count several-fold for no modelling gain.
 
-**What the patch means outside the fault**, whenever that gets built: ``h(u, v)`` is
-defined by the fault's own nodes, so a pad is an *extrapolation of the reference
-surface*, not more fault. Two constraints this container puts on whichever
-extrapolation is chosen, both of them consequences of things above rather than
-preferences. It has to be continuous across the fault boundary, because the SPDE
-assembles from the **lifted** triangles and a jump in ``h`` at the seam is a crease the
-cotangent Laplacian reads as real geometry -- which would move the artefact the pad
-exists to remove onto the fault edge instead of away from it. That rules out the
-cheapest option, ``h = 0``: ``h`` is zero-*mean* over the corners, not zero at the edge.
-And it has to stay admissible, since :func:`check_admissible` applies to the padded mesh
-too -- a tangent-plane extension off the boundary is comfortable at the shipped worst
-``|grad h| = 2.14`` (65 degrees off the reference plane, so a tangent extension turns
-nothing past vertical), whereas anything that continues the *curvature* is not, because
-these surfaces curve toward the fold rather than away from it.
+``h(u, v)`` is defined by the fault's own nodes, so the pad is an *extrapolation of the
+reference surface*, not more fault, and the flattest available extrapolation is the one
+used: ``h`` held at the nearest fault boundary node's value. Two properties make that the
+right choice rather than the lazy one. It is continuous across the seam, which matters
+because the SPDE assembles from the **lifted** triangles and a jump in ``h`` there is a
+crease the cotangent Laplacian reads as real geometry -- moving the artefact the pad
+exists to remove onto the fault edge instead of away from it. (That also rules out the
+cheapest option, ``h = 0``: ``h`` is zero-*mean*, not zero at the edge.) And it adds no
+curvature, which matters because :func:`check_admissible` applies to the padded mesh too:
+at the ``|grad h| = 2.14`` a real interface reaches, the tangent plane is already 65
+degrees off the reference plane, so anything continuing the *curvature* would turn past
+vertical.
 
 What this module deliberately does not do: it does not sample, solve or taper, and it
 imports neither :mod:`rupture_generator.triangular.spde` nor
@@ -147,6 +153,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pyproj
 import xarray as xr
+from scipy.spatial import KDTree
 
 from rupture_generator.formats import Format, resolve
 from rupture_generator.mesh import (
@@ -162,7 +169,7 @@ from rupture_generator.mesh import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from rupture_generator.config.geometry import FaultConfig, PointConfig
 
@@ -218,43 +225,53 @@ RESERVED_ATTRS = frozenset(
 )
 """Attribute names that say what the chart *is*, rather than what a stage learned."""
 
-DEGENERATE_MASS_FRACTION = 1.0e-5
+DEGENERATE_MASS_FRACTION = 5.0e-6
 """How little surface a vertex may carry, against the median, before the mesh is refused.
 
 A vertex's lumped mass is the area it carries -- a third of every triangle it touches --
 and it is the diagonal of the SPDE sampler's mass matrix. A vertex with almost none is
-almost unconstrained by the operator, so its marginal variance explodes; and because
-``sampling.standardise`` divides the whole field by its sample standard deviation, two
-such vertices drag the *healthy* slip distribution down with them. This is the
+barely constrained by the operator, so its marginal variance explodes; and because
+``sampling.standardise`` divides the whole field by its sample standard deviation, a
+couple of such vertices drag the *healthy* slip distribution down with them. This is the
 silent-and-plausible failure class: the field still looks like a field and nothing
 raises.
 
-**Measured, not chosen**, and the measurement is unusually direct because two real
-meshes sit either side of it. Across the three NZ CFM v1.0 subduction interfaces, as a
-fraction of each mesh's own median lumped mass:
+**The constant lives here rather than in the sampler** because it states a property of a
+*mesh*, and this module owns meshes; the sampler imports it and keeps its own backstop
+for the same condition. This check is the primary gate.
+
+**Measured, not chosen.** The sampler's own sweep found a cliff rather than a slope: at a
+worst mass ratio of 1.47e-05 the drawn field's healthy sample spread is 0.9996, and at
+1.47e-06 it is 0.0487 -- a factor of twenty across a factor of ten in mass. This value is
+the geometric middle of that decade, which is the only defensible place to stand when the
+transition is that sharp: an order of magnitude of headroom on each side.
+
+The three NZ CFM v1.0 subduction interfaces bracket it independently, as a fraction of
+each mesh's own median lumped mass:
 
 ======================  =========  ===========  ==============  ==========
-interface               V          worst ratio  below 1e-5      field std
+interface               V          worst ratio  below 5e-6      field std
 ======================  =========  ===========  ==============  ==========
-Puyseguer               2597       7.3e-07      **2 vertices**  0.187
+Puyseguer               2597       7.3e-07      **1 vertex**    0.187
 Hikurangi               5218       2.4e-05      none            0.996
 Puysegur-Fiordland      2312       2.4e-05      none            1.000
 ======================  =========  ===========  ==============  ==========
 
-Puyseguer's two vertices inflate their own marginal variance to 9.5e6 -- correlating
-0.981 with inverse lumped mass -- which drives the field's standard deviation to 6.26
-and so suppresses the healthy part of the slip distribution **5.3-fold**. The other two
-interfaces deliver 0.996 and 1.000 and have no vertex below this line at all.
+Puyseguer's worst vertex inflates its own marginal variance to 9.5e6, driving the field's
+standard deviation to 6.26 and suppressing the healthy part of the slip distribution
+**5.3-fold**. Every lattice mesh this package builds sits at exactly 1/6 -- the worst a
+lattice can do is a corner vertex touching two triangles -- so no mesh built here can
+approach the line.
 
-So the gap runs from 7.3e-07, which does the damage, to 2.4e-05, which does not: a
-factor of 32, and this threshold sits inside it, 2.4 times below the worst mesh that is
-fine and 14 times above the worst that is not. **That is the tightest tolerance in this
-module and it is worth saying so** -- ``SEAM_TOLERANCE_KM`` has six orders of headroom
-either way and this has less than two. Two things make it the right call anyway. Every
-lattice mesh this package builds sits at exactly 1/6, four orders clear, because the
-worst a lattice can do is a corner vertex touching two triangles. And the consequences
-are asymmetric: a mesh refused here produces a message naming the faces, while a mesh
-wrongly accepted produces a slip field that is quietly wrong by a factor of five.
+**The limitation, which matters and is not obvious.** The mass *ratio* is
+refinement-invariant: 1-to-4 subdivision splits every triangle into four similar ones, so
+a mesh's worst ratio is the same at every level and Hikurangi passes this gate at all of
+them. The *damage* is not invariant. Measured over three refinements of Hikurangi, the
+maximum per-vertex variance runs 9.2, 12.9, 257, and by the third the drawn field's
+sample spread is 8.0 -- which is what ``standardise`` divides the whole segment by. So
+**this gate does not protect a refined bad mesh**, and no threshold on a
+refinement-invariant quantity could. The answer is not to refine a badly shaped mesh at
+all: see :func:`remesh`, which builds a well-shaped one at a target resolution instead.
 """
 
 BOUNDARY_LABELS = ("top", "bottom", "lateral")
@@ -922,57 +939,13 @@ class TriangleMesh:
             For vertices or faces of the wrong shape, a non-finite position, a vertex
             index out of range, or a surface that folds.
         """
-        points = np.asarray(vertices_km, dtype=np.float64)
-        connectivity = np.asarray(faces, dtype=np.int64)
-        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
-            raise ValueError(
-                f"the vertices are shaped {points.shape}; a surface needs at least 3, "
-                "shaped (V, 3)"
-            )
-        if not np.isfinite(points).all():
-            raise ValueError("the vertices carry a non-finite position")
-        if (
-            connectivity.ndim != 2
-            or connectivity.shape[1] != 3
-            or not len(connectivity)
-        ):
-            raise ValueError(
-                f"the faces are shaped {connectivity.shape}; they are triangles, "
-                "shaped (F, 3), and there has to be at least one"
-            )
-        if connectivity.min() < 0 or connectivity.max() >= len(points):
-            raise ValueError(
-                f"a face names vertex {connectivity.max()} of {len(points)}; the "
-                "indices are zero-based, and GOCAD's are one-based"
-            )
-
-        sample, share = _surface_moment(points, connectivity)
-        frame = MongeFrame.fit(
-            sample,
+        points, connectivity, frame = _fit_surface(
+            vertices_km,
+            faces,
             strike_deg=strike_deg,
             dip_deg=dip_deg,
             dips_left=dips_left,
-            weights=share,
         )
-        parameters = frame.project(points)
-        frame = frame.translated(
-            float(parameters[:, 0].min()), float(parameters[:, 1].min())
-        )
-
-        # Which way a modeller wound their triangles is a convention, not a fact about
-        # the surface: it says whether they numbered each face anticlockwise seen from
-        # the hanging wall or from the footwall. All three CFM interfaces are wound the
-        # opposite way to this frame, and reading that as 9236 folds would be reading a
-        # file-format convention as geology. What is *not* a convention is whether the
-        # faces agree with each other -- that is exactly injectivity -- so the total
-        # signed area fixes the convention (it is plus or minus the true area whenever
-        # the projection is injective, so its sign is unambiguous and needs no
-        # tolerance) and `check_admissible` then refuses every face that disagrees.
-        corners = parameters[connectivity, :2]
-        first = corners[:, 1] - corners[:, 0]
-        second = corners[:, 2] - corners[:, 0]
-        if float((first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]).sum()) < 0.0:
-            connectivity = connectivity[:, [0, 2, 1]]
 
         if plane_of_face is None:
             plane_of_face = np.zeros(len(connectivity), dtype=np.int64)
@@ -1359,6 +1332,68 @@ class TriangleMesh:
                 "a stage's to rewrite"
             )
         return self._with(self._dataset.assign_attrs(**values))
+
+    def with_pulses(self, offsets: IntArray, samples: FloatArray) -> TriangleMesh:
+        """This chart with its slip-rate pulses attached. Functional, never in place.
+
+        The one stage whose output is not a face field: a pulse per face, each its own
+        length, so they are carried as CSR exactly as
+        :meth:`~rupture_generator.mesh.RuptureMesh.with_pulses` carries them -- same dim
+        names, same checks, so a reader of either file finds the same two arrays.
+
+        Parameters
+        ----------
+        offsets : IntArray
+            Where each face's pulse starts, length ``face_count + 1``.
+        samples : FloatArray
+            Every pulse, concatenated.
+
+        Returns
+        -------
+        TriangleMesh
+            A new chart carrying them.
+
+        Raises
+        ------
+        ValueError
+            For an indptr that is not one: the wrong length for this chart, decreasing
+            anywhere, or not ending at ``samples.size``.
+        """
+        offsets = np.asarray(offsets, dtype=np.int64)
+        samples = np.asarray(samples, dtype=np.float64)
+
+        if offsets.shape != (self.face_count + 1,):
+            raise ValueError(
+                f"the pulse offsets are shaped {offsets.shape}, and this chart has "
+                f"{self.face_count} faces, so it wants {self.face_count + 1} (one per "
+                "face, plus the end)"
+            )
+        if np.any(np.diff(offsets) < 0):
+            raise ValueError("the pulse offsets decrease, so some subfault has none")
+        if offsets[0] != 0 or offsets[-1] != samples.size:
+            raise ValueError(
+                f"the pulse offsets run {offsets[0]} to {offsets[-1]}, and there are "
+                f"{samples.size} samples"
+            )
+
+        return self._with(
+            self._dataset.assign(
+                {
+                    "slip_rate": ("sample", samples),
+                    "slip_rate_offset": ("cell_edge", offsets),
+                }
+            )
+        )
+
+    @property
+    def pulses(self) -> tuple[IntArray, FloatArray] | None:
+        """The slip-rate pulses as ``(offsets, samples)``, or ``None`` if unset."""
+        if "slip_rate" not in self._dataset:
+            return None
+        return (
+            self._dataset["slip_rate_offset"].to_numpy(),
+            self._dataset["slip_rate"].to_numpy(),
+        )
 
     # ------------------------------------------------------- derived quantities
 
@@ -1878,6 +1913,27 @@ class TriangleMesh:
             "corners cut off it -- so give a position on the surface"
         )
 
+    def cell_key(self, flat_index: int) -> int:
+        """The label this chart puts on the subfault at a flat index: the index itself.
+
+        The counterpart of :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`, whose
+        answer is an ``(i, j)`` pair. A triangulation has one flat face index and no
+        lattice position, so this is the identity -- and it exists so that
+        :func:`~rupture_generator.propagation.causal_jump` can record a jump's cells
+        without knowing which kind of chart it is looking at.
+
+        Parameters
+        ----------
+        flat_index : int
+            A face index in ``[0, F)``.
+
+        Returns
+        -------
+        int
+            ``flat_index``.
+        """
+        return int(flat_index)
+
 
 # ============================================================================
 # Admissibility -- what replaces `validate_chart`
@@ -2103,6 +2159,496 @@ def fold_margin(mesh: TriangleMesh) -> float:
 def _bearing_of(east: FloatArray, north: FloatArray) -> FloatArray:
     """Bearings of direction vectors, normalised to ``[0, 360)``."""
     return np.degrees(np.arctan2(east, north)) % 360.0
+
+
+def remesh(
+    vertices_km: FloatArray,
+    faces: IntArray,
+    spacing_km: float,
+    *,
+    strike_deg: float,
+    dip_deg: float,
+    dips_left: bool = False,
+    origin_east_km: float = 0.0,
+    origin_north_km: float = 0.0,
+    surface: str,
+) -> TriangleMesh:
+    """**Build** a well-shaped mesh on a supplied surface at a target resolution.
+
+    Not a refinement of the supplied triangulation -- a replacement for it. The parameter
+    domain is sampled on a regular lattice at ``spacing_km``, every lattice node is lifted
+    onto the source surface, and the connectivity comes from the lattice.
+
+    **Why building beats subdividing, measured.** One-to-four subdivision splits each
+    triangle into four *similar* ones, so it preserves element shape exactly: a badly
+    shaped mesh stays badly shaped at every level, and the shape is what the multigrid
+    sampler pays for. At matched vertex count:
+
+    ==========================================  =======  ============  =======
+    mesh                                        V        area max/min  draw
+    ==========================================  =======  ============  =======
+    built lattice                               263169   **1**         1.71 s
+    CFM Hikurangi, subdivided 1-to-4            300345   4.28e+04      61.4 s
+    ==========================================  =======  ============  =======
+
+    A 36-fold penalty from shape alone, and it gets worse rather than better with
+    refinement: V-cycle counts stay flat at 12 from 4 k to 4.2 M vertices on a built mesh
+    against 43, 90, 173, 312 -- doubling per level -- on a subdivided one. That is the
+    difference between 100 m being reachable and not, which is why this exists.
+
+    **The interpolant is piecewise-linear on the source faces**, and that is a decision
+    rather than a default. It is what the source surface *means*: a triangulation is
+    exactly the claim that the surface is planar within each face, so evaluating that
+    claim is the only reading of the data that adds nothing to it. Two consequences worth
+    stating. Every new vertex lies **exactly on** the source surface, so the result is
+    inscribed rather than approximated, and where the new lattice is finer than the source
+    the new triangles are coplanar sub-triangles of source faces -- so ``|grad h|`` there
+    is the source's *exactly*, and area is preserved exactly. The only departures are new
+    triangles that straddle two source faces, which chord across the source's own kinks,
+    and the boundary.
+
+    **The boundary is not guessed.** The earlier negative result stands -- no alpha-shape
+    threshold recovers this outline, interior circumradius 5.889-6.196 km overlapping
+    gap-spanning from 5.941 -- but none is needed, because the source triangulation
+    *carries* its outline. A lattice node is kept exactly when it lies inside some source
+    face, which is simultaneously the outline test and the precondition for interpolating
+    ``h`` there; a lattice quad is kept when all four of its corners are. So the outline
+    is exact data, resolved onto the lattice at ``spacing_km``: the boundary becomes a
+    staircase whose deviation is bounded by one cell, and the area it costs is
+    ``O(spacing x perimeter)`` and is reported by the tests rather than assumed small.
+
+    **Element shape is then exact in the parameter plane and bounded in space.** Every
+    face is half a lattice cell, so in projection all faces are congruent: measured on
+    full Hikurangi at 100 m, parameter area max/min is ``1.000000000011``. What remains in
+    *three* dimensions is the metric factor and nothing else -- the 3-D area spread came
+    out ``1.5742`` against ``sqrt(1 + |grad h|max^2) = 1.5742``, agreeing to four figures,
+    so the residual spread is the surface's own curvature rather than the mesh's shape,
+    and no mesh over this surface can do better.
+
+    Measured against the source, which is the comparison that matters:
+
+    ==================  ========  ==============  =========  ===========  ======
+    Hikurangi           V         param max/min   3-D ratio  min angle    area
+    ==================  ========  ==============  =========  ===========  ======
+    CFM source          5218      --              4.28e+04   0.018 deg    --
+    built at 2 km       44049     1.0             1.553      31.6 deg     -1.49%
+    built at 1 km       175988    1.0             1.565       31.1 deg    -0.75%
+    built at 400 m      1100240   1.0             1.571       31.0 deg    -0.30%
+    built at 100 m      17598707  1.0             1.574       31.0 deg    -0.075%
+    ==================  ========  ==============  =========  ===========  ======
+
+    Four orders of magnitude off the source's area ratio, and the minimum angle goes from
+    0.018 degrees to 31. The area deficit is the boundary staircase and it **halves with
+    the spacing**, exactly the first order the argument above predicts, so it is a
+    resolution knob rather than a bias. ``|grad h|`` converges to the source's from below
+    as the chording tightens: 1.006, 1.104, 1.188, 1.204, 1.212, 1.216 against the
+    source's 1.2142.
+
+    Cost, measured, since the point of this is reaching 100 m: 3.6 s and 0.9 GB at 400 m,
+    **35.7 s and 10.8 GB at 100 m** for 17.6 M vertices and 35.2 M faces. The
+    lattice-shaped intermediates dominate, and the peak is about 600 bytes per vertex.
+    ``Puyseguer`` at 400 m is 397 k vertices in 1.1 s, and remeshing repairs it: its
+    lumped-mass ratio goes from 7.3e-07, which :data:`DEGENERATE_MASS_FRACTION` refuses,
+    to 1/6.
+
+    Parameters
+    ----------
+    vertices_km : FloatArray
+        ``(V, 3)`` source positions, offsets from the surface origin.
+    faces : IntArray
+        ``(F, 3)`` source connectivity. It need not pass :func:`check_admissible` -- a
+        source whose elements are unusable is the case this exists for -- but it must be
+        a graph over its own best-fit plane, since that is what makes the parameter
+        lattice well defined.
+    spacing_km : float
+        The target edge length. A *request*, in the sense
+        :func:`rupture_generator.mesh.cell_counts` uses: the parameter extents are cut
+        into whole cells, so the realised spacing is the extent over the count. That is
+        what makes the lattice land on the domain's corners, and it is what makes this
+        reduce exactly to :meth:`TriangleMesh.from_patches` on a planar fault.
+    strike_deg, dip_deg : float
+        The stated geometry of the source.
+    dips_left : bool, optional
+        Whether the source dips left of the strike direction.
+    origin_east_km, origin_north_km : float, optional
+        The surface origin, in the CRS, kilometres.
+    surface : str
+        The name the result carries.
+
+    Returns
+    -------
+    TriangleMesh
+        Admissible, all-congruent, at the realised spacing.
+
+    Raises
+    ------
+    ValueError
+        For a source this cannot read (see :func:`_fit_surface`), a non-positive
+        spacing, or a spacing so coarse that no lattice cell falls entirely inside the
+        surface -- which names the extents so the caller can see by how much.
+    """
+    if not spacing_km > 0.0:
+        raise ValueError(
+            f"the target spacing is {spacing_km} km, which is not positive"
+        )
+
+    points, connectivity, frame = _fit_surface(
+        vertices_km, faces, strike_deg=strike_deg, dip_deg=dip_deg, dips_left=dips_left
+    )
+    projected = frame.project(points)
+    source_uv = projected[:, :2]
+    source_h = projected[:, 2]
+
+    extent_km = source_uv.max(axis=0) - source_uv.min(axis=0)
+    counts = np.maximum(np.round(extent_km / spacing_km).astype(np.int64), 1)
+    low = source_uv.min(axis=0)
+    step = extent_km / counts
+    grid_u = low[0] + np.arange(counts[0] + 1) * step[0]
+    grid_v = low[1] + np.arange(counts[1] + 1) * step[1]
+
+    height_km = np.zeros((counts[1] + 1, counts[0] + 1), dtype=np.float64)
+    located = np.zeros_like(height_km, dtype=bool)
+
+    corners = source_uv[connectivity]
+    edge_one = corners[:, 1] - corners[:, 0]
+    edge_two = corners[:, 2] - corners[:, 0]
+    determinant = edge_one[:, 0] * edge_two[:, 1] - edge_one[:, 1] * edge_two[:, 0]
+    diameter_km = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=-1).max(
+        axis=1
+    )
+
+    # One pass per source face, scattering into the lattice rather than searching the
+    # lattice for each face: F is thousands while the lattice is millions, and a face
+    # only ever touches the nodes in its own bounding box.
+    for index in range(len(connectivity)):
+        if determinant[index] == 0.0:
+            continue
+        # `floor` and `ceil` the wrong way round on purpose, widening the candidate
+        # block by up to one node on each side. A source face's extent is very often
+        # *exactly* a lattice coordinate -- always, on the planar fault this has to
+        # reduce to -- and then the tight bound is an integer that round-off pushes to
+        # either side, silently dropping the whole boundary ring. The barycentric test
+        # below rejects whatever is genuinely outside, so widening costs work and
+        # nothing else.
+        first_u = int(np.floor((corners[index, :, 0].min() - low[0]) / step[0]))
+        last_u = int(np.ceil((corners[index, :, 0].max() - low[0]) / step[0]))
+        first_v = int(np.floor((corners[index, :, 1].min() - low[1]) / step[1]))
+        last_v = int(np.ceil((corners[index, :, 1].max() - low[1]) / step[1]))
+        first_u, last_u = max(first_u, 0), min(last_u, counts[0])
+        first_v, last_v = max(first_v, 0), min(last_v, counts[1])
+        if first_u > last_u or first_v > last_v:
+            continue
+
+        block_u = grid_u[first_u : last_u + 1]
+        block_v = grid_v[first_v : last_v + 1]
+        offset_u = block_u[None, :] - corners[index, 0, 0]
+        offset_v = block_v[:, None] - corners[index, 0, 1]
+        alpha = (
+            offset_u * edge_two[index, 1] - offset_v * edge_two[index, 0]
+        ) / determinant[index]
+        beta = (
+            edge_one[index, 0] * offset_v - edge_one[index, 1] * offset_u
+        ) / determinant[index]
+        weight = np.stack([1.0 - alpha - beta, alpha, beta])
+        # A node on a shared edge is inside both faces and both give the same height,
+        # so overwriting is harmless; the tolerance is a *length* rather than a
+        # barycentric fraction, so it means the same thing on every face shape.
+        inside = weight.min(axis=0) * diameter_km[index] >= -SEAM_TOLERANCE_KM
+
+        target = (slice(first_v, last_v + 1), slice(first_u, last_u + 1))
+        heights = np.einsum("cvu,c->vu", weight, source_h[connectivity[index]])
+        height_km[target] = np.where(inside, heights, height_km[target])
+        located[target] |= inside
+
+    keep = located[:-1, :-1] & located[:-1, 1:] & located[1:, 1:] & located[1:, :-1]
+    if not keep.any():
+        raise ValueError(
+            f"{surface!r}: no lattice cell of {step[0]:.4g} x {step[1]:.4g} km falls "
+            f"entirely inside the surface, whose parameter extent is "
+            f"{extent_km[0]:.4g} x {extent_km[1]:.4g} km. Ask for a finer spacing"
+        )
+
+    # Number only the nodes some kept cell uses, so the vertex table has no orphans.
+    used = np.zeros_like(located)
+    for row_shift, column_shift in ((0, 0), (0, 1), (1, 1), (1, 0)):
+        used[
+            row_shift : row_shift + keep.shape[0],
+            column_shift : column_shift + keep.shape[1],
+        ] |= keep
+    numbering = np.full(used.shape, -1, dtype=np.int64)
+    numbering[used] = np.arange(int(used.sum()))
+
+    mesh_v, mesh_u = np.nonzero(used)
+    lifted = frame.lift(
+        np.stack([grid_u[mesh_u], grid_v[mesh_v], height_km[used]], axis=-1)
+    )
+
+    near = numbering[:-1, :-1][keep]
+    far = numbering[:-1, 1:][keep]
+    opposite = numbering[1:, 1:][keep]
+    beside = numbering[1:, :-1][keep]
+    connectivity = np.stack(
+        [
+            np.stack([near, far, opposite], axis=-1),
+            np.stack([near, opposite, beside], axis=-1),
+        ],
+        axis=1,
+    ).reshape(-1, 3)
+
+    parameters = frame.project(lifted)
+    frame = frame.translated(
+        float(parameters[:, 0].min()), float(parameters[:, 1].min())
+    )
+    mesh = TriangleMesh._from_frame(
+        vertices_km=lifted,
+        faces=connectivity,
+        plane_of_face=np.zeros(len(connectivity), dtype=np.int64),
+        frame=frame,
+        origin_east_km=origin_east_km,
+        origin_north_km=origin_north_km,
+        surface=surface,
+    )
+    check_admissible(mesh)
+    return mesh
+
+
+def padded_builder(
+    mesh: TriangleMesh, *, pad_spacing_km: float | None = None
+) -> Callable[[float, float], tuple[FloatArray, IntArray, FloatArray, IntArray]]:
+    """A callable that rebuilds a segment with its parameter domain extended outwards.
+
+    What the SPDE sampler needs and the shape it needs it in: the sampler never imports
+    this module, so the padding arrives as a function it can call. The returned callable
+    takes the pad widths and hands back plain arrays.
+
+    **Why the pad exists.** The SPDE's Neumann boundary condition reflects the covariance
+    in the domain boundary (Lindgren et al. appendix A.4), and at fault scale that is not
+    an edge effect: Mai & Beroza figure 13's own 0.25-0.6 ratio bound puts a fault between
+    1.7 and 4 correlation lengths across *by construction*, so a domain cropped to the
+    fault has the reflection everywhere. The circulant sampler never suffered it because
+    it pads and crops; this is the same remedy.
+
+    **The pad may be coarser than the fault, and usually should be.** Its only job is to
+    move the boundary away, so resolving it at fault resolution buys nothing and costs a
+    great deal -- a uniform pad two correlation lengths wide multiplies the vertex count
+    by roughly five, which at 100 m puts a crustal segment into the millions for no
+    modelling gain. ``pad_spacing_km`` defaults to the fault's own realised spacing, and
+    is worth setting larger.
+
+    **What the patch means out there.** ``h(u, v)`` is defined by the fault's own nodes, so
+    the pad is an *extrapolation of the reference surface*, and this uses the flattest one
+    available: ``h`` is held at the value of the nearest fault boundary node along each
+    outward direction, which is continuous across the seam and adds no curvature. Both
+    properties are load-bearing rather than tidy. Continuity, because the sampler
+    assembles from the **lifted** triangles and a jump in ``h`` at the seam is a crease the
+    cotangent Laplacian reads as real geometry -- which would move the artefact the pad
+    exists to remove onto the fault edge instead of away from it. And no added curvature,
+    because :func:`check_admissible` applies to the padded mesh too: at the ``|grad h| =
+    2.14`` a real interface reaches, a tangent-plane extension is already 65 degrees off
+    the reference plane and anything continuing the *curvature* would turn past vertical.
+
+    Parameters
+    ----------
+    mesh : TriangleMesh
+        The fault, already built. Its frame and parameter coordinates are kept exactly, so
+        the fault's own ``(u, v)`` do not move when the pad is added -- otherwise every
+        stored coordinate shifts and the hypocentre seam moves silently.
+    pad_spacing_km : float, optional
+        Lattice spacing in the pad. Defaults to the fault's median edge length in the
+        parameter plane.
+
+    Returns
+    -------
+    callable
+        ``build(pad_strike_km, pad_dip_km)`` returning ``(vertices_km, faces,
+        parameters_uv, fault_faces)``: positions ``(V, 3)``, connectivity ``(F, 3)``,
+        parameter coordinates ``(V, 2)``, and the indices of the faces that are **on the
+        fault** -- which is what the sampler crops back to. Zero pad widths give the
+        fault's own arrays unchanged.
+    """
+    frame = mesh.frame
+    fault_uv = mesh.parameters_km()
+    fault_vertices = mesh.vertices_km()
+    fault_faces = mesh.faces()
+    fault_height = frame.project(fault_vertices)[:, 2]
+
+    edges = mesh.edges()
+    default_spacing_km = float(
+        np.median(
+            np.linalg.norm(fault_uv[edges[:, 0]] - fault_uv[edges[:, 1]], axis=-1)
+        )
+    )
+    spacing_km = pad_spacing_km if pad_spacing_km is not None else default_spacing_km
+
+    def build(
+        pad_strike_km: float, pad_dip_km: float
+    ) -> tuple[FloatArray, IntArray, FloatArray, IntArray]:
+        """Extend the domain by the given pad widths and return plain arrays.
+
+        Parameters
+        ----------
+        pad_strike_km, pad_dip_km : float
+            How far to extend past the fault along each parameter axis, on both sides.
+
+        Returns
+        -------
+        tuple
+            ``(vertices_km, faces, parameters_uv, fault_faces)``.
+
+        Raises
+        ------
+        ValueError
+            For a negative pad width, or a pad the spacing cannot resolve at all.
+        """
+        if pad_strike_km < 0.0 or pad_dip_km < 0.0:
+            raise ValueError(
+                f"the pad is {pad_strike_km} by {pad_dip_km} km; a negative pad is not "
+                "a smaller domain, it is a crop, and cropping is the sampler's own step"
+            )
+        if pad_strike_km == 0.0 and pad_dip_km == 0.0:
+            return (
+                fault_vertices,
+                fault_faces,
+                fault_uv,
+                np.arange(len(fault_faces), dtype=np.int64),
+            )
+
+        low = fault_uv.min(axis=0) - np.array([pad_strike_km, pad_dip_km])
+        high = fault_uv.max(axis=0) + np.array([pad_strike_km, pad_dip_km])
+        counts = np.maximum(np.round((high - low) / spacing_km).astype(np.int64), 1)
+        grid_u = np.linspace(low[0], high[0], counts[0] + 1)
+        grid_v = np.linspace(low[1], high[1], counts[1] + 1)
+        lattice_v, lattice_u = np.meshgrid(grid_v, grid_u, indexing="ij")
+
+        # Flat extrapolation: hold `h` at the nearest fault vertex. Nearest-neighbour
+        # rather than anything smoother precisely because it adds no curvature, and it
+        # is continuous where it matters -- at the seam the nearest fault vertex *is*
+        # the boundary node, so the pad meets the fault at the fault's own height.
+        query = np.stack([lattice_u.ravel(), lattice_v.ravel()], axis=-1)
+        nearest = KDTree(fault_uv).query(query, k=1)[1]
+        height = fault_height[nearest].reshape(lattice_u.shape)
+
+        # Everything strictly inside the fault's parameter bounding box is the fault's
+        # own business; the pad is the frame around it. Cells wholly inside the box are
+        # dropped and the fault's own vertices spliced in instead, so the fault keeps
+        # exactly the mesh it was built with.
+        inside = (
+            (lattice_u > fault_uv[:, 0].min())
+            & (lattice_u < fault_uv[:, 0].max())
+            & (lattice_v > fault_uv[:, 1].min())
+            & (lattice_v < fault_uv[:, 1].max())
+        )
+        drop = inside[:-1, :-1] & inside[:-1, 1:] & inside[1:, 1:] & inside[1:, :-1]
+        keep = ~drop
+
+        used = np.zeros(lattice_u.shape, dtype=bool)
+        for row, column in ((0, 0), (0, 1), (1, 1), (1, 0)):
+            used[row : row + keep.shape[0], column : column + keep.shape[1]] |= keep
+        numbering = np.full(used.shape, -1, dtype=np.int64)
+        numbering[used] = np.arange(int(used.sum())) + len(fault_uv)
+
+        pad_uv = np.stack([lattice_u[used], lattice_v[used]], axis=-1)
+        pad_vertices = frame.lift(
+            np.stack([pad_uv[:, 0], pad_uv[:, 1], height[used]], axis=-1)
+        )
+
+        near = numbering[:-1, :-1][keep]
+        far = numbering[:-1, 1:][keep]
+        opposite = numbering[1:, 1:][keep]
+        beside = numbering[1:, :-1][keep]
+        pad_faces = np.stack(
+            [
+                np.stack([near, far, opposite], axis=-1),
+                np.stack([near, opposite, beside], axis=-1),
+            ],
+            axis=1,
+        ).reshape(-1, 3)
+
+        return (
+            np.concatenate([fault_vertices, pad_vertices]),
+            np.concatenate([fault_faces, pad_faces]),
+            np.concatenate([fault_uv, pad_uv]),
+            np.arange(len(fault_faces), dtype=np.int64),
+        )
+
+    return build
+
+
+def _fit_surface(
+    vertices_km: FloatArray,
+    faces: IntArray,
+    *,
+    strike_deg: float,
+    dip_deg: float,
+    dips_left: bool = False,
+) -> tuple[FloatArray, IntArray, MongeFrame]:
+    """Validate a supplied triangulation, fit its frame, and settle its winding.
+
+    Shared by :meth:`TriangleMesh.from_triangulation` and :func:`remesh`, which need the
+    same front half for different back halves -- and, importantly, ``remesh`` needs it on
+    surfaces that :func:`check_admissible` *refuses*, since repairing those is the whole
+    reason it exists.
+
+    Returns
+    -------
+    tuple
+        The vertices as float64, the faces wound to agree with the frame, and the frame
+        with its origin already moved to the parameter domain's low corner.
+
+    Raises
+    ------
+    ValueError
+        For vertices or faces of the wrong shape, a non-finite position, or a vertex
+        index out of range.
+    """
+    points = np.asarray(vertices_km, dtype=np.float64)
+    connectivity = np.asarray(faces, dtype=np.int64)
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        raise ValueError(
+            f"the vertices are shaped {points.shape}; a surface needs at least 3, "
+            "shaped (V, 3)"
+        )
+    if not np.isfinite(points).all():
+        raise ValueError("the vertices carry a non-finite position")
+    if connectivity.ndim != 2 or connectivity.shape[1] != 3 or not len(connectivity):
+        raise ValueError(
+            f"the faces are shaped {connectivity.shape}; they are triangles, shaped "
+            "(F, 3), and there has to be at least one"
+        )
+    if connectivity.min() < 0 or connectivity.max() >= len(points):
+        raise ValueError(
+            f"a face names vertex {connectivity.max()} of {len(points)}; the indices "
+            "are zero-based, and GOCAD's are one-based"
+        )
+
+    sample, share = _surface_moment(points, connectivity)
+    frame = MongeFrame.fit(
+        sample,
+        strike_deg=strike_deg,
+        dip_deg=dip_deg,
+        dips_left=dips_left,
+        weights=share,
+    )
+    parameters = frame.project(points)
+    frame = frame.translated(
+        float(parameters[:, 0].min()), float(parameters[:, 1].min())
+    )
+
+    # Which way a modeller wound their triangles is a convention, not a fact about the
+    # surface: it says whether they numbered each face anticlockwise seen from the
+    # hanging wall or from the footwall. All three CFM interfaces are wound the opposite
+    # way to this frame, and reading that as 9236 folds would be reading a file-format
+    # convention as geology. What is *not* a convention is whether the faces agree with
+    # each other -- that is exactly injectivity -- so the total signed area fixes the
+    # convention (it is plus or minus the true area whenever the projection is
+    # injective, so its sign is unambiguous and needs no tolerance) and
+    # `check_admissible` then refuses every face that disagrees.
+    corners = frame.project(points)[connectivity, :2]
+    first = corners[:, 1] - corners[:, 0]
+    second = corners[:, 2] - corners[:, 0]
+    if float((first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]).sum()) < 0.0:
+        connectivity = connectivity[:, [0, 2, 1]]
+    return points, connectivity, frame
 
 
 def _surface_moment(
@@ -2562,7 +3108,9 @@ __all__ = [
     "from_chart",
     "from_datatree",
     "implied_axes",
+    "padded_builder",
     "read_mesh",
+    "remesh",
     "stated_axes",
     "to_datatree",
     "write_mesh",

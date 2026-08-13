@@ -22,6 +22,8 @@ import pytest
 
 from rupture_generator import sampling
 from rupture_generator.sampling import (
+    CORRELATION_LENGTH_TOLERANCE,
+    MAXIMUM_DOUBLINGS,
     DegradedCorrelation,
     VonKarmanFilterParameters,
     correlation_lengths,
@@ -1132,3 +1134,279 @@ def test_irregular_delaunay_mesh_delivers_the_same_covariance() -> None:
     # not a failure.
     assert error == pytest.approx(2.7e-2, abs=5e-3)
     assert variance == pytest.approx(1.0, abs=0.06)
+
+
+# --------------------------------------------------------------- the padding
+
+
+def padded_builder(
+    lengths_u: float,
+    lengths_v: float,
+    per_length: int,
+    covariance: VonKarmanFilterParameters,
+) -> Callable[[float, float], spde.PaddedMesh]:
+    """A stand-in for the container's padded builder, for a rectangular fault.
+
+    Mirrors the contract `TriangleMesh.from_patches`' docstring sets out: the pad
+    arrives as its own argument, it is a lattice conforming along the fault
+    boundary, its faces are marked as not-fault, and the fault's parameter
+    coordinates do not move when the pad changes -- the pad is simply negative.
+    """
+    step_u = covariance.correlation_length_strike_km / per_length
+    step_v = covariance.correlation_length_dip_km / per_length
+    fault_u = round(lengths_u * per_length)
+    fault_v = round(lengths_v * per_length)
+
+    def build(pad_u_km: float, pad_v_km: float) -> spde.PaddedMesh:
+        cells_u = round(pad_u_km / step_u)
+        cells_v = round(pad_v_km / step_v)
+        # The fault keeps (0, 0); the pad is negative. Nothing about the fault's
+        # own coordinates depends on how wide the pad is.
+        u = (np.arange(-cells_u, fault_u + cells_u + 1)) * step_u
+        v = (np.arange(-cells_v, fault_v + cells_v + 1)) * step_v
+        grid_u, grid_v = np.meshgrid(u, v, indexing="ij")
+        parameters = np.stack([grid_u.ravel(), grid_v.ravel()], axis=-1)
+        frame_u, frame_v, _ = monge_frame(DIP_DEG)
+        vertices = parameters[:, 0, None] * frame_u + parameters[:, 1, None] * frame_v
+        index = np.arange(u.size * v.size).reshape(u.size, v.size)
+        a, b = index[:-1, :-1].ravel(), index[1:, :-1].ravel()
+        c, d = index[1:, 1:].ravel(), index[:-1, 1:].ravel()
+        faces = np.concatenate(
+            [np.stack([a, b, c], axis=-1), np.stack([a, c, d], axis=-1)]
+        )
+        centroid = parameters[faces].mean(axis=1)
+        fault = (
+            (centroid[:, 0] > 0.0)
+            & (centroid[:, 0] < fault_u * step_u)
+            & (centroid[:, 1] > 0.0)
+            & (centroid[:, 1] < fault_v * step_v)
+        )
+        return vertices, faces, parameters, fault
+
+    return build
+
+
+@pytest.mark.slow
+def test_padding_beats_the_boundary_reflection_on_a_crustal_fault():
+    """A fault 2 correlation lengths across, padded until the covariance is right.
+
+    This is where the folding bites: measured, the interfaces are 8 to 16
+    correlation lengths across and need nothing, while `colombia` is 1.9.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    per_length = 8
+    build = padded_builder(2.0, 2.0, per_length, covariance)
+
+    # Unpadded, the reflection *is* the field.
+    vertices, faces, parameters, fault = build(0.0, 0.0)
+    bare = quiet(spde.MaternOperator, vertices, faces, parameters, covariance)
+    unpadded = spde._delivered_correlation_length(
+        bare, parameters, fault, faces, covariance
+    )
+    assert unpadded > 1.4, "a 2-length domain should be badly folded"
+
+    padded = quiet(spde.padded_operator, build, covariance)
+    assert padded.correlation_length_error <= CORRELATION_LENGTH_TOLERANCE
+    assert padded.delivered_correlation_length == pytest.approx(1.0, abs=0.02)
+    # The first guess is Lindgren appendix A.4's own reach, so it should usually
+    # be the answer rather than the start of a search.
+    assert padded.pad_lengths == spde.BOUNDARY_FOLDING_LENGTHS
+    assert padded.pad_km[0] == pytest.approx(
+        spde.BOUNDARY_FOLDING_LENGTHS * covariance.correlation_length_strike_km
+    )
+    # And the pad really did shrink the error, by a lot.
+    assert padded.correlation_length_error < 0.1 * abs(unpadded - 1.0)
+
+
+@pytest.mark.slow
+def test_padding_draws_only_the_fault():
+    covariance = correlation_lengths(MAGNITUDE)
+    build = padded_builder(2.0, 2.0, 6, covariance)
+    padded = quiet(spde.padded_operator, build, covariance)
+    field = padded.draw_on_faces(np.random.default_rng(3))
+    assert field.shape == (int(padded.fault_faces.sum()),)
+    assert np.isfinite(field).all()
+    # The pad is a real fraction of the padded domain, so this is not a no-op.
+    assert padded.fault_faces.sum() < 0.4 * padded.fault_faces.size
+
+
+@pytest.mark.slow
+def test_padding_candidates_double_from_lindgrens_reach():
+    covariance = correlation_lengths(MAGNITUDE)
+    candidates = spde._pad_candidates(covariance)
+    assert candidates[0] == spde.BOUNDARY_FOLDING_LENGTHS
+    assert candidates == [
+        spde.BOUNDARY_FOLDING_LENGTHS * 2.0**k for k in range(len(candidates))
+    ]
+    assert len(candidates) == MAXIMUM_DOUBLINGS + 1
+
+
+@pytest.mark.slow
+def test_an_interface_sized_segment_needs_no_padding():
+    # The measurement that says this is a crustal problem: at 8 correlation
+    # lengths across, the unpadded domain already delivers the covariance.
+    covariance = correlation_lengths(MAGNITUDE)
+    build = padded_builder(8.0, 8.0, 8, covariance)
+    vertices, faces, parameters, fault = build(0.0, 0.0)
+    bare = quiet(spde.MaternOperator, vertices, faces, parameters, covariance)
+    delivered = spde._delivered_correlation_length(
+        bare, parameters, fault, faces, covariance
+    )
+    assert abs(delivered - 1.0) <= CORRELATION_LENGTH_TOLERANCE
+
+
+@pytest.mark.slow
+def test_the_tolerance_bounds_folding_and_discretisation_together():
+    """Why padding cannot rescue a mesh too coarse to carry the covariance.
+
+    Unlike `sampling._delivered_lengths`, which measures target and delivered with
+    the same estimator so the grid's coarseness cancels, this check compares
+    against the analytic 1.0 -- so the finite element bias is inside the tolerance
+    alongside the folding. On an 8-correlation-length domain, where there is
+    nothing left to fold, the *mesh* is what decides.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    errors = {}
+    for per_length in (6, 8, 12):
+        build = padded_builder(8.0, 8.0, per_length, covariance)
+        vertices, faces, parameters, fault = build(0.0, 0.0)
+        operator = quiet(spde.MaternOperator, vertices, faces, parameters, covariance)
+        delivered = spde._delivered_correlation_length(
+            operator, parameters, fault, faces, covariance
+        )
+        errors[round(operator.error.mesh_width, 3)] = abs(delivered - 1.0)
+
+    # Falls with the mesh, not with the domain -- so it is discretisation.
+    assert list(errors.values()) == sorted(errors.values(), reverse=True)
+    assert errors[0.236] > CORRELATION_LENGTH_TOLERANCE
+    assert errors[0.177] <= CORRELATION_LENGTH_TOLERANCE
+    assert errors[0.118] < 0.5 * CORRELATION_LENGTH_TOLERANCE
+
+
+# ------------------------------------------------------------- the multigrid
+
+
+def hierarchy(
+    vertices_km: FloatArray, faces: IntArray, levels: int
+) -> tuple[FloatArray, IntArray, list[tuple[FloatArray, IntArray, object]]]:
+    """Refine ``levels`` times, returning the finest mesh and the coarser stack."""
+    coarser = []
+    for _ in range(levels):
+        finer_vertices, finer_faces, prolongation = spde.subdivided(vertices_km, faces)
+        coarser.append((vertices_km, faces, prolongation))
+        vertices_km, faces = finer_vertices, finer_faces
+    return vertices_km, faces, coarser
+
+
+def test_subdivided_is_one_to_four_and_keeps_the_geometry() -> None:
+    covariance = correlation_lengths(MAGNITUDE)
+    vertices, faces, _, _ = square_mesh(2, 2, covariance)
+    refined_vertices, refined_faces, prolongation = spde.subdivided(vertices, faces)
+
+    assert refined_faces.shape[0] == 4 * faces.shape[0]
+    # Coarse vertices keep their own indices, so the prolongation's top block is
+    # the identity -- which is what makes the hierarchy free.
+    assert prolongation.shape == (refined_vertices.shape[0], vertices.shape[0])
+    assert refined_vertices[: vertices.shape[0]] == pytest.approx(vertices)
+    # Total area is unchanged: midpoints lie on the coarse faces, so this refines
+    # the discretisation and not the surface.
+    coarse_area, _, _, _, _ = spde._surface_frames(vertices, faces)
+    fine_area, _, _, _, _ = spde._surface_frames(refined_vertices, refined_faces)
+    assert fine_area.sum() == pytest.approx(coarse_area.sum())
+
+
+def test_prolongation_is_exact_on_linear_functions() -> None:
+    # Linear interpolation reproduces a linear function exactly, which is the
+    # property that makes P the right transfer for a piecewise-linear basis.
+    covariance = correlation_lengths(MAGNITUDE)
+    vertices, faces, _, _ = square_mesh(2, 2, covariance)
+    refined_vertices, _, prolongation = spde.subdivided(vertices, faces)
+    slope = np.array([0.3, -0.7, 1.1])
+    assert prolongation @ (vertices @ slope) == pytest.approx(refined_vertices @ slope)
+
+
+def test_multigrid_matches_the_direct_solver() -> None:
+    """The covariance is the same object whichever route computes it.
+
+    Draws differ pointwise between the two routes -- the three chained solves
+    amplify, see :data:`spde.ITERATIVE_TOLERANCE` -- but the covariance is a
+    quadratic functional of the operator and does not.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    base, base_faces, _, _ = square_mesh(16, 2, covariance)
+    vertices, faces, coarser = hierarchy(base, base_faces, 2)
+
+    direct = spde.MaternOperator(vertices, faces, None, covariance)
+    multigrid = spde.MaternOperator(vertices, faces, None, covariance, coarser=coarser)
+    assert multigrid.error.mesh_width == pytest.approx(direct.error.mesh_width)
+
+    probe = int(np.argmin(np.linalg.norm(vertices - vertices.mean(axis=0), axis=1)))
+    exact = direct.covariance_column(probe)
+    iterative = multigrid.covariance_column(probe)
+    assert iterative[probe] == pytest.approx(exact[probe], rel=1e-8)
+    assert np.abs(iterative - exact).max() / exact[probe] < 1e-8
+
+
+def test_multigrid_iteration_count_does_not_grow_with_the_mesh() -> None:
+    """Mesh independence, which is the whole reason for a V-cycle.
+
+    Measured on a well-shaped hierarchy from 4 thousand to 4.2 million vertices,
+    the outer count is flat at about 12. Here two levels are enough to show it is
+    not growing with ``1/h`` the way a Jacobi-preconditioned solve does.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    counts = []
+    for levels in (2, 3):
+        base, base_faces, _, _ = square_mesh(16, 1, covariance)
+        vertices, faces, coarser = hierarchy(base, base_faces, levels)
+        operator = spde.MaternOperator(
+            vertices, faces, None, covariance, coarser=coarser
+        )
+        operator.draw(np.random.default_rng(0))
+        counts.append(max(max(solver.iterations) for solver in operator._solvers))
+    assert all(count < 30 for count in counts), counts
+    # Four times the vertices must not cost twice the iterations.
+    assert counts[1] < 1.5 * counts[0]
+
+
+def test_multigrid_refuses_a_hierarchy_in_the_wrong_order() -> None:
+    covariance = correlation_lengths(MAGNITUDE)
+    base, base_faces, _, _ = square_mesh(8, 2, covariance)
+    vertices, faces, coarser = hierarchy(base, base_faces, 2)
+    with pytest.raises(ValueError, match="coarsest-first"):
+        spde.MaternOperator(
+            vertices, faces, None, covariance, coarser=list(reversed(coarser))
+        )
+
+
+def test_the_mass_gate_is_blind_to_refinement() -> None:
+    """Why :data:`spde.MINIMUM_LUMPED_MASS_RATIO` is a backstop and not a guarantee.
+
+    Subdivision divides every area by four, so the ratio of the smallest lumped
+    mass to the median is **exactly invariant** -- the gate reads the same number
+    however fine the mesh gets. The damage is not invariant: measured on the CFM
+    Hikurangi interface, sixty vertices of three hundred thousand take the healthy
+    field's amplitude to 0.266 after standardising, at a mass ratio fourteen times
+    *above* the floor, while a coarser mesh's smallest vertex sits below the floor
+    and is harmless. That measurement lives in the module docstring, because it
+    needs data this repository does not ship; the identity it turns on is here.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    vertices, faces, _, shape = square_mesh(8, 2, covariance)
+    anchor = (shape[0] // 2) * shape[1] + shape[1] // 2
+    step = vertices[anchor + 1] - vertices[anchor]
+    vertices = np.vstack([vertices, vertices[anchor] + 3.0e-3 * step])
+    faces = np.vstack([faces, [[anchor, len(vertices) - 1, anchor + shape[1]]]])
+
+    ratios = []
+    for _ in range(3):
+        lumped, _, _ = spde._assemble(vertices, faces, covariance)
+        ratios.append(float(lumped.min() / np.median(lumped)))
+        vertices, faces, _ = spde.subdivided(vertices, faces)
+
+    # Invariant to a few parts in a thousand -- the residual is the median moving
+    # as refinement changes which vertices are typical, not the sliver healing.
+    assert ratios[1] == pytest.approx(ratios[0], rel=0.05)
+    assert ratios[2] == pytest.approx(ratios[0], rel=0.05)
+    # And it stays above the floor throughout, so the gate admits every level.
+    assert min(ratios) > spde.MINIMUM_LUMPED_MASS_RATIO

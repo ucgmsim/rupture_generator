@@ -53,6 +53,7 @@ from rupture_generator.triangular.mesh import (
     SCHEMA_VERSION,
     MongeFrame,
     TriangleMesh,
+    _fit_surface,
     build_fault,
     build_point,
     build_surface,
@@ -60,7 +61,9 @@ from rupture_generator.triangular.mesh import (
     fold_margin,
     from_chart,
     implied_axes,
+    padded_builder,
     read_mesh,
+    remesh,
     stated_axes,
     write_mesh,
 )
@@ -1143,6 +1146,367 @@ def test_implied_axes_refuse_a_horizontal_surface() -> None:
     flat = np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0], [10.0, 10.0, 5.0]])
     with pytest.raises(ValueError, match="horizontal"):
         implied_axes(flat)
+
+
+# ============================================================================
+# The remesher: build, do not subdivide
+# ============================================================================
+
+
+def _source_arrays(stem: str) -> tuple[np.ndarray, np.ndarray, float, float, bool]:
+    """A CFM interface as raw arrays, so a mesh the gate refuses can still be remeshed."""
+    surface = _tsurf(stem)
+    faces = surface.parts[0]
+    used = np.unique(faces)
+    renumber = np.full(len(surface.vertices_km), -1, np.int64)
+    renumber[used] = np.arange(len(used))
+    points = surface.vertices_km[used].copy()
+    points[:, :2] -= points[:, :2].min(axis=0)
+    strike_deg, dip_deg, dips_left = implied_axes(points)
+    return points, renumber[faces], strike_deg, dip_deg, dips_left
+
+
+def _shape(mesh: TriangleMesh) -> tuple[float, float]:
+    """Three-dimensional area max/min, and the smallest angle in degrees."""
+    area = mesh.areas_km2()
+    corners = mesh.vertices_km()[mesh.faces()]
+    side = np.sort(
+        np.stack(
+            [
+                np.linalg.norm(corners[:, (k + 1) % 3] - corners[:, k], axis=-1)
+                for k in range(3)
+            ],
+            axis=-1,
+        ),
+        axis=-1,
+    )
+    # The smallest angle is opposite the shortest side.
+    cosine = (side[:, 1] ** 2 + side[:, 2] ** 2 - side[:, 0] ** 2) / (
+        2.0 * side[:, 1] * side[:, 2]
+    )
+    return (
+        float(area.max() / area.min()),
+        float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))).min()),
+    )
+
+
+def test_remeshing_a_planar_fault_reduces_to_the_lattice_builder() -> None:
+    """The gate: on a plane, building at the plane's own spacing changes nothing.
+
+    With ``h`` identically zero the parameter lattice lifts back into the fault plane, and
+    because a spacing is a *request* rounded onto whole cells the lattice lands on the
+    domain's corners -- so the result is the mesh :meth:`TriangleMesh.from_patches` would
+    have built, not merely one like it.
+    """
+    fault = _straight(strike_count=12, dip_count=8)
+    direct = build_fault(fault, NZTM)[0]
+    extent = direct.parameters_km().max(axis=0)
+
+    built = remesh(
+        direct.vertices_km(),
+        direct.faces(),
+        float(extent[0] / 12.0),
+        strike_deg=direct.frame.strike_deg,
+        dip_deg=direct.frame.dip_deg,
+        surface="straight",
+    )
+    assert built.face_count == direct.face_count
+    assert built.node_count == direct.node_count
+    assert built.areas_km2().sum() == pytest.approx(
+        direct.areas_km2().sum(), rel=1.0e-9
+    )
+    assert built.maximum_slope() < 1.0e-9
+    assert np.sort(built.parameters_km(), axis=0) == pytest.approx(
+        np.sort(direct.parameters_km(), axis=0), abs=1.0e-9
+    )
+
+
+def test_remeshing_converges_to_a_curved_source_surface() -> None:
+    """The built mesh approaches the source as the spacing falls, first order.
+
+    A concave parameter footprint is where the boundary staircase costs most, and this
+    fixture is concave by 12.4% -- so at the source's own spacing the built mesh is 18%
+    light, which is the honest behaviour rather than a defect. Halving the spacing halves
+    the deficit: 18.06%, 8.98%, 4.67%, 2.37%. ``|grad h|`` converges the other way, from
+    0.262 up to 0.297 against the source's 0.296, as the chording across the source's own
+    kinks tightens.
+
+    This is the property to hold the remesher to. It does not claim to reproduce a
+    coarse source exactly; it claims to converge to the surface, with the error in one
+    place and measurable.
+    """
+    nodes = _curved_interface(24, 16)
+    source = TriangleMesh.from_patches(
+        [nodes],
+        strike_deg=90.0,
+        dip_deg=20.0,
+        origin_east_km=0.0,
+        origin_north_km=0.0,
+        surface="interface",
+    )
+    truth_km2 = source.areas_km2().sum()
+    extent = source.parameters_km().max(axis=0) - source.parameters_km().min(axis=0)
+    base_km = float(extent[0] / 24.0)
+
+    deficits = []
+    for divisor in (1, 2, 4, 8):
+        built = remesh(
+            source.vertices_km(),
+            source.faces(),
+            base_km / divisor,
+            strike_deg=90.0,
+            dip_deg=20.0,
+            surface="interface",
+        )
+        deficits.append(1.0 - built.areas_km2().sum() / truth_km2)
+        assert built.maximum_slope() == pytest.approx(source.maximum_slope(), rel=0.15)
+
+    ratios = [before / after for before, after in itertools.pairwise(deficits)]
+    assert all(1.7 < ratio < 2.3 for ratio in ratios), f"deficits {deficits}"
+    assert deficits[-1] < 0.03
+
+
+def test_a_built_mesh_is_congruent_in_the_parameter_plane() -> None:
+    """The whole point: element shape is exact in projection, not merely good.
+
+    Every face is half a lattice cell, so all the parameter areas are the same number.
+    Measured on full Hikurangi at 100 m, the ratio is 1.000000000011; here it is checked
+    at a spacing the test suite can afford.
+
+    What remains in three dimensions is **only** the metric factor: the 3-D area ratio
+    equals ``sqrt(1 + |grad h|max^2) / sqrt(1 + |grad h|min^2)``, which is the surface's
+    own curvature and not something any mesh over it could avoid.
+    """
+    points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Hikurangi")
+    built = remesh(
+        points,
+        faces,
+        8.0,
+        strike_deg=strike_deg,
+        dip_deg=dip_deg,
+        dips_left=dips_left,
+        surface="Hikurangi",
+    )
+    signed = built.parameter_areas_km2()
+    assert signed.max() / signed.min() == pytest.approx(1.0, rel=1.0e-9)
+
+    slope = np.linalg.norm(built.slope(), axis=-1)
+    metric = np.sqrt(1.0 + slope**2)
+    ratio, _angle = _shape(built)
+    assert ratio == pytest.approx(metric.max() / metric.min(), rel=1.0e-9)
+
+
+def test_building_beats_subdividing_by_four_orders_of_magnitude() -> None:
+    """The measurement that made the remesher the critical path.
+
+    Subdivision preserves element shape exactly -- one-to-four splits a triangle into
+    four similar ones -- so the CFM source's area ratio of 4.28e+04 and minimum angle of
+    0.018 degrees survive every level of refinement. The multigrid sampler pays for shape,
+    not resolution: 36x on the draw at matched vertex count, and V-cycle counts that double
+    per level instead of staying flat.
+
+    Building at a target resolution instead: measured here at a coarse 8 km, which is
+    enough to make the point, and confirmed at 100 m in :func:`remesh`'s docstring.
+    """
+    points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Hikurangi")
+    source = TriangleMesh._from_frame(
+        **dict(
+            zip(
+                ("vertices_km", "faces", "frame"),
+                _fit_surface(
+                    points,
+                    faces,
+                    strike_deg=strike_deg,
+                    dip_deg=dip_deg,
+                    dips_left=dips_left,
+                ),
+                strict=True,
+            )
+        ),
+        plane_of_face=np.zeros(len(faces), np.int64),
+        origin_east_km=0.0,
+        origin_north_km=0.0,
+        surface="source",
+    )
+    source_ratio, source_angle = _shape(source)
+    assert source_ratio > 1.0e4
+    assert source_angle < 0.1
+
+    built = remesh(
+        points,
+        faces,
+        8.0,
+        strike_deg=strike_deg,
+        dip_deg=dip_deg,
+        dips_left=dips_left,
+        surface="Hikurangi",
+    )
+    built_ratio, built_angle = _shape(built)
+    assert built_ratio < 2.0
+    assert built_angle > 25.0
+    assert source_ratio / built_ratio > 1.0e4
+
+
+def test_the_boundary_deficit_halves_with_the_spacing() -> None:
+    """The one approximation the remesher makes, and it is first order as claimed.
+
+    A lattice cell is kept only if all four corners lie on the surface, so the outline
+    becomes a staircase and the area it costs is ``O(spacing x perimeter)``. Measured on
+    Hikurangi: -5.95%, -3.00%, -1.49%, -0.75% at 8, 4, 2 and 1 km -- halving each time, so
+    it is a resolution knob rather than a bias. That matters because it is the only place
+    the built mesh is not the source surface exactly.
+    """
+    points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Hikurangi")
+    deficits = []
+    for spacing_km in (8.0, 4.0, 2.0):
+        built = remesh(
+            points,
+            faces,
+            spacing_km,
+            strike_deg=strike_deg,
+            dip_deg=dip_deg,
+            dips_left=dips_left,
+            surface="Hikurangi",
+        )
+        deficits.append(1.0 - built.areas_km2().sum() / 181069.0)
+    ratios = [before / after for before, after in itertools.pairwise(deficits)]
+    assert all(1.7 < ratio < 2.3 for ratio in ratios), f"deficits {deficits}"
+
+
+def test_remeshing_repairs_the_mesh_the_gate_refuses() -> None:
+    """``Puyseguer`` cannot be loaded and can be rebuilt, which is the point of both.
+
+    Its worst lumped-mass ratio is 7.3e-07 against a gate at 5e-06; remeshed, it is 1/6,
+    which is the best a lattice can do. The surface is fine and only the discretisation
+    was not -- exactly the distinction the two checks in
+    :func:`check_admissible` draw.
+    """
+    with pytest.raises(ValueError, match="carry almost no surface"):
+        _tsurf("Puyseguer").to_mesh()
+
+    points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Puyseguer")
+    built = remesh(
+        points,
+        faces,
+        4.0,
+        strike_deg=strike_deg,
+        dip_deg=dip_deg,
+        dips_left=dips_left,
+        surface="Puyseguer",
+    )
+    check_admissible(built)
+    mass = built.lumped_mass_km2()
+    # A corner vertex of a lattice touches two of its six surrounding triangles, so
+    # its share is 1/6 of a cell -- not exactly 1/6 of the *median*, because lifting
+    # scales each cell by its own metric factor.
+    assert (mass / np.median(mass)).min() == pytest.approx(1.0 / 6.0, rel=0.05)
+    # Same surface: area within the boundary staircase at this spacing.
+    assert built.areas_km2().sum() == pytest.approx(67921.5, rel=0.07)
+
+
+def test_a_spacing_too_coarse_to_resolve_the_surface_is_refused() -> None:
+    """Naming the extents, so the caller can see by how much."""
+    points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Hikurangi")
+    with pytest.raises(ValueError, match="no lattice cell"):
+        remesh(
+            points,
+            faces,
+            5000.0,
+            strike_deg=strike_deg,
+            dip_deg=dip_deg,
+            dips_left=dips_left,
+            surface="Hikurangi",
+        )
+    with pytest.raises(ValueError, match="not positive"):
+        remesh(
+            points,
+            faces,
+            0.0,
+            strike_deg=strike_deg,
+            dip_deg=dip_deg,
+            dips_left=dips_left,
+            surface="Hikurangi",
+        )
+
+
+# ============================================================================
+# The padded build, for the SPDE's boundary reflection
+# ============================================================================
+
+
+def test_a_zero_pad_returns_the_faults_own_arrays() -> None:
+    """The identity case, so the caller can always go through the same path."""
+    mesh = build_fault(_straight(), NZTM)[0]
+    build = padded_builder(mesh)
+    vertices, faces, parameters, fault_faces = build(0.0, 0.0)
+    assert np.array_equal(vertices, mesh.vertices_km())
+    assert np.array_equal(faces, mesh.faces())
+    assert np.array_equal(parameters, mesh.parameters_km())
+    assert np.array_equal(fault_faces, np.arange(mesh.face_count))
+
+
+def test_a_pad_extends_the_domain_and_leaves_the_fault_alone() -> None:
+    """The fault keeps its own mesh and its own coordinates; the pad is a frame round it.
+
+    Holding the fault's ``(u, v)`` fixed is what keeps the hypocentre seam where it was --
+    if padding shifted every stored parameter coordinate, the seam would move silently.
+    """
+    mesh = build_fault(_straight(), NZTM)[0]
+    build = padded_builder(mesh)
+    vertices, faces, parameters, fault_faces = build(6.0, 4.0)
+
+    assert len(fault_faces) == mesh.face_count
+    assert np.array_equal(faces[fault_faces], mesh.faces())
+    assert np.array_equal(parameters[: mesh.node_count], mesh.parameters_km())
+    assert np.array_equal(vertices[: mesh.node_count], mesh.vertices_km())
+    assert len(faces) > mesh.face_count
+
+    fault_low = mesh.parameters_km().min(axis=0)
+    fault_high = mesh.parameters_km().max(axis=0)
+    assert parameters[:, 0].min() == pytest.approx(fault_low[0] - 6.0)
+    assert parameters[:, 1].min() == pytest.approx(fault_low[1] - 4.0)
+    assert parameters[:, 0].max() == pytest.approx(fault_high[0] + 6.0)
+    assert parameters[:, 1].max() == pytest.approx(fault_high[1] + 4.0)
+    assert faces.max() < len(vertices)
+
+
+def test_a_coarser_pad_costs_fewer_vertices() -> None:
+    """The pad only has to move the boundary away, so it need not be resolved finely.
+
+    Measured on a 12-by-8 cell fault padded by 6 by 4 km: at fault spacing the pad
+    multiplies the vertex count several-fold, and at four times the spacing it costs a
+    fraction of that. At 100 m that is the difference between a crustal segment staying
+    in the hundreds of thousands and going into the millions, for no modelling gain.
+    """
+    mesh = build_fault(_straight(), NZTM)[0]
+    fine = padded_builder(mesh)(6.0, 4.0)[0]
+    coarse = padded_builder(mesh, pad_spacing_km=6.0)(6.0, 4.0)[0]
+    assert len(coarse) < len(fine)
+    assert len(coarse) >= mesh.node_count
+
+
+def test_a_padded_mesh_meets_the_fault_at_the_faults_own_height() -> None:
+    """Continuity across the seam, which is what stops the pad becoming a crease.
+
+    The SPDE assembles from the lifted triangles, so a jump in ``h`` at the fault boundary
+    is geometry the cotangent Laplacian believes in -- it would put the artefact the pad
+    exists to remove onto the fault edge instead. On a planar fault the extrapolation is
+    exact, which is the case that can be checked to round-off.
+    """
+    mesh = build_fault(_straight(dip_deg=45.0), NZTM)[0]
+    vertices, _faces, parameters, _fault = padded_builder(mesh)(5.0, 5.0)
+    frame = mesh.frame
+    height = frame.project(vertices)[:, 2]
+    # A planar fault has h == 0, so a flat extrapolation must too, everywhere.
+    assert np.abs(height).max() < 1.0e-9
+    assert parameters.shape == (len(vertices), 2)
+
+
+def test_a_negative_pad_is_refused() -> None:
+    """Cropping is the sampler's own step, not something to spell as a negative pad."""
+    build = padded_builder(build_fault(_straight(), NZTM)[0])
+    with pytest.raises(ValueError, match="negative pad"):
+        build(-1.0, 0.0)
 
 
 # ============================================================================
