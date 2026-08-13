@@ -870,8 +870,11 @@ def test_a_chart_prints_as_its_shape_rather_than_its_arrays() -> None:
     chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
     cells_i, cells_j = chart.cell_counts
 
+    # A count rather than a shape: the triangular track replaces `cell_counts` with a
+    # single `int`, so a chart that prints `7x12` prints something a triangulation of
+    # the same fault cannot.
     assert repr(chart) == (
-        f"RuptureMesh('hope', {cells_i}x{cells_j} cells, fields: slip_m)"
+        f"RuptureMesh('hope', {cells_i * cells_j} cells, fields: slip_m)"
     )
 
 

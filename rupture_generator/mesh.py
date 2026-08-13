@@ -31,6 +31,7 @@ gap is the propagation stage's question.
 
 from __future__ import annotations
 
+import dataclasses
 import types
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -207,6 +208,7 @@ RESERVED_FIELDS = frozenset({*NODE_VARIABLES, "plane", "slip_rate", "slip_rate_o
 RESERVED_ATTRS = frozenset({"surface", "origin_east_km", "origin_north_km"})
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
 class RuptureMesh:
     """One rupture geometry expressed as a mesh."""
 
