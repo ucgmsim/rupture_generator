@@ -1471,6 +1471,41 @@ class TriangleMesh:
             self._dataset["slip_rate"].to_numpy(),
         )
 
+    @property
+    def pulse_offsets(self) -> IntArray | None:
+        """Where each face's pulse starts (CSR indptr), or ``None`` if unset.
+
+        The half of :attr:`pulses` that is one number per face rather than one per
+        sample, and therefore always affordable: 11 MB at 1.39 M faces against the 3.2
+        GB of rates it indexes into.
+        """
+        if "slip_rate_offset" not in self._dataset:
+            return None
+        offsets: IntArray = self._dataset["slip_rate_offset"].to_numpy()
+        return offsets
+
+    @property
+    def pulse_rates(self) -> xr.DataArray | None:
+        """Every pulse concatenated, **not read**, or ``None`` if unset.
+
+        The counterpart of :attr:`pulses` for a reader that cannot afford them whole.
+        At a 400 m cut one segment's rates are 2.45 G samples and 19.6 GB of ``f64``,
+        which is more than the machine
+        :func:`~rupture_generator.triangular.pipeline.write_rupture_mesh` streams them
+        out on has; ``scripts/view.py`` slices this a block at a time on the way back
+        in, and never materialises it.
+
+        Returns
+        -------
+        xr.DataArray or None
+            Backed by whatever the dataset is backed by -- after
+            :func:`read_mesh`, an open file -- so it is sliceable only while that file
+            is open, and a slice is what triggers the read.
+        """
+        if "slip_rate" not in self._dataset:
+            return None
+        return self._dataset["slip_rate"]
+
     # ------------------------------------------------------- derived quantities
 
     def centres(self) -> FloatArray:
