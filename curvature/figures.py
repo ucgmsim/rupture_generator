@@ -4,11 +4,14 @@ Reads ``curvature/data/*.npz`` and ``curvature/results.json``, writes
 ``curvature/figures/*.png``. It computes nothing the study depends on -- if a number
 appears on a figure it also appears in ``results.json``.
 
-One :class:`Plate` per interface, and every figure takes one. Hikurangi's plate carries
-no prefix, so it writes the same filenames it always did and the published document's
-image paths keep resolving; each Puysegur surface writes ``<interface>_<figure>.png``
-beside them. Nothing about a figure is per-interface except that prefix and the numbers,
-which is the point of running the same analysis on a second surface.
+One :class:`Plate` per interface **per magnitude**, and every figure takes one.
+Hikurangi at :data:`~curvature.model.MAGNITUDE` carries no prefix, so it writes the same
+filenames it always did and the published document's image paths keep resolving; each
+Puysegur surface writes ``<interface>_<figure>.png`` beside them, and each further
+magnitude writes ``<interface>_mw<magnitude>_<figure>.png``. Nothing about a figure is
+per-plate except that prefix, the title and the numbers, which is the point of running
+the same analysis on a second surface and at a second magnitude: two figures that differ
+only in their numbers can be compared by eye.
 
 Three conventions hold across all of them.
 
@@ -42,7 +45,7 @@ from matplotlib.colors import Colormap, ListedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
 
-from curvature import style
+from curvature import model, run, style
 from curvature.geometry import HIKURANGI, PUYSEGUR, PUYSEGUR_FIORDLAND, build_pair
 
 HERE = Path(__file__).resolve().parent
@@ -78,6 +81,16 @@ know where each lives; they are kept in one place because the *order* is the fig
 argument and reordering it would reverse the reading.
 """
 
+REFERENCE_CORNER_HZ = 0.01
+"""Roughly where an Mw 8.5 whole-interface rupture corners, for the spectrum's marker.
+
+A round order of magnitude rather than a fitted number -- it is drawn to say which part
+of the spectrum is the source and which is the discretisation, and the corner the run
+actually delivered is measured and reported in ``results.json``. At another magnitude
+:func:`_reference_corner_hz` moves it by self-similarity, since a marker left at an
+Mw 8.5 corner on an Mw 9.11 spectrum would be reading the wrong decade.
+"""
+
 MINIMUM_SECTION_EXTENT_KM = 100.0
 """How far down dip a column must reach before :func:`sections` will draw it.
 
@@ -100,12 +113,18 @@ class Plate:
         Its groups out of ``results.json``: ``geometry``, ``scenarios``, ``moment``,
         ``correlation``, ``true_depth`` and, for Hikurangi only, ``resolution``.
     prefix : str
-        Prepended to every filename. Empty for Hikurangi, whose figures are already
-        published under bare names.
+        Prepended to every filename, from :func:`curvature.run.prefix`. Empty for
+        Hikurangi at the study's own magnitude, whose figures are already published
+        under bare names.
     path : Path
         The surface, for the one figure that needs the mesh rather than a raster.
     label : str
-        What the interface is called in a title.
+        What the interface is called in a title. A plate at any magnitude but the
+        study's own says which, since two magnitudes' figures are otherwise identical
+        drawings of different numbers.
+    magnitude : float
+        The event these numbers are for. Read by the one figure that marks a reference
+        frequency the magnitude sets; everything else on every figure is measured.
     """
 
     arrays: dict
@@ -113,6 +132,7 @@ class Plate:
     prefix: str
     path: Path
     label: str
+    magnitude: float
 
     def figure(self, name: str) -> Path:
         """Where a figure of this name belongs for this interface."""
@@ -128,34 +148,101 @@ class Plate:
         return all(f"{site}_constant" in self.results["scenarios"] for site in SITES)
 
 
+INTERFACES = (
+    ("hikurangi", "arrays", HIKURANGI, "Hikurangi"),
+    (
+        "puysegur_fiordland",
+        "puysegur_fiordland",
+        PUYSEGUR_FIORDLAND,
+        "Puysegur-Fiordland",
+    ),
+    ("puyseguer", "puyseguer", PUYSEGUR, "Puysegur"),
+)
+"""Each interface's key in ``results.json``, its raster stem, its surface and its title.
+
+Hikurangi's raster is ``arrays.npz`` rather than ``hikurangi.npz`` because that is the
+name it has always had and :mod:`curvature.run` still writes it.
+"""
+
+
+def _plate(
+    groups: dict | None,
+    stem: str,
+    prefix: str,
+    path: Path,
+    label: str,
+    magnitude: float,
+):
+    """One plate, or ``None`` if that run has not been made.
+
+    Both halves of the check matter and neither implies the other: a group can be in
+    ``results.json`` while its raster is still being written, and a raster can outlive a
+    group that a later run replaced. A figure drawn from one without the other would be
+    two runs superimposed.
+
+    Parameters
+    ----------
+    groups : dict or None
+        The interface's groups, or ``None`` if the file has none under that key.
+    stem : str
+        The raster's name in ``curvature/data``, without the extension.
+    prefix, path, label, magnitude
+        As :class:`Plate`.
+
+    Returns
+    -------
+    Plate or None
+    """
+    raster = HERE / "data" / f"{stem}.npz"
+    if groups is None or not raster.exists():
+        return None
+    return Plate(
+        arrays=dict(np.load(raster)),
+        results=groups,
+        prefix=prefix,
+        path=path,
+        label=label,
+        magnitude=magnitude,
+    )
+
+
 def _plates() -> list[Plate]:
-    """Every interface that has been run, in the order the document reads them."""
+    """Every interface at every magnitude that has been run.
+
+    The baseline magnitude first, in the order the document reads it, then each further
+    magnitude in turn. A magnitude's plates are the *same* figures drawn from the *same*
+    code -- only the prefix, the label and the numbers differ -- which is what makes the
+    two sets comparable by eye rather than by argument.
+    """
     results = json.loads((HERE / "results.json").read_text())
-    plates = [
-        Plate(
-            arrays=dict(np.load(HERE / "data" / "arrays.npz")),
-            results=results,
-            prefix="",
-            path=HIKURANGI,
-            label="Hikurangi",
+    plates = []
+    for name, stem, path, label in INTERFACES:
+        groups = (
+            results if name == "hikurangi" else results.get("puysegur", {}).get(name)
         )
-    ]
-    for name, path, label in (
-        ("puysegur_fiordland", PUYSEGUR_FIORDLAND, "Puysegur-Fiordland"),
-        ("puyseguer", PUYSEGUR, "Puysegur"),
-    ):
-        raster = HERE / "data" / f"{name}.npz"
-        if name not in results.get("puysegur", {}) or not raster.exists():
-            continue
-        plates.append(
-            Plate(
-                arrays=dict(np.load(raster)),
-                results=results["puysegur"][name],
-                prefix=f"{name}_",
-                path=path,
-                label=label,
+        plate = _plate(
+            groups,
+            stem,
+            run.prefix(name, model.MAGNITUDE),
+            path,
+            label,
+            model.MAGNITUDE,
+        )
+        if plate is not None:
+            plates.append(plate)
+    for key, by_interface in sorted(results.get("magnitudes", {}).items()):
+        magnitude = float(key.removeprefix("mw_"))
+        for name, stem, path, label in INTERFACES:
+            plate = _plate(
+                by_interface.get(name),
+                f"{stem}{run.tag(magnitude)}",
+                run.prefix(name, magnitude),
+                path,
+                f"{label} (Mw {magnitude:g})",
+                magnitude,
             )
-        )
+            if plate is not None:
+                plates.append(plate)
     return plates
 
 
@@ -1362,14 +1449,32 @@ def _log_binned(
     return centres[filled], total[filled] / count[filled]
 
 
+def _reference_corner_hz(magnitude: float) -> float:
+    """:data:`REFERENCE_CORNER_HZ`, carried to another magnitude by self-similarity.
+
+    A constant stress drop puts the corner at ``f_c ~ M_0^(-1/3)``, so a magnitude step
+    moves it by ``10 ** (-magnitude_step / 2)``. Exact at
+    :data:`~curvature.model.MAGNITUDE`, where it returns the published number unchanged.
+
+    Parameters
+    ----------
+    magnitude : float
+
+    Returns
+    -------
+    float
+    """
+    return REFERENCE_CORNER_HZ * 10.0 ** (-(magnitude - model.MAGNITUDE) / 2.0)
+
+
 def moment_rate(plate: Plate) -> None:
     """The moment rate function and its amplitude spectrum, both models.
 
     The spectrum is the panel the comparison lives or dies on. It is drawn log-log with
-    the two frequencies that bound where it can be believed marked: the corner of an
-    Mw 8.5, and the ~6 Hz where a 500 m subfault crossed at 3 km/s stops resolving
-    anything. Between those two the curves are the measurement; outside them they are
-    the discretisation.
+    the two frequencies that bound where it can be believed marked: the corner of the
+    plate's own event, and the ~6 Hz where a 500 m subfault crossed at 3 km/s stops
+    resolving anything. Between those two the curves are the measurement; outside them
+    they are the discretisation.
     """
     arrays, results = plate.arrays, plate.results
     figure, panels = plt.subplots(2, 2, figsize=(11.0, 8.0))
@@ -1412,7 +1517,10 @@ def moment_rate(plate: Plate) -> None:
         panels[0, column].set_title(SCENARIO_LABELS[name])
         panels[0, column].set_xlim(times[0], times[-1])
 
-        for at, note in ((0.01, "Mw 8.5 corner"), (6.0, "500 m subfault limit")):
+        for at, note in (
+            (_reference_corner_hz(plate.magnitude), f"Mw {plate.magnitude:g} corner"),
+            (6.0, "500 m subfault limit"),
+        ):
             panels[1, column].axvline(at, color=style.AXIS, linewidth=1.0)
             panels[1, column].annotate(
                 note,

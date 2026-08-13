@@ -2,7 +2,8 @@
 
 Run as ``uv run python -m curvature.ruptures`` for Hikurangi and
 ``uv run python -m curvature.ruptures puysegur_fiordland`` or ``... puyseguer`` for the
-Puysegur surfaces, matching :mod:`curvature.run`'s own invocation. It writes
+Puysegur surfaces, matching :mod:`curvature.run`'s own invocation -- including its second
+argument, the magnitude, which every filename then carries. It writes
 ``curvature/ruptures/<prefix><scenario>_<geometry>.rupture.h5``: every row of the
 interface's own run matrix times the two geometries, plus the true-depth counterfactual at
 each hypocentre the study decomposes at, which exists only as a flat model and so
@@ -39,7 +40,7 @@ import pyproj
 
 from curvature import model
 from curvature.geometry import NZTM, MeshPair, build_pair
-from curvature.run import INTERFACES, Interface, hypocentres
+from curvature.run import INTERFACES, Interface, hypocentres, prefix
 from rupture_generator.realisation import Realisation
 from rupture_generator.triangular.mesh import TriangleMesh
 from rupture_generator.triangular.pipeline import write_rupture_mesh
@@ -158,14 +159,19 @@ def _write(chart: TriangleMesh, path: Path, pulse: object, started: float) -> No
     )
 
 
-def write_interface(interface: Interface) -> None:
+def write_interface(interface: Interface, magnitude: float = model.MAGNITUDE) -> None:
     """Recompute every run on one interface and write its rupture files.
 
     Parameters
     ----------
     interface : Interface
+    magnitude : float, optional
+        The event. Defaults to :data:`~curvature.model.MAGNITUDE`, which writes the
+        files under the bare names they already have; any other magnitude carries
+        :func:`~curvature.run.tag`'s suffix in every filename, so two magnitudes' files
+        sit in one directory and neither can be mistaken for the other.
     """
-    prefix = "" if interface.name == "hikurangi" else f"{interface.name}_"
+    named = prefix(interface.name, magnitude)
     pair = build_pair(interface.path)
     taper_weight = model.lateral_taper(pair)
     located = hypocentres(pair, interface.dip_position_km)
@@ -175,7 +181,7 @@ def write_interface(interface: Interface) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         samplers = {
-            name: model.Sampler(pair, vertices, levels[name])
+            name: model.Sampler(pair, vertices, levels[name], magnitude)
             for name, vertices in geometries.items()
         }
 
@@ -192,7 +198,12 @@ def write_interface(interface: Interface) -> None:
         fields = {
             name: {
                 geometry: model.draw_fields(
-                    pair, samplers[geometry], vertices, velocity, taper_weight
+                    pair,
+                    samplers[geometry],
+                    vertices,
+                    velocity,
+                    taper_weight,
+                    magnitude,
                 )
                 for geometry, vertices in geometries.items()
             }
@@ -208,6 +219,7 @@ def write_interface(interface: Interface) -> None:
                 fields[name][geometry].pattern,
                 materials[name][geometry].rigidity_pa,
                 areas[geometry],
+                magnitude,
             )
             for geometry in geometries
         }
@@ -243,7 +255,7 @@ def write_interface(interface: Interface) -> None:
             )
             _write(
                 chart,
-                RUPTURES / f"{prefix}{scenario.name}_{geometry}.rupture.h5",
+                RUPTURES / f"{named}{scenario.name}_{geometry}.rupture.h5",
                 pulse,
                 started,
             )
@@ -265,10 +277,15 @@ def write_interface(interface: Interface) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         counterfactual = model.draw_fields(
-            pair, samplers["flat"], pair.curved_km, model.STANDARD, taper_weight
+            pair,
+            samplers["flat"],
+            pair.curved_km,
+            model.STANDARD,
+            taper_weight,
+            magnitude,
         )
     slip_m = model.slip_metres(
-        counterfactual.pattern, true_depth.rigidity_pa, areas["flat"]
+        counterfactual.pattern, true_depth.rigidity_pa, areas["flat"], magnitude
     )
 
     for site in interface.decomposed_sites:
@@ -293,20 +310,20 @@ def write_interface(interface: Interface) -> None:
         )
         _write(
             chart,
-            RUPTURES
-            / f"{prefix}{site}_standard_{TRUE_DEPTH_CONDITION}_flat.rupture.h5",
+            RUPTURES / f"{named}{site}_standard_{TRUE_DEPTH_CONDITION}_flat.rupture.h5",
             pulse,
             started,
         )
 
 
 def main() -> None:
-    """Write one interface's rupture files."""
+    """Write one interface's rupture files, at one magnitude."""
     RUPTURES.mkdir(parents=True, exist_ok=True)
     name = sys.argv[1] if len(sys.argv) > 1 else "hikurangi"
     if name not in INTERFACES:
         raise SystemExit(f"no such interface {name!r}: choose from {list(INTERFACES)}")
-    write_interface(INTERFACES[name])
+    magnitude = float(sys.argv[2]) if len(sys.argv) > 2 else model.MAGNITUDE
+    write_interface(INTERFACES[name], magnitude)
 
 
 if __name__ == "__main__":

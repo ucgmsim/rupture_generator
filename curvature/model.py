@@ -103,7 +103,15 @@ FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 MAGNITUDE = 8.5
-"""The event. A whole-interface Hikurangi rupture, which is what makes the parameter
+"""The event the study is reported at, and the default every function here takes.
+
+Every entry point that reads it -- :func:`covariance`, :class:`Sampler`,
+:func:`draw_fields`, :func:`slip_metres` -- takes ``magnitude`` as an optional argument
+defaulting to this, so a second magnitude is a caller's choice rather than an edit here.
+That is what makes the Mw 8.5 numbers reproducible while a control at another magnitude
+runs beside them: passing nothing is passing 8.5.
+
+The event. A whole-interface Hikurangi rupture, which is what makes the parameter
 domain 821 x 329 km and so puts the fault 14.6 by 15.3 correlation lengths across --
 comfortably outside the range where the SPDE's Neumann boundary folding is the field.
 
@@ -387,9 +395,15 @@ class _Chart:
         return self._centres_km
 
 
-def covariance() -> VonKarmanFilterParameters:
-    """Mai & Beroza's correlation lengths at :data:`MAGNITUDE`."""
-    return correlation_lengths(MAGNITUDE)
+def covariance(magnitude: float = MAGNITUDE) -> VonKarmanFilterParameters:
+    """Mai & Beroza's correlation lengths at a magnitude.
+
+    Parameters
+    ----------
+    magnitude : float, optional
+        Defaults to :data:`MAGNITUDE`.
+    """
+    return correlation_lengths(magnitude)
 
 
 def materials_of(depth_km: FloatArray, velocity: VelocityModel) -> Materials:
@@ -545,7 +559,13 @@ class Sampler:
     operator, since the operator reads the surface and never the velocity model.
     """
 
-    def __init__(self, pair: MeshPair, vertices_km: FloatArray, levels: list) -> None:
+    def __init__(
+        self,
+        pair: MeshPair,
+        vertices_km: FloatArray,
+        levels: list,
+        magnitude: float = MAGNITUDE,
+    ) -> None:
         """Assemble the operator on one of the two geometries.
 
         Parameters
@@ -557,10 +577,17 @@ class Sampler:
             models different.
         levels : list
             This model's multigrid hierarchy, coarsest first.
+        magnitude : float, optional
+            Sets the correlation lengths the operator is built for, so an operator
+            cannot be shared between two magnitudes. Defaults to :data:`MAGNITUDE`.
         """
         self._faces = pair.faces
         self._operator = spde.MaternOperator(
-            vertices_km, pair.faces, pair.parameters_km, covariance(), coarser=levels
+            vertices_km,
+            pair.faces,
+            pair.parameters_km,
+            covariance(magnitude),
+            coarser=levels,
         )
 
     @property
@@ -589,6 +616,7 @@ def draw_fields(
     vertices_km: FloatArray,
     velocity: VelocityModel,
     taper_weight: FloatArray,
+    magnitude: float = MAGNITUDE,
 ) -> Fields:
     """The four drawn fields of one model, under one velocity setting.
 
@@ -610,12 +638,16 @@ def draw_fields(
         Whether the depth ramps are live.
     taper_weight : FloatArray
         ``(F,)`` from :func:`lateral_taper`, shared.
+    magnitude : float, optional
+        Sets the correlation lengths and the average rise time. It must be the
+        magnitude ``sampler`` was built at, since the operator carries the covariance
+        the fields are drawn from. Defaults to :data:`MAGNITUDE`.
 
     Returns
     -------
     Fields
     """
-    structure = covariance()
+    structure = covariance(magnitude)
     chart = _Chart(pair.centres_km(vertices_km))
     slip_params = stages.SlipParams(
         covariance=structure,
@@ -632,7 +664,7 @@ def draw_fields(
 
     correction = timing.alpha_t(pair.frame.dip_deg, AVERAGE_RAKE_DEG)
     average_s = stages.average_rise_time_s(
-        moment.seismic_moment_nm(MAGNITUDE), RISE_TIME_COEFFICIENT, correction
+        moment.seismic_moment_nm(magnitude), RISE_TIME_COEFFICIENT, correction
     )
     rise_params = (
         stages.RiseTimeParams(average_s=average_s)

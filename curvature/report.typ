@@ -270,22 +270,30 @@ number that only means something because the two draws share their white noise.
     two are indistinguishable; with depth they separate.],
 )
 
-Under the control the two spectra are *indistinguishable* — corner frequency
-#text(font: "DejaVu Sans Mono")[0.00481] against
-#text(font: "DejaVu Sans Mono")[0.00484] Hz, and a high-frequency falloff of
-#text(font: "DejaVu Sans Mono")[−2.12] in both. This is a genuine null result and worth
-stating as one: the geometric stretch alone does not change the radiated spectrum.
+Under the control the two spectra are *indistinguishable* — a high-frequency falloff of
+#text(font: "DejaVu Sans Mono")[−2.12] in both, and peak moment rates that agree. This is
+a genuine null result and worth stating as one: the geometric stretch alone does not
+change the radiated spectrum.
 
 With the depth-dependent model they separate. Peak moment rate falls
-#text(font: "DejaVu Sans Mono")[6.3%], the corner frequency drops from
-#text(font: "DejaVu Sans Mono")[0.00432] to #text(font: "DejaVu Sans Mono")[0.00369] Hz —
-a 15% shift — and the falloff steepens from #text(font: "DejaVu Sans Mono")[−1.85] to
-#text(font: "DejaVu Sans Mono")[−1.95]. A rupture on the plane radiates as a slightly
-larger, slower event than the same rupture on the real interface.
+#text(font: "DejaVu Sans Mono")[6.3%] and the falloff steepens from
+#text(font: "DejaVu Sans Mono")[−1.85] to #text(font: "DejaVu Sans Mono")[−1.95]. A
+rupture on the plane radiates as a slightly larger, slower event than the same rupture on
+the real interface.
 
-The spectra are trustworthy to about 6 Hz, where the 525 m subfaults stop resolving the
-front. The sample interval of 0.02 s gives a Nyquist of 25 Hz, so the discretisation
-rather than the sampling sets that limit.
+*The corner frequency is not measured here, and an earlier version of this document
+reported it as though it were.* At every magnitude and on every interface the spectrum has
+already fallen below half its zero-frequency value at the *first* non-zero frequency bin,
+so any corner estimate is an interpolation inside bin one and is bounded by one over the
+record length. It reports the duration, not a corner. The magnitude control below is what
+exposed this: a fourfold change in moment moved the estimate by
+#text(font: "DejaVu Sans Mono")[+3.7%] where self-similarity requires roughly
+#text(font: "DejaVu Sans Mono")[−50%]. Resolving a corner for an event this long needs a
+record several times the rupture duration, which these do not have.
+
+The falloff and the peak *are* resolved, and the spectra are trustworthy to about 6 Hz,
+where the 525 m subfaults stop resolving the front. The sample interval of 0.02 s gives a
+Nyquist of 25 Hz, so the discretisation rather than the sampling sets that limit.
 
 == Plan and section views
 
@@ -568,6 +576,59 @@ fitted plane rather than by the curvature:
 
 A modeller cannot therefore reason from curvature alone about whether a planar
 approximation is safe. Both terms need measuring on the surface in hand.
+
+== Magnitude, as a control
+
+Mw 8.5 on a #text(font: "DejaVu Sans Mono")[178,374] km² interface gives a mean slip of
+#text(font: "DejaVu Sans Mono")[0.71] m, which is not a credible megathrust — the
+magnitude is far too small for the area it is spread over. Every surface was therefore
+rerun at a magnitude consistent with its own area, from the Contreras (2022) NGA-Sub
+interface relation, `Mw = log₁₀A + 3.8609`. The mesh, the seeds, the hypocentres and the
+sample interval are identical; magnitude is the only thing that changes.
+
+#html.elem("div", attrs: (class: "numeric"))[
+  #table(
+    columns: (1fr, auto, auto, auto),
+    stroke: none,
+    align: (left, right, right, right),
+    table.hline(),
+    table.header([*interface*], [*area km²*], [*Mw 8.5*], [*at its own Mw*]),
+    table.hline(),
+    [Hikurangi], [178,374], [0.71 m], [*5.71 m* @ 9.11],
+    [Puysegur–Fiordland], [75,780], [1.72 m], [*3.08 m* @ 8.67],
+    [Puyseguer], [65,766], [1.94 m], [*3.49 m* @ 8.67],
+    table.hline(),
+  )
+]
+
+*Every travel-time statistic is bit-identical between the two magnitudes*, on all three
+interfaces — every median, p90 and maximum, both rupture durations, and the true-depth
+counterfactual at all three hypocentres. Not close: identical, with zero mismatches over
+every quantity checked. The eikonal has no channel through which magnitude can reach it,
+and this demonstrates that rather than asserting it. *Every timing result in this
+document therefore holds unchanged at magnitudes consistent with the areas.*
+
+Two smaller corrections fall out. The *bare* area ratio is bit-identical, but the moment's
+area contribution is a *slip-weighted* fold, so it moves at the
+#text(font: "DejaVu Sans Mono")[10#super[−4]] level with the slip pattern — geometric in
+substance, not exactly so in arithmetic. And the rigidity term shifts by
+#text(font: "DejaVu Sans Mono")[−0.97%] on Hikurangi but barely at all on Puysegur
+(#text(font: "DejaVu Sans Mono")[0.02%]), which is consistent with the rest of the study:
+the term is only material where the depth error is large.
+
+Both magnitudes clear both admissibility bounds on all three surfaces with room — the
+worst case is Puyseguer, at a Mai ratio of #text(font: "DejaVu Sans Mono")[0.144] against
+the #text(font: "DejaVu Sans Mono")[0.6] limit and 6.9 correlation lengths across dip
+against the 4 the boundary condition needs. The first magnitude either bound refuses is
+beyond 9.5.
+
+Two notes for anyone quoting these numbers. The model's *slip-weighted mean rigidity is
+50.4 GPa*, not the 33 GPa a hand calculation usually assumes, so the mean slips above are
+about two-thirds of the textbook figure. And Contreras gives
+#text(font: "DejaVu Sans Mono")[8.75] and #text(font: "DejaVu Sans Mono")[8.69] for the two
+Puysegur surfaces on their own areas, so the single 8.67 used here is about
+#text(font: "DejaVu Sans Mono")[0.08] low for the larger one. It is also *not* the NZ NSHM
+2022 interface relation, which is Stirling et al.
 
 == What this adds up to
 

@@ -8,6 +8,18 @@ into ``curvature/results.json``, leaving every group it did not produce untouche
 three runs can be made in any order and repeated singly, and a rerun of one interface
 cannot silently drop another's numbers. Nothing here plots.
 
+A second argument is the magnitude: ``uv run python -m curvature.run hikurangi 9.11``.
+It defaults to :data:`~curvature.model.MAGNITUDE`, and everything else the run reads --
+the mesh, the seeds, the hypocentres, the sample interval, the six rows and the
+counterfactual -- is fixed, so the magnitude is the only difference between two runs and
+the second is a **control on magnitude dependence** rather than a second experiment. The
+prediction it tests is that the travel-time differences and the moment's area term do not
+move: the eikonal solver reads geometry and the velocity model and never the event, and
+the area ratio is a property of the two surfaces. What is expected to move is everything
+the event sizes -- the correlation lengths, the slip, the rise times and the corner
+frequency. :func:`merged` and :func:`tag` are what keep the two magnitudes' outputs
+beside each other rather than one on top of the other.
+
 One process per interface, because :func:`peak_memory_gb` reads a high-water mark: two
 interfaces in one process would report the larger one's peak for both, which is a bound
 rather than a measurement.
@@ -296,7 +308,7 @@ def peak_memory_gb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1.0e6
 
 
-def magnitude_ladder(pair: MeshPair) -> dict:
+def magnitude_ladder(pair: MeshPair, chosen: float = model.MAGNITUDE) -> dict:
     """Which magnitudes this interface can carry the correlation structure of.
 
     Two independent bounds, both read off the parameter extents rather than off the
@@ -307,6 +319,11 @@ def magnitude_ladder(pair: MeshPair) -> dict:
     Parameters
     ----------
     pair : MeshPair
+    chosen : float, optional
+        The magnitude actually run. Added as its own rung when it is not one of
+        :data:`MAGNITUDE_LADDER`'s half-steps, so the two bounds are reported *at* the
+        magnitude the numbers beside them were produced at rather than interpolated
+        between the rungs either side of it.
 
     Returns
     -------
@@ -318,7 +335,7 @@ def magnitude_ladder(pair: MeshPair) -> dict:
     extent_strike_km = float(np.ptp(pair.parameters_km[:, 0]))
     extent_dip_km = float(np.ptp(pair.parameters_km[:, 1]))
     ladder: dict[str, dict] = {}
-    for magnitude in MAGNITUDE_LADDER:
+    for magnitude in sorted({*MAGNITUDE_LADDER, chosen}):
         structure = correlation_lengths(magnitude)
         ratios = (
             structure.correlation_length_strike_km / extent_strike_km,
@@ -342,7 +359,7 @@ def magnitude_ladder(pair: MeshPair) -> dict:
     return {
         "parameter_extent_strike_km": extent_strike_km,
         "parameter_extent_dip_km": extent_dip_km,
-        "chosen_magnitude": model.MAGNITUDE,
+        "chosen_magnitude": chosen,
         "by_magnitude": ladder,
     }
 
@@ -461,6 +478,7 @@ def moment_report(
     pattern: FloatArray,
     curved: model.Materials,
     flat: model.Materials,
+    magnitude: float = model.MAGNITUDE,
 ) -> dict:
     """The moment error of the flat model, split into its area and rigidity parts.
 
@@ -495,6 +513,11 @@ def moment_report(
         ``(F,)`` the flat model's dimensionless slip pattern.
     curved, flat : model.Materials
         Sampled at each model's own depths.
+    magnitude : float, optional
+        The target the flat model scaled its pattern to. Only the two moments and the
+        mean slip read it: the three ratios are ratios of the same fold and the
+        magnitude cancels out of them exactly, which is why the area and rigidity terms
+        are properties of the geometry rather than of the event.
 
     Returns
     -------
@@ -512,7 +535,7 @@ def moment_report(
     flat_true = fold(flat.rigidity_pa, curved_km2)
     flat_flat = fold(flat.rigidity_pa, flat_km2)
 
-    target_nm = seismic_moment_nm(model.MAGNITUDE)
+    target_nm = seismic_moment_nm(magnitude)
     rigidity_ratio = curved.rigidity_pa / flat.rigidity_pa
     return {
         "target_moment_nm": target_nm,
@@ -546,14 +569,17 @@ def moment_report(
         ),
         "mean_slip_curved_m": float(
             np.sum(
-                curved_km2 * model.slip_metres(pattern, curved.rigidity_pa, curved_km2)
+                curved_km2
+                * model.slip_metres(pattern, curved.rigidity_pa, curved_km2, magnitude)
             )
             / curved_km2.sum()
         ),
     }
 
 
-def correlation_report(pair: MeshPair, fields: dict) -> tuple[dict, dict]:
+def correlation_report(
+    pair: MeshPair, fields: dict, magnitude: float = model.MAGNITUDE
+) -> tuple[dict, dict]:
     """Delivered correlation lengths, against **surface** separation, for both models.
 
     Two measurements, and they answer different questions. The **Gaussian** is the
@@ -567,6 +593,9 @@ def correlation_report(pair: MeshPair, fields: dict) -> tuple[dict, dict]:
     pair : MeshPair
     fields : dict
         ``{"curved": Fields, "flat": Fields}``.
+    magnitude : float, optional
+        Sets the correlation lengths the delivered ones are measured against, so it must
+        be the magnitude ``fields`` were drawn at.
 
     Returns
     -------
@@ -577,7 +606,7 @@ def correlation_report(pair: MeshPair, fields: dict) -> tuple[dict, dict]:
     height, _, _ = analysis.rasterise(
         parameters, pair.displacement_km[pair.faces].mean(axis=1), RASTER_SPACING_KM
     )
-    structure = model.covariance()
+    structure = model.covariance(magnitude)
     asked = {
         "strike": structure.correlation_length_strike_km,
         "dip": structure.correlation_length_dip_km,
@@ -784,6 +813,7 @@ def true_depth_report(
     located: dict,
     sites: tuple[str, ...],
     saved: dict,
+    magnitude: float = model.MAGNITUDE,
 ) -> dict:
     """The counterfactual row, and the two numbers a refactor decision turns on.
 
@@ -820,6 +850,9 @@ def true_depth_report(
         Which of them to run, from :attr:`Interface.decomposed_sites`.
     saved : dict
         Mutated with the rasters, the polar coordinates and the spectra.
+    magnitude : float, optional
+        The event, passed on to the fields and the moment fold so the counterfactual is
+        the same event as the rows it is compared against.
 
     Returns
     -------
@@ -876,11 +909,14 @@ def true_depth_report(
                 pair.curved_km if ramps_read_true_depth else pair.flat_km,
                 model.STANDARD,
                 taper_weight,
+                magnitude,
             )
-        slip_m = model.slip_metres(fields.pattern, materials.rigidity_pa, areas["flat"])
+        slip_m = model.slip_metres(
+            fields.pattern, materials.rigidity_pa, areas["flat"], magnitude
+        )
 
         report["moment"][condition] = moment_report(
-            pair, fields.pattern, materials, materials
+            pair, fields.pattern, materials, materials, magnitude
         )
         report["moment"][condition].update(analysis.spread(slip_m, "slip_flat", "m"))
         report["moment"][condition].update(
@@ -982,12 +1018,20 @@ def true_depth_report(
     return report
 
 
-def study(interface: Interface) -> tuple[dict, dict]:
+def study(
+    interface: Interface, magnitude: float = model.MAGNITUDE
+) -> tuple[dict, dict]:
     """Run the whole matrix on one interface.
 
     Parameters
     ----------
     interface : Interface
+    magnitude : float, optional
+        The event. Everything else -- the mesh, the seeds, the hypocentres, the sample
+        interval, the six rows and the counterfactual -- is held fixed, so a second
+        magnitude is a control on magnitude dependence rather than a second experiment.
+        Defaults to :data:`~curvature.model.MAGNITUDE`, which reproduces the study's own
+        numbers.
 
     Returns
     -------
@@ -1007,7 +1051,7 @@ def study(interface: Interface) -> tuple[dict, dict]:
         "hypocentres": hypocentres(pair, interface.dip_position_km),
         "settings": {
             "decomposed_sites": list(interface.decomposed_sites),
-            "magnitude": model.MAGNITUDE,
+            "magnitude": magnitude,
             "sample_interval_s": model.SAMPLE_INTERVAL_S,
             "velocity_fraction": model.VELOCITY_FRACTION,
             "average_rake_deg": model.AVERAGE_RAKE_DEG,
@@ -1036,11 +1080,12 @@ def study(interface: Interface) -> tuple[dict, dict]:
         },
         "scenarios": {},
     }
-    if interface is not HIKURANGI_INTERFACE:
-        # Hikurangi's magnitude was settled before this study and its group is quoted
-        # as it stands, so the ladder is reported where it was actually used to choose.
+    if interface is not HIKURANGI_INTERFACE or magnitude != model.MAGNITUDE:
+        # Hikurangi's Mw 8.5 magnitude was settled before this study and its group is
+        # quoted as it stands, so the ladder is reported where it was actually used to
+        # choose -- which is every surface at every other magnitude, Hikurangi included.
         results["settings"]["dip_position_km"] = interface.dip_position_km
-        results["magnitude_ladder"] = magnitude_ladder(pair)
+        results["magnitude_ladder"] = magnitude_ladder(pair, magnitude)
 
     geometries = {"curved": pair.curved_km, "flat": pair.flat_km}
     levels = {"curved": pair.curved_levels, "flat": pair.flat_levels}
@@ -1049,7 +1094,7 @@ def study(interface: Interface) -> tuple[dict, dict]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         samplers = {
-            name: model.Sampler(pair, vertices, levels[name])
+            name: model.Sampler(pair, vertices, levels[name], magnitude)
             for name, vertices in geometries.items()
         }
     timings["operator_setup_s"] = time.perf_counter() - step
@@ -1075,7 +1120,12 @@ def study(interface: Interface) -> tuple[dict, dict]:
             warnings.simplefilter("ignore")
             fields[name] = {
                 geometry: model.draw_fields(
-                    pair, samplers[geometry], vertices, velocity, taper_weight
+                    pair,
+                    samplers[geometry],
+                    vertices,
+                    velocity,
+                    taper_weight,
+                    magnitude,
                 )
                 for geometry, vertices in geometries.items()
             }
@@ -1090,6 +1140,7 @@ def study(interface: Interface) -> tuple[dict, dict]:
                 fields[name][geometry].pattern,
                 materials[name][geometry].rigidity_pa,
                 areas[geometry],
+                magnitude,
             )
             for geometry in geometries
         }
@@ -1103,6 +1154,7 @@ def study(interface: Interface) -> tuple[dict, dict]:
             fields[name]["flat"].pattern,
             materials[name]["curved"],
             materials[name]["flat"],
+            magnitude,
         )
         results["moment"][name]["truncated_fraction_curved"] = fields[name][
             "curved"
@@ -1196,7 +1248,7 @@ def study(interface: Interface) -> tuple[dict, dict]:
         )
 
     step = time.perf_counter()
-    correlation, profiles = correlation_report(pair, fields["standard"])
+    correlation, profiles = correlation_report(pair, fields["standard"], magnitude)
     results["correlation"] = correlation
     timings["correlation_s"] = time.perf_counter() - step
 
@@ -1435,12 +1487,16 @@ def study(interface: Interface) -> tuple[dict, dict]:
         results["hypocentres"],
         interface.decomposed_sites,
         saved,
+        magnitude,
     )
     results["true_depth"]["refactor"] = refactor_numbers(results)
     results["attribution"]["by_site"] = by_site(results, interface.decomposed_sites)
     timings["true_depth_s"] = time.perf_counter() - step
 
-    if interface is HIKURANGI_INTERFACE:
+    if interface is HIKURANGI_INTERFACE and magnitude == model.MAGNITUDE:
+        # The survey builds meshes and measures their geometry; nothing in it reads the
+        # event. Rerunning it at a second magnitude would spend four minutes producing
+        # the same table, so the magnitude that already carries it keeps it.
         step = time.perf_counter()
         results["resolution"] = resolution.survey()
         timings["resolution_survey_s"] = time.perf_counter() - step
@@ -1615,7 +1671,51 @@ def refactor_numbers(results: dict) -> dict:
     return numbers
 
 
-def merged(groups: dict, interface: Interface) -> dict:
+def tag(magnitude: float) -> str:
+    """The filename suffix that names a magnitude, empty at the study's own.
+
+    The Mw 8.5 rasters, figures and rupture files are published under bare names and are
+    read by paths written down elsewhere, so the baseline magnitude cannot gain a suffix
+    without breaking them. Every other magnitude carries one, which is what keeps two
+    magnitudes' outputs in one directory without either overwriting the other.
+
+    Parameters
+    ----------
+    magnitude : float
+
+    Returns
+    -------
+    str
+        ``""`` at :data:`~curvature.model.MAGNITUDE`, else ``"_mw<magnitude>"``.
+    """
+    return "" if magnitude == model.MAGNITUDE else f"_mw{magnitude:g}"
+
+
+def prefix(interface_name: str, magnitude: float) -> str:
+    """What one interface's outputs at one magnitude are named with.
+
+    One rule, here rather than in each of the three programs that writes files, because
+    a figure, a raster and a rupture file that disagreed about the prefix would be three
+    sets of outputs nobody could match up. Hikurangi at :data:`~curvature.model.MAGNITUDE`
+    takes no prefix at all, which is what keeps the published figures at the paths the
+    document already writes down.
+
+    Parameters
+    ----------
+    interface_name : str
+    magnitude : float
+
+    Returns
+    -------
+    str
+        Empty, or a trailing-underscore prefix such as ``puyseguer_mw8.67_``.
+    """
+    stem = "" if interface_name == HIKURANGI_INTERFACE.name else interface_name
+    named = f"{stem}{tag(magnitude)}".lstrip("_")
+    return f"{named}_" if named else ""
+
+
+def merged(groups: dict, interface: Interface, magnitude: float) -> dict:
     """This interface's groups, folded into whatever ``results.json`` already holds.
 
     Reading the file back rather than writing it fresh is what lets the three
@@ -1623,11 +1723,21 @@ def merged(groups: dict, interface: Interface) -> dict:
     and leaves the others exactly as they were, which is also the property the published
     document needs from Hikurangi's numbers.
 
+    **Magnitude is a dimension of the file rather than a rewrite of it.** The baseline
+    magnitude keeps the layout the document quotes -- Hikurangi at the top level, the two
+    Puysegur surfaces under ``puysegur`` -- and every other magnitude lands under
+    ``magnitudes/mw_<magnitude>/<interface>``, one flat shape for all three surfaces
+    because nothing there is published under a path yet. So a control at a second
+    magnitude adds keys and moves none, and the two are read side by side rather than one
+    replacing the other.
+
     Parameters
     ----------
     groups : dict
         What :func:`study` returned.
     interface : Interface
+    magnitude : float
+        Which magnitude the groups were produced at.
 
     Returns
     -------
@@ -1636,6 +1746,10 @@ def merged(groups: dict, interface: Interface) -> dict:
     """
     path = HERE / "results.json"
     results = json.loads(path.read_text()) if path.exists() else {}
+    if magnitude != model.MAGNITUDE:
+        by_magnitude = results.setdefault("magnitudes", {})
+        by_magnitude.setdefault(f"mw_{magnitude:g}", {})[interface.name] = groups
+        return results
     if interface is HIKURANGI_INTERFACE:
         results.update(groups)
         return results
@@ -1673,24 +1787,25 @@ def replaced(path: Path, write: Callable[[Path], None]) -> None:
 
 
 def main() -> None:
-    """Run one interface and merge its results in."""
+    """Run one interface at one magnitude and merge its results in."""
     warnings.simplefilter("always", DegradedSeed)
     name = sys.argv[1] if len(sys.argv) > 1 else HIKURANGI_INTERFACE.name
     if name not in INTERFACES:
         raise SystemExit(f"no such interface {name!r}: choose from {list(INTERFACES)}")
     interface = INTERFACES[name]
+    magnitude = float(sys.argv[2]) if len(sys.argv) > 2 else model.MAGNITUDE
 
-    groups, saved = study(interface)
+    groups, saved = study(interface, magnitude)
     stem = "arrays" if interface is HIKURANGI_INTERFACE else interface.name
     (HERE / "data").mkdir(exist_ok=True)
     replaced(
-        HERE / "data" / f"{stem}.npz",
+        HERE / "data" / f"{stem}{tag(magnitude)}.npz",
         lambda partial: np.savez_compressed(partial, **saved),
     )
     replaced(
         HERE / "results.json",
         lambda partial: partial.write_text(
-            json.dumps(merged(groups, interface), indent=2, sort_keys=False)
+            json.dumps(merged(groups, interface, magnitude), indent=2, sort_keys=False)
         ),
     )
     print(json.dumps(groups["run"], indent=2))
