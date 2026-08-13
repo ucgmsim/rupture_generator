@@ -45,6 +45,7 @@ zero and neither is an error:
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import warnings
 from pathlib import Path
 
@@ -69,7 +70,7 @@ from rupture_generator.config.rupture import (
 )
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse
 from rupture_generator.realisation import Realisation
-from rupture_generator.sampling import von_karman_field
+from rupture_generator.sampling import DegradedCorrelation, von_karman_field
 from rupture_generator.triangular import assemble as tri_assemble
 from rupture_generator.triangular import pipeline as tri
 from rupture_generator.triangular.fim import DegradedSeed
@@ -176,6 +177,7 @@ def _shared_sampler(chart: RuptureMesh, lookup: np.ndarray) -> tri.SamplerFactor
         _mesh: TriangleMesh,
         _geometry: tri.SegmentGeometry,
         _covariance: object,
+        _coarser: object = (),
     ) -> stages.FieldSampler:
         def draw(
             _chart: object, covariance: object, rng: np.random.Generator
@@ -1058,6 +1060,284 @@ def test_a_curved_subduction_interface_ruptures_end_to_end() -> None:
     assert tri_assemble.moment_newton_m(srf) == pytest.approx(
         realisation.moment_newton_m, rel=1e-5
     )
+
+
+# ============================================================================
+# Refinement, and the hierarchy the sampler solves on
+# ============================================================================
+
+
+def test_a_refinement_is_the_same_surface_four_times_over() -> None:
+    """One-to-four subdivision adds resolution and no geometry.
+
+    The midpoints lie on the coarse faces, so total area, the parameter extent and the
+    frame are all invariants -- which is what makes a refined mesh comparable with the
+    one it came from, and what lets `refined` keep the coarse mesh's frame rather than
+    refitting one to the new points.
+    """
+    chart, _ = _planar_chart(2.0)
+    coarse = from_chart(chart)
+    fine, hierarchy = tri.refined(coarse, 2)
+
+    assert fine.face_count == coarse.face_count * 16
+    assert len(hierarchy) == 2
+    assert fine.frame.strike_deg == pytest.approx(coarse.frame.strike_deg)
+    assert fine.areas_km2().sum() == pytest.approx(coarse.areas_km2().sum(), rel=1e-12)
+    assert np.allclose(
+        np.ptp(fine.parameters_km(), axis=0), np.ptp(coarse.parameters_km(), axis=0)
+    )
+    # The coarse vertices keep their own indices and their own coordinates, which is
+    # what makes the prolongation the identity on that block.
+    assert np.allclose(
+        fine.parameters_km()[: coarse.node_count], coarse.parameters_km()
+    )
+
+    # Coarsest first, each transfer landing on the level above it, the last on `fine`.
+    counts = [level[0].shape[0] for level in hierarchy] + [fine.node_count]
+    for index, (_vertices, _faces, prolongation) in enumerate(hierarchy):
+        assert prolongation.shape == (counts[index + 1], counts[index])
+
+
+def test_no_levels_is_the_mesh_itself() -> None:
+    """The identity case, so a caller can always go through the same path."""
+    mesh = from_chart(_planar_chart(2.0)[0])
+    same, hierarchy = tri.refined(mesh, 0)
+    assert hierarchy == []
+    assert np.array_equal(same.faces(), mesh.faces())
+
+
+def test_a_refined_segment_ruptures_the_same_whichever_solver_draws_it() -> None:
+    """The hierarchy changes the solver, not the model.
+
+    :func:`~rupture_generator.triangular.pipeline.matern_sampler` factorises without a
+    hierarchy and runs multigrid-preconditioned conjugate gradients with one, and
+    `spde.ITERATIVE_TOLERANCE`'s docstring is explicit that the two do not agree
+    pointwise -- the chained shifted solves amplify, so the same seed gives a different
+    draw. What must agree is the *statistics*, and the moment, which is a fold over
+    whatever the field turned out to be.
+    """
+    chart, crs = _planar_chart(2.0)
+    mesh, hierarchy = tri.refined(from_chart(chart), 1)
+    config = _config()
+
+    def run(hierarchies: dict[str, object] | None) -> Realisation:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DegradedSeed)
+            warnings.simplefilter("ignore", DegradedCorrelation)
+            return tri.generate(
+                config, Realisation({"hope": mesh}, crs), hierarchies=hierarchies
+            )
+
+    direct = run(None)
+    multigrid = run({"hope": hierarchy})
+
+    assert multigrid.moment_newton_m == pytest.approx(direct.moment_newton_m, rel=1e-12)
+    for field in ("slip_m", "rise_time_s", "rake_deg"):
+        theirs, ours = direct["hope"][field], multigrid["hope"][field]
+        assert ours.mean() == pytest.approx(theirs.mean(), rel=0.05), field
+        assert ours.std() == pytest.approx(theirs.std(), rel=0.10), field
+
+
+# ============================================================================
+# The streaming SRF writer
+# ============================================================================
+
+
+@pytest.mark.parametrize("budget_bytes", (1 << 30, 1 << 16, 1 << 12))
+def test_the_streamed_file_is_the_whole_file_writers_own(
+    bent: Generated, tmp_path: Path, budget_bytes: int
+) -> None:
+    """Blocking must be invisible in the file, at every block size.
+
+    The two writers reach the same bytes by different routes -- one holds every pulse
+    of the rupture and the other holds a gibibyte of them -- so this is what says the
+    route does not show. The small budgets are the interesting ones: 4 KiB is under a
+    single pulse here, so every block is one face and every boundary is exercised.
+    """
+    realisation, config, _ = bent
+
+    whole = tmp_path / "whole.h5"
+    tri_assemble.to_srf_file(realisation).write_sw4_hdf5(whole)
+
+    streamed = tmp_path / "streamed.h5"
+    tri_assemble.write_sw4_hdf5(
+        streamed, realisation, pipeline.pulse_model(config), budget_bytes=budget_bytes
+    )
+
+    with h5py.File(whole) as expected, h5py.File(streamed) as actual:
+        assert actual.attrs["VERSION"] == expected.attrs["VERSION"]
+        assert np.array_equal(actual.attrs["PLANE"], expected.attrs["PLANE"])
+        for column in expected["POINTS"].dtype.names:
+            assert np.array_equal(
+                actual["POINTS"][column], expected["POINTS"][column]
+            ), column
+        assert np.array_equal(actual["SR1"][:], expected["SR1"][:])
+
+
+def test_a_streamed_rupture_states_the_moment_it_was_scaled_to(
+    bent: Generated, tmp_path: Path
+) -> None:
+    """The check that catches a block boundary dropping or duplicating points.
+
+    Read off the **file**, in the file's own units, without touching ``SR1`` -- which
+    is what keeps it available at a resolution where the file is eleven gigabytes. The
+    tolerance is float32: the columns the moment is summed from are stored single
+    precision, and 1.6e-8 is what that costs.
+    """
+    realisation, config, _ = bent
+    path = tmp_path / "streamed.h5"
+    tri_assemble.write_sw4_hdf5(
+        path, realisation, pipeline.pulse_model(config), budget_bytes=1 << 13
+    )
+
+    assert tri_assemble.hdf5_moment_newton_m(path) == pytest.approx(
+        realisation.moment_newton_m, rel=1e-5
+    )
+    with h5py.File(path) as handle:
+        assert handle["POINTS"].shape[0] == realisation[realisation.root].face_count
+
+
+def test_write_blocks_cover_every_face_once_in_order() -> None:
+    """A block is a slice of the point order, or it is a different file.
+
+    ``SR1`` is every pulse concatenated in subfault order and ``POINTS`` is one record
+    per subfault in the same order, so anything other than consecutive covering slices
+    writes a rupture whose pulses belong to the wrong triangles.
+    """
+    params = pipeline.pulse_model(_config())
+    rise_time_s = np.linspace(0.05, 4.0, 500)
+
+    for budget_bytes in (1 << 30, 1 << 16, 1 << 10, 12):
+        blocks = list(tri.face_blocks(rise_time_s, params, budget_bytes))
+        assert blocks[0].start == 0
+        assert blocks[-1].stop == rise_time_s.size
+        assert all(
+            after.start == before.stop for before, after in itertools.pairwise(blocks)
+        )
+        assert all(block.stop > block.start for block in blocks)
+
+    # And the budget is honoured wherever more than one face fits in it: a block's
+    # bound on its own samples stays under what the budget buys at the cost the caller
+    # states. Twelve bytes is the SRF writer's -- the kernel's f64 and the float32 it
+    # narrows into -- against the eight the native writer pays.
+    budget_bytes = 1 << 20
+    per_sample = 8 + np.dtype(np.float32).itemsize
+    bound = rise_time_s / params.sample_interval_s + tri.PULSE_SAMPLE_MARGIN
+    for block in tri.face_blocks(rise_time_s, params, budget_bytes, per_sample):
+        if block.stop - block.start > 1:
+            assert bound[block].sum() * per_sample <= budget_bytes
+
+
+@pytest.mark.parametrize("budget_bytes", (1 << 30, 1 << 12))
+def test_a_streamed_rupture_file_is_the_resident_writers_own(
+    tmp_path: Path, budget_bytes: int
+) -> None:
+    """The native file, written a block of faces at a time, is the whole one.
+
+    The route production takes for a 400 m rupture, where the pulses are 2.45 G samples
+    and 19.6 GB of float64 that must never all be resident. The stored form is the same
+    two CSR arrays under the same names, so this compares them and the fields beside
+    them exactly, at a block size that makes every boundary a block boundary.
+
+    Run on the **two-segment** geometry, because the streaming route writes each
+    segment's samples into that segment's own group and the offsets restart at zero per
+    segment: a writer that carried either across the segment boundary would still write
+    a file, and a one-segment rupture would never notice.
+    """
+    geometry, config = _two_fault_geometry()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DegradedSeed)
+        warnings.simplefilter("ignore", DegradedCorrelation)
+        streamed = tri.generate(config, tri.segments_of(geometry), synthesise=False)
+        resident = tri.generate(config, tri.segments_of(geometry))
+    assert set(streamed) == {"kaikoura:0", "kaikoura:1"}
+
+    tri.write_rupture_mesh(
+        streamed,
+        tmp_path / "streamed.h5",
+        pipeline.pulse_model(config),
+        budget_bytes=budget_bytes,
+    )
+    tri.write_rupture_mesh(resident, tmp_path / "resident.h5")
+
+    read, _ = read_mesh(tmp_path / "streamed.h5")
+    expected, _ = read_mesh(tmp_path / "resident.h5")
+    for surface, segments in expected.items():
+        for wanted, actual in zip(segments, read[surface], strict=True):
+            offsets, samples = wanted.pulses
+            back_offsets, back_samples = actual.pulses
+            assert np.array_equal(offsets, back_offsets)
+            assert np.array_equal(samples, back_samples)
+            assert actual.fields() == wanted.fields()
+            for field in sorted(wanted.fields()):
+                assert np.array_equal(actual[field], wanted[field]), field
+            assert actual.attrs["sample_interval_s"] == pytest.approx(
+                wanted.attrs["sample_interval_s"]
+            )
+
+
+def test_writing_a_rupture_file_refuses_to_guess_about_its_pulses(
+    bent: Generated, tmp_path: Path
+) -> None:
+    """Neither missing pulses nor two sources of them pass silently.
+
+    Both would produce a file: one with no slip rate at all, one with every pulse
+    written twice into a run that only the offsets say the length of. The second is the
+    dangerous one, because the offsets would still parse.
+    """
+    realisation, config, _ = bent
+
+    with pytest.raises(ValueError, match="already carry their pulses"):
+        tri.write_rupture_mesh(
+            realisation, tmp_path / "twice.h5", pipeline.pulse_model(config)
+        )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DegradedSeed)
+        warnings.simplefilter("ignore", DegradedCorrelation)
+        unsynthesised = tri.generate(
+            config,
+            tri.segments_of(read_geometry(EXAMPLES / "hope.geometry.toml")),
+            synthesise=False,
+        )
+    with pytest.raises(ValueError, match="no slip-rate pulses"):
+        tri.write_rupture_mesh(unsynthesised, tmp_path / "none.h5")
+    with pytest.raises(ValueError, match="streaming route writes netCDF"):
+        tri.write_rupture_mesh(
+            unsynthesised, tmp_path / "none.zarr", pipeline.pulse_model(config)
+        )
+
+
+def test_a_rupture_generated_without_pulses_still_writes_its_srf(
+    tmp_path: Path,
+) -> None:
+    """What production runs: S9 happens inside the writer, so it never has to fit.
+
+    The realisation carries no pulses at all, and the file it produces is the one the
+    full pipeline's would be -- which is the whole claim `synthesise=False` makes.
+    """
+    geometry = read_geometry(EXAMPLES / "hope.geometry.toml")
+    config = _config()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DegradedSeed)
+        warnings.simplefilter("ignore", DegradedCorrelation)
+        unsynthesised = tri.generate(
+            config, tri.segments_of(geometry), synthesise=False
+        )
+        whole = tri.generate(config, tri.segments_of(geometry))
+
+    assert unsynthesised[unsynthesised.root].pulses is None
+    assert whole[whole.root].pulses is not None
+
+    streamed, expected = tmp_path / "streamed.h5", tmp_path / "whole.h5"
+    tri_assemble.write_sw4_hdf5(streamed, unsynthesised, pipeline.pulse_model(config))
+    tri_assemble.to_srf_file(whole).write_sw4_hdf5(expected)
+
+    with h5py.File(streamed) as actual, h5py.File(expected) as wanted:
+        assert np.array_equal(actual["SR1"][:], wanted["SR1"][:])
+        assert np.array_equal(actual["POINTS"]["NT1"], wanted["POINTS"]["NT1"])
 
 
 def test_the_stand_in_sampler_says_it_is_not_a_model() -> None:

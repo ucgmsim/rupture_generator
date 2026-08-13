@@ -519,6 +519,11 @@ class SrfFile:
     ) -> None:
         """Write the SRF file in SW4's SRF-HDF5 format.
 
+        The whole file in one block, because an `SrfFile` is the whole file already.
+        A rupture too large to be one of these is written through `Sw4Hdf5Stream`
+        directly, which is what this delegates to, so there is one statement of the
+        layout rather than two.
+
         Parameters
         ----------
         output_ffp : Path
@@ -534,27 +539,15 @@ class SrfFile:
            Livermore National Laboratory, Livermore, CA.
            https://github.com/geodynamics/sw4/blob/master/doc/SW4_UsersGuide.pdf
         """
-        plane_data = np.zeros(len(self.planes), dtype=SW4_PLANE_DTYPE)
-        for sw4_field, attribute in _SW4_PLANE_FIELDS.items():
-            plane_data[sw4_field] = [getattr(plane, attribute) for plane in self.planes]
-
-        points_data = np.zeros(len(self.points), dtype=SW4_POINTS_DTYPE)
-        for sw4_field, attribute in _SW4_POINT_FIELDS.items():
-            points_data[sw4_field] = getattr(self.points, attribute)
-
-        points_data["NT1"] = np.diff(self.slip_rate.indptr)
-        if self.points.has_material_properties:
-            points_data["VS"] = self.points.shear_speed_cm_s
-            points_data["DEN"] = self.points.density_g_cm3
-
-        with h5py.File(output_ffp, "w") as h5file:
-            h5file.attrs.create("VERSION", np.float32(self.version))
-            h5file.attrs.create("PLANE", plane_data)
-            h5file.create_dataset("POINTS", data=points_data)
-            # `asarray`, not `astype`: already float32, and a copy here is 3.8 GB on a
-            # twenty-fault rupture.
-            h5file.create_dataset(
-                "SR1", data=np.asarray(self.slip_rate.data, dtype=np.float32)
+        with Sw4Hdf5Stream(output_ffp, self.version) as stream:
+            for plane in self.planes:
+                stream.plane(plane)
+            stream.points(
+                self.points,
+                np.diff(self.slip_rate.indptr),
+                # `asarray`, not `astype`: already float32, and a copy here is 3.8 GB
+                # on a twenty-fault rupture.
+                np.asarray(self.slip_rate.data, dtype=np.float32),
             )
 
     @property
@@ -577,6 +570,183 @@ class SrfFile:
     def segments(self) -> Segments:  # numpydoc ignore=RT01
         """Segments: A sequence of segments in the SRF."""
         return Segments(self.planes, self.points)
+
+
+SW4_POINTS_PER_CHUNK = 1 << 14
+"""How many points one HDF5 chunk of the ``POINTS`` dataset holds.
+
+A resizable dataset has to be chunked, and the chunk is the unit HDF5 reads, writes
+and caches. `SW4_POINTS_DTYPE` is 68 bytes, so this is a 1.1 MB chunk -- comfortably
+above the ~64 KB below which the per-chunk B-tree overhead starts to show, and small
+enough that a reader wanting a few points does not pull a hundred megabytes. The
+point block of a whole twenty-fault rupture is a few hundred of these.
+"""
+
+SW4_SAMPLES_PER_CHUNK = 1 << 20
+"""How many slip-rate samples one HDF5 chunk of ``SR1`` holds.
+
+Four megabytes of float32. The dataset is written once, front to back, and read the
+same way, so the only thing the size trades is B-tree entries against the granularity
+of a partial read; at a 400 m cut the 2.45 G samples of one interface are 2336 of
+these. Deliberately independent of the writer's own chunking over faces
+(`rupture_generator.triangular.pipeline.STREAM_BUDGET_BYTES`) -- one is how much
+memory a producer may use and the other is how the file is laid out, and tying them
+together would make a memory budget change the bytes on disk.
+"""
+
+
+class Sw4Hdf5Stream:
+    """SW4's SRF-HDF5 format, written a block of points at a time.
+
+    **The layout, stated once.** `SrfFile.write_sw4_hdf5` hands over the whole file in
+    one block and a generated rupture too large to hold hands over a chunk of subfaults
+    at a time; both come through here, so there is one description of the format rather
+    than a second transcription that can drift.
+
+    What makes the incremental form possible is that this format is *append-only in
+    subfault order*: ``POINTS`` is one record per subfault and ``SR1`` is every pulse
+    concatenated in the same order, with each subfault's length in its own ``NT1``
+    field. There is no index array to rebuild across blocks and no global offset table
+    -- unlike the text path, whose CSR ``indices`` `assemble.srf_file` has to
+    construct. So a block of subfaults can be written and forgotten, and the only
+    invariant across blocks is that ``NT1`` and the samples appended agree, which is
+    what the file's own moment then checks.
+
+    ``PLANE`` is an attribute rather than a dataset and attributes cannot grow, so the
+    headers are collected and written on close. That is why this is a context manager:
+    leaving the block is what finishes the file.
+
+    Parameters
+    ----------
+    output_ffp : Path or str
+        Where to write.
+    version : str
+        The SRF version, one of `SUPPORTED_VERSIONS`. Stored as the file's ``VERSION``
+        attribute, a float32, exactly as the whole-file writer stores it.
+
+    Examples
+    --------
+    >>> with Sw4Hdf5Stream(path, "2.0") as stream:  # doctest: +SKIP
+    ...     stream.plane(header)
+    ...     for block, lengths, samples in blocks:
+    ...         stream.points(block, lengths, samples)
+    """
+
+    def __init__(self, output_ffp: Path | str, version: str) -> None:
+        """Hold where to write and what version to declare."""
+        self._path = output_ffp
+        self._version = version
+        self._planes: list[PlaneHeader] = []
+        self._file: h5py.File | None = None
+        self._points: h5py.Dataset | None = None
+        self._samples: h5py.Dataset | None = None
+
+    def __enter__(self) -> Self:
+        """Open the file and create both datasets empty and growable.
+
+        Returns
+        -------
+        Self
+        """
+        self._file = h5py.File(self._path, "w")
+        self._file.attrs.create("VERSION", np.float32(self._version))
+        self._points = self._file.create_dataset(
+            "POINTS",
+            shape=(0,),
+            maxshape=(None,),
+            dtype=SW4_POINTS_DTYPE,
+            chunks=(SW4_POINTS_PER_CHUNK,),
+        )
+        self._samples = self._file.create_dataset(
+            "SR1",
+            shape=(0,),
+            maxshape=(None,),
+            dtype=np.float32,
+            chunks=(SW4_SAMPLES_PER_CHUNK,),
+        )
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        """Write the plane headers and close, whether or not the block raised."""
+        assert self._file is not None
+        plane_data = np.zeros(len(self._planes), dtype=SW4_PLANE_DTYPE)
+        for sw4_field, attribute in _SW4_PLANE_FIELDS.items():
+            plane_data[sw4_field] = [
+                getattr(plane, attribute) for plane in self._planes
+            ]
+        self._file.attrs.create("PLANE", plane_data)
+        self._file.close()
+        self._file = self._points = self._samples = None
+
+    def plane(self, header: PlaneHeader) -> None:
+        """Add one PLANE record. Order is the order the points follow.
+
+        Parameters
+        ----------
+        header : PlaneHeader
+        """
+        self._planes.append(header)
+
+    def points(
+        self,
+        points: Points,
+        pulse_lengths: np.ndarray,
+        samples_cm_s: np.ndarray,
+    ) -> None:
+        """Append one block of subfaults and their concatenated pulses.
+
+        Parameters
+        ----------
+        points : Points
+            The block's columns, already in the format's own units. Material
+            properties are written when they are there, which is what makes the file
+            version 2.0; the declared version is not re-checked here because
+            `SrfFile.__post_init__` is where that disagreement is caught.
+        pulse_lengths : np.ndarray
+            ``(n,)`` samples in each of this block's pulses -- the ``NT1`` column.
+        samples_cm_s : np.ndarray
+            The block's pulses concatenated, in centimetres per second, as long as
+            ``pulse_lengths.sum()``.
+
+        Raises
+        ------
+        RuntimeError
+            If called outside the context manager, where there is no open file.
+        ValueError
+            If the samples handed over are not as many as the lengths claim. That is
+            the one thing a block can get wrong on its own, and it would otherwise
+            surface as a rupture whose pulses are shifted by a subfault from some
+            point onwards -- plausible, and wrong from there to the end of the file.
+        """
+        if self._points is None or self._samples is None:
+            raise RuntimeError(
+                "an Sw4Hdf5Stream writes inside its `with` block; outside it there is "
+                "no open file"
+            )
+        expected = int(np.sum(pulse_lengths))
+        if samples_cm_s.size != expected:
+            raise ValueError(
+                f"this block claims {expected} slip-rate samples across "
+                f"{len(pulse_lengths)} subfaults and carries {samples_cm_s.size}. "
+                "SR1 is every pulse concatenated in subfault order, so a block that "
+                "disagrees with its own NT1 shifts every later subfault's pulse"
+            )
+
+        block = np.zeros(len(points), dtype=SW4_POINTS_DTYPE)
+        for sw4_field, attribute in _SW4_POINT_FIELDS.items():
+            block[sw4_field] = getattr(points, attribute)
+        block["NT1"] = pulse_lengths
+        if points.has_material_properties:
+            block["VS"] = points.shear_speed_cm_s
+            block["DEN"] = points.density_g_cm3
+
+        at = self._points.shape[0]
+        self._points.resize((at + len(block),))
+        self._points[at:] = block
+
+        at = self._samples.shape[0]
+        self._samples.resize((at + samples_cm_s.size,))
+        self._samples[at:] = samples_cm_s
 
 
 def read_srf(srf_ffp: Path | str) -> SrfFile:

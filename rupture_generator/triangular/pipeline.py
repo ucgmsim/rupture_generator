@@ -33,7 +33,9 @@ out rather than deriving it from a lattice shape.
   :func:`~rupture_generator.triangular.fim.face_arrivals`.
 - :func:`draw_fields`, which assembles **one** :class:`MaternOperator` per segment and
   draws the four fields from it. The circulant sampler's cost is the embedding and this
-  one's is the factorisation, so in both cases the geometry is paid for once.
+  one's is the solver setup, so in both cases the geometry is paid for once. Which
+  solver, and whether the domain is padded, are :func:`matern_sampler`'s to decide and
+  its docstring carries the measurements.
 - The seed seam. A lattice seeds a *cell*; the solver here seeds *vertices*, and a
   face's arrival is the mean of its three corners. Seeding one corner of the hypocentre
   face would leave that face arriving ``~0.4 h S`` late -- 0.2 s at a 1 km cut, in the
@@ -51,8 +53,19 @@ a 6 s build. So :class:`SegmentGeometry` computes them **once per segment** in
 :func:`generate` and every stage takes it as an argument. They are deliberately *not*
 cached on the mesh: that would reintroduce exactly the coupling the container excludes.
 
-Nothing here writes a file, exactly as in `pipeline.py`; the SRF seam is
-:mod:`rupture_generator.triangular.assemble`.
+**S9 is the one stage whose output does not fit.** At a 400 m cut on the CFM Hikurangi
+interface the slip-rate pulses are 2.45 billion samples -- 19.6 GB of float64 -- so
+:func:`synthesise_pulses` attaching them to the mesh is not something a 30 GB machine
+can do, and neither is any writer that reads them off it afterwards. So ``generate``
+takes ``synthesise=False`` and stops after S8, and the writers run S9 themselves a
+block of faces at a time: :func:`face_blocks` is where a block comes from,
+:data:`STREAM_BUDGET_BYTES` is what bounds it, and the two writers are
+:func:`write_rupture_mesh` here and
+:func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` for the SRF. Measured end
+to end at 400 m: 3.89 GB peak against the 23 GB the resident route needs.
+
+:func:`write_rupture_mesh` is the only thing here that writes a file, and it writes the
+*native* format; the SRF seam is :mod:`rupture_generator.triangular.assemble`.
 """
 
 from __future__ import annotations
@@ -86,10 +99,15 @@ from rupture_generator.pipeline import (
 )
 from rupture_generator.realisation import Realisation
 from rupture_generator.triangular import fim, spde
-from rupture_generator.triangular.mesh import TriangleMesh, build_surface
+from rupture_generator.triangular.mesh import (
+    TriangleMesh,
+    build_surface,
+    is_paddable,
+    padded_builder,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from rupture_generator.config.geometry import GeometryConfig
     from rupture_generator.sampling import VonKarmanFilterParameters
@@ -118,6 +136,52 @@ outermost cell the weight ``h / width`` where a true distance ramp gives ``h / (
 width)``, so the incumbent model is itself a half-cell -- ``h / 2`` -- away from a
 distance ramp. Eight samples per edge is 8 times finer than that, and the cost is
 ``8 B`` points for ``B`` boundary edges however wide or narrow the taper is.
+"""
+
+
+STREAM_BUDGET_BYTES = 1 << 30
+"""How much memory one block of slip-rate pulses may take while it is written out.
+
+**The one number that decides whether production resolution is reachable**, so it is a
+budget rather than a block size: :func:`face_blocks` derives the block from it and from
+the rupture's own rise times, and a rupture with longer pulses gets fewer faces per
+block rather than more memory.
+
+**What it replaces.** :func:`synthesise_pulses` attaches every pulse of every subfault
+to the mesh, and on the CFM Hikurangi interface cut at 400 m that is 2.45 **billion**
+samples -- 19.6 GB of ``f64`` from the kernel, before any writer has allocated
+anything, on a machine with 30 GB. Nothing else about a 400 m rupture is memory-bound.
+At 100 m it is worse in exact proportion, because rise time is physical and so samples
+per subfault do not change: sixteen times the faces is sixteen times the samples.
+
+What is live per sample depends on the writer.
+:func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` holds the kernel's
+``f64`` and the ``float32`` the format stores, twelve bytes, so a gibibyte is 89.5
+million samples -- about 78 thousand faces at the ~1140 samples a face the shipped
+Mw 8.5 configuration produces at ``dt = 0.005 s``, and 28 blocks for the 2.15 million
+faces of Hikurangi at 400 m. :func:`write_rupture_mesh` keeps ``f64`` throughout, so
+the same budget buys half as many faces and twice as many blocks.
+
+A gibibyte, which is comfortably under the 2 GB that is safe to hold on this machine
+beside the mesh and the fields, and far enough above the HDF5 chunk size that the point
+of blocking is bounding the peak rather than making the writes small. Measured end to
+end at 400 m: 3.89 GB peak resident for the whole run, against the 23 GB the resident
+route would need.
+"""
+
+PULSE_SAMPLE_MARGIN = 3
+"""Samples a pulse may carry beyond the duration its rise time covers.
+
+Blocks are sized from a *bound* on each pulse's length rather than from the kernel's
+own rounding, because transcribing that rounding here would be a second statement of
+it, free to drift from the first. The bound needs only two facts from
+`crates/kernels/src/pulse.rs`: a resolved pulse gets "one more sample than the duration
+covers", and one too short to resolve is floored at ``SPIKE_SAMPLES = 3``. So
+``rise_time / dt + 3`` is above both, for every rise time, and a block comes out at
+worst smaller than the budget allows.
+
+It is a bound and not a count, which is what makes it safe: the only change to the
+kernel that could invalidate it is ``SPIKE_SAMPLES`` growing.
 """
 
 
@@ -197,6 +261,83 @@ class SegmentGeometry:
 # ============================================================================
 # The segments
 # ============================================================================
+
+
+def refined(mesh: TriangleMesh, levels: int) -> tuple[TriangleMesh, list[spde.Level]]:
+    """A segment refined one-to-four, and the multigrid hierarchy underneath it.
+
+    **The production route to a fine mesh**, and the reason it is a route rather than
+    a call to :func:`~rupture_generator.triangular.mesh.remesh` at the target spacing.
+    The sampler's cost is set by two things that pull against each other: element
+    *shape*, which is what the V-cycle's iteration count reads, and whether a
+    hierarchy exists at all. Remeshing at the target gives the shape but no hierarchy
+    -- a lattice cut at 400 m is not a subdivision of anything, so
+    :class:`~rupture_generator.triangular.spde.MaternOperator` has to factorise, which
+    at a million vertices it cannot. Subdividing the modeller's own triangulation
+    gives a hierarchy but keeps that triangulation's shape, and on the CFM Hikurangi
+    interface that is an area spread of 4.28e+04 and 26 times the iterations.
+
+    Doing both -- remesh coarse, then subdivide up -- gives both, because
+    subdivision splits a triangle into four *similar* ones: the shape of the built
+    lattice is preserved at every level, and every level is a rung of the hierarchy by
+    construction. Measured on the curved CFM Hikurangi interface, remeshed at 3.44 km
+    and refined three times: 936,225 vertices at a 440 m median edge, 3-D area max/min
+    **1.51**, and a draw in 11.8 s against 549 s for the direct factorisation at a
+    third of that size. The field is healthy where the subdivided-source one is not --
+    after :func:`~rupture_generator.sampling.standardise` its median ``|f|`` is 0.6734
+    against the 0.6745 a standard normal gives, where subdividing the source crushes
+    the same statistic to 0.098.
+
+    So: subdivision preserving element shape is a liability on a bad mesh and a virtue
+    on a good one, and this is the good one.
+
+    What it costs against remeshing at the target directly is the **outline**. The
+    boundary staircase is resolved at the coarse spacing and stays there, since
+    refinement adds no new information about where the fault stops; at 3.44 km that is
+    a boundary within one coarse cell of the true one rather than one fine cell. The
+    fault is therefore slightly smaller than a directly-remeshed one, and the moment
+    fold closes on that area rather than around it.
+
+    Parameters
+    ----------
+    mesh : TriangleMesh
+        The coarse segment, built at ``target spacing x 2 ** levels``.
+    levels : int
+        How many one-to-four refinements. Each quadruples the faces and roughly
+        quadruples the vertices, and halves the edge length.
+
+    Returns
+    -------
+    tuple
+        The refined segment, and its hierarchy **coarsest first** -- ``levels``
+        entries, whose last prolongation lands on the refined segment. Hand it to
+        :func:`generate` as ``hierarchies[name]``.
+
+    Raises
+    ------
+    ValueError
+        For a negative number of levels, or a refinement that folds in the frame --
+        which it cannot, since midpoints lie on the coarse faces, so this would be a
+        coarse mesh that was already inadmissible.
+    """
+    if levels < 0:
+        raise ValueError(f"a hierarchy of {levels} levels is not a hierarchy")
+
+    vertices_km = mesh.vertices_km()
+    faces = mesh.faces()
+    planes = mesh.planes()
+    hierarchy: list[spde.Level] = []
+    for _ in range(levels):
+        finer_vertices, finer_faces, prolongation = spde.subdivided(vertices_km, faces)
+        hierarchy.append((vertices_km, faces, prolongation))
+        vertices_km, faces = finer_vertices, finer_faces
+        # `subdivided` lays the four children out as four blocks over all the parent
+        # faces in order, so a child's provenance is its parent's, four times over.
+        planes = np.tile(planes, 4)
+
+    if not hierarchy:
+        return mesh, hierarchy
+    return mesh.with_triangulation(vertices_km, faces, planes), hierarchy
 
 
 def segments_of(geometry: GeometryConfig) -> Realisation:
@@ -432,10 +573,12 @@ def taper_edges(
         return field
 
     centres_uv = parameters[geometry.faces].mean(axis=1)
-    # Both of these walk every half-edge, so they are read once here rather than once
-    # per label: `boundary_faces(label)` would repeat the walk three times over.
+    # One half-edge walk for the whole taper: the edges are found once and then
+    # *handed* to the labeller, where `boundary_labels()` on its own would walk again
+    # and `boundary_edges(label)` would walk twice per label -- six passes over 6.5
+    # million half-edges at a 400 m cut, for one answer.
     edges = mesh.boundary_edges()
-    labels = mesh.boundary_labels()
+    labels = mesh.boundary_labels(edges)
 
     weight = np.ones(geometry.face_count)
     for label, width_km in zip(("lateral", "top", "bottom"), widths_km, strict=True):
@@ -458,20 +601,67 @@ def matern_sampler(
     mesh: TriangleMesh,
     geometry: SegmentGeometry,
     covariance: VonKarmanFilterParameters,
+    coarser: Sequence[spde.Level] = (),
 ) -> stages.FieldSampler:
     """The mesh-native sampler, as a draw the shared stages can take.
 
-    One :class:`~rupture_generator.triangular.spde.MaternOperator` is assembled and
-    factorised here and every draw from it is a handful of sparse solves -- which is
-    the counterpart of the circulant sampler holding its embedding, and the reason this
-    returns a closure rather than a function that rebuilds per field. A segment draws
-    four fields.
+    One :class:`~rupture_generator.triangular.spde.MaternOperator` is assembled here
+    and every draw from it is a handful of sparse solves -- which is the counterpart of
+    the circulant sampler holding its embedding, and the reason this returns a closure
+    rather than a function that rebuilds per field. A segment draws four fields.
 
     The returned draw ignores the covariance it is handed, because the operator was
     built from it: the four stages of one segment all use ``source.covariance_of(name)``,
     so there is one covariance per segment by construction, and a sampler that quietly
     rebuilt for a second one would be the expensive thing happening invisibly. It is
     checked rather than assumed.
+
+    **Which solver, and why the caller decides.** Given a hierarchy the shifted solves
+    are conjugate gradients preconditioned by a V-cycle, whose memory is linear in the
+    mesh; without one they are sparse factorisations, whose fill-in is not. At the
+    resolutions this track exists for that is the difference between reachable and not
+    -- 11.8 s a draw at 936 thousand vertices against 549 s at a third of that -- but a
+    hierarchy is a fact about *how the mesh was built* and cannot be recovered from the
+    mesh, so it arrives from :func:`refined` through :func:`generate` rather than being
+    guessed at here. Omitting it on a mesh small enough to factorise is not a mistake;
+    omitting it on a large one is slow rather than wrong.
+
+    **Whether the domain is padded is decided here, and by the segment's size.** The
+    SPDE's natural boundary condition reflects the covariance, and on a fault only a few
+    correlation lengths across the reflection *is* the field
+    (:func:`~rupture_generator.triangular.spde.boundary_folds` is the predicate and
+    carries the table). So a segment that folds is solved on a domain extended past it
+    and cropped back, which is the circulant sampler's own remedy. Measured on the
+    shipped ``kaikoura:0`` geometry, reading the marginal variance and the correlation at
+    one correlation length off the fault's centre:
+
+    ==========  =====================  ===============  ===============
+    magnitude   spans (strike x dip)   variance         correlation
+    ==========  =====================  ===============  ===============
+    Mw 7.0      3.97 x 2.34            1.504 -> 1.028   0.7035 -> 0.4964
+    Mw 7.5      2.23 x 1.60            2.861 -> 1.013   0.8764 -> 0.4975
+    Mw 8.0      1.25 x 1.09            6.889 -> 1.050   --
+    ==========  =====================  ===============  ===============
+
+    -- against a model whose variance is 1 and whose correlation at one length is
+    0.5005. Unpadded, an Mw 8.0 crustal segment's slip field has nearly seven times the
+    variance the model asks for.
+
+    A segment that does **not** fold is left alone, and that is a decision rather than an
+    economy: padding trades a folding error for the pad's own discretisation error, and
+    on ``kaikoura`` at the shipped magnitude -- 4.3 correlation lengths across, barely
+    folded -- the delivered correlation length went from 1.010 to 0.956 when it was
+    padded. The unpadded 1.010 was two errors cancelling; but 0.956 is no better a
+    number, and the fault does not need the pad.
+
+    Two cases fall back to the plain operator, and both say so through
+    :func:`~rupture_generator.triangular.spde.MaternOperator`'s own
+    ``DegradedCorrelation`` warning rather than silently. A segment fused across a bend
+    has no parameter lattice for a conforming pad to be built on
+    (:func:`~rupture_generator.triangular.mesh.is_paddable`), and a segment with a
+    multigrid hierarchy cannot be padded because the pad is not in the hierarchy -- which
+    is not a case production reaches, since a mesh large enough to need a hierarchy is a
+    fault far too large to fold.
 
     Parameters
     ----------
@@ -481,16 +671,60 @@ def matern_sampler(
         Its hoisted geometry.
     covariance : VonKarmanFilterParameters
         The patch structure this segment's magnitude implies.
+    coarser : Sequence of spde.Level, optional
+        The multigrid hierarchy beneath this segment, coarsest first, from
+        :func:`refined`. Empty means factorise.
 
     Returns
     -------
     stages.FieldSampler
         Called as ``sampler(mesh, covariance, rng)``, returning one value per face.
     """
-    del mesh
-    operator = spde.MaternOperator(
-        geometry.vertices_km, geometry.faces, geometry.parameters_km, covariance
+    padded = (
+        not coarser
+        and spde.boundary_folds(geometry.parameters_km, covariance)
+        and is_paddable(mesh)
     )
+    if padded:
+        # The pad has to carry the covariance out to where the boundary now is, so its
+        # spacing is capped by the correlation length as well as by the fault's own --
+        # see `spde.PAD_RESOLUTION_LENGTHS`, and the measurement that put it there.
+        edges = mesh.edges()
+        parameters_km = geometry.parameters_km
+        fault_spacing_km = float(
+            np.median(
+                np.linalg.norm(
+                    parameters_km[edges[:, 0]] - parameters_km[edges[:, 1]], axis=-1
+                )
+            )
+        )
+        padding = spde.padded_operator(
+            padded_builder(
+                mesh,
+                pad_spacing_km=max(
+                    fault_spacing_km,
+                    spde.PAD_RESOLUTION_LENGTHS
+                    * min(
+                        covariance.correlation_length_strike_km,
+                        covariance.correlation_length_dip_km,
+                    ),
+                ),
+            ),
+            covariance,
+        )
+        one_field = padding.draw_on_faces
+    else:
+        operator = spde.MaternOperator(
+            geometry.vertices_km,
+            geometry.faces,
+            geometry.parameters_km,
+            covariance,
+            coarser=coarser,
+        )
+
+        def one_field(rng: np.random.Generator) -> FloatArray:
+            """One field, one value per face, on the fault's own domain."""
+            return spde.face_values(operator.draw(rng), geometry.faces)
 
     def draw(
         chart: object,
@@ -508,7 +742,7 @@ def matern_sampler(
                 f"{asked.correlation_length_dip_km:.4g} km. One operator serves one "
                 "covariance; build a second sampler rather than reusing this one"
             )
-        return spde.face_values(operator.draw(rng), geometry.faces)
+        return one_field(rng)
 
     return draw
 
@@ -517,6 +751,7 @@ def white_noise_stand_in(
     mesh: TriangleMesh,
     geometry: SegmentGeometry,
     covariance: VonKarmanFilterParameters,
+    coarser: Sequence[spde.Level] = (),
 ) -> stages.FieldSampler:
     """**A stand-in, not a model**: independent noise per face, with no covariance.
 
@@ -541,6 +776,10 @@ def white_noise_stand_in(
         Its hoisted geometry, for the face count.
     covariance : VonKarmanFilterParameters
         Unread, and that is the point.
+    coarser : Sequence of spde.Level, optional
+        Unread: there is no operator here to precondition. Taken so that this is
+        interchangeable with :func:`matern_sampler` wherever a
+        :data:`SamplerFactory` is wanted.
 
     Returns
     -------
@@ -551,7 +790,7 @@ def white_noise_stand_in(
     StandInField
         Always.
     """
-    del mesh, covariance
+    del mesh, covariance, coarser
     warnings.warn(
         "drawing this segment's fields as white noise: this is a stand-in for the "
         "Matern sampler, not a coarser version of it. The slip field will have no "
@@ -576,7 +815,13 @@ def white_noise_stand_in(
 
 
 type SamplerFactory = Callable[
-    [TriangleMesh, SegmentGeometry, "VonKarmanFilterParameters"], stages.FieldSampler
+    [
+        TriangleMesh,
+        SegmentGeometry,
+        "VonKarmanFilterParameters",
+        "Sequence[spde.Level]",
+    ],
+    stages.FieldSampler,
 ]
 """How :func:`draw_fields` gets a segment's draw: :func:`matern_sampler`, or a stand-in.
 
@@ -584,6 +829,11 @@ A parameter rather than an import so that the one legitimate reason to use anyth
 other than the SPDE -- reaching a resolution it cannot yet factorise -- is a decision
 the caller makes and is visible in the call, rather than a fallback the pipeline takes
 when something is slow.
+
+The fourth argument is that segment's multigrid hierarchy, which :func:`generate`
+looks up by name and which is empty for a mesh that was not built by :func:`refined`.
+It is passed to every factory rather than bound into one because it is a fact about
+the *mesh*, not about the sampler, and the two are chosen independently.
 """
 
 
@@ -740,6 +990,7 @@ def draw_fields(
     config: RuptureConfig,
     *,
     sampler_of: SamplerFactory = matern_sampler,
+    hierarchies: Mapping[str, Sequence[spde.Level]] | None = None,
 ) -> Realisation:
     """The four drawn fields: slip pattern, rise time, rake, onset perturbation.
 
@@ -765,6 +1016,9 @@ def draw_fields(
     sampler_of : SamplerFactory, optional
         How to build each segment's draw. See :data:`SamplerFactory`; the default is
         the SPDE sampler and the alternative is a stand-in that says so.
+    hierarchies : Mapping of str to Sequence of spde.Level, optional
+        Each segment's multigrid hierarchy, from :func:`refined`, keyed by the name it
+        has in the realisation. A segment not named here is sampled by factorisation.
 
     Returns
     -------
@@ -772,11 +1026,12 @@ def draw_fields(
     """
     source = config.source
     random = config.random
+    hierarchies = hierarchies or {}
 
     for name, mesh in list(realisation.items()):
         geometry = geometries[name]
         covariance = source.covariance_of(name)
-        sampler = sampler_of(mesh, geometry, covariance)
+        sampler = sampler_of(mesh, geometry, covariance, hierarchies.get(name, ()))
         slip_params = stages.SlipParams(
             covariance=covariance,
             coefficient_of_variation=config.slip.coefficient_of_variation,
@@ -1059,6 +1314,81 @@ def solve_onsets(
     return realisation
 
 
+def face_blocks(
+    rise_time_s: FloatArray,
+    params: pulses.PulseParams,
+    budget_bytes: int = STREAM_BUDGET_BYTES,
+    bytes_per_sample: int = 8,
+) -> Iterator[slice]:
+    """Cut a segment's faces into runs whose pulses fit a memory budget.
+
+    **How S9 is run when its output does not fit**, and the shape both streaming
+    writers share. Consecutive runs, never a permutation: a rupture file's subfaults are
+    one ordered block per segment and the samples are every pulse concatenated in that
+    same order, so a block is a slice or it is a different rupture.
+
+    The cut is made on the **pulses' own lengths**, not on a face count, because that is
+    what the memory is: a face whose rise time is four seconds carries eight hundred
+    samples at ``dt = 0.005 s`` and one at half a second carries a hundred, so a fixed
+    number of faces per block would be sized for whichever the segment happened to have.
+    :data:`PULSE_SAMPLE_MARGIN` is what makes the length a bound rather than a guess.
+
+    A single face whose pulse alone exceeds the budget still gets its own block -- there
+    is nothing smaller to cut -- so the budget is honoured except where it cannot be,
+    and that case is one pulse rather than a segment.
+
+    Parameters
+    ----------
+    rise_time_s : FloatArray
+        ``(F,)`` each face's rise time, seconds.
+    params : pulses.PulseParams
+        For the sample interval and the shape's duration scale, which are what turn a
+        rise time into a sample count.
+    budget_bytes : int, optional
+        See :data:`STREAM_BUDGET_BYTES`.
+    bytes_per_sample : int, optional
+        What one live sample costs the caller. The kernel's own ``f64`` output is
+        always 8; a writer that narrows into a second buffer before writing adds that
+        buffer's width, which is 4 for the SRF's ``float32``. Stated by the caller
+        because it is a property of the writer, not of the pulses.
+
+    Yields
+    ------
+    slice
+        Consecutive, covering ``range(F)`` exactly once, in order.
+
+    Raises
+    ------
+    ValueError
+        For a budget too small to hold a single sample.
+    """
+    budget_samples = budget_bytes // bytes_per_sample
+    if budget_samples < 1:
+        raise ValueError(
+            f"a budget of {budget_bytes} bytes does not hold one slip-rate sample, "
+            f"which costs {bytes_per_sample} bytes while it is written"
+        )
+
+    bound = (
+        np.asarray(rise_time_s, dtype=np.float64)
+        * params.shape.duration_scale
+        / params.sample_interval_s
+        + PULSE_SAMPLE_MARGIN
+    )
+    # Walk the cumulative bound and cut whenever the next face would cross the budget.
+    # `searchsorted` on the running total does that without a Python loop over faces:
+    # the cut after a block starting at `start` is the last face whose cumulative bound
+    # is still within `budget_samples` of where the block began.
+    running = np.cumsum(bound)
+    start = 0
+    while start < running.size:
+        ceiling = (running[start - 1] if start else 0.0) + budget_samples
+        stop = int(np.searchsorted(running, ceiling, side="right"))
+        stop = max(stop, start + 1)
+        yield slice(start, stop)
+        start = stop
+
+
 def synthesise_pulses(
     realisation: Realisation,
     geometries: Mapping[str, SegmentGeometry],
@@ -1104,6 +1434,8 @@ def generate(
     geometry: Realisation,
     *,
     sampler_of: SamplerFactory = matern_sampler,
+    hierarchies: Mapping[str, Sequence[spde.Level]] | None = None,
+    synthesise: bool = True,
 ) -> Realisation:
     """Run the pipeline over a triangulated fault system.
 
@@ -1127,6 +1459,20 @@ def generate(
         How each segment's fields are drawn. The default is the SPDE sampler; passing
         :func:`white_noise_stand_in` instead is a deliberate, warned-about choice and
         never something this function makes on its own.
+    hierarchies : Mapping of str to Sequence of spde.Level, optional
+        Each segment's multigrid hierarchy, from :func:`refined`, keyed by the name it
+        has in ``geometry``. Segments not named here are sampled by factorisation,
+        which is what every mesh small enough to factorise wants.
+    synthesise : bool, optional
+        Whether to run S9 and attach each segment's slip-rate pulses. ``False`` stops
+        after S8 with everything the pulses are a function of -- slip, rise time,
+        depth, and the sample interval -- already attached, which is what
+        :func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` wants: at a 400 m
+        cut one segment's pulses are 1.9 G samples and 15 GB of float64 held at once,
+        and that writer synthesises them a chunk of faces at a time instead. A
+        realisation generated this way carries no pulses, so
+        :func:`~rupture_generator.triangular.assemble.to_srf_file` and
+        :func:`write_rupture_mesh` will not write one.
 
     Returns
     -------
@@ -1156,15 +1502,27 @@ def generate(
         realisation = constant_fields(realisation, geometries, source, config.field)
     else:
         realisation = draw_fields(
-            realisation, geometries, config, sampler_of=sampler_of
+            realisation,
+            geometries,
+            config,
+            sampler_of=sampler_of,
+            hierarchies=hierarchies,
         )
 
     realisation = scale_moment(realisation, geometries, source)
     realisation = solve_onsets(realisation, geometries, config)
+    if not synthesise:
+        return realisation
     return synthesise_pulses(realisation, geometries, config)
 
 
-def write_rupture_mesh(realisation: Realisation, path: Path | str) -> None:
+def write_rupture_mesh(
+    realisation: Realisation,
+    path: Path | str,
+    params: pulses.PulseParams | None = None,
+    *,
+    budget_bytes: int = STREAM_BUDGET_BYTES,
+) -> None:
     """Write a generated triangular rupture out as a version 3 mesh file.
 
     A convenience, and an honest one: :func:`~rupture_generator.triangular.mesh
@@ -1177,24 +1535,163 @@ def write_rupture_mesh(realisation: Realisation, path: Path | str) -> None:
     fusion a segment is what ruptures and its name is what the causality tree uses; the
     file's group names are then the names a config selects.
 
+    **Two routes in, chosen by what the realisation carries.** A rupture whose pulses
+    are attached is written whole, which is every rupture small enough for
+    :func:`generate` to have attached them. A rupture generated with ``synthesise=False``
+    is handed ``params`` instead, and then S9 runs *here*, a block of faces at a time,
+    appended to the file and dropped -- because at a 400 m cut the pulses are 2.45 G
+    samples and 19.6 GB of ``f64``, which is the whole of the free memory on the machine
+    this was measured on. :data:`STREAM_BUDGET_BYTES` bounds the peak and
+    :func:`face_blocks` is where a block comes from. The stored form is identical either
+    way: the same two CSR arrays under the same names, so a reader cannot tell.
+
+    The streaming route writes netCDF only. A Zarr store would want the same treatment
+    through a different API and nothing needs it yet, so it refuses rather than
+    quietly holding 19.6 GB.
+
     Parameters
     ----------
     realisation : Realisation
         A rupture that has been through the pipeline. Its own CRS is what is stored.
     path : Path or str
-        Where to write it: ``.h5`` or ``.zarr``.
+        Where to write it: ``.h5``, or ``.zarr`` for a rupture that carries its pulses.
+    params : pulses.PulseParams, optional
+        How each pulse is shaped and sampled -- from
+        `rupture_generator.pipeline.pulse_model`, the same model
+        :func:`synthesise_pulses` uses. Given, S9 runs here in blocks; omitted, the
+        realisation must carry its pulses already.
+    budget_bytes : int, optional
+        See :data:`STREAM_BUDGET_BYTES`.
+
+    Raises
+    ------
+    ValueError
+        If ``params`` is omitted and a segment has no pulses, if it is given and a
+        segment already has them -- the two would be written twice -- or if the
+        streaming route is asked for anything but a netCDF file.
     """
     from rupture_generator.triangular.mesh import write_mesh
 
+    path = Path(path)
+    attached = [name for name, mesh in realisation.items() if mesh.pulses is not None]
+    if params is None:
+        missing = [name for name in realisation if name not in attached]
+        if missing:
+            raise ValueError(
+                f"segments {', '.join(missing)} carry no slip-rate pulses, so this "
+                "would write a rupture that does not say how anything slipped. Either "
+                "run `generate` without `synthesise=False`, or pass the pulse model so "
+                "that S9 can run here a block of faces at a time"
+            )
+        write_mesh(
+            {name: [mesh] for name, mesh in realisation.items()},
+            realisation.crs,
+            path,
+        )
+        return
+
+    if attached:
+        raise ValueError(
+            f"segments {', '.join(attached)} already carry their pulses, and a pulse "
+            "model was passed as well, so S9 would run twice and the second run's "
+            "samples would be appended to the first's. Pass one or the other"
+        )
+    if path.suffix not in {".h5", ".nc", ".hdf5", ".netcdf"}:
+        raise ValueError(
+            f"the streaming route writes netCDF and {path.suffix or path} is not one. "
+            "A rupture whose pulses do not fit in memory is what this route is for, "
+            "and appending to a Zarr store is a different API nothing needs yet"
+        )
+
     write_mesh(
-        {name: [mesh] for name, mesh in realisation.items()},
+        {
+            name: [mesh.with_attrs(sample_interval_s=params.sample_interval_s)]
+            for name, mesh in realisation.items()
+        },
         realisation.crs,
-        Path(path),
+        path,
     )
+    _append_pulses(realisation, path, params, budget_bytes)
+
+
+def _append_pulses(
+    realisation: Realisation,
+    path: Path,
+    params: pulses.PulseParams,
+    budget_bytes: int,
+) -> None:
+    """Synthesise each segment's pulses and append them to a written mesh file.
+
+    The two CSR arrays :meth:`~rupture_generator.triangular.mesh.TriangleMesh
+    .with_pulses` would have stored, written into the same variables of the same group,
+    but grown a block at a time so that only one block of samples is ever resident.
+
+    Through `h5netcdf` rather than `h5py`, deliberately: the file is netCDF underneath,
+    so a variable needs its dimension scales, and a bare HDF5 dataset dropped alongside
+    reads back as a phony dimension that `read_mesh` refuses. ``sample`` is created
+    unlimited because its length is the total pulse length, which is the kernel's answer
+    and is not known until the last block has been synthesised.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        The rupture, without pulses.
+    path : Path
+        The file :func:`~rupture_generator.triangular.mesh.write_mesh` just wrote.
+    params : pulses.PulseParams
+        How each pulse is shaped and sampled.
+    budget_bytes : int
+        See :data:`STREAM_BUDGET_BYTES`.
+
+    Raises
+    ------
+    ValueError
+        For a subfault whose rise time the sample interval cannot represent, naming the
+        segment and the block as well as the subfault -- the kernel numbers subfaults
+        within the block it was handed, and a block-local index reported as a global one
+        would name the wrong triangle.
+    """
+    import h5netcdf
+
+    with h5netcdf.File(path, "a") as handle:
+        for name, mesh in realisation.items():
+            group = handle[name]["segment_0"]
+            group.dimensions["sample"] = None
+            group.dimensions["cell_edge"] = mesh.face_count + 1
+            samples = group.create_variable("slip_rate", ("sample",), dtype="f8")
+
+            depth_km = mesh.centres()[:, 2]
+            slip_m = mesh["slip_m"]
+            rise_time_s = mesh["rise_time_s"]
+            lengths = np.zeros(mesh.face_count, dtype=np.int64)
+            at = 0
+            for block in face_blocks(rise_time_s, params, budget_bytes):
+                try:
+                    offsets, block_samples = pulses.synthesise(
+                        depth_km[block], slip_m[block], rise_time_s[block], params
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"synthesising the pulses of segment {name!r} over faces "
+                        f"{block.start} to {block.stop}, where the kernel numbers "
+                        f"subfaults from {block.start}: {error}"
+                    ) from error
+                lengths[block] = np.diff(offsets)
+                group.resize_dimension("sample", at + block_samples.size)
+                samples[at : at + block_samples.size] = block_samples
+                at += block_samples.size
+
+            # The offsets are rebuilt across blocks rather than concatenated: each
+            # block's own start at zero, and a segment's samples are one run.
+            group.create_variable("slip_rate_offset", ("cell_edge",), dtype="i8")[:] = (
+                np.concatenate([[0], np.cumsum(lengths)])
+            )
 
 
 __all__ = [
     "BOUNDARY_SAMPLES_PER_EDGE",
+    "PULSE_SAMPLE_MARGIN",
+    "STREAM_BUDGET_BYTES",
     "Realisation",
     "SamplerFactory",
     "SegmentGeometry",
@@ -1203,9 +1700,11 @@ __all__ = [
     "charts_for",
     "constant_fields",
     "draw_fields",
+    "face_blocks",
     "face_seeds",
     "generate",
     "matern_sampler",
+    "refined",
     "scale_moment",
     "segments_of",
     "solve_onsets",

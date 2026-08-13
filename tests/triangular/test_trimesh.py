@@ -36,6 +36,7 @@ import numpy as np
 import pyproj
 import pytest
 
+from rupture_generator.config import read_geometry
 from rupture_generator.config.geometry import (
     Discretisation,
     FaultConfig,
@@ -61,6 +62,7 @@ from rupture_generator.triangular.mesh import (
     fold_margin,
     from_chart,
     implied_axes,
+    is_paddable,
     padded_builder,
     read_mesh,
     remesh,
@@ -1468,6 +1470,58 @@ def test_a_pad_extends_the_domain_and_leaves_the_fault_alone() -> None:
     assert parameters[:, 0].max() == pytest.approx(fault_high[0] + 6.0)
     assert parameters[:, 1].max() == pytest.approx(fault_high[1] + 4.0)
     assert faces.max() < len(vertices)
+
+
+def test_a_pad_shares_the_faults_own_boundary_vertices() -> None:
+    """**The property the pad exists for**, and the one a geometric check misses.
+
+    The SPDE couples through the mesh, so a pad that surrounds the fault without sharing
+    its boundary vertices is a second connected component: it is assembled, factorised
+    and solved, and the field on the fault is the unpadded one exactly. An earlier
+    builder did that, and every assertion about the pad's extent still passed -- it
+    surrounded the fault, it was the right shape, and it changed nothing. So what is
+    asserted here is connectivity, and that the fault's boundary vertices are the ones
+    the pad is attached by.
+    """
+    from scipy.sparse import coo_matrix, csgraph
+
+    mesh = build_fault(_straight(), NZTM)[0]
+    vertices, faces, _parameters, fault_faces = padded_builder(mesh)(6.0, 4.0)
+
+    rows = faces.ravel()
+    columns = np.roll(faces, 1, axis=1).ravel()
+    adjacency = coo_matrix(
+        (np.ones(rows.size), (rows, columns)), shape=(len(vertices),) * 2
+    )
+    assert csgraph.connected_components(adjacency, directed=False)[0] == 1
+
+    # And the join is at the fault's *boundary*: the vertices shared with the pad are
+    # exactly boundary vertices, never interior ones, so nothing has been re-meshed.
+    pad_vertices = np.unique(faces[len(fault_faces) :])
+    shared = pad_vertices[pad_vertices < mesh.node_count]
+    assert shared.size > 0
+    assert np.isin(shared, np.unique(mesh.boundary_edges())).all()
+
+
+def test_a_bent_segment_says_it_cannot_be_padded() -> None:
+    """A refusal, not a pad that does nothing.
+
+    A segment fused across a bend has no parameter lattice -- the shipped ``hope`` has
+    855 distinct strike coordinates for 855 vertices, because the bend gives every node
+    its own -- so the grid-line construction has nothing to build on.
+    :data:`PADDED_LATTICE_SLACK` carries the measurement, and the sampler asks
+    :func:`is_paddable` first rather than catching this.
+    """
+    geometry = read_geometry(EXAMPLES / "hope.geometry.toml")
+    (bent,) = build_surface(geometry.surfaces[0], geometry.crs)
+    assert len(np.unique(bent.planes())) == 2
+
+    assert not is_paddable(bent)
+    with pytest.raises(ValueError, match="not a lattice"):
+        padded_builder(bent)
+
+    (straight,) = build_fault(_straight(), NZTM)[:1]
+    assert is_paddable(straight)
 
 
 def test_a_coarser_pad_costs_fewer_vertices() -> None:

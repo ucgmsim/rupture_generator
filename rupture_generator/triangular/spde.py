@@ -241,9 +241,20 @@ discretisation difference between the two samplers, it is a different field, and
 it is the one thing that must be settled before the triangular path can reproduce
 the quad results. The fix is the circulant sampler's own -- triangulate a
 parameter domain extended by :data:`BOUNDARY_FOLDING_LENGTHS` correlation lengths
-on each side, solve there, keep the vertices inside the fault -- and it is a
-change to *what mesh is built*, so it belongs to the mesh builder and not here.
-Until it exists, :func:`_warn_if_folded` refuses to be quiet about it.
+on each side, solve there, keep the vertices inside the fault --
+and :func:`padded_operator` is it, taking the mesh from an injected builder
+because building one is not this module's business.
+:func:`boundary_folds` decides which segments get one, and
+:func:`_warn_if_folded` still refuses to be quiet about a segment that does not.
+
+**A pad only works if it is conforming**, which is the one thing about it that is
+neither obvious nor geometric: the operator couples through the *mesh*, so a pad
+that surrounds the fault without sharing its boundary vertices is a second
+connected component and delivers the unpadded field to fifteen digits.
+:func:`_refuse_disconnected` is what makes that unshippable, and
+:data:`PAD_RESOLUTION_LENGTHS` is the second correction -- the pad has to *carry*
+the covariance out to where the boundary now is, so it cannot be arbitrarily
+coarse either.
 
 References
 ----------
@@ -288,7 +299,18 @@ from rupture_generator.sampling import (
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 BoolArray = np.ndarray[tuple[int, ...], np.dtype[np.bool_]]
-PaddedMesh = tuple[FloatArray, IntArray, FloatArray, BoolArray]
+PaddedMesh = tuple[FloatArray, IntArray, FloatArray, IntArray]
+
+Level = tuple[FloatArray, IntArray, sparse.csr_matrix]
+"""One rung of a multigrid hierarchy: a mesh, and the transfer up from it.
+
+``(vertices_km, faces, prolongation)``, where the prolongation carries a field on
+*this* level to the next finer one. A hierarchy is a sequence of these, **coarsest
+first**, whose last prolongation lands on the mesh the :class:`MaternOperator` is
+built for -- so a hierarchy of ``k`` rungs describes ``k + 1`` meshes and only the
+finest of them is the operator's own. :func:`subdivided` produces one rung;
+:func:`~rupture_generator.triangular.pipeline.refined` produces the sequence.
+"""
 
 MANIFOLD_DIMENSION = 2
 """The ``d`` of the SPDE: a fault surface is a 2-manifold, whatever it is embedded in.
@@ -1182,6 +1204,45 @@ def _warn_if_oversized(
         )
 
 
+def boundary_folds(
+    parameters_uv: FloatArray, covariance: VonKarmanFilterParameters
+) -> bool:
+    """Whether this domain is small enough that the Neumann reflection is the field.
+
+    The predicate :func:`_warn_if_folded` warns on, named so that a caller can *act* on
+    it rather than only hear about it: :func:`~rupture_generator.triangular.pipeline
+    .matern_sampler` pads exactly the segments this returns true for, because padding a
+    segment that does not need it costs several times the vertices and, as the
+    measurements in :func:`padded_operator` show, trades a folding error for a
+    discretisation one.
+
+    ``2 * BOUNDARY_FOLDING_LENGTHS`` across the narrower axis is the line, and
+    :func:`_warn_if_folded` carries the table it comes from: at 4 correlation lengths
+    the marginal variance is 1.17 and the correlation at one length 0.584, at 6 they are
+    1.04 and 0.507 against a target of 0.5005.
+
+    Parameters
+    ----------
+    parameters_uv : FloatArray
+        ``(V, 2)`` parameter coordinates, strike then dip.
+    covariance : VonKarmanFilterParameters
+        The two correlation lengths.
+
+    Returns
+    -------
+    bool
+        False for a degenerate domain, which has no size to compare.
+    """
+    extents = np.ptp(parameters_uv, axis=0)
+    if not (extents > 0.0).all():
+        return False
+    spans = (
+        float(extents[0]) / covariance.correlation_length_strike_km,
+        float(extents[1]) / covariance.correlation_length_dip_km,
+    )
+    return min(spans) < 2.0 * BOUNDARY_FOLDING_LENGTHS
+
+
 def _warn_if_folded(
     parameters_uv: FloatArray, covariance: VonKarmanFilterParameters
 ) -> None:
@@ -1221,16 +1282,11 @@ def _warn_if_folded(
     builder and not here, and until it exists this warns.
     """
     extents = np.ptp(parameters_uv, axis=0)
-    if not (extents > 0.0).all():
-        return
-    lengths = (
-        covariance.correlation_length_strike_km,
-        covariance.correlation_length_dip_km,
-    )
-    spans = tuple(
-        float(extent) / length for extent, length in zip(extents, lengths, strict=True)
-    )
-    if min(spans) < 2.0 * BOUNDARY_FOLDING_LENGTHS:
+    if boundary_folds(parameters_uv, covariance):
+        spans = (
+            float(extents[0]) / covariance.correlation_length_strike_km,
+            float(extents[1]) / covariance.correlation_length_dip_km,
+        )
         axis = "along strike" if spans[0] < spans[1] else "down dip"
         warnings.warn(
             f"this segment is {min(spans):.2g} correlation lengths across {axis}, and "
@@ -1519,7 +1575,7 @@ rather than merely awkward.
 
 
 def _multigrid_solvers(
-    coarser: list[tuple[FloatArray, IntArray, sparse.csr_matrix]],
+    coarser: list[Level],
     vertices_km: FloatArray,
     faces: IntArray,
     covariance: VonKarmanFilterParameters,
@@ -1710,7 +1766,7 @@ class MaternOperator:
         parameters_uv: FloatArray | None = None,
         covariance: VonKarmanFilterParameters | None = None,
         order: int = RATIONAL_ORDER,
-        coarser: Sequence[tuple[FloatArray, IntArray, sparse.csr_matrix]] = (),
+        coarser: Sequence[Level] = (),
         tolerance: float = ITERATIVE_TOLERANCE,
     ) -> None:
         """Assemble and factorise. See the class docstring."""
@@ -1924,6 +1980,31 @@ not silently shrunk.
 """
 
 
+PAD_RESOLUTION_LENGTHS = 0.15
+"""How finely the pad has to resolve the covariance, in correlation lengths.
+
+**The pad is not free to be as coarse as it likes**, which is the correction to an
+earlier claim that its only job is to move the boundary away. It also has to *carry*
+the covariance out to where the boundary now is: the operator is solved on the whole
+padded mesh, so a pad too coarse to represent the field puts its own discretisation
+error onto the fault. Measured on a kaikoura segment padded at the pad-lattice spacing
+2 km against a 3.69 km down-dip correlation length -- 0.54 lengths -- the delivered
+correlation length came out 0.795, worse than the unpadded 1.010 it was supposed to
+repair.
+
+The number is this module's own measurement of where the finite element bias falls
+below the tolerance the circulant sampler is held to: the delivered length is within
+about 1% of the ACF at ``h = 0.18`` correlation lengths, and
+`test_the_tolerance_bounds_folding_and_discretisation_together` puts the crossing
+between ``h = 0.236`` (outside) and ``h = 0.177`` (inside). 0.15 sits below the
+measured crossing with a little room and is not a knob.
+
+It is a *ceiling* on the pad's spacing, taken with the fault's own: a fault meshed more
+finely than this does not need a pad meshed to match, and a fault meshed more coarsely
+cannot be rescued by a finer pad, because then the fault itself is what is too coarse.
+"""
+
+
 @dataclasses.dataclass(frozen=True)
 class Padding:
     """A padded solve: the operator on the extended domain, and which of it is fault.
@@ -1932,10 +2013,14 @@ class Padding:
     ----------
     operator : MaternOperator
         Built on the **padded** mesh. Draw from this, then keep the fault.
-    fault_faces : BoolArray
-        ``(F,)`` true on the faces that are the fault rather than the pad. The
-        container marks the pad ``plane_of_face = -1`` and offers
-        ``fault_faces()``; this is that predicate's answer.
+    fault_faces : IntArray
+        ``(n,)`` **indices**, one per fault face, in the fault's own face order --
+        so ``operator.faces[fault_faces[k]]`` is the fault's face ``k``. Not a
+        boolean mask, and the difference is the ordering: a mask says *which* faces
+        are fault but not in what order they come back, and every stage downstream
+        indexes a field by the fault's own face number. See
+        :func:`~rupture_generator.triangular.mesh.padded_builder`, which is the
+        producer, on how it guarantees the order.
     pad_lengths : float
         How many correlation lengths of pad were used, per axis.
     pad_km : tuple of float
@@ -1951,7 +2036,7 @@ class Padding:
     """
 
     operator: MaternOperator
-    fault_faces: BoolArray
+    fault_faces: IntArray
     pad_lengths: float
     pad_km: tuple[float, float]
     delivered_correlation_length: float
@@ -1963,7 +2048,7 @@ class Padding:
         Returns
         -------
         FloatArray
-            ``(fault_faces.sum(),)`` in the order the fault faces appear.
+            ``(len(fault_faces),)``, in the fault's own face order.
         """
         vertex_field = self.operator.draw(rng)
         return face_values(vertex_field, self.operator.faces[self.fault_faces])
@@ -1972,7 +2057,7 @@ class Padding:
 def _delivered_correlation_length(
     operator: MaternOperator,
     parameters_uv: FloatArray,
-    fault_faces: BoolArray,
+    fault_faces: IntArray,
     faces: IntArray,
     covariance: VonKarmanFilterParameters,
 ) -> float:
@@ -2067,6 +2152,65 @@ def _pad_candidates(covariance: VonKarmanFilterParameters) -> list[float]:
     ]
 
 
+def _refuse_disconnected(
+    vertices_km: FloatArray, faces: IntArray, fault_faces: IntArray
+) -> None:
+    """Refuse a pad that surrounds the fault without touching it.
+
+    **The check that makes the whole padding argument checkable.** The SPDE couples
+    through the mesh and nothing else, so a pad that shares no vertex with the fault is
+    a second connected component: it is assembled, factorised and solved, it costs
+    everything a real pad costs, and the field on the fault is *bit for bit* the
+    unpadded one. That is not a hypothetical failure -- the container's first padded
+    builder laid a lattice around the fault's bounding box without splicing the fault's
+    own vertices into it, and the delivered correlation length on the shipped ``hope``
+    segment came back 1.0232914518973932 padded against 1.0232914518973928 unpadded.
+    Fifteen digits of agreement, from a function whose entire purpose is to change that
+    number.
+
+    A geometric check would not have caught it: the pad *does* surround the fault, it
+    *is* the right shape, and every assertion about its extent passes. What separates
+    the two cases is connectivity, so that is what is asserted, and it costs one union-
+    find over the edges of a mesh that is small by construction.
+
+    Parameters
+    ----------
+    vertices_km : FloatArray
+        ``(V, 3)`` the padded mesh.
+    faces : IntArray
+        ``(F, 3)``.
+    fault_faces : IntArray
+        Which of them are fault, so the message can say which side is adrift.
+
+    Raises
+    ------
+    ValueError
+        If the padded mesh is more than one connected component.
+    """
+    from scipy.sparse import csgraph
+
+    count = vertices_km.shape[0]
+    edges = sparse.coo_matrix(
+        (
+            np.ones(faces.size),
+            (faces.ravel(), np.roll(faces, 1, axis=1).ravel()),
+        ),
+        shape=(count, count),
+    )
+    components, labels = csgraph.connected_components(edges, directed=False)
+    if components == 1:
+        return
+    fault_labels = np.unique(labels[np.unique(faces[fault_faces])])
+    raise ValueError(
+        f"the padded mesh is {components} connected components, and the fault is in "
+        f"{fault_labels.size} of them. A pad only moves the boundary away if it shares "
+        "the fault's boundary vertices: the SPDE couples through the mesh, so a pad "
+        "that merely surrounds the fault leaves the fault's own boundary a boundary "
+        "and delivers the unpadded field exactly. Build the pad on the fault's own "
+        "parameter grid lines and splice its vertices in by index"
+    )
+
+
 def padded_operator(
     build: Callable[[float, float], PaddedMesh],
     covariance: VonKarmanFilterParameters,
@@ -2101,10 +2245,15 @@ def padded_operator(
     build : callable
         ``build(pad_strike_km, pad_dip_km)`` returning
         ``(vertices_km, faces, parameters_uv, fault_faces)`` for a mesh extended by
-        that much on every side, with ``fault_faces`` true on the fault's own
-        faces. Injected rather than imported so that the sampler does not depend
-        on the container; `TriangleMesh.from_patches`' docstring specifies the
-        three things the padded builder has to get right.
+        that much on every side, with ``fault_faces`` the **indices** of the
+        fault's own faces in the fault's own order (see :class:`Padding`).
+        Injected rather than imported so that the sampler does not depend on the
+        container; `TriangleMesh.from_patches`' docstring specifies the three
+        things the padded builder has to get right. The pad has to be
+        *conforming* -- it must share the fault's boundary vertices, not merely
+        surround it -- because the operator couples through the mesh and a pad
+        that touches nothing is a second connected component the fault never
+        sees.
     covariance : VonKarmanFilterParameters
         The correlation lengths and roughness.
     order : int, optional
@@ -2128,6 +2277,7 @@ def padded_operator(
         vertices_km, faces, parameters_uv, fault_faces = build(*pad_km)
         if vertices_km.shape[0] > MAXIMUM_PADDED_VERTICES and best is not None:
             break
+        _refuse_disconnected(vertices_km, faces, fault_faces)
         operator = MaternOperator(
             vertices_km, faces, parameters_uv, covariance, order=order
         )
@@ -2295,13 +2445,16 @@ __all__ = [
     "MAXIMUM_ITERATIONS",
     "MAXIMUM_PADDED_VERTICES",
     "MODEL_ERROR_CONSTANT",
+    "PAD_RESOLUTION_LENGTHS",
     "RATIONAL_ORDER",
     "SMOOTHER_SPECTRAL_RATIO",
     "SMOOTHING_SWEEPS",
+    "Level",
     "MaternOperator",
     "ModelError",
     "Padding",
     "RationalApproximation",
+    "boundary_folds",
     "face_values",
     "matern_exponent",
     "matern_field",

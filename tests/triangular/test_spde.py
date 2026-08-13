@@ -1175,7 +1175,9 @@ def padded_builder(
             [np.stack([a, b, c], axis=-1), np.stack([a, c, d], axis=-1)]
         )
         centroid = parameters[faces].mean(axis=1)
-        fault = (
+        # Indices, not a mask -- see `spde.Padding.fault_faces`: what a consumer needs
+        # is the fault's faces *in the fault's own order*, which a mask cannot state.
+        fault = np.flatnonzero(
             (centroid[:, 0] > 0.0)
             & (centroid[:, 0] < fault_u * step_u)
             & (centroid[:, 1] > 0.0)
@@ -1224,10 +1226,41 @@ def test_padding_draws_only_the_fault():
     build = padded_builder(2.0, 2.0, 6, covariance)
     padded = quiet(spde.padded_operator, build, covariance)
     field = padded.draw_on_faces(np.random.default_rng(3))
-    assert field.shape == (int(padded.fault_faces.sum()),)
+    assert field.shape == (padded.fault_faces.size,)
     assert np.isfinite(field).all()
     # The pad is a real fraction of the padded domain, so this is not a no-op.
-    assert padded.fault_faces.sum() < 0.4 * padded.fault_faces.size
+    assert padded.fault_faces.size < 0.4 * len(padded.operator.faces)
+
+
+def test_a_pad_that_touches_nothing_is_refused():
+    """The bug this refusal exists for, reproduced: a pad that is not conforming.
+
+    A pad whose vertices are its own -- surrounding the fault, overlapping it in the
+    parameter plane, sharing not one node -- is a second connected component. The
+    operator never couples to it, so the field on the fault is the unpadded one *exactly*
+    and nothing about the pad's geometry looks wrong. This builds that mesh deliberately
+    by renumbering the pad's vertices away from the fault's, and asserts the refusal
+    names it.
+    """
+    covariance = correlation_lengths(MAGNITUDE)
+    conforming = padded_builder(2.0, 2.0, 4, covariance)
+
+    def adrift(pad_u_km: float, pad_v_km: float) -> spde.PaddedMesh:
+        vertices, faces, parameters, fault = conforming(pad_u_km, pad_v_km)
+        pad = np.setdiff1d(np.arange(len(faces)), fault)
+        # Give every pad face its own copy of every vertex it uses: the same geometry,
+        # in the same place, joined to nothing.
+        fresh = faces[pad].ravel()
+        renumbered = np.arange(fresh.size) + len(vertices)
+        return (
+            np.concatenate([vertices, vertices[fresh]]),
+            np.concatenate([faces[fault], renumbered.reshape(-1, 3)]),
+            np.concatenate([parameters, parameters[fresh]]),
+            np.arange(len(fault)),
+        )
+
+    with pytest.raises(ValueError, match="connected components"):
+        quiet(spde.padded_operator, adrift, covariance)
 
 
 @pytest.mark.slow

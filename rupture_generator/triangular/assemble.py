@@ -37,9 +37,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import h5py
 import numpy as np
 import pyproj
 
+from rupture_generator import pulses
 from rupture_generator.assemble import POINT_COLUMNS, srf_file
 from rupture_generator.mesh import WGS84, grid_convergence_deg
 from rupture_generator.realisation import (
@@ -47,22 +49,29 @@ from rupture_generator.realisation import (
     HYPOCENTRE_STRIKE_KM,
     Realisation,
 )
-from rupture_generator.srf import PlaneHeader, SrfFile
-from rupture_generator.triangular.pipeline import SegmentGeometry
+from rupture_generator.srf import PlaneHeader, Points, SrfFile, Sw4Hdf5Stream
+from rupture_generator.triangular.pipeline import (
+    STREAM_BUDGET_BYTES,
+    SegmentGeometry,
+    face_blocks,
+)
 from rupture_generator.units import (
     CM2_PER_M2,
     CM_PER_KM,
     CM_PER_M,
     M2_PER_KM2,
     M_PER_KM,
+    SRF_FLOAT,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from pathlib import Path
 
     from rupture_generator.triangular.mesh import TriangleMesh
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 
 def project_faces(
@@ -250,6 +259,202 @@ def to_srf_file(
     return srf_file(headers, columns, pulse_lengths, samples_of)
 
 
+def write_sw4_hdf5(
+    path: Path | str,
+    realisation: Realisation,
+    params: pulses.PulseParams,
+    geometries: Mapping[str, SegmentGeometry] | None = None,
+    *,
+    budget_bytes: int = STREAM_BUDGET_BYTES,
+) -> None:
+    """Write a generated triangular rupture straight out as an SRF-HDF5 file.
+
+    **S9 and the writer, fused**, and that is the whole point rather than an
+    optimisation. :func:`~rupture_generator.triangular.pipeline.synthesise_pulses`
+    attaches every pulse of every subfault to the mesh, and at a 400 m cut on the CFM
+    Hikurangi interface that is 1.9 G samples -- 15 GB of ``f64`` -- before the writer
+    has allocated anything. So the pulses are synthesised **here**, a block of faces at
+    a time, converted, appended and dropped; :data:`STREAM_BUDGET_BYTES` is what bounds
+    the peak and :func:`face_blocks` is where a block comes from.
+
+    A rupture that will fit in memory does not need this. It goes through
+    :func:`to_srf_file`, which produces a whole `SrfFile` -- readable, sliceable, and
+    what every test asserts against. The two share the format through
+    `srf.Sw4Hdf5Stream`, so there is one statement of the layout.
+
+    Pulses already attached to the realisation are **not** read. Doing so would be a
+    second path through this function, exercised only by the small ruptures that do not
+    need it, for the case that is precisely the one that cannot hold them; the pulse
+    kernel is deterministic in its inputs, so what is written is what
+    ``synthesise_pulses`` would have attached. Run the pipeline with
+    ``synthesise=False`` and nothing is computed twice.
+
+    Parameters
+    ----------
+    path : Path or str
+        Where to write. Overwritten.
+    realisation : Realisation
+        A rupture that has been through
+        :func:`~rupture_generator.triangular.pipeline.generate`, with or without its
+        pulses.
+    params : pulses.PulseParams
+        How each pulse is shaped and sampled -- from
+        `rupture_generator.pipeline.pulse_model`, which is the same model
+        ``synthesise_pulses`` uses. Its ``sample_interval_s`` is the file's ``dt``.
+    geometries : Mapping of str to SegmentGeometry, optional
+        The hoisted geometry of each segment. Derived here if omitted.
+    budget_bytes : int, optional
+        See :data:`STREAM_BUDGET_BYTES`.
+
+    Raises
+    ------
+    KeyError
+        If a segment is missing a field the format needs, which is a realisation that
+        has not been all the way through the pipeline.
+    ValueError
+        For a subfault whose rise time the sample interval cannot represent, naming the
+        segment and the block as well as the subfault -- the kernel numbers subfaults
+        within the block it was handed, and a block-local index reported as a global
+        one would name the wrong triangle.
+    """
+    with Sw4Hdf5Stream(path, "2.0") as stream:
+        for name, mesh in realisation.items():
+            geometry = (
+                SegmentGeometry.of(mesh) if geometries is None else geometries[name]
+            )
+            located = project_faces(mesh, geometry, realisation.crs)
+
+            hypocentre_km = (
+                (
+                    float(mesh.attrs[HYPOCENTRE_STRIKE_KM]),
+                    float(mesh.attrs[HYPOCENTRE_DIP_KM]),
+                )
+                if HYPOCENTRE_STRIKE_KM in mesh.attrs
+                else None
+            )
+            stream.plane(
+                plane_header(mesh, geometry, located, hypocentre_km=hypocentre_km)
+            )
+
+            # SI leaves the package here, exactly as in `to_srf_file`, and for the
+            # whole segment at once: the point columns are one float per face and the
+            # pulses are hundreds, so it is only the pulses that need blocking.
+            depth_km = geometry.depth_km
+            slip_m = mesh["slip_m"]
+            rise_time_s = mesh["rise_time_s"]
+            columns = {
+                "longitude_deg": located["longitude_deg"],
+                "latitude_deg": located["latitude_deg"],
+                "depth_km": located["depth_km"],
+                "strike_deg": located["strike_deg"],
+                "dip_deg": located["dip_deg"],
+                "area_cm2": geometry.areas_km2 * M2_PER_KM2 * CM2_PER_M2,
+                "onset_s": mesh["onset_s"],
+                "sample_interval_s": np.full(
+                    geometry.face_count, params.sample_interval_s
+                ),
+                "rake_deg": mesh["rake_deg"],
+                "slip_cm": slip_m * CM_PER_M,
+                "rise_time_s": rise_time_s,
+                "shear_speed_cm_s": mesh["shear_speed_kms"] * CM_PER_KM,
+                "density_g_cm3": mesh["density_g_cm3"],
+            }
+
+            # Twelve bytes a live sample: the kernel's own f64, and the float32 it
+            # is narrowed into for the file.
+            for block in face_blocks(
+                rise_time_s,
+                params,
+                budget_bytes,
+                8 + np.dtype(SRF_FLOAT).itemsize,
+            ):
+                try:
+                    offsets, samples = pulses.synthesise(
+                        depth_km[block], slip_m[block], rise_time_s[block], params
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"synthesising the pulses of segment {name!r} over faces "
+                        f"{block.start} to {block.stop}, where the kernel numbers "
+                        f"subfaults from {block.start}: {error}"
+                    ) from error
+
+                # Converted into its final buffer rather than concatenated into one:
+                # `np.multiply` with `out=` does the unit conversion and the narrowing
+                # in one pass, so only the destination is ever live beside the
+                # kernel's own output. `assemble.srf_file` makes the same move for the
+                # same reason.
+                block_samples = np.empty(samples.size, dtype=SRF_FLOAT)
+                np.multiply(samples, CM_PER_M, out=block_samples, casting="unsafe")
+                del samples
+
+                stream.points(
+                    Points(
+                        **{
+                            column: np.asarray(values[block], dtype=SRF_FLOAT)
+                            for column, values in columns.items()
+                        }
+                    ),
+                    np.diff(offsets),
+                    block_samples,
+                )
+
+
+def hdf5_moment_newton_m(path: Path | str) -> float:
+    """The moment an SRF-HDF5 file states, summed from its own ``POINTS`` columns.
+
+    :func:`moment_newton_m` for a file too large to read: the same arithmetic on the
+    same four columns, read a slab at a time off disk, and never touching ``SR1`` --
+    which is 99% of the file and carries no moment, since the kernel normalises every
+    pulse so that ``dt sum(sdot)`` is the point's own slip.
+
+    This is what keeps the check MESH.md asks for available at production resolution.
+    A streaming writer's characteristic failure is dropping or duplicating a block of
+    points at a block boundary, and the moment is the quantity that sees it: the
+    pipeline's own moment is a sum over exactly the faces that exist, so the two agree
+    only if every face was written exactly once.
+
+    Parameters
+    ----------
+    path : Path or str
+        An SRF-HDF5 file.
+
+    Returns
+    -------
+    float
+        Newton-metres.
+
+    Raises
+    ------
+    ValueError
+        For a version 1.0 file, whose points carry no material properties, so the
+        moment depends on the velocity model it is run against rather than on the file.
+    """
+    with h5py.File(path, "r") as file:
+        if float(file.attrs["VERSION"]) < 2.0:
+            raise ValueError(
+                f"{path} declares SRF version {float(file.attrs['VERSION'])}, whose "
+                "points carry no shear speed or density, so the file states no "
+                "rigidity and no moment"
+            )
+        points = file["POINTS"]
+        moment_dyne_cm = 0.0
+        # A slab at a time, at a size that is a read granularity and nothing else: a
+        # million records of `SW4_POINTS_DTYPE` is 68 MB, small beside the file and
+        # large enough that the per-read overhead does not show.
+        for start in range(0, points.shape[0], 1 << 20):
+            slab = points[start : start + (1 << 20)]
+            moment_dyne_cm += float(
+                np.sum(
+                    slab["DEN"].astype(np.float64)
+                    * slab["VS"].astype(np.float64) ** 2
+                    * slab["AREA"].astype(np.float64)
+                    * slab["SLIP1"].astype(np.float64)
+                )
+            )
+    return moment_dyne_cm * 1.0e-7
+
+
 def moment_newton_m(srf: SrfFile) -> float:
     """The moment an SRF file states, summed from its own columns.
 
@@ -300,4 +505,11 @@ def moment_newton_m(srf: SrfFile) -> float:
     return moment_dyne_cm * 1.0e-7
 
 
-__all__ = ["moment_newton_m", "plane_header", "project_faces", "to_srf_file"]
+__all__ = [
+    "hdf5_moment_newton_m",
+    "moment_newton_m",
+    "plane_header",
+    "project_faces",
+    "to_srf_file",
+    "write_sw4_hdf5",
+]

@@ -102,22 +102,25 @@ covariance and the mesh are built on ``(u, v)``, while the hypocentre seam and t
 header want arc length, since "the hypocentre is 12 km along strike" means along the
 fault.
 
-**The parameter domain is currently exactly the fault, and that is a restriction this
-module expects to lose.** The SPDE sampler's Neumann boundary condition reflects the
-covariance in the domain boundary (Lindgren et al. appendix A.4), which is not an edge
-effect at fault scale: Mai & Beroza figure 13's own 0.25-0.6 ratio bound puts a fault
-between 1.7 and 4 correlation lengths across *by construction* -- ``colombia`` is 1.9 --
-so a domain cropped to the fault has the reflection everywhere. The circulant sampler
-does not suffer it because it pads and crops. The fix is the same one: triangulate a
-parameter rectangle **extended past the fault** on all sides, sample on that, and crop
-back to the fault.
+**The parameter domain can be extended past the fault, and for the sampler it has to
+be.** The SPDE sampler's Neumann boundary condition reflects the covariance in the
+domain boundary (Lindgren et al. appendix A.4), which is not an edge effect at fault
+scale: Mai & Beroza figure 13's own 0.25-0.6 ratio bound puts a fault between 1.7 and 4
+correlation lengths across *by construction* -- ``colombia`` is 1.9 -- so a domain
+cropped to the fault has the reflection everywhere. The circulant sampler does not
+suffer it because it pads and crops. The fix is the same one: triangulate a parameter
+rectangle **extended past the fault** on all sides, sample on that, and crop back to the
+fault.
 
 :func:`padded_builder` is that, handed to the sampler as a callable so it never imports
 this module: ``build(pad_strike_km, pad_dip_km)`` returns ``(vertices_km, faces,
 parameters_uv, fault_faces)``, with the fault's own mesh and parameter coordinates
-untouched and the pad a frame around it. The pad may be **coarser** than the fault, and
-usually should be -- its only job is to move the boundary away, and resolving it at fault
-resolution multiplies the vertex count several-fold for no modelling gain.
+untouched and the pad a frame around it -- built on the tensor product of the fault's
+**own** parameter grid lines, so the two share every seam vertex. That is the whole
+construction and it is load-bearing rather than tidy: a pad that merely surrounds the
+fault is a second connected component, the operator never couples to it, and the field
+comes out unpadded to fifteen digits. :func:`is_paddable` is what a caller asks first,
+because a segment fused across a bend has no such grid.
 
 ``h(u, v)`` is defined by the fault's own nodes, so the pad is an *extrapolation of the
 reference surface*, not more fault, and the flattest available extrapolation is the one
@@ -1112,6 +1115,79 @@ class TriangleMesh:
         )
         return cls(dataset)
 
+    def with_triangulation(
+        self, vertices_km: FloatArray, faces: IntArray, plane_of_face: IntArray
+    ) -> TriangleMesh:
+        """The same surface in the same frame, laid on a different triangulation.
+
+        What a *refinement* is, as far as the container is concerned. The frame, the
+        origin and the surface name are kept exactly, so the parameter coordinates of
+        every vertex that survives the change do not move -- which matters because the
+        hypocentre seam, the taper and the SPDE's anisotropy are all read off ``(u, v)``,
+        and a frame refitted to the new points would shift all three silently for no
+        modelling reason. It is also what makes a refined mesh comparable with the one
+        it came from at all.
+
+        This is deliberately *not* a mesher. It decides no geometry: the caller supplies
+        the vertices and the faces, and the only thing added here is the projection
+        through this mesh's own frame. The one refinement the package uses is one-to-four
+        subdivision, which lives in
+        :func:`~rupture_generator.triangular.spde.subdivided` because it is the multigrid
+        hierarchy the sampler needs; :func:`~rupture_generator.triangular.pipeline.refined`
+        is the two composed. Keeping them apart is what lets this module import neither
+        the sampler nor the solver.
+
+        No field and no attribute a stage attached comes across -- a refined mesh has a
+        different number of faces, so a per-face field is not a field on it.
+
+        Parameters
+        ----------
+        vertices_km : FloatArray
+            ``(V, 3)`` node positions, offsets from this mesh's own origin.
+        faces : IntArray
+            ``(F, 3)`` vertex indices.
+        plane_of_face : IntArray
+            ``(F,)`` config-plane provenance, which the caller carries across because
+            only the caller knows how its faces map onto the old ones.
+
+        Returns
+        -------
+        TriangleMesh
+            Admissible -- :func:`check_admissible` runs, as it does in every builder.
+
+        Raises
+        ------
+        ValueError
+            For arrays of the wrong shape, or a triangulation that folds in this frame.
+        """
+        vertices_km = np.asarray(vertices_km, dtype=np.float64)
+        faces = np.asarray(faces, dtype=np.int64)
+        plane_of_face = np.asarray(plane_of_face, dtype=np.int64)
+        if vertices_km.ndim != 2 or vertices_km.shape[1] != 3:
+            raise ValueError(
+                f"vertices_km is shaped {vertices_km.shape}, and this wants (V, 3)"
+            )
+        if faces.ndim != 2 or faces.shape[1] != 3:
+            raise ValueError(f"faces is shaped {faces.shape}, and this wants (F, 3)")
+        if plane_of_face.shape != (faces.shape[0],):
+            raise ValueError(
+                f"plane_of_face has {plane_of_face.shape} entries for "
+                f"{faces.shape[0]} faces"
+            )
+
+        origin_east_km, origin_north_km = self.origin_km
+        mesh = TriangleMesh._from_frame(
+            vertices_km=vertices_km,
+            faces=faces,
+            plane_of_face=plane_of_face,
+            frame=self.frame,
+            origin_east_km=origin_east_km,
+            origin_north_km=origin_north_km,
+            surface=self.surface,
+        )
+        check_admissible(mesh)
+        return mesh
+
     # ------------------------------------------------------------------ shape
 
     @property
@@ -1698,6 +1774,38 @@ class TriangleMesh:
 
     # ------------------------------------------------------------- the boundary
 
+    def _edge_keys(self) -> tuple[IntArray, IntArray]:
+        """Every directed edge, and the one integer that identifies it undirected.
+
+        **The canonical form is a number, not a pair**, and that is the whole of why the
+        boundary walk is affordable at production resolution. Deduplicating ``(3F, 2)``
+        pairs means ``np.unique(..., axis=0)``, which sorts rows lexicographically
+        through a structured view; the same information is ``min * V + max``, one int64,
+        and deduplicating that is a plain sort. Measured on the CFM Hikurangi interface
+        at 400 m -- 2.15 M faces, 6.46 M half-edges -- the row form takes 6.58 s and the
+        key form 0.42 s, **15.6 times**. With
+        :func:`~rupture_generator.triangular.pipeline.taper_edges` also handing its
+        edges to :meth:`boundary_labels` rather than making it walk again, the taper's
+        boundary work goes from 1.77 s to 0.53 s at that size.
+
+        The key cannot overflow at any size this package meshes: the largest is
+        ``(V - 1) V``, which stays inside int64 up to three billion vertices, against
+        the 17.6 M of Hikurangi at 100 m.
+
+        Returns
+        -------
+        tuple of IntArray
+            ``(3F, 2)`` directed edges in face order -- corner 0-1 of every face, then
+            1-2, then 2-0 -- and ``(3F,)`` their undirected keys.
+        """
+        faces = self.faces()
+        directed = np.concatenate(
+            [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0
+        )
+        low = directed.min(axis=1)
+        high = directed.max(axis=1)
+        return directed, low * self.node_count + high
+
     def _half_edges(self) -> tuple[IntArray, IntArray, IntArray]:
         """Every directed edge, its face, and how many faces share it undirected.
 
@@ -1707,14 +1815,9 @@ class TriangleMesh:
             ``(3F, 2)`` directed edges in face order, ``(3F,)`` face indices, and
             ``(3F,)`` incidence counts.
         """
-        faces = self.faces()
-        directed = np.concatenate(
-            [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0
-        )
+        directed, keys = self._edge_keys()
         of_face = np.tile(np.arange(self.face_count, dtype=np.int64), 3)
-        _, inverse, counts = np.unique(
-            np.sort(directed, axis=1), axis=0, return_inverse=True, return_counts=True
-        )
+        _, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
         return directed, of_face, counts[inverse.ravel()]
 
     def edges(self) -> IntArray:
@@ -1723,16 +1826,13 @@ class TriangleMesh:
         Returns
         -------
         IntArray
-            Built as all ``3F`` directed edges, canonicalised as sorted pairs and
-            deduplicated -- the same pass :meth:`boundary_edges` reads its counts from,
-            so there is one implementation of edge incidence rather than one per
-            consumer.
+            Built as all ``3F`` directed edges, canonicalised by :meth:`_edge_keys` and
+            deduplicated -- the same canonical form :meth:`boundary_edges` counts, so
+            there is one implementation of edge incidence rather than one per consumer.
         """
-        faces = self.faces()
-        directed = np.concatenate(
-            [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0
-        )
-        return np.unique(np.sort(directed, axis=1), axis=0)
+        _, keys = self._edge_keys()
+        unique = np.unique(keys)
+        return np.stack([unique // self.node_count, unique % self.node_count], axis=-1)
 
     def boundary_edges(self, label: str | None = None) -> IntArray:
         """The edges incident to exactly one face, ``(B, 2)``.
@@ -1797,7 +1897,7 @@ class TriangleMesh:
             )
         return np.unique(on_boundary[self.boundary_labels() == label])
 
-    def boundary_labels(self) -> np.ndarray:
+    def boundary_labels(self, edges: IntArray | None = None) -> np.ndarray:
         """Each boundary edge as ``top``, ``bottom`` or ``lateral``, ``(B,)``.
 
         Read straight off the parameter coordinates, which is one of the things storing
@@ -1811,12 +1911,22 @@ class TriangleMesh:
         the two cases are separated by ``|n_v| = |n_u|``, which is the 45-degree
         diagonal and the only division that does not need a number chosen.
 
+        Parameters
+        ----------
+        edges : IntArray, optional
+            ``(B, 2)`` the edges to label, from :meth:`boundary_edges`. Omitted, they
+            are walked for -- which is the whole half-edge pass again, and a caller that
+            already holds them is asking for it twice. Nothing checks that what is
+            handed over is a boundary; the labels are a function of an edge's own
+            direction and mean nothing for an interior one.
+
         Returns
         -------
         np.ndarray
-            Strings, aligned with :meth:`boundary_edges`.
+            Strings, aligned with the edges.
         """
-        edges = self.boundary_edges()
+        if edges is None:
+            edges = self.boundary_edges()
         parameters = self.parameters_km()
         direction = parameters[edges[:, 1]] - parameters[edges[:, 0]]
         # Turn the edge direction a right angle clockwise: interior on the left means
@@ -2412,6 +2522,146 @@ def remesh(
     return mesh
 
 
+PADDED_LATTICE_SLACK = 4.0
+"""How far a segment's parameter grid may be from a full lattice and still be paddable.
+
+:func:`padded_builder` builds the pad on the tensor product of the fault's *own*
+parameter grid lines, which is what makes the two conforming: every fault vertex is
+then a node of the padded lattice, so the seam is shared vertices rather than two
+meshes that happen to touch. That construction needs the fault to *be* a lattice in
+``(u, v)``, and this is the test -- the number of grid lines multiplied out, against
+the number of vertices there actually are.
+
+Measured on the shipped geometry: every single-plane segment comes out at exactly
+1.00 (``kaikoura:0`` 41 x 17 = 697 lines for 697 vertices, ``Greendale_central``
+190 x 111 = 21090 for 21090), and a segment `remesh` built is a lattice with a
+staircase outline, so its ratio is the bounding box over the fault -- 2.0 on the CFM
+Hikurangi interface. A **bent** segment fused from two planes is not a lattice at all:
+``hope`` has 855 distinct ``u`` for 855 vertices, a ratio of 854, because the bend
+gives every node its own ``u``. Four therefore separates the two cases by two orders
+of magnitude, and it is a refusal rather than a silent fallback because a pad that is
+not conforming does nothing at all -- measured, the delivered correlation length with
+and without it agreed to fifteen digits.
+"""
+
+
+def _grid_lines(values: FloatArray) -> FloatArray:
+    """The distinct coordinates a lattice has along one parameter axis.
+
+    A grid line is a *cluster* rather than an exact value, because a segment's ``(u, v)``
+    are a projection: the nodes of one column of a planar fault share a strike coordinate
+    to f64 round-off and not bit for bit. `SEAM_TOLERANCE_KM` is the length two positions
+    have to differ by to be two places rather than one, and it is the same millimetre the
+    rest of this module joins meshes at.
+
+    Parameters
+    ----------
+    values : FloatArray
+        ``(V,)`` one coordinate of every vertex.
+
+    Returns
+    -------
+    FloatArray
+        Ascending, one entry per line.
+    """
+    order = np.unique(values)
+    if order.size == 0:
+        return order
+    return order[np.concatenate([[True], np.diff(order) > SEAM_TOLERANCE_KM])]
+
+
+def _line_of(lines: FloatArray, values: FloatArray) -> IntArray:
+    """Which grid line each coordinate is on: the **nearest**, not the one below.
+
+    A line is a cluster (:func:`_grid_lines`), so a coordinate sits within round-off of
+    its line and as often above it as below. ``searchsorted`` alone would put everything
+    a hair above a line onto the *next* one, which collapses two fault vertices onto one
+    lattice node and tears the mesh -- measured as a face with no area, several thousand
+    faces into the pad, which is where this was found.
+
+    Parameters
+    ----------
+    lines : FloatArray
+        Ascending, from :func:`_grid_lines`.
+    values : FloatArray
+        ``(n,)`` coordinates known to lie on one of them.
+
+    Returns
+    -------
+    IntArray
+        ``(n,)`` line indices.
+    """
+    above = np.clip(np.searchsorted(lines, values), 0, lines.size - 1)
+    below = np.clip(above - 1, 0, lines.size - 1)
+    nearer_below = np.abs(values - lines[below]) <= np.abs(lines[above] - values)
+    return np.where(nearer_below, below, above)
+
+
+def _padded_lines(lines: FloatArray, pad_km: float, spacing_km: float) -> FloatArray:
+    """One axis's grid lines with a pad's worth of them added at each end.
+
+    The fault's own lines survive untouched -- that is what shares the seam -- and the
+    pad's are laid at as near ``spacing_km`` as divides the width evenly, so the pad
+    lands exactly on the fault's first and last line rather than near them.
+
+    Parameters
+    ----------
+    lines : FloatArray
+        The fault's own lines, ascending.
+    pad_km : float
+        How far past each end to reach. Zero adds nothing.
+    spacing_km : float
+        The pad's target spacing.
+
+    Returns
+    -------
+    FloatArray
+        Ascending.
+    """
+    if pad_km <= 0.0:
+        return lines
+    steps = max(1, round(pad_km / spacing_km))
+    below = np.linspace(lines[0] - pad_km, lines[0], steps + 1)[:-1]
+    above = np.linspace(lines[-1], lines[-1] + pad_km, steps + 1)[1:]
+    return np.concatenate([below, lines, above])
+
+
+def _lattice_lines(mesh: TriangleMesh) -> tuple[FloatArray, FloatArray] | None:
+    """A segment's parameter grid lines, or ``None`` if it has no grid.
+
+    See :data:`PADDED_LATTICE_SLACK` for the test and what the shipped geometry measures
+    against it.
+    """
+    parameters_km = mesh.parameters_km()
+    lines_u = _grid_lines(parameters_km[:, 0])
+    lines_v = _grid_lines(parameters_km[:, 1])
+    if lines_u.size * lines_v.size > PADDED_LATTICE_SLACK * len(parameters_km):
+        return None
+    return lines_u, lines_v
+
+
+def is_paddable(mesh: TriangleMesh) -> bool:
+    """Whether :func:`padded_builder` can surround this segment conformingly.
+
+    Asked rather than discovered: a caller that wants the pad when it can have it -- the
+    sampler does -- should not learn that it cannot by catching an exception, because
+    then the two cases become one code path with an invisible branch in it.
+
+    Parameters
+    ----------
+    mesh : TriangleMesh
+        The segment.
+
+    Returns
+    -------
+    bool
+        True when the segment's parameter domain is a lattice, which every single-plane
+        segment and every :func:`remesh` output is and a segment fused across a bend is
+        not.
+    """
+    return _lattice_lines(mesh) is not None
+
+
 def padded_builder(
     mesh: TriangleMesh, *, pad_spacing_km: float | None = None
 ) -> Callable[[float, float], tuple[FloatArray, IntArray, FloatArray, IntArray]]:
@@ -2428,12 +2678,26 @@ def padded_builder(
     fault has the reflection everywhere. The circulant sampler never suffered it because
     it pads and crops; this is the same remedy.
 
+    **The pad has to be conforming, and that is the whole of the construction.** The SPDE
+    couples through the *mesh*: two triangulations that overlap in the parameter plane but
+    share no vertex are two connected components, the fault's own boundary is still a
+    boundary, and the pad does exactly nothing. That is not hypothetical -- it is what an
+    earlier version of this function did, and the delivered correlation length on the
+    shipped ``hope`` segment came out the same to fifteen digits with the pad and without
+    it. So the pad is built on the tensor product of the fault's **own** parameter grid
+    lines, extended outwards: every fault vertex is then a node of the padded lattice and
+    is spliced in by index rather than duplicated, and the seam is shared vertices by
+    construction rather than by coincidence. :data:`PADDED_LATTICE_SLACK` is the test that
+    the fault is a lattice at all, and carries what the shipped geometry measures.
+
     **The pad may be coarser than the fault, and usually should be.** Its only job is to
     move the boundary away, so resolving it at fault resolution buys nothing and costs a
     great deal -- a uniform pad two correlation lengths wide multiplies the vertex count
     by roughly five, which at 100 m puts a crustal segment into the millions for no
     modelling gain. ``pad_spacing_km`` defaults to the fault's own realised spacing, and
-    is worth setting larger.
+    is worth setting larger. It sets the spacing *outside* the fault's own extent only:
+    the fault's grid lines run on through the pad on the four sides, because dropping one
+    would unshare the seam.
 
     **What the patch means out there.** ``h(u, v)`` is defined by the fault's own nodes, so
     the pad is an *extrapolation of the reference surface*, and this uses the flattest one
@@ -2462,9 +2726,16 @@ def padded_builder(
     callable
         ``build(pad_strike_km, pad_dip_km)`` returning ``(vertices_km, faces,
         parameters_uv, fault_faces)``: positions ``(V, 3)``, connectivity ``(F, 3)``,
-        parameter coordinates ``(V, 2)``, and the indices of the faces that are **on the
-        fault** -- which is what the sampler crops back to. Zero pad widths give the
+        parameter coordinates ``(V, 2)``, and the **indices** of the faces that are on the
+        fault, in the fault's own face order -- which is what the sampler crops back to,
+        and the order is why they are indices rather than a mask. Zero pad widths give the
         fault's own arrays unchanged.
+
+    Raises
+    ------
+    ValueError
+        If the segment's parameter domain is not a lattice, which a segment fused from
+        two planes at a bend is not. See :data:`PADDED_LATTICE_SLACK`.
     """
     frame = mesh.frame
     fault_uv = mesh.parameters_km()
@@ -2479,6 +2750,23 @@ def padded_builder(
         )
     )
     spacing_km = pad_spacing_km if pad_spacing_km is not None else default_spacing_km
+
+    grid = _lattice_lines(mesh)
+    if grid is None:
+        lines_u = _grid_lines(fault_uv[:, 0])
+        lines_v = _grid_lines(fault_uv[:, 1])
+        raise ValueError(
+            f"{mesh.surface!r} has {lines_u.size} distinct strike coordinates and "
+            f"{lines_v.size} down dip, a lattice of {lines_u.size * lines_v.size} nodes "
+            f"for the {len(fault_uv)} vertices it actually has. Its parameter domain is "
+            "therefore not a lattice, and the pad is built on the fault's own grid lines "
+            "precisely so that the two share their seam -- a pad that merely surrounds "
+            "the fault is a second connected component and changes nothing. A segment "
+            "fused from two planes at a bend is the case this reaches: every node gets "
+            "its own coordinate. Sample it unpadded and read the DegradedCorrelation "
+            "warning, or split the bend into segments that are each one plane"
+        )
+    lines_u, lines_v = grid
 
     def build(
         pad_strike_km: float, pad_dip_km: float
@@ -2513,43 +2801,51 @@ def padded_builder(
                 np.arange(len(fault_faces), dtype=np.int64),
             )
 
-        low = fault_uv.min(axis=0) - np.array([pad_strike_km, pad_dip_km])
-        high = fault_uv.max(axis=0) + np.array([pad_strike_km, pad_dip_km])
-        counts = np.maximum(np.round((high - low) / spacing_km).astype(np.int64), 1)
-        grid_u = np.linspace(low[0], high[0], counts[0] + 1)
-        grid_v = np.linspace(low[1], high[1], counts[1] + 1)
+        # The fault's own grid lines, with the pad's outside them. Keeping every fault
+        # line is what shares the seam: a lattice node that is a fault vertex is spliced
+        # in by index below, and it can only be one if the line it sits on survives.
+        grid_u = _padded_lines(lines_u, pad_strike_km, spacing_km)
+        grid_v = _padded_lines(lines_v, pad_dip_km, spacing_km)
         lattice_v, lattice_u = np.meshgrid(grid_v, grid_u, indexing="ij")
 
-        # Flat extrapolation: hold `h` at the nearest fault vertex. Nearest-neighbour
-        # rather than anything smoother precisely because it adds no curvature, and it
-        # is continuous where it matters -- at the seam the nearest fault vertex *is*
-        # the boundary node, so the pad meets the fault at the fault's own height.
-        query = np.stack([lattice_u.ravel(), lattice_v.ravel()], axis=-1)
-        nearest = KDTree(fault_uv).query(query, k=1)[1]
-        height = fault_height[nearest].reshape(lattice_u.shape)
+        # Which lattice node each fault vertex *is*, so that it can be spliced in by
+        # index instead of being duplicated a millimetre away. See :func:`_line_of` for
+        # why this is a nearest-line lookup and what goes wrong when it is not.
+        column_of = _line_of(grid_u, fault_uv[:, 0])
+        row_of = _line_of(grid_v, fault_uv[:, 1])
+        is_fault = np.zeros(lattice_u.shape, dtype=bool)
+        vertex_at = np.full(lattice_u.shape, -1, dtype=np.int64)
+        is_fault[row_of, column_of] = True
+        vertex_at[row_of, column_of] = np.arange(len(fault_uv))
 
-        # Everything strictly inside the fault's parameter bounding box is the fault's
-        # own business; the pad is the frame around it. Cells wholly inside the box are
-        # dropped and the fault's own vertices spliced in instead, so the fault keeps
-        # exactly the mesh it was built with.
-        inside = (
-            (lattice_u > fault_uv[:, 0].min())
-            & (lattice_u < fault_uv[:, 0].max())
-            & (lattice_v > fault_uv[:, 1].min())
-            & (lattice_v < fault_uv[:, 1].max())
+        # A cell all four of whose corners are fault vertices is the fault's own cell,
+        # and the fault's own two triangles already cover it. Everything else is pad.
+        # A staircase outline can leave a cell with four fault corners that is *not* a
+        # fault cell -- a diagonal step -- and that cell becomes a hole rather than an
+        # overlap, which the pad does not mind: its job is distance, not coverage.
+        covered = (
+            is_fault[:-1, :-1]
+            & is_fault[:-1, 1:]
+            & is_fault[1:, 1:]
+            & is_fault[1:, :-1]
         )
-        drop = inside[:-1, :-1] & inside[:-1, 1:] & inside[1:, 1:] & inside[1:, :-1]
-        keep = ~drop
+        keep = ~covered
 
         used = np.zeros(lattice_u.shape, dtype=bool)
         for row, column in ((0, 0), (0, 1), (1, 1), (1, 0)):
             used[row : row + keep.shape[0], column : column + keep.shape[1]] |= keep
-        numbering = np.full(used.shape, -1, dtype=np.int64)
-        numbering[used] = np.arange(int(used.sum())) + len(fault_uv)
+        fresh = used & ~is_fault
+        numbering = vertex_at.copy()
+        numbering[fresh] = np.arange(int(fresh.sum())) + len(fault_uv)
 
-        pad_uv = np.stack([lattice_u[used], lattice_v[used]], axis=-1)
+        pad_uv = np.stack([lattice_u[fresh], lattice_v[fresh]], axis=-1)
+        # Flat extrapolation: hold `h` at the nearest fault vertex. Nearest-neighbour
+        # rather than anything smoother precisely because it adds no curvature, and it
+        # is continuous where it matters -- at the seam the nearest fault vertex *is*
+        # the boundary node, so the pad meets the fault at the fault's own height.
+        nearest = KDTree(fault_uv).query(pad_uv, k=1)[1]
         pad_vertices = frame.lift(
-            np.stack([pad_uv[:, 0], pad_uv[:, 1], height[used]], axis=-1)
+            np.stack([pad_uv[:, 0], pad_uv[:, 1], fault_height[nearest]], axis=-1)
         )
 
         near = numbering[:-1, :-1][keep]
@@ -3097,6 +3393,7 @@ def read_mesh(
 __all__ = [
     "BOUNDARY_LABELS",
     "DEGENERATE_MASS_FRACTION",
+    "PADDED_LATTICE_SLACK",
     "SCHEMA_VERSION",
     "MongeFrame",
     "TriangleMesh",
@@ -3108,6 +3405,7 @@ __all__ = [
     "from_chart",
     "from_datatree",
     "implied_axes",
+    "is_paddable",
     "padded_builder",
     "read_mesh",
     "remesh",
