@@ -9,41 +9,27 @@ A segment may span several config planes where their seams coincide; the ``plane
 coordinate on the strike axis records which one each cell column came from, so the
 provenance survives without the file having to be cut the way the config was written.
 
-# Self-contained on purpose
-
 Each group carries the node positions as well as the fields, so a rupture file is
-everything a viewer or a consumer needs. The alternative -- a rupture that refers to a
-mesh file -- is a pair that can be separated, and a slip field without its geometry is
-a grid of numbers.
+everything a viewer or a consumer needs: a slip field without its geometry is a grid of
+numbers, and a pair of files can be separated.
 
-# Two coordinate systems, and neither is redundant
+Two coordinate systems, neither redundant. The **nodes** are projected offsets, exactly
+as the mesh file holds them -- the geometry, and what a renderer draws. The **cell**
+variables are WGS84, what an SRF is written from and what consumers expect.
 
-The **nodes** are projected offsets, exactly as the mesh file holds them: they are the
-geometry, and they are what a renderer draws. The **cell** variables are WGS84, because
-they are what an SRF is written from and what every consumer downstream expects. One is
-input and the other is derived output.
+Units are SI: slip in metres, slip rate in metres per second, moment in newton-metres,
+area in square metres. The centimetres the SRF format wants appear in `srf.py` and
+nowhere else, and every variable carries its unit.
 
-# Units are SI
+The pulses are ragged, so they are stored as CSR. ``data``/``indptr`` is the layout the
+kernel already produces and `scipy.sparse.csr_array` already wants, so nothing is
+translated on either side.
 
-Slip in metres, slip rate in metres per second, moment in newton-metres, area in
-square metres. The centimetres the SRF format wants appear in `srf.py` and nowhere
-else. Every variable carries its unit, which is the discipline that stopped shear speed
-being written in km/s where the SRF wants cm/s.
-
-# The pulses are ragged, so they are stored as CSR
-
-Each subfault's pulse has its own length. ``data``/``indptr`` is the layout the kernel
-already produces and `scipy.sparse.csr_array` already wants, so nothing is translated on
-either side -- and the column index of a sample is its position *within its own pulse*,
-not within the rupture.
-
-**The ``indices`` of that triple are not stored**, because for this matrix they carry no
-information: every pulse starts at column zero and runs contiguously, so a sample's
-column is ``arange(n) - repeat(indptr[:-1], diff(indptr))`` and is a function of
-``indptr`` alone. Writing them down doubles the file, and on the shipped twenty-fault
-scenario that is 7.6 GB of int64 restating 7.6 GB of float64 -- the array that used to
-exhaust memory before the rupture could be written at all. `assemble.to_srf_file`
-rebuilds them where `scipy.sparse` insists on having them.
+**The ``indices`` of that triple are not stored**: every pulse starts at column zero and
+runs contiguously, so a sample's column is a function of ``indptr`` alone. Writing them
+down doubles the file -- 7.6 GB of int64 restating 7.6 GB of float64 on the shipped
+twenty-fault scenario, the array that used to exhaust memory before the rupture could be
+written at all. `assemble.to_srf_file` rebuilds them where `scipy.sparse` insists.
 """
 
 from __future__ import annotations
@@ -67,7 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 SCHEMA_VERSION = 2
-"""Bumped from the port's format: the units are SI and a group is a segment.
+"""Version 2 made the units SI and a group a segment.
 
 A reader of a version-1 file would take metres for centimetres, which is the kind of
 disagreement a version number exists for.
@@ -90,8 +76,7 @@ CELL_VARIABLES = {
 """Every variable carries its unit and a sentence.
 
 ``strike_deg`` says **TRUE** in capitals because the mesh file's does not: that one is
-grid north, and the difference reaches five degrees. A reader who takes one for the
-other gets a mechanism wrong by more than the SRF can express.
+grid north, and the difference reaches five degrees.
 """
 
 NODE_VARIABLES = {
@@ -111,10 +96,8 @@ FILE_FIELDS = (
 )
 """The fields a rupture file stores, read off the chart by name.
 
-The whitelist is what keeps the pipeline's *working* fields out of the file. A stage
-may attach whatever it needs -- the unit-mean slip pattern, the onset perturbation,
-the solved wavefront -- and a file is a rupture rather than a trace of how one was
-made, so only these cross.
+The whitelist keeps the pipeline's *working* fields out: a file is a rupture rather
+than a trace of how one was made.
 """
 
 
@@ -129,14 +112,12 @@ def to_dataset(
     """One segment's rupture and geometry, as a dataset.
 
     The fields are **on the chart**, so this reads them off rather than being told
-    them. That is not only brevity: a field the pipeline stops producing now fails
-    here, naming the segment and the field, instead of being a ``TypeError`` at a call
-    site the pipeline no longer has.
+    them: a field the pipeline stops producing fails here, naming the segment and the
+    field, rather than at a call site the pipeline no longer has.
 
     The hypocentre is not a parameter either. Only the segment the rupture nucleated on
-    carries one, and it carries it in its own attrs, so this copies what the chart
-    records -- writing it into every group claimed three hypocentres for one
-    earthquake, and the old signature made every call site decide per segment.
+    carries one, in its own attrs, so this copies what the chart records -- writing it
+    into every group claimed three hypocentres for one earthquake.
 
     Parameters
     ----------
@@ -145,15 +126,10 @@ def to_dataset(
     crs : pyproj.CRS
         The frame its nodes are in -- the one projection seam.
     segment_name : str, optional
-        What the causality tree calls this segment. Stored because a surface can
-        yield several segments and they would otherwise be distinguishable only by
-        the group name -- a convention rather than a record, and one the tree in the
-        root attributes refers to by a name the groups did not carry.
+        What the causality tree calls this segment. Stored because a surface can yield
+        several segments, which would otherwise be distinguishable only by the group
+        name -- a convention rather than a record.
     sample_interval_s, moment_newton_m : float
-
-    Returns
-    -------
-    xr.Dataset
 
     Raises
     ------
@@ -285,10 +261,11 @@ def to_datatree(
     attrs : Mapping, optional
         The **caller's** provenance: a title, the config verbatim, the seed and the
         realisation index. What the rupture *is* -- the frame, the causality tree, the
-        jumps, the event moment -- comes off the realisation and is written whether
-        this is given or not, because a rupture file that does not say which segment
-        triggered which is a set of faults that happen to be in one place.
+        jumps, the event moment -- comes off the realisation and is written either way.
     """
+    # Once, not once per segment: the property sums over every chart, so reading it
+    # inside the comprehension would make the writer quadratic in the segment count.
+    moment_newton_m = realisation.moment_newton_m
     tree = xr.DataTree.from_dict(
         {
             # A colon is a path separator to a datatree, and a fused surface's parts
@@ -299,7 +276,7 @@ def to_datatree(
                 realisation.crs,
                 segment_name=name,
                 sample_interval_s=float(mesh.attrs["sample_interval_s"]),
-                moment_newton_m=realisation.moment_newton_m or 0.0,
+                moment_newton_m=moment_newton_m,
             )
             for name, mesh in realisation.items()
         }
@@ -315,7 +292,7 @@ def to_datatree(
                 for name, jump in realisation.jumps.items()
             }
         ),
-        "moment_newton_m": realisation.moment_newton_m or 0.0,
+        "moment_newton_m": moment_newton_m,
         **dict(attrs or {}),
     }
     return tree

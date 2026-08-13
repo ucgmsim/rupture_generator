@@ -61,8 +61,7 @@ class PlaneHeader:
     and no geometry.
 
     `hypocentre_strike_km` is measured from the segment's along-strike **centre** and
-    `hypocentre_dip_km` from its top edge — genslip's convention, and the one
-    `realisation_to_srf.py` already converts into.
+    `hypocentre_dip_km` from its top edge, which is the SRF's own convention.
     """
 
     centre_longitude_deg: float
@@ -497,12 +496,12 @@ class SrfFile:
             else None,
         )
 
-        # **No `indices`.** The writer walks `row_ptr` and `data`
-        # (`crates/srf/src/srf_writer.rs`) and never asks a sample which column it is
-        # in -- every pulse starts at column zero, so `indptr` already says. Widening
-        # `indices` to `uint64` to hand it over was one `uint64` per sample: 7.6 GB on
-        # the twenty-fault scenario, allocated to be ignored, and the largest single
-        # thing standing between that rupture and an SRF.
+        # **No `indices`.** The writer walks `row_ptr` and `data` and never asks a
+        # sample which column it is in -- every pulse starts at column zero, so
+        # `indptr` already says. Widening `indices` to `uint64` to hand it over was one
+        # `uint64` per sample: 7.6 GB on the twenty-fault scenario, allocated to be
+        # ignored, and the largest single thing standing between that rupture and an
+        # SRF.
         #
         # `asarray` rather than `astype` for the data, which already arrives as float32
         # from `assemble.to_srf_file`; `astype` would copy 3.8 GB to change nothing.

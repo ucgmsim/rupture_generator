@@ -10,18 +10,13 @@ the root attributes -- the same thing :class:`~rupture_generator.mesh.RuptureMes
 holds, for the same reason. The origin is stored once, in the root attributes, and
 added back by whoever wants a coordinate rather than a shape.
 
-# Only the geometry is stored
+Only the geometry is stored. Cell centres, areas, strike and dip are all functions of
+the nodes, so they are computed on read and never written.
 
-Cell centres, areas, strike and dip are all functions of the nodes, so they are
-computed on read and never written. A stored quantity that could have been derived is
-a second description free to drift from the first.
-
-# The dims are renamed at this seam and nowhere else
-
-In memory a chart's node dims are ``(i_node, j_node)`` -- ``i`` down-dip, ``j`` along
-strike. The file keeps its original ``(dip_node, strike_node)`` spelling, so readers
-that never import this package keep working. The rename happens here, in both
-directions, and nothing else in the package knows both spellings.
+The dims are renamed at this seam and nowhere else. In memory a chart's node dims are
+``(i_node, j_node)`` -- ``i`` down-dip, ``j`` along strike -- and the file keeps its
+original ``(dip_node, strike_node)`` spelling, so readers that never import this package
+keep working.
 """
 
 from __future__ import annotations
@@ -35,22 +30,25 @@ import numpy as np
 import pyproj
 import xarray as xr
 
-from rupture_generator.config.geometry import ComputedPropagation, PropagationConfig
 from rupture_generator.formats import Format, resolve
 from rupture_generator.mesh import RuptureMesh
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-SCHEMA_VERSION = 1
-"""Bumped when a reader of an older file would get the wrong answer rather than an error."""
+SCHEMA_VERSION = 2
+"""Bumped when a reader of an older file would get the wrong answer rather than an error.
+
+Version 2 stopped storing ``propagation``: which segment triggers which is a property
+of the earthquake, not of the surfaces, and it is stated in the rupture config. A
+version 1 file still reads -- the attribute is simply ignored.
+"""
 
 
 def to_datatree(
     meshes: Mapping[str, list[RuptureMesh]],
     crs: pyproj.CRS,
     *,
-    propagation: PropagationConfig | None = None,
     attrs: Mapping[str, Any] | None = None,
 ) -> xr.DataTree:
     """Lay charts out as a tree: one group per plane, nested under its surface.
@@ -61,8 +59,6 @@ def to_datatree(
         Surface name to its per-plane charts, in trace order.
     crs : pyproj.CRS
         The frame every position is in. Stored once, in the root.
-    propagation : PropagationConfig, optional
-        How a rupture crosses between these surfaces. Defaults to the computed form.
     attrs : Mapping, optional
         Extra root attributes -- the config verbatim, a title.
 
@@ -116,12 +112,6 @@ def to_datatree(
         # One origin per surface, as JSON because an attribute is a scalar or an
         # array and this is a mapping. Read back by `from_datatree` and nothing else.
         "origins": json.dumps(origins),
-        # How a rupture crosses between these surfaces is a property of the fault
-        # system, so it travels with the fault system. The `geometry_config` attribute
-        # the CLI also writes is the input file verbatim -- provenance, for a human
-        # and for reproducing a run -- where this is the operative copy the pipeline
-        # reads back.
-        "propagation": json.dumps((propagation or ComputedPropagation()).to_dict()),
         **dict(attrs or {}),
     }
     return tree
@@ -129,7 +119,7 @@ def to_datatree(
 
 def from_datatree(
     tree: xr.DataTree,
-) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS, PropagationConfig]:
+) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
     """Rebuild charts from a tree.
 
     The inverse of :func:`to_datatree`, and lossless: the nodes are the geometry, so
@@ -138,8 +128,7 @@ def from_datatree(
     Returns
     -------
     tuple
-        Surface name to per-plane charts, the CRS they are in, and how a rupture
-        crosses between them.
+        Surface name to per-plane charts, and the CRS they are in.
 
     Raises
     ------
@@ -153,12 +142,10 @@ def from_datatree(
         raise ValueError("the file has no crs attribute, so its positions mean nothing")
     origins = json.loads(tree.attrs.get("origins", "{}"))
 
-    # Keyed by the *stored* plane index rather than by the order the groups come
-    # back in, because **Zarr does not preserve order** -- see the git history's
-    # MESH.md for the measurement. HDF5 does preserve insertion, so trusting
-    # iteration order is green in one container and silently permutes the fault in
-    # the other -- and since the order varies between runs, it is the kind of thing
-    # that fails somewhere else, intermittently, long after.
+    # Keyed by the *stored* plane index rather than by the order the groups come back
+    # in, because **Zarr does not preserve order**. HDF5 does preserve insertion, so
+    # trusting iteration order is green in one container and silently permutes the
+    # fault in the other -- intermittently, since the order varies between runs.
     by_surface: dict[str, dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "east_km" not in node.dataset:
@@ -200,13 +187,7 @@ def from_datatree(
             for index in sorted(planes)
         ]
 
-    stored = tree.attrs.get("propagation")
-    propagation = (
-        PropagationConfig.from_dict(json.loads(stored))
-        if stored
-        else ComputedPropagation()
-    )
-    return meshes, pyproj.CRS(crs_name), propagation
+    return meshes, pyproj.CRS(crs_name)
 
 
 def write_mesh(
@@ -215,7 +196,6 @@ def write_mesh(
     path: Path | str,
     *,
     format: Format = Format.INFERRED,
-    propagation: PropagationConfig | None = None,
     attrs: Mapping[str, Any] | None = None,
 ) -> None:
     """Write charts to an HDF5 file or a Zarr store.
@@ -228,7 +208,7 @@ def write_mesh(
     """
     path = Path(path)
     chosen = resolve(path, format)
-    tree = to_datatree(meshes, crs, propagation=propagation, attrs=attrs)
+    tree = to_datatree(meshes, crs, attrs=attrs)
 
     match chosen:
         case Format.NETCDF:
@@ -244,13 +224,13 @@ def write_mesh(
 
 def read_mesh(
     path: Path | str, *, format: Format = Format.INFERRED
-) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS, PropagationConfig]:
+) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
     """Read charts back.
 
     Returns
     -------
     tuple
-        Surface name to per-plane charts, the CRS, and the propagation.
+        Surface name to per-plane charts, and the CRS.
 
     Raises
     ------

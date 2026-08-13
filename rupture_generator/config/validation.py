@@ -8,14 +8,12 @@ Every message follows one template -- ``"must be ..., got ..."`` -- because it e
 in a panel next to the key that broke, where the reader wants the *constraint* and their
 own value side by side and nothing else.
 
-# The domain aliases are the point
-
-The generic ones (``PositiveFloat``, ``Latitude``) could come from anywhere. The ones
-below them could not: ``DipDeg`` is ``(0, 90]`` rather than ``[0, 90]`` because a fault
-that does not dip is not a fault this program describes, and `DEFECTS.md` records
-``geometry_correction`` answering a dip of 120 degrees with a correction factor of
-*zero* -- a valid-looking rupture with the geometry correction silently switched off.
-Writing the range down where the field is declared is how that stops being a thing
+The domain aliases are the point. The generic ones (``PositiveFloat``, ``Latitude``)
+could come from anywhere; the ones below them could not. ``DipDeg`` is ``(0, 90]``
+rather than ``[0, 90]`` because a fault that does not dip is not a fault this program
+describes -- and out of range, the geometry correction answers a dip of 120 degrees
+with a factor of *zero*, a valid-looking rupture with the correction silently switched
+off. Writing the range down where the field is declared is how that stops being a thing
 anyone has to remember.
 """
 

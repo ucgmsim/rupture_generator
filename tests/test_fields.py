@@ -41,8 +41,8 @@ from rupture_generator.moment import (
 )
 from rupture_generator.sampling import (
     CORRELATION_LENGTH_TOLERANCE,
-    DegradedCorrelation,
     MINIMUM_EMBEDDING,
+    DegradedCorrelation,
     VonKarmanFilterParameters,
     _embed,
     correlate_fields,

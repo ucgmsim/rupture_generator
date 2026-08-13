@@ -94,3 +94,35 @@ seed = 1663495676
 realisation = 0
 
 # Hypocentre fractions from the realisation: s = 0.5, d = 0.5465986642702483
+
+# Who triggers whom. Stated rather than sampled, because this scenario is a
+# specific one: the hazard model chose which fault triggers which, and
+# recomputing it would be generating a different earthquake.
+#
+# The jump *points* are not carried across: this
+# generator finds them from the solved wavefront rather than by closest
+# approach, so importing them would import an answer to a question it asks
+# itself, and asks differently.
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Alpine: Caswell" = "Alpine: Caswell - South George"
+"Alpine: George landward" = "Alpine: Caswell - South George"
+"Alpine: Nancy" = "Alpine: Caswell"
+"Alpine: Resolution - Dagg" = "Alpine: Nancy"
+"Alpine: Resolution - Five Fingers" = "Alpine: Resolution - Dagg"
+"Alpine: George to Jacksons" = "Alpine: George landward"
+"Alpine: Jacksons to Kaniere" = "Alpine: George to Jacksons"
+"Kelly" = "Alpine: Jacksons to Kaniere"
+"Hope: Hurunui" = "Kelly"
+"Hope: Hope River" = "Hope: Hurunui"
+"Hope: Kakapo-2-Hamner" = "Hope: Hope River"
+"Hope: Hanmer NW" = "Hope: Kakapo-2-Hamner"
+"Hanmer" = "Hope: Hanmer NW"
+"Hope: Conway" = "Hanmer"
+"Hope: Seaward" = "Hope: Conway"
+"Hope: Te Rapa" = "Hope: Seaward"
+"Te Rapa 1" = "Hope: Te Rapa"
+"Te Rapa 2" = "Te Rapa 1"
+"Opouawe - Uruti" = "Te Rapa 2"

@@ -10,13 +10,11 @@ A **validation** error wants the *key*. The file parsed, so nothing is visibly w
 with it; what is wrong is a value, and the reader needs the dotted path to it and the
 constraint it broke.
 
-# Why the path takes walking
-
-mashumaro reports a nested failure as a chain. A bad dip inside a plane inside a fault
-arrives as an ``InvalidFieldValue`` about ``surfaces``, whose ``__context__`` is about
-``planes``, whose ``__context__`` is about ``dip_deg``. The outermost is true and
-useless. `config.field_path` walks to the innermost and collects the breadcrumbs, and
-this renders what it finds.
+The path takes walking because mashumaro reports a nested failure as a chain: a bad
+dip inside a plane inside a fault arrives as an ``InvalidFieldValue`` about
+``surfaces``, whose ``__context__`` is about ``planes``, whose ``__context__`` is about
+``dip_deg``. The outermost is true and useless, so `config.field_path` walks to the
+innermost and collects the breadcrumbs.
 
 Everything here writes to **stderr**, so stdout stays pipeable.
 """

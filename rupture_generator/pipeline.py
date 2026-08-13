@@ -1,50 +1,24 @@
 """The pipeline: the one place the stage order is written down.
 
-It is written down as :func:`generate`'s own body. A realisation goes in, a realisation
-comes out, and each line between is a function of the same shape -- so the stage order
-is code that runs rather than a table that has to be kept true.
+It is written down as :func:`generate`'s own body -- a realisation in, a realisation
+out, and each line between a function of the same shape.
 
-.. code-block:: python
+Each function has one of three shapes. Most are a **map over the segments**, whose
+per-segment closure never sees another segment, which is what licenses a substream
+each. :func:`scale_moment` is a **fold**: the shared factor needs every segment's
+pattern, rigidity and area at once. :func:`solve_onsets` is the one **causal
+traversal**, parents before children, because a child is seeded where its parent's
+front crossed onto it.
 
-    realisation = propagate(geometry, ...)        # which fault triggers which
-    realisation = attach_materials(realisation, ...)   # the rock each subfault is in
-    realisation = draw_fields(realisation, ...)   # slip, rise time, rake, perturbation
-    realisation = scale_moment(realisation, ...)  # the pattern becomes slip, in metres
-    realisation = solve_onsets(realisation, ...)  # the wavefront, in causal order
-    return synthesise_pulses(realisation, ...)    # a slip-rate pulse per subfault
+Every random choice is made in :func:`draw_fields` -- including the onset perturbation,
+which is drawn there because it correlates against slip's own Gaussian, and *spent* in
+:func:`solve_onsets`. So the causal traversal is a pure function of its inputs. Each
+calculation draws from its own substream, keyed by its own name and its segment's, so
+reordering or re-batching the stages cannot change any field's noise.
 
-Unlike the port's `generate`, that order is a **convention rather than a contract**.
-Each calculation draws from its own substream, keyed by its own name and its segment's,
-so reordering them, re-batching them, or changing one's parameters cannot change
-another's noise. The port could not do that: its stages shared one stream in a fixed
-order, and two dead fields were drawn and discarded on every run purely to keep that
-order intact.
-
-# Three shapes, and only three
-
-Every function here has one of three shapes, and which one it is says what it may do.
-Most are a **map over the segments** -- a dict comprehension whose per-segment closure
-never sees another segment, which is what licenses a substream each. `scale_moment` is
-a **fold**: the shared factor needs every segment's pattern, rigidity and area at once,
-and it does not pretend otherwise. `solve_onsets` is the one **causal traversal**,
-parents before children, because a child is seeded where its parent's front crossed
-onto it.
-
-# Drawing and timing are separate
-
-Every random choice is made in `draw_fields` -- including the onset perturbation, which
-is drawn there because it correlates against slip's own Gaussian, and *spent* in
-`solve_onsets`. So slip's own draw never leaves the function that made it, and the
-causal traversal is a pure function of its inputs. A point source takes the same
-path with constant fields and a perturbation of zeros, which is why no stage below ever
-asks what kind of source it has.
-
-# Nothing here writes a file
-
-The result is each input chart with `slip_m`, `rake_deg`, `rise_time_s`, `onset_s` and
-pulses attached. Which of those a rupture file stores, and what the groups are called,
-is `formats.rupture`'s to say -- so the stage order can be read without reading the
-file layout, which is what this module used to make impossible.
+Nothing here writes a file. The result is each input chart with `slip_m`, `rake_deg`,
+`rise_time_s`, `onset_s` and pulses attached; which of those a rupture file stores is
+`formats.rupture`'s to say.
 """
 
 from __future__ import annotations
@@ -54,41 +28,26 @@ import itertools
 import numpy as np
 
 from rupture_generator import moment, propagation, pulses, stages, timing
-from rupture_generator.config.geometry import (
-    ComputedPropagation,
-    GeometryConfig,
-    PredeterminedPropagation,
-    PropagationConfig,
-)
+from rupture_generator.config.geometry import GeometryConfig
 from rupture_generator.config.rupture import (
+    ComputedPropagation,
     FieldConfig,
     HypocentreConfig,
     PerFaultSourceConfig,
     PointSourceConfig,
+    PredeterminedPropagation,
+    PropagationConfig,
     RampConfig,
     RuptureConfig,
     SourceConfig,
     VelocityModelConfig,
 )
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse, validate_chart
-from rupture_generator.random import Streams
 from rupture_generator.realisation import Realisation
 
 
-def _streams(config: RuptureConfig) -> Streams:
-    """The event's randomness, split by name."""
-    return Streams(config.random.seed, config.random.realisation)
-
-
 def segments_of(geometry: GeometryConfig) -> Realisation:
-    """S1-S3 over the whole geometry: every validated segment, named.
-
-    A surface that fuses to one segment keeps its own name. One whose planes do not
-    all share a seam becomes several, named ``surface:0``, ``surface:1`` -- because
-    those parts are what actually rupture, and the causality tree is over the things
-    that rupture. A predetermined propagation can name either form; the bare name is
-    what a single-segment surface answers to.
-    """
+    """S1-S3 over the whole geometry: every validated segment, named by `named`."""
     segments: dict[str, RuptureMesh] = {}
     for surface in geometry.surfaces:
         charts = fuse(build_surface(surface, geometry.crs))
@@ -102,10 +61,10 @@ def named(surface: str, charts: list[RuptureMesh]) -> dict[str, RuptureMesh]:
     """One surface's charts, under the names the causality tree uses.
 
     A surface that fuses to one segment keeps its own name; one whose planes do not all
-    share a seam becomes ``surface:0``, ``surface:1``. One function because both
-    `segments_of` here and `generate_cli.named_segments`, which starts from a mesh file
-    rather than a geometry, have to agree about it -- a rupture whose config names
-    ``kaikoura`` and whose mesh yields ``kaikoura:0`` is a rupture nobody can select.
+    share a seam becomes ``surface:0``, ``surface:1`` -- those parts are what actually
+    rupture. One function, because `segments_of` and `generate_cli.named_segments`
+    start from different files and a config naming ``kaikoura`` against a mesh yielding
+    ``kaikoura:0`` is a rupture nobody can select.
     """
     if len(charts) == 1:
         return {surface: charts[0]}
@@ -115,14 +74,11 @@ def named(surface: str, charts: list[RuptureMesh]) -> dict[str, RuptureMesh]:
 def charts_for(geometry: GeometryConfig, surface_name: str | None) -> Realisation:
     """The validated segments of one surface.
 
-    Kept for callers that want a single surface rather than the whole system.
-
     Raises
     ------
     ValueError
         If the geometry holds several surfaces and none was named. Picking the first
-        would run silently on a fault nobody chose, and the output would look exactly
-        like the one that was wanted.
+        would run silently on a fault nobody chose.
     """
     names = [surface.name for surface in geometry.surfaces]
     if surface_name is None:
@@ -150,7 +106,7 @@ def causality_tree(
     config: PropagationConfig,
     root: str,
     rng: np.random.Generator,
-) -> propagation.Tree:
+) -> propagation.Tree[str | None]:
     """Which segment triggers which, either sampled or as stated.
 
     Sampled from fault separations in the computed form, or taken verbatim in the
@@ -168,7 +124,9 @@ def causality_tree(
         return {names[0]: None}
 
     if isinstance(config, PredeterminedPropagation):
-        tree: propagation.Tree = {name: config.parents.get(name) for name in names}
+        tree: propagation.Tree[str | None] = {
+            name: config.parents.get(name) for name in names
+        }
         propagation.check_tree(tree, names, root)
         return tree
 
@@ -200,13 +158,8 @@ def generate(
 ) -> Realisation:
     """Run the pipeline over a fault system.
 
-    A realisation in, a realisation out. The geometry is a system nothing has been
-    drawn on; the result is the same segments with the rupture attached to them, which
-    is why the two are one type.
-
-    Nothing here writes a file. The rupture is a `Realisation`, and what a rupture file
-    stores is `formats.rupture`'s to say -- so the stage order can be read without
-    reading the file layout.
+    The geometry is a system nothing has been drawn on; the result is the same
+    segments with the rupture attached to them, which is why the two are one type.
 
     Parameters
     ----------
@@ -214,11 +167,8 @@ def generate(
         What the earthquake is.
     geometry : Realisation
         The validated charts and the frame they are in, from `segments_of` or
-        `charts_for`.
-    propagation_config : PropagationConfig, optional
-        How the rupture crosses between them. Defaults to the computed form. A keyword
-        rather than part of ``config`` because it describes the *geometry*, and arrives
-        beside the meshes from whichever file they were read from.
+        `charts_for`. **Annotated in place**: the segments, the tree and the jumps are
+        written onto this object, which is also what is returned.
 
     Returns
     -------
@@ -234,11 +184,10 @@ def generate(
 
     source = config.source
     source.check_segments(list(geometry))
-    propagation_config = propagation_config or ComputedPropagation()
 
     realisation = propagate(
         geometry,
-        propagation_config,
+        config.propagation,
         config.hypocentre,
         config.random.stream("propagation"),
     )
@@ -250,7 +199,7 @@ def generate(
         realisation = draw_fields(realisation, config)
 
     realisation = scale_moment(realisation, source)
-    realisation = solve_onsets(realisation, config, propagation_config)
+    realisation = solve_onsets(realisation, config)
     return synthesise_pulses(realisation, config)
 
 
@@ -262,14 +211,10 @@ def propagate(
 ) -> Realisation:
     """Decide which segment triggers which, before any field is drawn.
 
-    The tree is settled first because everything causal downstream reads it, and
-    because deciding it from drawn fields would make the propagation a function of the
-    noise rather than of the geometry.
-
-    The **jumps** are not found here. `propagation.causal_jump` needs the parent's
-    solved wavefront, which does not exist until the travel times are solved, so the
-    tree is fixed here and the crossings are found in :func:`solve_onsets`. That split
-    is `propagation.py`'s own division of labour.
+    Settled first because deciding it from drawn fields would make the propagation a
+    function of the noise rather than of the geometry. The **jumps** are not found
+    here: `propagation.causal_jump` needs the parent's solved wavefront, so the
+    crossings are found in :func:`solve_onsets`.
 
     Raises
     ------
@@ -279,21 +224,21 @@ def propagate(
         are too far apart to form a connected system.
     """
     root = _root_of(realisation, hypocentre)
-    return realisation.with_tree(
-        causality_tree(dict(realisation), propagation_config, root, rng)
-    )
+    realisation.tree = causality_tree(dict(realisation), propagation_config, root, rng)
+    return realisation
 
 
 def _root_of(realisation: Realisation, hypocentre: HypocentreConfig) -> str:
     """Which segment the rupture starts on, named or inferred.
 
     Inferred only when there is nothing to infer: with one segment the hypocentre can
-    only be on it. With several, picking one would run a rupture on a fault nobody
-    chose, and the output would look exactly like the one that was wanted.
+    only be on it.
 
     Raises
     ------
     ValueError
+        If several segments rupture and the hypocentre names none of them, or names
+        one that is not here.
     """
     names = list(realisation)
     if hypocentre.fault is None:
@@ -318,8 +263,7 @@ def attach_materials(
 
     Sampled per subfault from the 1-D model at its own centre depth. Every later stage
     reads these off the chart rather than the model, so the moment fold, the wavefront
-    and the SRF all describe the same rock -- the SRF used to resample the model from
-    each subfault's written depth, which is the same number arrived at twice.
+    and the SRF all describe the same rock.
 
     ``density_g_cm3`` is a working field: the rupture file does not store it, and only
     the SRF, whose points state it, ever asks.
@@ -339,13 +283,18 @@ def attach_materials(
             density_g_cm3=layer_densities[moment.layer_of(depth_km, bottoms)],
         )
 
-    return realisation.replace_segments(
-        {name: attach(mesh) for name, mesh in realisation.items()}
-    )
+    for name, mesh in list(realisation.items()):
+        realisation[name] = attach(mesh)
+    return realisation
 
 
 def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
+    """The four drawn fields: slip pattern, rise time, rake, onset perturbation.
 
+    One batch, and the only place anything is drawn. Rise time and the perturbation
+    both correlate against slip's own Gaussian, so the Gaussian and the sampler
+    reference are locals that never leave this function.
+    """
     source = config.source
     random = config.random
 
@@ -407,9 +356,9 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             truncated_fraction=stages.truncated_fraction(gaussian, slip_params)
         )
 
-    return realisation.replace_segments(
-        {name: draw(name, mesh) for name, mesh in realisation.items()}
-    )
+    for name, mesh in list(realisation.items()):
+        realisation[name] = draw(name, mesh)
+    return realisation
 
 
 def constant_fields(
@@ -418,12 +367,12 @@ def constant_fields(
     """The same four fields for a point source, given rather than drawn.
 
     A point source is this pipeline with constant fields, not a path of its own: it
-    provides exactly the names :func:`draw_fields` provides, so everything downstream
-    is unchanged and no later stage asks which kind of source it has.
+    provides exactly the names :func:`draw_fields` does, so no later stage asks which
+    kind of source it has.
 
-    The rise time is **given**, and the geometric correction is deliberately *not*
-    applied -- a rise time the caller chose has already accounted for the geometry --
-    while the same source's rupture *speed* does get it, in :func:`solve_onsets`. The
+    The rise time is **given**, and the geometric correction deliberately *not* applied
+    -- a rise time the caller chose has already accounted for the geometry -- while the
+    same source's rupture *speed* does get it, in :func:`solve_onsets`. The
     perturbation is a field of zeros rather than a missing one, which is what lets
     `stages.apply_perturbation` run unconditionally.
     """
@@ -436,9 +385,9 @@ def constant_fields(
             onset_perturbation=np.zeros(mesh.cell_counts),
         ).with_attrs(truncated_fraction=0.0)
 
-    return realisation.replace_segments(
-        {name: constant(mesh) for name, mesh in realisation.items()}
-    )
+    for name, mesh in list(realisation.items()):
+        realisation[name] = constant(mesh)
+    return realisation
 
 
 def scale_moment(realisation: Realisation, source: SourceConfig) -> Realisation:
@@ -446,15 +395,12 @@ def scale_moment(realisation: Realisation, source: SourceConfig) -> Realisation:
 
     Either **one factor over every segment** -- so how the moment divides between
     faults is the fields' own -- or a target per fault, when the source states the
-    division. The two are different models and the config says which; a hazard model
-    that derived each fault's magnitude from its area has already decided the
-    partition, and re-deriving it would discard that.
+    division. A hazard model that derived each fault's magnitude from its area has
+    already decided the partition, and re-deriving it would discard that.
 
-    Not a per-segment map, and not pretending to be: the shared factor needs every
-    segment's pattern, rigidity and area at once. The four lists are built from one
-    ``names``, in one order, and paired back by position -- get that wrong and each
-    fault carries a plausible slip, the event total is still exactly right, and only
-    the per-fault moments are swapped.
+    The four lists are built from one ``names``, in one order, and paired back by
+    position: get that wrong and each fault carries a plausible slip, the event total
+    is still exactly right, and only the per-fault moments are swapped.
     """
     names = list(realisation)
     patterns = [realisation[name]["slip_pattern"] for name in names]
@@ -473,35 +419,30 @@ def scale_moment(realisation: Realisation, source: SourceConfig) -> Realisation:
             patterns, rigidities, areas, moment.seismic_moment_nm(source.magnitude)
         )
 
-    return realisation.replace_segments(
-        {
-            name: realisation[name].with_fields(slip_m=slip).without("slip_pattern")
-            for name, slip in zip(names, scaled, strict=True)
-        }
-    ).with_moment(moment.seismic_moment_nm(source.magnitude))
+    for name, slip in zip(names, scaled, strict=True):
+        realisation[name] = (
+            realisation[name].with_fields(slip_m=slip).without("slip_pattern")
+        )
+    return realisation
 
 
-def solve_onsets(
-    realisation: Realisation,
-    config: RuptureConfig,
-    propagation_config: PropagationConfig,
-) -> Realisation:
+def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation:
     """S7 and S8: the wavefront, in causal order, and where the front crossed.
 
     **Draws nothing.** Every random choice was made in :func:`draw_fields`; this solves
     the eikonal equation from the seeds the tree implies and spends the perturbation
-    already on the chart. So the one traversal whose order matters is a pure function
-    of its inputs, and re-running it cannot move a field.
+    already on the chart, so the one order-dependent traversal is a pure function of
+    its inputs.
 
-    Parents first. The root is seeded at the hypocentre; every other segment is seeded
-    where and when its parent's front crossed onto it, which is what makes a
-    multi-segment rupture propagate rather than restart on each fault.
+    Parents first. The root is seeded at the hypocentre; every other segment where and
+    when its parent's front crossed onto it, which is what makes a multi-segment
+    rupture propagate rather than restart on each fault.
     """
     onset_params = _onset_params(config)
     jump_delay = _jump_delay(config)
     max_jump_km = (
-        propagation_config.max_jump_km
-        if isinstance(propagation_config, ComputedPropagation)
+        config.propagation.max_jump_km
+        if isinstance(config.propagation, ComputedPropagation)
         else propagation.MAX_JUMP_KM
     )
 
@@ -522,11 +463,9 @@ def solve_onsets(
             pinned: tuple[int, int] | None = hypocentre
             delay_s = config.timing.rupture_delay_s
         else:
-            # Chosen on the parent's wavefront and timed on its onset. Choosing the
-            # cell from the perturbed field would be an argmin over a hundred thousand
-            # perturbed values -- an order statistic that finds the perturbation's
-            # negative tail rather than the shape of the front -- while the time the
-            # rupture actually reached the chosen cell is the onset's to report.
+            # Chosen on the parent's wavefront and timed on its onset: an argmin over
+            # a hundred thousand perturbed values is an order statistic that finds the
+            # perturbation's negative tail rather than the shape of the front.
             jump = propagation.causal_jump(
                 solved[parent],
                 solved[parent]["wavefront_s"],
@@ -562,8 +501,7 @@ def solve_onsets(
 
     # The hypocentre, in the root's own arc lengths and under the names a file uses,
     # so the writer copies it and no segment needs a special case. Clamped to the
-    # fault's extent: a hypocentre at the far edge is on the last cell, and the arc
-    # length naming it is the edge rather than something past it.
+    # fault's extent: a hypocentre at the far edge is on the last cell.
     root_mesh = solved[root]
     solved[root] = root_mesh.with_attrs(
         hypocentre_strike_km=min(
@@ -574,14 +512,16 @@ def solve_onsets(
         ),
     )
 
-    return realisation.replace_segments(solved).with_jumps(jumps)
+    realisation.update(solved)
+    realisation.jumps = jumps
+    return realisation
 
 
 def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realisation:
     """S9: a slip-rate pulse per subfault, carrying that subfault's slip.
 
-    The last stage, and the only one whose output is not a cell field -- a pulse per
-    subfault, each its own length, so the charts carry them as CSR.
+    The only stage whose output is not a cell field -- a pulse per subfault, each its
+    own length, so the charts carry them as CSR.
     """
     pulse_params = pulses.PulseParams(
         shape=pulses.from_stype(config.timing.slip_rate_shape or "OliuP2"),
@@ -601,16 +541,16 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
             sample_interval_s=config.timing.sample_interval_s
         )
 
-    return realisation.replace_segments(
-        {name: synthesise(mesh) for name, mesh in realisation.items()}
-    )
+    for name, mesh in list(realisation.items()):
+        realisation[name] = synthesise(mesh)
+    return realisation
 
 
 def _onset_params(config: RuptureConfig) -> stages.OnsetParams:
     """How far the onset is perturbed from the wavefront, and how it follows slip.
 
-    One object read in two places -- the correlation by the draw, the scale and spread
-    by the application -- so the two cannot disagree about which model they are.
+    One object read by both the draw and the application, so the two cannot disagree
+    about which model they are.
     """
     return stages.OnsetParams(
         scale_s=config.timing.rupture_time_scale,
@@ -638,10 +578,9 @@ def _speed_params(
 def _jump_delay(config: RuptureConfig) -> propagation.JumpDelay:
     """How long the front takes to cross from one segment to the next.
 
-    The gap is by definition on neither fault, so neither segment's own *sampled*
-    materials describe the rock in it -- the shared velocity model does, read at the
-    depth the front leaves from. One delay serves every edge of the tree, because the
-    velocity model is one model and nothing here depends on which pair is crossing.
+    The gap is on neither fault, so neither segment's own *sampled* materials describe
+    the rock in it -- the shared velocity model does, read at the depth the front
+    leaves from. One delay serves every edge of the tree.
     """
     return propagation.DistanceOverVelocity(
         np.asarray(config.velocity_model.bottom_depth_km),

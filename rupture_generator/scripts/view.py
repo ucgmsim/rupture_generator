@@ -508,6 +508,7 @@ class CumulativeSlip:
     """
 
     def __init__(self, segment: Segment) -> None:
+        """Integrate the segment's pulses in place, into cumulative slip."""
         offsets = np.asarray(segment.pulse_offsets, dtype=np.int64)
         self.starts = offsets[:-1]
         self.lengths = np.diff(offsets)

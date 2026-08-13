@@ -160,3 +160,18 @@ deep_speed_factor = 0.6
 [random]
 seed = 100000
 realisation = 0
+
+# Who triggers whom. The jump *points* are not carried across: this
+# generator finds them from the solved wavefront rather than by closest
+# approach, so importing them would import an answer to a question it asks
+# itself, and asks differently.
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Greendale_NW_SE" = "Charing_Cross"
+"Fault_NNW" = "Charing_Cross"
+"Greendale_central" = "Greendale_NW_SE"
+"Fault_Near_Hororata" = "Greendale_NW_SE"
+"Greendale_East" = "Greendale_central"
+"Fault_NE" = "Greendale_East"

@@ -192,16 +192,14 @@ def generate(
     if realisation is not None:
         rupture_config.random.realisation = realisation
 
-    meshes, crs, propagation = read_mesh(mesh_path)
+    meshes, crs = read_mesh(mesh_path)
 
     # Everything geometric and everything physical, in one place, so a refusal from
     # any of it renders the same way -- one red line naming the cause, rather than a
     # traceback for a mistake in a file.
     try:
         geometry = named_segments(meshes, crs, surface, plane)
-        result = pipeline.generate(
-            rupture_config, geometry, propagation_config=propagation
-        )
+        result = pipeline.generate(rupture_config, geometry)
     except ValueError as error:
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(1) from error

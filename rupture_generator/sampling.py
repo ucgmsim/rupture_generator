@@ -2,7 +2,7 @@
 
 Sampled using the **circulant embedding method** (Dietrich & Newsam 1993; Wood & Chan 1994).
 
-# The model
+The model
 
 Mai & Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
 
@@ -134,10 +134,10 @@ class VonKarmanFilterParameters:
 def correlation_lengths(
     magnitude: float,
     *,
-    strike_offset: float,
-    dip_offset: float,
-    strike_exponent: float,
-    dip_exponent: float,
+    strike_offset: float = 2.50,
+    dip_offset: float = 1.50,
+    strike_exponent: float = 0.5,
+    dip_exponent: float = 1.0 / 3.0,
 ) -> VonKarmanFilterParameters:
     """A corner relation's correlation lengths for a magnitude, in kilometres.
 
@@ -145,6 +145,12 @@ def correlation_lengths(
 
         \\lambda_{strike} = 10^{c_{s} M_w - a}, \\qquad
         \\lambda_{dip}    = 10^{c_{d} M_w - b}
+
+    The defaults are Mai & Beroza (2002), and they live here rather than in the config
+    so that `SourceConfig.corner_coefficients` can pass nothing for ``mai`` and the
+    published numbers exist in one place. The dip exponent is **a third, not 0.3333**:
+    equation (5) reads ``log(a_z) ~ -1.5 + (1/3) Mw``, so the fraction is what was
+    published and the decimal would be a transcription of it.
     """
     return VonKarmanFilterParameters(
         correlation_length_strike_km=10.0
@@ -481,12 +487,12 @@ def _predicted_extents(
         max(
             MINIMUM_EMBEDDING * cell_counts[0],
             cell_counts[0]
-            + np.ceil(margin * parameters.correlation_length_dip_km / dip_km),
+            + int(np.ceil(margin * parameters.correlation_length_dip_km / dip_km)),
         ),
         max(
             MINIMUM_EMBEDDING * cell_counts[1],
             cell_counts[1]
-            + np.ceil(margin * parameters.correlation_length_strike_km / strike_km),
+            + int(np.ceil(margin * parameters.correlation_length_strike_km / strike_km)),
         ),
     )
     return (int(next_fast_len(wanted[0])), int(next_fast_len(wanted[1])))

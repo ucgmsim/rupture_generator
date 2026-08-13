@@ -24,13 +24,11 @@ import xarray as xr
 
 from rupture_generator import assemble, moment
 from rupture_generator.config import read_config, read_geometry
-from rupture_generator.config.geometry import (
-    GeometryConfig,
-    PredeterminedPropagation,
-)
+from rupture_generator.config.geometry import GeometryConfig
 from rupture_generator.config.rupture import (
     FiniteSourceConfig,
     PerFaultSourceConfig,
+    PredeterminedPropagation,
     RuptureConfig,
 )
 from rupture_generator.formats.mesh import read_mesh, write_mesh
@@ -76,7 +74,7 @@ def datasets(realisation: Realisation) -> dict[str, xr.Dataset]:
             realisation.crs,
             segment_name=name,
             sample_interval_s=float(mesh.attrs["sample_interval_s"]),
-            moment_newton_m=realisation.moment_newton_m or 0.0,
+            moment_newton_m=realisation.moment_newton_m,
         )
         for name, mesh in realisation.items()
     }
@@ -575,7 +573,7 @@ def test_a_mesh_file_carries_a_bent_fault_into_the_pipeline(tmp_path: Path) -> N
 
     path = tmp_path / "mesh.h5"
     write_mesh({"hope": charts}, geometry.crs, path)
-    restored, crs, _ = read_mesh(path)
+    restored, crs = read_mesh(path)
 
     direct = generate(_config(), Realisation(named("hope", fuse(charts)), geometry.crs))
     through_file = generate(_config(), Realisation(named("hope", fuse(restored["hope"])), crs))
@@ -686,7 +684,7 @@ def two_faults() -> Generated:
     geometry, config = _two_fault_geometry()
     segments = segments_of(geometry)
     return (
-        generate(config, segments, propagation_config=geometry.propagation),
+        generate(config, segments),
         config,
         geometry.crs,
     )
@@ -800,9 +798,7 @@ def test_each_fault_carries_the_magnitude_it_was_given() -> None:
         rakes={"kaikoura:0": 175.0, "kaikoura:1": 90.0},
     )
 
-    realisation = generate(
-        config, segments_of(geometry), propagation_config=geometry.propagation
-    )
+    realisation = generate(config, segments_of(geometry))
 
     for name, segment in datasets(realisation).items():
         _, rigidity = moment.sample_velocity_model(
@@ -842,26 +838,22 @@ def test_only_the_nucleating_segment_records_a_hypocentre(
 def test_a_stated_propagation_gives_the_tree_it_states() -> None:
     """Predetermined mode, end to end, and it does not consult the sampler."""
     geometry, config = _two_fault_geometry()
-    geometry.propagation = PredeterminedPropagation(
-        parents={"kaikoura:1": "kaikoura:0"}
-    )
+    config.propagation = PredeterminedPropagation(parents={"kaikoura:1": "kaikoura:0"})
     segments = segments_of(geometry)
 
-    realisation = generate(config, segments, propagation_config=geometry.propagation)
+    realisation = generate(config, segments)
     assert realisation.tree == {"kaikoura:0": None, "kaikoura:1": "kaikoura:0"}
 
 
 def test_a_stated_root_that_is_not_the_hypocentres_fault_is_refused() -> None:
     """Two statements of one fact, refused when they disagree."""
     geometry, config = _two_fault_geometry()
-    geometry.propagation = PredeterminedPropagation(
-        parents={"kaikoura:1": "kaikoura:0"}
-    )
+    config.propagation = PredeterminedPropagation(parents={"kaikoura:1": "kaikoura:0"})
     config.hypocentre.fault = "kaikoura:1"
     segments = segments_of(geometry)
 
     with pytest.raises(ValueError, match="rooted at"):
-        generate(config, segments, propagation_config=geometry.propagation)
+        generate(config, segments)
 
 
 def test_a_rupture_over_several_segments_needs_to_say_where_it_starts() -> None:

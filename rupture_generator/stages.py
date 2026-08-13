@@ -5,21 +5,15 @@ variable attached. Nothing is mutated and nothing is shared between them except 
 chart, which is why the order they run in is a convention rather than a contract --
 `pipeline.py` writes it down once and no stage reads another's stream.
 
-# Randomness
-
-Every stage takes its own generator, spawned from the event seed by
-``SeedSequence(seed).spawn``. That is what deletes the whole class of ordering
-machinery the port carried: two dead fields drawn-and-discarded purely to keep a
-stream in step, invariants counting deviates, and the rule that a band-pass must
-never remove a draw. Changing one stage's parameters now cannot change another
-stage's noise, which is itself a property worth asserting.
-
-# The ramps
+Every stage takes its own generator, named from the event seed, so changing one
+stage's parameters cannot change another stage's noise. That deletes a whole class of
+ordering machinery: fields drawn and discarded purely to keep a stream in step,
+invariants counting deviates, and the rule that a band-pass must never remove a draw.
 
 Three of these stages read a depth ramp, and all three read the same one:
-:class:`DepthRamp`, a linear transition between two depths. Its asymmetry is the
-original's and is deliberate -- each branch measures from the ramp's *far* end, so
-the value is exactly 1 at the inner edge and ``1 + excess`` at the outer.
+:class:`DepthRamp`, a linear transition between two depths. Its asymmetry is
+deliberate -- each branch measures from the ramp's *far* end, so the value is exactly
+1 at the inner edge and ``1 + excess`` at the outer.
 """
 
 from __future__ import annotations
@@ -126,14 +120,11 @@ def taper_edges(field: FloatArray, params: SlipParams) -> FloatArray:
     scaling, so the moment closes on what the taper left.
 
     **Separable**, deliberately: the result is the product of two independent
-    one-dimensional ramps, one along strike and one down dip, so a cell that two
-    ramps reach is damped by both. genslip has two profiles here that agree while the
-    ramps stay apart and disagree once they overlap -- in its dip bands the
-    right-hand ramp overwrites the left rather than compounding with it, which on a
-    fourteen-cell fault with an eight-cell taper is 7/8 in one place and 1 in
-    another. Unifying on the separable form is a change of science rather than a port
-    detail, and overlapping tapers are refused outright so the disagreement region is
-    unrepresentable.
+    one-dimensional ramps, one along strike and one down dip, so a cell that two ramps
+    reach is damped by both. The alternative -- one ramp overwriting the other where
+    they overlap -- is 7/8 in one place and 1 in another on a fourteen-cell fault with
+    an eight-cell taper. Overlapping tapers are refused outright, so the region where
+    the two forms disagree is unrepresentable.
     """
     cells_i, cells_j = field.shape
     side, top, bottom = _taper_widths(params, cells_i, cells_j)
@@ -167,15 +158,14 @@ def slip_pattern(
         f  = max(f, 0)                    truncation
         f  = taper_edges(f)               the edges are where the fault stops
 
-    The mean *shift* is the whole simplification. genslip divides by the field's own
-    mean, rescales the residual to a target variation, and flips the field's sign
-    when the mean came out negative -- three steps whose algebra is exactly
-    ``1 + cov * Z`` once the field is standardised first, and whose sign flip exists
-    only to make the intermediate well-defined. A field's sign is not physically
-    determined; its structure is.
+    The mean *shift* is the whole simplification: dividing by the field's own mean,
+    rescaling the residual to a target variation, and flipping the sign when the mean
+    came out negative is exactly ``1 + cov * Z`` once the field is standardised first.
+    The sign flip existed only to make the intermediate well-defined, and a field's
+    sign is not physically determined; its structure is.
 
-    The size is not set here. :func:`~rupture_generator.moment.scale_to_moment`
-    does that, once, jointly across every segment.
+    The size is not set here. :func:`~rupture_generator.moment.scale_to_moment` does
+    that, once, jointly across every segment.
 
     Returns
     -------
@@ -276,7 +266,7 @@ def average_rise_time_s(
     .. math:: \\bar\\tau = c \\, M_0^{1/3} \\, \\alpha_T
 
     Rise time grows with the cube root of moment -- linearly with fault dimension.
-    The scale constant carries the units: genslip's ``1e-9`` is per cube-root
+    The scale constant carries the units: the published ``1e-9`` is per cube-root
     dyne-centimetre, and this is its newton-metre equivalent, ``1e-9 * (1e7)^(1/3)``.
 
     ``geometric_correction`` is the same :func:`~rupture_generator.timing.alpha_t`
@@ -308,13 +298,11 @@ def rise_time_field(
     """
     depth_km = mesh.centres()[..., 2]
 
-    # Correlated with slip's Gaussian rather than with the slip itself. genslip
-    # correlates against the truncated, tapered, moment-scaled field put back on a
-    # padded grid and affinely mapped onto the unprocessed field's statistics -- an
-    # apparatus whose entire purpose is to get the two fields onto one scale, which
-    # is free here because both are standardised by construction. Expect a slightly
-    # higher realised correlation than the original's: it is no longer being measured
-    # through the truncation.
+    # Correlated with slip's Gaussian rather than with the slip itself: both are
+    # standardised by construction, so getting the two fields onto one scale is free.
+    # The realised correlation is slightly higher than correlating against the
+    # truncated, tapered, moment-scaled field would give, because it is no longer
+    # being measured through the truncation.
     independent = von_karman_field(mesh, covariance, rng)
     correlated = standardise(
         correlate_fields(slip_draw, independent, params.correlation)
@@ -452,23 +440,20 @@ def apply_perturbation(
     .. math:: t_{ij} = T_{ij} + c\\,\\sigma\\,Z_{p,ij} + \\mathrm{delay}
 
     **The hypocentre's perturbation is pinned to zero**, so its onset is exactly its
-    travel time plus the delay. genslip instead subtracts the perturbed field's
-    global minimum, which does *not* pin the hypocentre: with a non-zero scale some
-    other cell can be earlier, and then the cell the rupture started from is not the
-    earliest thing in the file. Pinning is what `PLAN.md` asks for and what makes the
-    registration assertable -- and registration is what `DEFECTS.md` 17 was about. A
-    hypocentre one cell off in each direction gave onset fields correlating 0.92 to
-    0.997 with the truth while differing by up to a second, so every diagnostic that
-    asked "is this the right shape" said yes.
+    travel time plus the delay. Subtracting the perturbed field's global minimum
+    instead does *not* pin it: with a non-zero scale some other cell can be earlier,
+    and then the cell the rupture started from is not the earliest thing in the file.
+    Pinning is what makes the registration assertable, and registration is easy to get
+    wrong invisibly -- a hypocentre one cell off in each direction gives onset fields
+    correlating 0.92 to 0.997 with the truth while differing by up to a second.
 
     Note what is *not* asserted: that the hypocentre is the global minimum of the
     perturbed field. It is not, and cannot be without clamping every other cell.
     Causality is a property of the travel times, which S7 owns.
 
     A pure function of its arguments: given the perturbation, nothing here draws. That
-    is what makes the causal traversal deterministic, and it is why a point source --
-    whose perturbation is a field of zeros rather than a missing one -- needs no branch
-    of its own here.
+    is what makes the causal traversal deterministic, and why a point source -- whose
+    perturbation is a field of zeros rather than a missing one -- needs no branch here.
 
     Parameters
     ----------

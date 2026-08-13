@@ -4,16 +4,13 @@ Two files, because they have different lifetimes. A geometry is digitised once a
 reused across every realisation and every magnitude run on it; a source is what varies.
 ``rupture-generator mesh`` reads the first and ``generate`` reads the second.
 
-# Importing this module is what registers the tagged unions
+Importing this module is what registers the tagged unions. `mashumaro`'s
+``Discriminator(include_subtypes=True)`` resolves a ``type`` tag against whatever
+subclasses *exist*, so they have to have been imported; the walk below does that, and
+dropping a new surface or source kind into its module is the whole of adding one.
 
-`mashumaro`'s ``Discriminator(include_subtypes=True)`` resolves a ``type`` tag against
-whatever subclasses *exist*, which means they have to have been imported. The walk below
-does that, so dropping a new surface kind or source kind into its module is the whole of
-adding one -- there is no list to keep in step, which is the point.
-
-Deliberately eager rather than lazy. A tag that fails to resolve because a module was
-never imported produces "no such type" for a type that is right there, and the
-resolution is invisible from the message.
+Deliberately eager rather than lazy: a tag that fails to resolve because a module was
+never imported produces "no such type" for a type that is right there.
 """
 
 import importlib

@@ -1,9 +1,6 @@
 # The Alpine-Hope joint rupture, converted from a workflow realisation.
 #
-# Every fault here is a run of planes hanging from a digitised trace. The
-# propagation is stated rather than sampled, because this scenario is a
-# specific one: the hazard model chose which fault triggers which, and
-# recomputing it would be generating a different earthquake.
+# Every fault here is a run of planes hanging from a digitised trace.
 #
 # Traces thinned where the fault's own depth cannot support them:
 # at a bend the bottom edge shortens by the horizontal reach of the
@@ -1602,31 +1599,3 @@ dip_deg = 70.067
 bottom_depth_km = 12.160
 dip_direction = "right"
 discretisation = { subfault_size_km = 0.1 }
-
-# Who triggers whom. The jump *points* are not carried across: this
-# generator finds them from the solved wavefront rather than by closest
-# approach, so importing them would import an answer to a question it asks
-# itself, and asks differently.
-[propagation]
-type = "predetermined"
-
-[propagation.parents]
-"Alpine: Caswell" = "Alpine: Caswell - South George"
-"Alpine: George landward" = "Alpine: Caswell - South George"
-"Alpine: Nancy" = "Alpine: Caswell"
-"Alpine: Resolution - Dagg" = "Alpine: Nancy"
-"Alpine: Resolution - Five Fingers" = "Alpine: Resolution - Dagg"
-"Alpine: George to Jacksons" = "Alpine: George landward"
-"Alpine: Jacksons to Kaniere" = "Alpine: George to Jacksons"
-"Kelly" = "Alpine: Jacksons to Kaniere"
-"Hope: Hurunui" = "Kelly"
-"Hope: Hope River" = "Hope: Hurunui"
-"Hope: Kakapo-2-Hamner" = "Hope: Hope River"
-"Hope: Hanmer NW" = "Hope: Kakapo-2-Hamner"
-"Hanmer" = "Hope: Hanmer NW"
-"Hope: Conway" = "Hanmer"
-"Hope: Seaward" = "Hope: Conway"
-"Hope: Te Rapa" = "Hope: Seaward"
-"Te Rapa 1" = "Hope: Te Rapa"
-"Te Rapa 2" = "Te Rapa 1"
-"Opouawe - Uruti" = "Te Rapa 2"

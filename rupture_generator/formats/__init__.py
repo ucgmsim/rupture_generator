@@ -1,15 +1,12 @@
 """Which file format a path means, and who writes it.
 
-One enum, one inference rule and one dispatch, in the shape
-``nzcvm/formats/__init__.py`` uses: a :class:`Format` with an ``INFERRED`` member, a
-:func:`from_path` that reads the extension, and a ``match`` per writer.
-
-# The two-suffix check
+One enum, one inference rule and one dispatch: a :class:`Format` with an ``INFERRED``
+member, a :func:`from_path` that reads the extension, and a ``match`` per writer.
 
 ``.srf.h5`` is SW4's SRF-in-HDF5 and ``.h5`` is this package's own format, so inference
-looks at the last *two* suffixes before the last one. Getting that backwards writes a
-native rupture where a consumer expects SW4's layout, and both are HDF5, so nothing
-downstream notices until it reads a dataset that is not there.
+looks at the last *two* suffixes first. Getting that backwards writes a native rupture
+where a consumer expects SW4's layout -- both are HDF5, so nothing downstream notices
+until it reads a dataset that is not there.
 """
 
 from enum import StrEnum, auto

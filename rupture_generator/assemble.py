@@ -5,31 +5,18 @@ PLANE record per segment, points ordered along strike fastest within each segmen
 turn. This is the translation, and it is the **only** place in the package where
 metres become centimetres.
 
-# Where the plane header comes from
+The plane header comes **from the mesh**, not from a reconstruction. Recomputing a
+plane centre from a fault width and a dip needs a tangent-plane approximation that is
+off by 43 m on a crustal fault and 1.9 km at subduction scale; the mesh was built in a
+projected frame where the quantity is an identity, so this asks it rather than deriving
+it worse.
 
-From the mesh, not from a reconstruction. genslip recomputes a plane centre from a
-fault width and a dip with a tangent-plane approximation that is off by 43 m on a
-crustal fault and 1.9 km at subduction scale; the caller here already has the exact
-answer, because the mesh was built in a projected frame where the quantity is an
-identity, so this asks for it rather than deriving it worse.
+The one convention conversion: an SRF's ``shyp`` is measured from the along-strike
+**centre** of the plane, where the config and the mesh both measure from its ``j = 0``
+end. That subtraction happens here, at the seam that writes the format wanting it.
 
-From the mesh **directly**, now: this used to take a written rupture-file dataset and
-call `formats.rupture.mesh_of` to rebuild the chart the pipeline had just serialised,
-purely to ask it those geometric questions. A whole round trip through a file format to
-recover something the caller was holding.
-
-# The one convention conversion
-
-An SRF's ``shyp`` is measured from the along-strike **centre** of the plane, where the
-config and the mesh both measure from its ``j = 0`` end. That subtraction happens here,
-at the seam that writes the format that wants it, and nowhere else.
-
-# One PLANE per segment
-
-genslip emits one PLANE record per segment and orders its points by segment rather
-than by anything in the input geometry, so a bent or multi-segment fault is written as
-several planes whose points follow in the same order. `SrfFile.planes` has always been
-a list; what was missing was a caller that filled it with more than one entry.
+One PLANE record per segment, its points ordered by segment, so a bent or
+multi-segment fault is written as several planes whose points follow in the same order.
 """
 
 from __future__ import annotations
@@ -70,8 +57,8 @@ def plane_header(
     hypocentre_km : tuple of float, optional
         Where the rupture started, in this segment's own arc lengths, or ``None`` for
         a segment that does not hold it. The format has no way to say "not here", so
-        a segment without the hypocentre records zeros -- which is what genslip does,
-        and what a reader of a multi-plane SRF has to know already.
+        a segment without the hypocentre records zeros, which a reader of a multi-plane
+        SRF has to know already.
 
     Returns
     -------

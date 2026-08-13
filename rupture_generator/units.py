@@ -6,7 +6,7 @@ exception -- a fault is written down and meshed in kilometres, because that is t
 scale a fault has and the scale the mesh file stores -- so the km-to-metre
 conversions below exist for the single place each is undone.
 
-The CGS the C worked in survives only inside the SRF writer. An SRF stores slip in
+CGS survives only inside the SRF writer. An SRF stores slip in
 centimetres, slip rate in cm/s and area in cm^2; those constants live here so the
 writer converts by name rather than by magic number, and nothing outside `srf.py`
 has a reason to touch them.

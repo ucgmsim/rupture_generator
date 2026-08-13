@@ -18,14 +18,17 @@ import sys
 import numpy as np
 import pytest
 
-from rupture_generator.random import Streams, _key
+from rupture_generator.config.rupture import RandomConfig, _key
 
 CALCULATIONS = ("propagation", "slip", "rise_time", "rake", "onset")
 
 
-def _draw(streams: Streams, calculation: str, segment: str | None = None) -> np.ndarray:
+def _draw(
+    streams: RandomConfig, calculation: str, segment: str | None = None
+) -> np.ndarray:
     """A few numbers off one stream -- enough that two streams agreeing is not luck."""
-    return streams.stream(calculation, segment).standard_normal(8)
+    names = (calculation,) if segment is None else (calculation, segment)
+    return streams.stream(*names).standard_normal(8)
 
 
 # ============================================================================
@@ -35,8 +38,8 @@ def _draw(streams: Streams, calculation: str, segment: str | None = None) -> np.
 
 def test_one_seed_gives_one_earthquake() -> None:
     """The same key, twice, gives the same numbers. The point of a seed."""
-    first = Streams(seed=1234, realisation=0)
-    second = Streams(seed=1234, realisation=0)
+    first = RandomConfig(seed=1234, realisation=0)
+    second = RandomConfig(seed=1234, realisation=0)
 
     for calculation in CALCULATIONS:
         assert np.array_equal(
@@ -50,7 +53,7 @@ def test_each_calculation_draws_from_its_own_stream() -> None:
     This is what lets a stage be added, reordered, or -- as the fields batch does --
     merged with its neighbours, without moving any other field's values.
     """
-    streams = Streams(seed=1234)
+    streams = RandomConfig(seed=1234, realisation=0)
     drawn = [_draw(streams, calculation, "hope") for calculation in CALCULATIONS]
 
     for first in range(len(drawn)):
@@ -64,7 +67,7 @@ def test_each_segment_draws_from_its_own_stream() -> None:
     Two faults handed one stream would carry the same slip pattern up to their
     different shapes -- which looks like a correlation nobody asked for.
     """
-    streams = Streams(seed=1234)
+    streams = RandomConfig(seed=1234, realisation=0)
 
     assert not np.array_equal(
         _draw(streams, "slip", "kaikoura:0"), _draw(streams, "slip", "kaikoura:1")
@@ -73,8 +76,8 @@ def test_each_segment_draws_from_its_own_stream() -> None:
 
 def test_a_realisation_is_an_independent_earthquake() -> None:
     """The realisation index moves every stream. That is what a campaign varies."""
-    first = Streams(seed=1234, realisation=0)
-    second = Streams(seed=1234, realisation=1)
+    first = RandomConfig(seed=1234, realisation=0)
+    second = RandomConfig(seed=1234, realisation=1)
 
     assert not np.array_equal(_draw(first, "slip", "hope"), _draw(second, "slip", "hope"))
 
@@ -85,7 +88,7 @@ def test_an_event_level_draw_is_not_any_segments() -> None:
     A two-element spawn key and a three-element one are different streams, so omitting
     the segment is not the same as passing some particular one.
     """
-    streams = Streams(seed=1234)
+    streams = RandomConfig(seed=1234, realisation=0)
     event = _draw(streams, "propagation")
 
     for segment in ("hope", "kaikoura:0", ""):
@@ -105,7 +108,7 @@ def test_renaming_one_segment_leaves_its_siblings_alone() -> None:
     and silently redraws every field on all of them. Here, ``hope`` draws what ``hope``
     draws, whatever it is standing next to.
     """
-    streams = Streams(seed=1234)
+    streams = RandomConfig(seed=1234, realisation=0)
     alone = _draw(streams, "slip", "hope")
 
     for sibling in ("kaikoura", "alpine", "wairau", "aaaaa"):
@@ -118,11 +121,11 @@ def test_renaming_one_segment_leaves_its_siblings_alone() -> None:
 def test_the_order_streams_are_asked_for_does_not_matter() -> None:
     """Streams are addressed, not consumed in sequence.
 
-    `Streams` holds no generator state; every call builds its own from the key. So a
+    `RandomConfig` holds no generator state; every call builds its own from the key. So a
     caller that draws rake before slip gets exactly what one drawing slip first gets,
     which is what makes the pipeline's stage order a convention.
     """
-    streams = Streams(seed=1234)
+    streams = RandomConfig(seed=1234, realisation=0)
 
     forwards = [_draw(streams, name, "hope") for name in CALCULATIONS]
     backwards = [_draw(streams, name, "hope") for name in reversed(CALCULATIONS)]
@@ -146,7 +149,7 @@ def test_a_name_keys_the_same_stream_in_every_process() -> None:
     interpreter would pass on an implementation that reproduces nothing.
     """
     program = (
-        "from rupture_generator.random import _key; print(_key('hope'), _key('slip'))"
+        "from rupture_generator.config.rupture import _key; print(_key('hope'), _key('slip'))"
     )
     runs = {
         subprocess.run(

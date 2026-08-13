@@ -22,7 +22,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from rupture_generator import propagation
-from rupture_generator.config.geometry import (
+from rupture_generator.config.rupture import (
     ComputedPropagation,
     PredeterminedPropagation,
 )

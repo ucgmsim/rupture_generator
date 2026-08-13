@@ -1,35 +1,26 @@
 """What the earthquake is: the input to ``rupture-generator generate``.
 
-# One copy
-
-The port kept three descriptions of a rupture model -- these dataclasses, a Rust spec
-mirror, and a stub -- policed by a completeness test whose only job was to keep them
-agreeing. Every one of the four wrong numbers found in the reduction sweep was a
-disagreement between copies. This file is now the **only** copy: stages take frozen
-parameter objects built from these classes, kernels take scalars and arrays, and there
-is nothing left to mirror.
+This file is the **only** description of a rupture model: stages take frozen parameter
+objects built from these classes, kernels take scalars and arrays, and there is nothing
+left to mirror. Keeping several copies in step is what produced every wrong number the
+reduction sweep found.
 
 The one place the "configuration is the pipeline's vocabulary" rule bends is the
 **hypocentre**, which is in-fault arc lengths here and a cell index in the pipeline.
-That conversion is the mesh's, it is `DEFECTS.md` 17's exact subject, and it happens at
-one seam -- ``mesh.RuptureMesh.cell_index`` -- with the convention written above it.
+That conversion is the mesh's, and it happens at one seam --
+``mesh.RuptureMesh.cell_index`` -- with the convention written above it.
 
-# The physics vocabulary shrank
+One corner relation (``mai``), one spectral shape (``von_karman``) and one slip-rate
+family (``OliuP2``) are kept. The others were documented knobs, so they are **refused
+by name with a message saying they were removed**: a reader who wrote
+``model = "somerville"`` deserves to know it was a decision, not a typo. Output
+comparison could not adjudicate this -- the Mai/Somerville crossover at M7.37 makes
+the two indistinguishable below that magnitude.
 
-Production selects one corner relation (``mai``), one spectral shape (``von_karman``),
-and one slip-rate family (``OliuP2``). The others were documented knobs, so they are
-**refused by name with a message saying they were removed** -- a reader who wrote
-``model = "somerville"`` deserves to know it was a decision, not a typo. The evidence
-that the config, not the output, is what adjudicates this selection is `DEFECTS.md`
-11: the Mai/Somerville crossover at M7.37 makes output comparison unable to tell them
-apart below that magnitude.
-
-The corner relation is the one of the three that has a second option, and it is not a
-second name: ``custom`` states the four coefficients in the file. That is deliberate.
-A name asserts a published fit and nothing checks the assertion -- which is how
-`DEFECTS.md` 11 happened -- whereas coefficients are what the pipeline actually uses
-and are readable off the file. Anyone who needs a relation the rewrite removed writes
-its numbers down rather than asking this package to remember them.
+The corner relation is the one with a second option, and it is not a second name:
+``custom`` states the four coefficients in the file. A name asserts a published fit
+and nothing checks the assertion, whereas coefficients are what the pipeline actually
+uses and are readable off the file.
 """
 
 from __future__ import annotations
@@ -67,10 +58,9 @@ if TYPE_CHECKING:
     from rupture_generator.mesh import RuptureMesh
 
 REMOVED_CORNER_MODELS = ("somerville", "suzuki", "given")
-"""Corner relations the rewrite removed. Production's `defaults.yaml` sets
-``srf.kmodel: 2`` -- Mai -- with no override on any path, so the others go by name.
-What replaces them is ``custom``, which states the coefficients instead: a name is a
-claim about a fit that output cannot check, and four numbers are checkable."""
+"""Corner relations the rewrite removed, refused by name. What replaces them is
+``custom``, which states the coefficients instead: a name is a claim about a fit that
+output cannot check, and four numbers are checkable."""
 
 CORNER_MODELS = ("mai", "custom")
 """The corner relations a source may name. ``mai`` is the published relation and takes
@@ -82,8 +72,7 @@ CORNER_COEFFICIENTS = ("strike_offset", "dip_offset", "strike_exponent", "dip_ex
 
 REMOVED_SPECTRUM_SHAPES = ("somerville", "frankel")
 """Spectral falloffs the rewrite removed. Von Karman (Hurst 0.75) is Mai's own
-falloff, the shape ``kmodel: 2`` takes; the hybrid weights that fed the others are
-inert in production."""
+falloff; the hybrid weights that fed the others were inert."""
 
 
 @dataclasses.dataclass
@@ -150,20 +139,15 @@ class SourceConfig(ConfigObject):
     """What the earthquake is. Tagged: a finite fault and a point source enter the
     pipeline differently -- one draws fields, the other is the constant case.
 
-    # The source answers per segment
-
     A rupture over several faults asks the same five questions of each of them: what
-    magnitude does this fault carry, which way does it slip, how does it dip, what
-    patch structure does it have, and what does its rake field centre on. Two of the
-    three sources answer from one number for the whole event, and the third answers
-    from a dictionary -- so the *questions* are the same and only the answers differ,
-    which is what makes them methods here rather than branches in the pipeline.
+    magnitude it carries, which way it slips, how it dips, what patch structure it has,
+    and what its rake field centres on. Two of the three sources answer from one number
+    for the whole event and the third from a dictionary, so the *questions* are the
+    same and only the answers differ -- which is what makes them methods here rather
+    than branches in the pipeline.
 
-    The base answers all five from ``magnitude``, ``average_rake_deg`` and
-    ``average_dip_deg``; :class:`PerFaultSourceConfig` overrides every one. The rule
-    that keeps this from growing: the source answers **values**, and the pipeline does
-    the arithmetic. ``alpha_t`` is physics, so it stays in `timing`, even though it is
-    computed from two numbers that come from here.
+    The rule that keeps this from growing: the source answers **values**, and the
+    pipeline does the arithmetic. ``alpha_t`` is physics, so it stays in `timing`.
     """
 
     class Config(ConfigObject.Config):
@@ -224,9 +208,9 @@ class FiniteSourceConfig(SourceConfig):
     """A finite fault.
 
     ``model`` is the corner relation only, not the spectral shape a `[slip]` section
-    chooses independently as ``shape`` -- the two used to be one vocabulary, and
-    nothing checked that a `[source]` and a `[slip]` section naming different
-    relations agreed (`DEFECTS.md` 11).
+    chooses independently as ``shape``. The two used to be one vocabulary, and nothing
+    checked that a `[source]` and a `[slip]` section naming different relations
+    agreed.
 
     Two relations. ``mai`` is Mai & Beroza (2002) and carries no coefficients: they
     are the published fit, they live in `sampling.correlation_lengths`, and a file
@@ -444,15 +428,14 @@ class PerFaultSourceConfig(SourceConfig):
 
 
 def default_wavelength_band(strike_km: float, dip_km: float) -> tuple[float, float]:
-    """The wavelength limits genslip picks when none is given, for this grid.
+    """The wavelength limits to use when none is given, for this grid.
 
     No constant is right on two grids, which is why `SlipConfig` leaves both `None`
-    rather than carrying a literal: genslip derives the low end from the grid itself,
+    rather than carrying a literal. The low end comes from the grid itself,
     ``2*sqrt(dstk*ddip)/0.8`` -- 80% of the Nyquist wavelength of a grid whose spacing
     is the geometric mean of the strike and dip cell sizes, so the band-pass rolls off
     at 80% of the Nyquist *wavenumber* rather than at it exactly. The high end has no
-    real bound: genslip's own is ``1.0e15``, assigned after the ``getpar`` that reads
-    it, so nothing a config file says about it is ever seen.
+    real bound.
     """
     return 2.0 * math.sqrt(strike_km * dip_km) / 0.8, 1.0e15
 
@@ -463,9 +446,9 @@ class SlipConfig(ConfigObject):
 
     ``coefficient_of_variation`` is the slip field's spread and is dimensionless;
     ``rake_sigma_deg`` is the rake field's and is in **degrees**. Handing one to the
-    other is `DEFECTS.md` 14, which gave every rake a spread of 0.75 degrees where the
-    original gives 15 -- a factor of twenty, on every fault. They are never both bare
-    numbers in the same expression here, and their names carry the difference.
+    other gives every rake a spread of 0.75 degrees where it should be 15 -- a factor
+    of twenty, on every fault. They are never both bare numbers in the same expression
+    here, and their names carry the difference.
 
     ``min_wavelength_km`` and ``max_wavelength_km`` default to `None` rather than to a
     literal, because the right value depends on the grid the field is sampled on --
@@ -515,10 +498,10 @@ class TimingConfig(ConfigObject):
     """How rupture time and rise time relate to slip.
 
     ``shallow_ramp`` and ``deep_ramp`` stretch **rise time**. Rupture speed has ramps
-    of its own, which default to the rise-time ones because that is the case the
-    original's four independent parameters share; ``shallow_speed_ramp`` and
-    ``deep_speed_ramp`` override them when they do not. `DEFECTS.md` 13 was one pair
-    reaching both.
+    of its own, which default to the rise-time ones because that is the case the four
+    independent parameters share; ``shallow_speed_ramp`` and ``deep_speed_ramp``
+    override them when they do not. One pair reaching both is a real mistake, so they
+    are separate fields.
     """
 
     rupture_time_scale: float
@@ -539,10 +522,10 @@ class TimingConfig(ConfigObject):
     deep_speed_ramp: RampConfig | None = None
     shallow_speed_factor: PositiveFloat = 0.6
     deep_speed_factor: PositiveFloat = 0.6
-    # genslip's own `stype` spelling, parsed by `pulses.from_stype` -- including
-    # `ucsb-T`'s numeric suffix, which is why this is a string and not a `Literal`.
-    # The production workflow's `defaults.yaml` advertises removed shapes as valid
-    # `stype` values, so the parse distinguishes "removed" from "unknown".
+    # An `stype` spelling, parsed by `pulses.from_stype` -- including `ucsb-T`'s
+    # numeric suffix, which is why this is a string and not a `Literal`. The parse
+    # distinguishes "removed" from "unknown", because removed shapes are still
+    # advertised in configs people already have.
     slip_rate_shape: str | None = None
     beta_shallow: PositiveFloat = 0.5
     beta_mid: PositiveFloat = 0.13
@@ -578,6 +561,20 @@ class FieldConfig(ConfigObject):
     velocity_fraction: VelocityFraction = 0.8
 
 
+def _key(name: str) -> int:
+    """A name as a stable integer, for a spawn key.
+
+    blake2b rather than the built-in :func:`hash`, which is randomised per process for
+    strings unless ``PYTHONHASHSEED`` is set -- so the same seed would give two
+    different earthquakes in two runs, which is the one thing a seed exists to prevent.
+
+    Eight bytes is the whole of a name's identity here. A collision would hand two
+    calculations one stream; over the handful of names in a rupture, at 2**64, it does
+    not happen.
+    """
+    return int.from_bytes(hashlib.blake2b(name.encode(), digest_size=8).digest(), "big")
+
+
 @dataclasses.dataclass
 class RandomConfig(ConfigObject):
     """Which stream of numbers, and where in it.
@@ -599,11 +596,20 @@ class RandomConfig(ConfigObject):
             self.refuse("realisation", f"must be 0 or more, got {self.realisation}")
 
     def stream(self, *args: str) -> np.random.Generator:
-        spawn_key = [self.realisation]
-        for arg in args:
-            spawn_key.append(
-                int.from_bytes(hashlib.blake2b(arg.encode(), digest_size=8).digest())
-            )
+        """A generator of this event's own, named by `args`.
+
+        Noise is a pure function of the seed, the realisation index and the names --
+        typically a calculation and a segment -- so reordering or re-batching the
+        stages cannot change any field's draw. Keyed by **name**, not by position:
+        keying on a segment's index in a dict would make insertion order semantically
+        significant, so adding a fault would redraw every field on every fault after
+        it.
+
+        A draw belonging to no segment -- the causality tree, which is one draw for
+        the whole system -- passes one name. A one-name key and a two-name key are
+        different streams, so the omission collides with nothing.
+        """
+        spawn_key = [self.realisation, *(_key(name) for name in args)]
         return np.random.default_rng(
             np.random.SeedSequence(entropy=self.seed, spawn_key=spawn_key)
         )
@@ -616,6 +622,75 @@ DECODERS = {
     "json": JSONDecoder,
 }
 """Which decoder an extension means. TOML is the default for anything unrecognised."""
+
+
+@dataclasses.dataclass
+class PropagationConfig(ConfigObject):
+    """How a rupture crosses between the segments of a fault system.
+
+    Tagged, because the two ways of answering are different in kind rather than in
+    degree: either the tree is *computed* from how far apart the faults are, or it is
+    *stated*. A file that says nothing gets the computed form with its defaults, so a
+    rupture on one surface never has to mention this at all.
+    """
+
+    class Config(ConfigObject.Config):
+        discriminator = Discriminator(field="type", include_subtypes=True)
+
+
+@dataclasses.dataclass
+class ComputedPropagation(PropagationConfig):
+    """Sample which segment triggers which from how far apart they are.
+
+    The probability that a rupture jumps a gap follows Shaw & Dieterich (2007):
+    certain within ``delta_km``, decaying with characteristic length ``d0_km``, and
+    beyond ``max_jump_km`` not a jump anyone models. The tree is then drawn from the
+    distribution those probabilities imply -- or, with ``strategy =
+    "maximum_likelihood"``, taken as its single most likely member, which is what a
+    campaign wanting the modal scenario rather than a sample asks for.
+    """
+
+    strategy: Literal["sampled", "maximum_likelihood"] = "sampled"
+    d0_km: PositiveFloat = 3.0
+    delta_km: PositiveFloat = 1.0
+    max_jump_km: PositiveFloat = 15.0
+    type: Literal["computed"] = "computed"
+
+
+@dataclasses.dataclass
+class PredeterminedPropagation(PropagationConfig):
+    """State which segment triggers which, rather than sampling it.
+
+    ``parents`` maps each triggered segment to the one that triggered it. The segment
+    that appears as nobody's child is the root, and it must be the one
+    :class:`HypocentreConfig` names -- both live in this file, and the two are checked
+    against each other when the rupture runs.
+
+    Examples
+    --------
+    TOML::
+
+        [propagation]
+        type = "predetermined"
+        parents = { kelly = "hope", conway = "kelly" }
+    """
+
+    parents: dict[str, str] = dataclasses.field(default_factory=dict)
+    type: Literal["predetermined"] = "predetermined"
+
+    def __post_init__(self) -> None:
+        """Validate the fields, then the shape of what they describe."""
+        super().__post_init__()
+        if not self.parents:
+            self.refuse(
+                "parents",
+                "a predetermined propagation needs to say which segment triggers "
+                "which; with one segment there is nothing to state, so use the "
+                "computed form or omit the section",
+            )
+        for child, parent in self.parents.items():
+            if child == parent:
+                self.refuse("parents", f"{child!r} cannot trigger itself")
 
 
 @dataclasses.dataclass
@@ -660,9 +735,14 @@ class RuptureConfig(ConfigObject):
     velocity_model: VelocityModelConfig
     source: SourceConfig
     timing: TimingConfig
+    # No default: `RandomConfig` states the seed and the realisation index outright, so
+    # a rupture that did not say which one it is cannot be reproduced.
+    random: RandomConfig
     slip: SlipConfig = dataclasses.field(default_factory=SlipConfig)
     field: FieldConfig = dataclasses.field(default_factory=FieldConfig)
-    random: RandomConfig = dataclasses.field(default_factory=RandomConfig)
+    propagation: PropagationConfig = dataclasses.field(
+        default_factory=ComputedPropagation
+    )
     schema_version: int = 1
     title: NonEmptyStr | None = None
 

@@ -5,19 +5,15 @@ local shear speed, reduced near the surface and at depth; the arrival times are 
 solution of :math:`|\\nabla T| = 1/v` from the seed points, computed by the factored
 fast sweeping kernel.
 
-# The geometric correction lives here
+:func:`alpha_t` is Graves & Pitarka's dip-and-rake correction, and it lives here
+rather than in the config. Their model was calibrated on strike-slip events; a
+shallow-dipping reverse fault has the free surface closer to the whole fault plane, so
+slip is faster and the pulse shorter. The correction shortens the rise time and raises
+the rupture speed **by the same factor**, which is why one function serves both stages.
 
-:func:`alpha_t` is Graves & Pitarka's dip-and-rake correction. Their model was
-calibrated on strike-slip events; a shallow-dipping reverse fault has the free surface
-closer to the whole fault plane, so slip is faster and the pulse shorter. The
-correction shortens the rise time and raises the rupture speed **by the same factor**,
-which is why one function serves both stages -- and why the config does not carry it
-at all.
-
-That last point is not tidiness. Dividing the velocity fraction by the correction at
-the *config boundary* was one of the four wrong numbers: the port did not divide, and
-a dip-45 reverse fault ruptured up to 10% slow. A correction applied in two places by
-two callers is a correction that can be applied once, or twice, or with the wrong sign.
+Applying it at the *config boundary* instead is how a dip-45 reverse fault came to
+rupture up to 10% slow: a correction applied by two callers can be applied once, or
+twice, or with the wrong sign.
 """
 
 from __future__ import annotations
@@ -35,11 +31,9 @@ FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 ALPHA_COEFFICIENT = 0.1
 """How much the geometry correction can move things: at most a tenth.
 
-A literal, and it stays one. genslip hardwires it despite documenting a parameter for
-it, so the production workflow's own value never reaches the program. The sibling
-high-frequency port *did* read it from a deck -- one whose "use the default" sentinel
-was ``-99.0``, which after the deck reader was deleted went through literally and gave
-every non-strike-slip fault a negative corner frequency. No sentinels.
+A literal, and it stays one. The last thing to make it configurable used ``-99.0`` as
+its "use the default" sentinel, which once the deck reader was gone went through
+literally and gave every non-strike-slip fault a negative corner frequency.
 """
 
 DIP_PLATEAU_DEG = 45.0
@@ -52,9 +46,8 @@ REVERSE_RAKE_DEG = 90.0
 def alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
     """Graves & Pitarka's geometric correction, in ``[1/1.1, 1]``.
 
-    Exactly 1 for a vertical strike-slip fault, which is the calibration point --
-    so a strike-slip rupture is unaffected by this whole apparatus, which is a
-    useful thing to be able to assert.
+    Exactly 1 for a vertical strike-slip fault, which is the calibration point, so a
+    strike-slip rupture is unaffected by this whole apparatus.
 
     Parameters
     ----------
@@ -66,16 +59,11 @@ def alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
         Reproduced deliberately: the alternative is a circular mean, which is a
         different model of what "the fault's rake" means.
 
-    Returns
-    -------
-    float
-
     Raises
     ------
     ValueError
-        For a dip outside ``[0, 90]``. genslip answers a dip of 120 with a factor of
-        *zero* -- a rupture with the correction silently switched off, and
-        indistinguishable in the output from a vertical fault.
+        For a dip outside ``[0, 90]``, rather than the factor of *zero* that reads as
+        a rupture with the correction silently switched off.
     """
     if not (0.0 <= average_dip_deg <= 90.0):
         raise ValueError(
@@ -113,9 +101,8 @@ class SpeedParams:
         The only inputs to that correction.
     shallow, deep : DepthRamp
         Where the speed reduction begins and ends at each end of the depth range.
-        They default to the rise-time stretch ramps, because that is the case the
-        original's four independent parameters share -- and `DEFECTS.md` 13 was one
-        pair of them reaching both.
+        They default to the rise-time stretch ramps, which is the case the four
+        independent parameters share.
     shallow_factor, deep_factor : float
         The speed multiplier outside each ramp. Exactly 1 in between.
     """
@@ -152,15 +139,14 @@ def speed_field(
     .. math:: v_{ij} = \\frac{f}{\\alpha_T} \\, \\beta(z_{ij}) \\, r(z_{ij})
 
     The division by the geometric correction happens **here**, inside the stage, and
-    nowhere else. It is the same correction that shortens the rise time, from the same
+    nowhere else -- the same correction that shortens the rise time, from the same
     function, so the two cannot drift apart.
 
     Raises
     ------
     ValueError
-        If any speed is not strictly positive. The solver inverts it, and a
-        non-positive speed is a subfault the front can never reach -- refused in this
-        stage's own vocabulary rather than surfacing from inside a kernel.
+        If any speed is not strictly positive. The solver inverts it, so a
+        non-positive speed is a subfault the front can never reach.
     """
     corrected_fraction = params.velocity_fraction / alpha_t(
         params.average_dip_deg, params.average_rake_deg
@@ -198,9 +184,8 @@ def travel_times(
     seeds : list of tuple
         ``(i, j, t0_seconds)`` -- points the front leaves at known times. One triple
         for a hypocentre; several for a fault triggered along an edge by another
-        segment. Making the contract seeds-with-times from the start is what
-        multi-segment needs and what costs single-segment nothing -- and it leaves no
-        "the hypocentre" special case to get off by one.
+        segment. Seeds-with-times leaves no "the hypocentre" special case to get off
+        by one.
 
     Returns
     -------

@@ -33,7 +33,7 @@ magnitude = 6.2
 #     strike_offset = 2.50
 #     dip_offset = 1.50
 #     strike_exponent = 0.5
-#     dip_exponent = 0.3333   # those four are Mai, spelled out
+#     dip_exponent = 0.33333333333333331   # those four are Mai, spelled out
 #
 # which takes all four, so the file says what the relation is rather than naming one
 # and trusting this package to remember it. The relations the rewrite removed by name

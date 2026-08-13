@@ -1,28 +1,18 @@
 """S9: slip-rate pulses, and the vocabulary that names their shapes.
 
-Two things live here. The **vocabulary seam** -- :func:`from_stype`, which turns the
-`stype` spelling a config file uses into a resolved shape -- and (from Phase 3) the
-driver that hands slip, rise time and shape to ``crates/kernels``' pulse synthesis.
+Two things live here: the **vocabulary seam** -- :func:`from_stype`, which turns the
+`stype` spelling a config file uses into a resolved shape -- and the driver that hands
+slip, rise time and shape to the pulse-synthesis kernel.
 
-# The vocabulary shrank, and the seam says so
-
-The port offered eleven shapes because genslip did. Production selects one family:
-`OliuP2`, the Liu-Archuleta pulse whose rising fraction comes from a depth profile,
-plus `delta` for the degenerate spike. The four proven aliases of the same kernel --
-``ucsb``, ``ucsb2``, ``ucsb-varT1``, ``ucsb-T<b>`` -- collapse into parametrisations
-of it: `crates/genslip`'s contract tests established, sample for sample, that each is
-``oliu_p`` with the breakpoints moved, and the table in :data:`_ALIASES` is that
-finding written down.
+One family is kept: `OliuP2`, the Liu-Archuleta pulse whose rising fraction comes from
+a depth profile, plus `delta` for the degenerate spike. The four aliases of the same
+kernel -- ``ucsb``, ``ucsb2``, ``ucsb-varT1``, ``ucsb-T<b>`` -- are parametrisations of
+it, established sample for sample, and :data:`_ALIASES` is that finding written down.
 
 The rest -- ``brune``, ``urs``, ``esg2006``, ``cos``, ``seki`` -- are **removed**, and
-the refusal says so by name. `defaults.yaml` in the production workflow advertises
-them as valid ``stype`` values, so a config that names one deserves better than
-"unknown shape": it gets told the shape existed and was removed, which is the
-difference between a typo and a decision.
-
-The C's own behaviour on an unrecognised ``stype`` is to fall through to ``brune``
-and silently generate a different rupture. Anything not in the vocabulary is an
-error here, whatever else changes.
+the refusal names them: a config that selects one is told the shape existed and was
+removed, which is the difference between a typo and a decision. Falling through to a
+default shape instead would silently generate a different rupture.
 """
 
 from __future__ import annotations
@@ -52,7 +42,7 @@ class ResolvedShape:
     Attributes
     ----------
     kernel : str
-        ``"oliu_p"`` or ``"delta"`` -- the two shapes ``crates/kernels`` knows.
+        ``"oliu_p"`` or ``"delta"`` -- the two shapes the kernel knows.
     duration_scale : float
         Multiplies the rise time before synthesis. 1 for the plain pulse; the
         ``ucsb2`` alias doubles the duration with the peak kept in place.
@@ -85,12 +75,8 @@ def from_stype(stype: str) -> ResolvedShape:
     Parameters
     ----------
     stype : str
-        genslip's own spelling: ``OliuP2``, ``delta``, one of the ``ucsb`` aliases
-        (including ``ucsb-T<b>`` with its numeric suffix), or a removed name.
-
-    Returns
-    -------
-    ResolvedShape
+        ``OliuP2``, ``delta``, one of the ``ucsb`` aliases (including ``ucsb-T<b>``
+        with its numeric suffix), or a removed name.
 
     Raises
     ------
@@ -180,11 +166,10 @@ def synthesise(
     """S9: a slip-rate pulse for every subfault, as CSR rows.
 
     The kernel guarantees ``dt * sum(pulse) == slip`` exactly, whatever the shape, and
-    refuses -- naming the subfault -- a subfault that slips at a rise time its shape
-    cannot sample at this interval. That refusal is `DEFECTS.md` 21: silently emitting
-    nothing there dropped 0.63% of the moment on the seed-1234 fixture, and nothing
-    downstream could tell the difference between a subfault that did not slip and one
-    whose pulse was thrown away.
+    refuses -- naming the subfault -- one that slips at a rise time its shape cannot
+    sample at this interval. Emitting nothing there instead dropped 0.63% of the moment
+    on the seed-1234 fixture, and nothing downstream could tell the difference between
+    a subfault that did not slip and one whose pulse was thrown away.
 
     Returns
     -------

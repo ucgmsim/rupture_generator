@@ -4,17 +4,16 @@ Everything here is SI: moment in newton-metres, rigidity in pascals, slip in met
 The mesh works in kilometres, so the one conversion -- square kilometres to square
 metres -- happens here, once, in :func:`scale_to_moment`.
 
-# One magnitude convention
+One magnitude convention:
 
 .. math::
 
     \\log_{10} M_0 [\\mathrm{N\\,m}] = 1.5 (M_w + 6.0333003)
 
 Hanks & Kanamori (1979) **equation 7**, in the SI form the paper itself publishes.
-Equation 4 is a different relation with a different constant, and defaulting to it
-read 1.109 times too much moment and mean slip against every config that leaves the
-production default alone -- one of the four wrong numbers, and worth naming because
-the error is a clean multiplicative factor that no diagnostic about *shape* can see.
+Equation 4 is a different relation with a different constant, and reads 1.109 times
+too much moment and mean slip -- a clean multiplicative factor that no diagnostic
+about *shape* can see.
 """
 
 from __future__ import annotations
@@ -29,15 +28,14 @@ IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 MAGNITUDE_COEFFICIENT = 10.699967 - 7.0 / 1.5
 """The constant in eq. 7's SI form, at full precision.
 
-The seismological literature and genslip both write **10.699967** for the
-dyne-centimetre form. Newton-metres are ``1e7`` larger, and the relation's slope is
-1.5, so the SI constant is exactly that much smaller -- about 6.0333003, which is the
-6.03 the paper rounds to.
+The literature writes **10.699967** for the dyne-centimetre form. Newton-metres are
+``1e7`` larger and the relation's slope is 1.5, so the SI constant is exactly that
+much smaller -- about 6.0333003, the 6.03 the paper rounds to.
 
-Written as the derivation rather than as its decimal expansion because rounding it at
-the seventh figure moves the moment by 1.2e-7 relative: harmless, and needless, and
-the kind of gratuitous disagreement between two forms of one constant that makes a
-later comparison ambiguous.
+Written as the derivation rather than its decimal expansion: rounding at the seventh
+figure moves the moment by 1.2e-7 relative, which is harmless, needless, and the kind
+of disagreement between two forms of one constant that makes a later comparison
+ambiguous.
 """
 
 
@@ -75,19 +73,16 @@ def rigidity_pa(shear_speed_km_s: FloatArray, density_g_cm3: FloatArray) -> Floa
 def layer_of(depth_km: FloatArray, bottom_depth_km: FloatArray) -> IntArray:
     """Which layer of a 1-D velocity model each depth falls in.
 
-    Two conventions that are choices rather than consequences, both kept:
+    Two conventions that are choices rather than consequences, both kept here rather
+    than at each lookup, because the callers are in different modules:
 
     A depth **exactly on a layer boundary belongs to the layer above it**, which is
-    what ``side="left"`` gives; the alternative makes a fault whose top edge sits on
-    a boundary sample the layer it is not in.
+    what ``side="left"`` gives; the alternative makes a fault whose top edge sits on a
+    boundary sample the layer it is not in.
 
-    A depth **below the deepest layer clamps** to that layer rather than
-    extrapolating. A subfault below the model is a modelling error, not a reason to
-    invent properties for it.
-
-    Both conventions live here rather than at each lookup, because a second copy is a
-    second thing to disagree with -- and the callers are in different modules: the
-    materials of a subfault, and the shear speed of the rock a jump crosses.
+    A depth **below the deepest layer clamps** to that layer rather than extrapolating.
+    A subfault below the model is a modelling error, not a reason to invent properties
+    for it.
 
     Returns
     -------
@@ -109,8 +104,7 @@ def sample_velocity_model(
     """Shear speed and rigidity at each subfault's depth.
 
     Sampled **per subfault**, not per row: one lookup per dip row broadcast along
-    strike is exact for a plane and for nothing else, and a bent chart has a
-    different depth at every subfault in a row.
+    strike is exact for a plane and for nothing else.
 
     Returns
     -------
@@ -136,19 +130,16 @@ def scale_to_moment(
         \\gamma = \\frac{M_0}{\\sum_k \\sum_{ij} \\mu_{ij} A_{ij} f_{ij}},
         \\qquad s_{ij} = \\gamma f_{ij}
 
-    **One factor, shared across every segment.** That is the whole content of the
-    joint scaling: a segment's own moment is whatever the shared factor and its own
-    pattern give it, and only the total is a target. A per-segment scaling would
-    make the moment right and the *partition between faults* an artefact of how the
-    patterns happened to normalise.
+    **One factor, shared across every segment.** A segment's own moment is whatever
+    the shared factor and its own pattern give it, and only the total is a target; a
+    per-segment scaling would make the *partition between faults* an artefact of how
+    the patterns happened to normalise.
 
-    That the sum then equals the target is a tautology -- it is divided by exactly
-    that sum. What the assertion is worth is the **registration**: that the sum runs
-    over all segments, that the areas are the mesh's own rather than a nominal
-    product of spacings, and that the accumulation is in float64. The C folds through
-    single precision, which on a hundred thousand subfaults costs about 6e-5
-    relative -- six missing subfaults' worth, where in float64 one missing subfault
-    is visible.
+    That the sum equals the target is a tautology -- it is divided by exactly that sum.
+    What is worth asserting is the **registration**: that the sum runs over all
+    segments, that the areas are the mesh's own rather than a nominal product of
+    spacings, and that the accumulation is in float64. Single precision on a hundred
+    thousand subfaults costs about 6e-5 relative, six missing subfaults' worth.
 
     Parameters
     ----------
@@ -193,9 +184,7 @@ def scale_each_to_moment(
     """Scale each segment to a target of its own.
 
     The counterpart of :func:`scale_to_moment`, for a source that states how the
-    moment divides between faults rather than letting the fields decide. A hazard
-    model that derived each fault's magnitude from its own area has already made that
-    decision; re-deriving it would discard what the model said.
+    moment divides between faults rather than letting the fields decide.
 
     The two are genuinely different: here each segment's moment is exact and the
     event's total is whatever the parts sum to, where jointly the total is exact and
@@ -231,8 +220,8 @@ def moment_of(
 ) -> float:
     """One segment's seismic moment, newton-metres.
 
-    The inverse reading of :func:`scale_to_moment`, for reporting and for the test
-    that the parts sum to the whole.
+    The inverse reading of :func:`scale_to_moment`, and what
+    `Realisation.moment_newton_m` sums.
     """
     return float(np.sum(rigidity_pa * area_km2 * M2_PER_KM2 * slip_m))
 
@@ -251,20 +240,16 @@ def moment_rate(
 
     .. math:: \\dot{M}(t) = \\sum_i \\mu_i A_i \\dot{s}_i(t - t_i)
 
-    It is the first thing anyone looks at to judge whether a generated rupture is
-    plausible: a source time function that is ragged, or that peaks at the very
-    start, or whose integral misses the target moment, says something is wrong before
-    any map does. That makes it a library quantity rather than a viewer's, and it has
-    a test a viewer could not give it -- the integral is the moment the generator was
-    scaled to hit.
+    The first thing anyone looks at to judge whether a generated rupture is plausible,
+    and it has a test a viewer could not give it: the integral is the moment the
+    generator was scaled to hit.
 
     Each subfault's pulse has its own length and starts at its own onset, so this
     places each at its own offset into a shared timeline rather than summing aligned
-    arrays. Onsets are quantised to the sample interval: a pulse starts at the sample
-    nearest its onset, an error under half a sample -- 0.0025 s at the default
-    interval, a twentieth of the onset bound. Interpolating instead would smear each
-    pulse across two samples and change the peak, which is the number people read off
-    this.
+    arrays. Onsets are quantised to the sample interval, an error under half a sample
+    -- 0.0025 s at the default interval, a twentieth of the onset bound. Interpolating
+    would smear each pulse across two samples and change the peak, which is the number
+    people read off this.
 
     Parameters
     ----------
