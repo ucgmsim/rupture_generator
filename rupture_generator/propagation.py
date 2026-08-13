@@ -45,10 +45,42 @@ from rupture_generator import moment
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from rupture_generator.mesh import RuptureMesh
-
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
+
+
+class Chart(Protocol):
+    """What this module asks of a fault segment, and no more.
+
+    A protocol rather than a concrete mesh type because every question here is about
+    positions and about where the fault stops, and neither depends on whether the
+    segment is a lattice or a triangulation. Both mesh containers satisfy it as they
+    stand.
+    """
+
+    @property
+    def surface(self) -> str:
+        """The segment's name, for the message when two faults are too far apart."""
+        ...
+
+    @property
+    def origin_km(self) -> tuple[float, float]:
+        """The easting and northing every position on this chart is an offset from."""
+        ...
+
+    def centres(self) -> FloatArray:
+        """Subfault centres, positions with depth last."""
+        ...
+
+    def boundary_faces(self) -> IntArray:
+        """Flat indices of the subfaults where the fault runs out."""
+        ...
+
+    def cell_key(self, flat_index: int) -> tuple[int, int] | int:
+        """How this chart labels the subfault at a flat index."""
+        ...
+
+
 type Tree[T] = dict[str, T]
 """A rupture causality tree: each fault mapped to the fault that triggered it, and
 the root mapped to ``None``."""
@@ -536,8 +568,12 @@ class Jump:
 
     Attributes
     ----------
-    parent_cell, child_cell : tuple of int
-        The ``(i, j)`` cells the front left from and arrived at.
+    parent_cell, child_cell : tuple of int, or int
+        The subfaults the front left from and arrived at, labelled the way their own
+        chart labels a subfault: ``(i, j)`` on a lattice, a flat face index on a
+        triangulation. Either indexes that chart's own fields, which is the property
+        the label exists for -- see
+        :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`.
     distance_km : float
         The gap it crossed.
     departure_s : float
@@ -553,33 +589,18 @@ class Jump:
         model running silently.
     """
 
-    parent_cell: tuple[int, int]
-    child_cell: tuple[int, int]
+    parent_cell: tuple[int, int] | int
+    child_cell: tuple[int, int] | int
     distance_km: float
     departure_s: float
     arrival_s: float
     from_edge: bool = True
 
 
-def _edge_cells(cell_counts: tuple[int, int]) -> IntArray:
-    """Flat indices of a chart's perimeter -- where a front runs out of fault.
-
-    All four edges. Which one a jump leaves from is settled by arrival time in
-    :func:`causal_jump`. The surface trace is *not* excluded: it is a real arrest, and
-    excluding it would be the depth floor this rule exists to retire under another
-    name.
-    """
-    rows, columns = cell_counts
-    on_edge = np.zeros((rows, columns), dtype=bool)
-    on_edge[(0, rows - 1), :] = True
-    on_edge[:, (0, columns - 1)] = True
-    return np.flatnonzero(on_edge.reshape(-1))
-
-
 def causal_jump(
-    parent: RuptureMesh,
+    parent: Chart,
     parent_wavefront_s: FloatArray,
-    child: RuptureMesh,
+    child: Chart,
     delay: JumpDelay,
     *,
     parent_onset_s: FloatArray | None = None,
@@ -640,9 +661,16 @@ def causal_jump(
     nearest neighbours, and restricting to edges cuts even that by two orders of
     magnitude.
 
+    **Where a front runs out of fault is the chart's own answer**, not this function's:
+    a lattice's perimeter is its first and last rows and columns, and a triangulation's
+    is the faces with an edge no second face shares. Both spell it ``boundary_faces()``
+    and both return flat indices, so nothing here branches on which kind of chart it
+    has, and neither does the label a :class:`Jump` records -- see
+    :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`.
+
     Parameters
     ----------
-    parent, child : RuptureMesh
+    parent, child : Chart
         The two charts. Both hold offsets from their own surface origins, so the
         origins are added back here before differencing -- two faults digitised
         against different origins would otherwise be compared in different frames.
@@ -696,7 +724,7 @@ def causal_jump(
     from scipy.spatial import cKDTree
 
     tree = cKDTree(to_points)
-    candidates = _edge_cells(parent.cell_counts)
+    candidates = parent.boundary_faces()
     candidate_points = all_points[candidates]
     nearest_km, nearest = tree.query(candidate_points, k=1, workers=-1)
     from_edge = bool((nearest_km <= max_distance_km).any())
@@ -730,12 +758,8 @@ def causal_jump(
     departure_s = float(departures[from_cell])
 
     return Jump(
-        parent_cell=tuple(
-            int(index) for index in np.unravel_index(from_cell, parent.cell_counts)
-        ),
-        child_cell=tuple(
-            int(index) for index in np.unravel_index(to_cell, child.cell_counts)
-        ),
+        parent_cell=parent.cell_key(from_cell),
+        child_cell=child.cell_key(to_cell),
         distance_km=float(nearest_km[chosen]),
         departure_s=departure_s,
         arrival_s=departure_s + float(delays_s[chosen]),
@@ -743,7 +767,7 @@ def causal_jump(
     )
 
 
-def closest_approach_km(first: RuptureMesh, second: RuptureMesh) -> float:
+def closest_approach_km(first: Chart, second: Chart) -> float:
     """How near two faults come to each other, in kilometres.
 
     What the jump probability is a function of. Measured between cell centres rather
@@ -767,6 +791,7 @@ def closest_approach_km(first: RuptureMesh, second: RuptureMesh) -> float:
 __all__ = [
     "MAX_JUMP_KM",
     "PROBABILITY_CAP",
+    "Chart",
     "DistanceOverVelocity",
     "Instantaneous",
     "Jump",

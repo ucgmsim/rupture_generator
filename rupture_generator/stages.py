@@ -19,10 +19,11 @@ deliberate -- each branch measures from the ramp's *far* end, so the value is ex
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from typing import Protocol
 
 import numpy as np
 
-from rupture_generator.mesh import RuptureMesh
 from rupture_generator.sampling import (
     VonKarmanFilterParameters,
     correlate_fields,
@@ -31,6 +32,40 @@ from rupture_generator.sampling import (
 )
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+
+
+class Chart(Protocol):
+    """The whole of what a field stage asks of a chart: where its subfaults are.
+
+    A protocol rather than :class:`~rupture_generator.mesh.RuptureMesh` because three
+    of these stages read nothing but the centre depths, and the depths of a
+    triangulated segment's faces are the same quantity as the depths of a lattice's
+    cells. Naming the concrete type instead would have made every stage that only
+    reads depth look like it needed a lattice.
+    """
+
+    def centres(self) -> FloatArray:
+        """Subfault centres, positions with depth last."""
+        ...
+
+
+type FieldSampler = Callable[..., FloatArray]
+"""Draws one field of a segment's covariance, one value per subfault.
+
+Called as ``sampler(mesh, covariance, rng)``, which is
+:func:`~rupture_generator.sampling.von_karman_field`'s own signature -- so the default
+is that function itself and there is no adapter to keep in step. It is a parameter
+rather than an import because the *sampler* is what a mesh's shape decides and the
+field models are not: circulant embedding is a lattice method by construction
+(`sampling.py`), while a triangulated segment draws the same covariance from the
+Whittle-Matern SPDE (:mod:`rupture_generator.triangular.spde`). Injecting the draw is
+what lets one rise-time model, one rake model and one perturbation model serve both,
+instead of two transcriptions free to drift.
+
+Deliberately spelled ``Callable[..., FloatArray]`` rather than a protocol: the first
+argument is the chart, which the stage passes through and never inspects, and a
+protocol would have to name a type for it that both mesh containers satisfy.
+"""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,6 +160,13 @@ def taper_edges(field: FloatArray, params: SlipParams) -> FloatArray:
     they overlap -- is 7/8 in one place and 1 in another on a fourteen-cell fault with
     an eight-cell taper. Overlapping tapers are refused outright, so the region where
     the two forms disagree is unrepresentable.
+
+    A **lattice** taper: the widths are whole cells and the ramps run along the index
+    axes, which is why :func:`slip_pattern` takes it as a parameter rather than calling
+    it. A triangulated segment has no index axes, so
+    :func:`rupture_generator.triangular.pipeline.taper_edges` measures the same
+    fractions as distances to the labelled boundary in the parameter plane instead --
+    the same product of two independent ramps, and the same refusal when they overlap.
     """
     cells_i, cells_j = field.shape
     side, top, bottom = _taper_widths(params, cells_i, cells_j)
@@ -145,9 +187,12 @@ def taper_edges(field: FloatArray, params: SlipParams) -> FloatArray:
 
 
 def slip_pattern(
-    mesh: RuptureMesh,
+    mesh: Chart,
     params: SlipParams,
     rng: np.random.Generator,
+    *,
+    sampler: FieldSampler = von_karman_field,
+    taper: Callable[[FloatArray, SlipParams], FloatArray] = taper_edges,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
     """S4, up to the moment: a non-negative, tapered, unit-ish slip pattern.
 
@@ -167,6 +212,24 @@ def slip_pattern(
     The size is not set here. :func:`~rupture_generator.moment.scale_to_moment` does
     that, once, jointly across every segment.
 
+    Parameters
+    ----------
+    mesh : Chart
+        The segment, passed through to ``sampler`` and otherwise unread.
+    params : SlipParams
+    rng : np.random.Generator
+        This stage's own substream.
+    sampler : FieldSampler, optional
+        How to draw a field of this covariance on this chart. See
+        :data:`FieldSampler`.
+    taper : callable, optional
+        ``taper(field, params)``, ramping the field to zero at the fault's edges.
+        Defaults to :func:`taper_edges`, the lattice form; a triangulated segment
+        passes its own, because a taper is the one part of this stage that has to know
+        what shape the chart is. Everything else here -- the mean shift, the spread,
+        the truncation and the order they happen in -- is the model, and the model is
+        one implementation.
+
     Returns
     -------
     tuple
@@ -183,11 +246,11 @@ def slip_pattern(
         *this* Gaussian rather than a freshly drawn one, which is what makes "rise
         time follows slip" a statement about the slip this rupture actually has.
     """
-    drawn = von_karman_field(mesh, params.covariance, rng)
+    drawn = sampler(mesh, params.covariance, rng)
     gaussian = standardise(drawn)
     pattern = 1.0 + params.coefficient_of_variation * gaussian
     pattern = np.maximum(pattern, 0.0)
-    return taper_edges(pattern, params), gaussian, drawn
+    return taper(pattern, params), gaussian, drawn
 
 
 def truncated_fraction(gaussian: FloatArray, params: SlipParams) -> float:
@@ -278,7 +341,7 @@ def average_rise_time_s(
 
 
 def rise_time_field(
-    mesh: RuptureMesh,
+    mesh: Chart,
     slip_gaussian: FloatArray,
     slip_draw: FloatArray,
     params: RiseTimeParams,
@@ -286,6 +349,7 @@ def rise_time_field(
     covariance: VonKarmanFilterParameters,
     *,
     sample_interval_s: float,
+    sampler: FieldSampler = von_karman_field,
 ) -> FloatArray:
     """S5: a rise time for every subfault, in seconds.
     The mean is the requested average **by construction** -- the normalising constant
@@ -303,7 +367,7 @@ def rise_time_field(
     # The realised correlation is slightly higher than correlating against the
     # truncated, tapered, moment-scaled field would give, because it is no longer
     # being measured through the truncation.
-    independent = von_karman_field(mesh, covariance, rng)
+    independent = sampler(mesh, covariance, rng)
     correlated = standardise(
         correlate_fields(slip_draw, independent, params.correlation)
     )
@@ -356,17 +420,34 @@ class RakeParams:
 
 
 def rake_field(
-    mesh: RuptureMesh,
+    mesh: Chart,
     params: RakeParams,
     rng: np.random.Generator,
+    *,
+    sampler: FieldSampler = von_karman_field,
 ) -> FloatArray:
     """S6: a rake for every subfault, in degrees.
 
     ``base + sigma * Z``, with ``Z`` an independent field of the same covariance
     family. **Not correlated with slip**: a patch that slips more has no reason to
     slip in a different direction.
+
+    Parameters
+    ----------
+    mesh : Chart
+        The segment, passed through to ``sampler`` and otherwise unread.
+    params : RakeParams
+    rng : np.random.Generator
+        This stage's own substream.
+    sampler : FieldSampler, optional
+        How to draw a field of this covariance on this chart.
+
+    Returns
+    -------
+    FloatArray
+        Degrees, one per subfault.
     """
-    field = standardise(von_karman_field(mesh, params.covariance, rng))
+    field = standardise(sampler(mesh, params.covariance, rng))
     return params.base_rake_deg + params.sigma_deg * field
 
 
@@ -403,11 +484,13 @@ class OnsetParams:
 
 
 def onset_perturbation(
-    mesh: RuptureMesh,
+    mesh: Chart,
     slip_draw: FloatArray,
     params: OnsetParams,
     rng: np.random.Generator,
     covariance: VonKarmanFilterParameters,
+    *,
+    sampler: FieldSampler = von_karman_field,
 ) -> FloatArray:
     """S8's draw: the shape of the onset perturbation, correlated with slip.
 
@@ -420,8 +503,27 @@ def onset_perturbation(
     Correlated against slip's own **draw**, rather than against the slip itself -- the
     same argument :func:`rise_time_field` makes, and the reason both take the field the
     Gaussian was standardised from rather than the tapered pattern.
+
+    Parameters
+    ----------
+    mesh : Chart
+        The segment, passed through to ``sampler`` and otherwise unread.
+    slip_draw : FloatArray
+        Slip's own unstandardised draw.
+    params : OnsetParams
+    rng : np.random.Generator
+        This stage's own substream.
+    covariance : VonKarmanFilterParameters
+        The segment's patch structure.
+    sampler : FieldSampler, optional
+        How to draw a field of this covariance on this chart.
+
+    Returns
+    -------
+    FloatArray
+        Dimensionless, standardised, one value per subfault.
     """
-    independent = von_karman_field(mesh, covariance, rng)
+    independent = sampler(mesh, covariance, rng)
     return standardise(
         correlate_fields(slip_draw, independent, params.correlation)
     )
@@ -432,7 +534,7 @@ def apply_perturbation(
     perturbation: FloatArray,
     params: OnsetParams,
     *,
-    hypocentre: tuple[int, int] | None,
+    hypocentre: tuple[int, int] | int | None,
     delay_s: float,
 ) -> FloatArray:
     """S8: onset from travel time plus an already-drawn perturbation.
@@ -457,10 +559,12 @@ def apply_perturbation(
 
     Parameters
     ----------
-    hypocentre : tuple of int, or None
-        The ``(i, j)`` cell the rupture starts from, or ``None`` for a segment
-        triggered from elsewhere -- whose onsets stay absolute, which is what lets a
-        multi-segment rupture propagate rather than restart on every fault.
+    hypocentre : tuple of int, int, or None
+        The subfault the rupture starts from -- the ``(i, j)`` cell of a lattice or the
+        flat face index of a triangulation, since either indexes its own field the same
+        way -- or ``None`` for a segment triggered from elsewhere, whose onsets stay
+        absolute, which is what lets a multi-segment rupture propagate rather than
+        restart on every fault.
     delay_s : float
         A constant offset added to every subfault -- what the hypocentre's own onset
         becomes. Passed rather than carried on ``params`` because it is the *caller's*
@@ -496,7 +600,9 @@ def apply_perturbation(
 
 
 __all__ = [
+    "Chart",
     "DepthRamp",
+    "FieldSampler",
     "OnsetParams",
     "RakeParams",
     "RiseTimeParams",

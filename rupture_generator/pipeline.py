@@ -24,6 +24,7 @@ Nothing here writes a file. The result is each input chart with `slip_m`, `rake_
 from __future__ import annotations
 
 import itertools
+from typing import Any
 
 import numpy as np
 
@@ -320,7 +321,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             mesh,
             gaussian,
             slip_draw,
-            _rise_time_params(config, average_s),
+            rise_time_model(config, average_s),
             random.stream("rise_time", name),
             covariance,
             sample_interval_s=config.timing.sample_interval_s,
@@ -342,7 +343,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
         perturbation = stages.onset_perturbation(
             mesh,
             slip_draw,
-            _onset_params(config),
+            perturbation_model(config),
             random.stream("onset", name),
             covariance,
         )
@@ -438,8 +439,8 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
     when its parent's front crossed onto it, which is what makes a multi-segment
     rupture propagate rather than restart on each fault.
     """
-    onset_params = _onset_params(config)
-    jump_delay = _jump_delay(config)
+    onset_params = perturbation_model(config)
+    jump_delay = jump_model(config)
     max_jump_km = (
         config.propagation.max_jump_km
         if isinstance(config.propagation, ComputedPropagation)
@@ -485,7 +486,7 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
         travel_time_s = timing.travel_times(
             mesh,
             mesh["shear_speed_kms"],
-            _speed_params(config, name, mesh),
+            speed_model(config, name, mesh),
             seeds,
         )
         solved[name] = mesh.with_fields(
@@ -523,19 +524,11 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
     The only stage whose output is not a cell field -- a pulse per subfault, each its
     own length, so the charts carry them as CSR.
     """
-    pulse_params = pulses.PulseParams(
-        shape=pulses.from_stype(config.timing.slip_rate_shape or "OliuP2"),
-        shallow_ramp=_ramp(config.timing.beta_shallow_ramp),
-        mid_ramp=_ramp(config.timing.beta_mid_ramp),
-        beta_shallow=config.timing.beta_shallow,
-        beta_mid=config.timing.beta_mid,
-        beta_deep=config.timing.beta_deep,
-        sample_interval_s=config.timing.sample_interval_s,
-    )
+    params = pulse_model(config)
 
     def synthesise(mesh: RuptureMesh) -> RuptureMesh:
         offsets, samples = pulses.synthesise(
-            mesh, mesh["slip_m"], mesh["rise_time_s"], pulse_params
+            mesh.centres()[..., 2], mesh["slip_m"], mesh["rise_time_s"], params
         )
         return mesh.with_pulses(offsets, samples).with_attrs(
             sample_interval_s=config.timing.sample_interval_s
@@ -546,11 +539,32 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
     return realisation
 
 
-def _onset_params(config: RuptureConfig) -> stages.OnsetParams:
+# ============================================================================
+# The config boundary: what the file says, as the parameter objects a stage takes
+# ============================================================================
+#
+# These six are **public and shared**, which is the one thing about them worth saying.
+# They read a config and return a frozen parameter object, and nothing in them depends
+# on whether a subfault is a lattice cell or a triangle -- so
+# `triangular.pipeline` calls these rather than transcribing them, and a knob added to
+# the config reaches both pipelines by being added once. They were private while there
+# was one pipeline.
+
+
+def perturbation_model(config: RuptureConfig) -> stages.OnsetParams:
     """How far the onset is perturbed from the wavefront, and how it follows slip.
 
     One object read by both the draw and the application, so the two cannot disagree
     about which model they are.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        What the earthquake is.
+
+    Returns
+    -------
+    stages.OnsetParams
     """
     return stages.OnsetParams(
         scale_s=config.timing.rupture_time_scale,
@@ -559,28 +573,52 @@ def _onset_params(config: RuptureConfig) -> stages.OnsetParams:
     )
 
 
-def _speed_params(
-    config: RuptureConfig, name: str, mesh: RuptureMesh
-) -> timing.SpeedParams:
-    """How fast the front travels on one segment."""
+def speed_model(config: RuptureConfig, name: str, mesh: Any) -> timing.SpeedParams:
+    """How fast the front travels on one segment.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        What the earthquake is.
+    name : str
+        Which segment.
+    mesh : Any
+        Its chart, read only by ``source.dip_of`` -- which asks a lattice and a
+        triangulation the same question, ``strike_dip_deg()``.
+
+    Returns
+    -------
+    timing.SpeedParams
+    """
     source = config.source
     return timing.SpeedParams(
         velocity_fraction=config.field.velocity_fraction,
         average_dip_deg=source.dip_of(name, mesh),
         average_rake_deg=source.rake_of(name),
-        shallow=_ramp(config.timing.shallow_speed_ramp or config.timing.shallow_ramp),
-        deep=_ramp(config.timing.deep_speed_ramp or config.timing.deep_ramp),
+        shallow=depth_ramp(
+            config.timing.shallow_speed_ramp or config.timing.shallow_ramp
+        ),
+        deep=depth_ramp(config.timing.deep_speed_ramp or config.timing.deep_ramp),
         shallow_factor=config.timing.shallow_speed_factor,
         deep_factor=config.timing.deep_speed_factor,
     )
 
 
-def _jump_delay(config: RuptureConfig) -> propagation.JumpDelay:
+def jump_model(config: RuptureConfig) -> propagation.JumpDelay:
     """How long the front takes to cross from one segment to the next.
 
     The gap is on neither fault, so neither segment's own *sampled* materials describe
     the rock in it -- the shared velocity model does, read at the depth the front
     leaves from. One delay serves every edge of the tree.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        What the earthquake is.
+
+    Returns
+    -------
+    propagation.JumpDelay
     """
     return propagation.DistanceOverVelocity(
         np.asarray(config.velocity_model.bottom_depth_km),
@@ -588,20 +626,72 @@ def _jump_delay(config: RuptureConfig) -> propagation.JumpDelay:
     )
 
 
-def _ramp(config_ramp: RampConfig) -> stages.DepthRamp:
+def depth_ramp(config_ramp: RampConfig) -> stages.DepthRamp:
+    """One config ramp as the depth ramp three stages read.
+
+    Parameters
+    ----------
+    config_ramp : RampConfig
+        A centre and a half width, in kilometres.
+
+    Returns
+    -------
+    stages.DepthRamp
+    """
     return stages.DepthRamp(config_ramp.centre_km, config_ramp.half_width_km)
 
 
-def _rise_time_params(config: RuptureConfig, average_s: float) -> stages.RiseTimeParams:
+def pulse_model(config: RuptureConfig) -> pulses.PulseParams:
+    """How every subfault's slip-rate pulse is shaped and sampled.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        What the earthquake is.
+
+    Returns
+    -------
+    pulses.PulseParams
+
+    Raises
+    ------
+    ValueError
+        For a slip-rate shape the rewrite removed, named.
+    """
+    return pulses.PulseParams(
+        shape=pulses.from_stype(config.timing.slip_rate_shape or "OliuP2"),
+        shallow_ramp=depth_ramp(config.timing.beta_shallow_ramp),
+        mid_ramp=depth_ramp(config.timing.beta_mid_ramp),
+        beta_shallow=config.timing.beta_shallow,
+        beta_mid=config.timing.beta_mid,
+        beta_deep=config.timing.beta_deep,
+        sample_interval_s=config.timing.sample_interval_s,
+    )
+
+
+def rise_time_model(config: RuptureConfig, average_s: float) -> stages.RiseTimeParams:
+    """How long each subfault slips for, and how that follows slip and depth.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        What the earthquake is.
+    average_s : float
+        The fault-wide mean rise time, from the moment.
+
+    Returns
+    -------
+    stages.RiseTimeParams
+    """
     timing_config = config.timing
     return stages.RiseTimeParams(
         average_s=average_s,
         correlation=timing_config.rise_time_correlation,
         sigma=timing_config.rise_time_sigma,
         slip_exponent=timing_config.slip_exponent,
-        shallow_blend=_ramp(timing_config.rise_time_blend),
-        shallow_stretch=_ramp(timing_config.shallow_ramp),
-        deep_stretch=_ramp(timing_config.deep_ramp),
+        shallow_blend=depth_ramp(timing_config.rise_time_blend),
+        shallow_stretch=depth_ramp(timing_config.shallow_ramp),
+        deep_stretch=depth_ramp(timing_config.deep_ramp),
         shallow_factor=timing_config.shallow_rise_factor,
         deep_factor=timing_config.deep_rise_factor,
     )
@@ -613,12 +703,18 @@ __all__ = [
     "causality_tree",
     "charts_for",
     "constant_fields",
+    "depth_ramp",
     "draw_fields",
     "generate",
+    "jump_model",
     "named",
+    "perturbation_model",
     "propagate",
+    "pulse_model",
+    "rise_time_model",
     "scale_moment",
     "segments_of",
     "solve_onsets",
+    "speed_model",
     "synthesise_pulses",
 ]
