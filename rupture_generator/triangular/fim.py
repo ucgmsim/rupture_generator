@@ -253,6 +253,25 @@ at one ring the boundary is a hexagon rather than a circle, and by six the
 constant-slowness error of :data:`SEED_SLOWNESS_BUDGET_S` has taken over. The point of
 deriving ``r0`` rather than configuring it is not that the choice does not matter, but
 that both edges of the window it sits in are visible.
+
+**A ring count is a physical length only if the mesh has one**, and that is a real
+condition rather than a formality. Measured over 200 seed positions on Hikurangi:
+
+    ================  ============  =====================  ==================
+    mesh              edge spread   ``r0`` across seeds    over the slowness
+                                                            budget
+    ================  ============  =====================  ==================
+    CFM as shipped    4608x         **9.3x** (4.4-41 km)   **164 of 200**
+    built at 800 m    1.9x          1.5x (2.9-4.3 km)      7 of 200
+    built at 400 m    1.9x          1.3x (1.7-2.2 km)      **0 of 200**
+    ================  ============  =====================  ==================
+
+On a mesh built by :func:`~rupture_generator.triangular.mesh.remesh` the derivation holds
+and ``r0`` is a fixed physical radius to within 30%. On the raw CFM triangulation it is
+not: three rings is 4.4 km in one place and 41 km in another, and the constant-slowness
+assumption fails at 82% of seed positions. That is a statement about which mesh to solve
+on, not an argument for making ``r0`` configurable -- and it is *detected* rather than
+assumed, because :class:`SeedReport` measures it and :class:`DegradedSeed` says so.
 """
 
 SEED_SLOWNESS_BUDGET_S = 0.05
@@ -338,6 +357,53 @@ is noise; a mesh carrying one is refused by name rather than solved around.
 """
 
 
+NUMPY = "numpy"
+"""The reference implementation: the batched pass in this module.
+
+The default everywhere, and the oracle `crates/kernels/tests/fim_contract.rs` and
+:func:`test_the_kernel_reproduces_the_reference` hold the Rust kernel to. Slower by 45x
+to 70x, and kept for exactly that reason -- a reference that is the same code as the
+thing it checks is not a reference, which `DEFECTS.md` 17 and 18 both are.
+"""
+
+KERNEL = "kernel"
+"""`crates/kernels/src/fim.rs`: the same method, Gauss-Seidel, optionally threaded.
+
+**66x to 92x faster, and agreeing with this module to 4e-12 s.** Measured on Hikurangi
+meshes built by :func:`~rupture_generator.triangular.mesh.remesh`, which is what
+production uses:
+
+    =========  ==========  ==========  ==========  ==========
+    spacing    vertices    reference   kernel      agreement
+    =========  ==========  ==========  ==========  ==========
+    3200 m         17,204     1.317 s     0.019 s   3.8e-12 s
+    1600 m         68,704     5.651 s     0.085 s   9.1e-12 s
+    800 m         275,049    25.006 s     0.354 s   1.2e-11 s
+    400 m       1,100,240   141.187 s     1.535 s   2.4e-11 s
+    200 m       4,400,971           --     5.670 s          --
+    =========  ==========  ==========  ==========  ==========
+
+Two differences of substance, both measured and both documented in the Rust module:
+
+- It runs Fu et al.'s Algorithm 2.1 as written -- in place, each update visible to the
+  next vertex -- where this module runs a batched pass. Same fixed point; on a
+  well-shaped mesh both are near-linear in the vertex count, and the 70x is interpreter
+  and allocator overhead. On a *badly* shaped one the batched pass degrades to about
+  ``V**1.5`` and the kernel does not.
+- It sweeps again until no vertex would move, which Algorithm 2.1 does not give on its
+  own: the paper's removal condition takes a vertex off the list when its own value stops
+  moving, and two adjacent vertices can both stop moving in one visit while each still
+  owes the other an update. **This module inherits that defect** -- see the note on
+  :func:`solve_from_boundary` -- and the kernel does not.
+
+Reach for it above about 100,000 vertices, which is where this module starts to cost
+more than the answer is worth.
+"""
+
+BACKENDS = (NUMPY, KERNEL)
+"""The two implementations, by name."""
+
+
 class DegradedSeed(UserWarning):
     """The analytic ball's assumptions do not hold as well as they should."""
 
@@ -385,9 +451,19 @@ class SeedReport:
         How many unseeded vertices touch it -- the polygon the front actually leaves
         from.
     boundary_radius_spread : float
-        ``(max r - min r) / r0`` over those boundary vertices: how far the seeded
-        boundary is from being the circle it is meant to be. The *lower* bound on
-        ``r0`` in measured form; see :data:`SEED_RING_DEPTH`.
+        ``(max r - min r) / r0`` over those boundary vertices.
+
+        **A weak discriminator, and that is worth knowing rather than discovering.** The
+        first unseeded ring spans ``r0`` to ``r0 + h``, so on a mesh of uniform spacing
+        this is about ``h / r0``, which :data:`SEED_RING_DEPTH` fixes at roughly ``1/3``
+        by construction -- measured 0.28 to 0.33 on regular lattices *and* 0.33 on the
+        raw CFM Hikurangi interface, whose edges span a factor of 4608. It reports that
+        the ring exists and is one cell thick; it does not report whether the mesh is
+        uniform enough for the ring to be a circle. What does is
+        :attr:`slowness_error_s`, which on the same CFM mesh exceeds its budget for 164 of
+        200 seed positions, and the spread of :attr:`radius_km` itself across seeds --
+        9.3x on the raw CFM mesh against a uniform value on one built by
+        :func:`~rupture_generator.triangular.mesh.remesh`.
     slowness_spread : float
         ``max|S - S0| / S0`` over the faces the ball covers.
     slowness_error_s : float
@@ -1056,6 +1132,9 @@ def solve_from_boundary(
     slowness_s_per_km: FloatArray,
     boundary_vertices: IntArray,
     boundary_times_s: FloatArray,
+    *,
+    backend: str = NUMPY,
+    threads: int = 1,
 ) -> FloatArray:
     """meshFIM proper: first arrivals from an arbitrary Dirichlet boundary condition.
 
@@ -1081,6 +1160,14 @@ def solve_from_boundary(
         Which vertices are held fixed.
     boundary_times_s : FloatArray
         Their arrivals, in seconds. Same length as ``boundary_vertices``.
+    backend : str, optional
+        :data:`NUMPY`, the reference, or :data:`KERNEL`, the Rust one. Defaults to the
+        reference so that nothing that already calls this function changes answer.
+    threads : int, optional
+        Workers, for :data:`KERNEL` only. ``1`` is the sequential Gauss-Seidel path and
+        the only one whose answer is bit-reproducible; ``0`` takes one per core. Within a
+        single solve threading buys 1.6x on eight cores and costs about 1e-3 s of
+        reproducibility, so the default is one.
 
     Returns
     -------
@@ -1118,7 +1205,46 @@ def solve_from_boundary(
             "which is not a time"
         )
 
+    if backend not in BACKENDS:
+        raise ValueError(
+            f"{backend!r} is not a backend; the two are {NUMPY!r} and {KERNEL!r}"
+        )
+    if backend == KERNEL:
+        return _kernel_solve(
+            positions, connectivity, slowness, [(held, held_s)], threads
+        )
     times_s, _ = _solve_held(positions, connectivity, slowness, held, held_s)
+    return times_s
+
+
+def _kernel_solve(
+    positions: FloatArray,
+    connectivity: IntArray,
+    slowness: FloatArray,
+    boundaries: list[tuple[IntArray, FloatArray]],
+    threads: int,
+) -> FloatArray:
+    """Hand one or more boundaries to `crates/kernels/src/fim.rs`.
+
+    The one seam. Arrays are made contiguous and typed here rather than at each call
+    site, because `numpy`'s ``as_slice`` refuses a strided view and the failure would
+    surface as a type error a long way from the transpose that caused it.
+    """
+    from rupture_generator import _kernels
+
+    times_s, _passes, _visits, _unsplit = _kernels.fim_solve(
+        np.ascontiguousarray(positions, dtype=np.float64),
+        np.ascontiguousarray(connectivity, dtype=np.int64),
+        np.ascontiguousarray(slowness, dtype=np.float64),
+        [
+            (
+                np.ascontiguousarray(held, dtype=np.int64),
+                np.ascontiguousarray(held_s, dtype=np.float64),
+            )
+            for held, held_s in boundaries
+        ],
+        threads,
+    )
     return times_s
 
 
@@ -1219,6 +1345,9 @@ def solve(
     faces: IntArray,
     slowness_s_per_km: FloatArray,
     seeds: Sequence[Seed],
+    *,
+    backend: str = NUMPY,
+    threads: int = 1,
 ) -> FloatArray:
     """First-arrival times at every vertex, from every seed.
 
@@ -1236,6 +1365,11 @@ def solve(
         ``(F,)`` piecewise constant per triangle.
     seeds : Sequence of Seed
         Where the front starts, and when.
+    backend : str, optional
+        :data:`NUMPY` or :data:`KERNEL`; see :func:`solve_from_boundary`.
+    threads : int, optional
+        Workers, for :data:`KERNEL` only. Across seeds the answer is bit-identical at any
+        thread count, so a multi-segment rupture can take all the cores it likes.
 
     Returns
     -------
@@ -1254,7 +1388,9 @@ def solve(
         If a ball's constant-slowness assumption costs more than
         :data:`SEED_SLOWNESS_BUDGET_S`.
     """
-    return solve_with_report(vertices_km, faces, slowness_s_per_km, seeds)[0]
+    return solve_with_report(
+        vertices_km, faces, slowness_s_per_km, seeds, backend=backend, threads=threads
+    )[0]
 
 
 def solve_with_report(
@@ -1262,6 +1398,9 @@ def solve_with_report(
     faces: IntArray,
     slowness_s_per_km: FloatArray,
     seeds: Sequence[Seed],
+    *,
+    backend: str = NUMPY,
+    threads: int = 1,
 ) -> tuple[FloatArray, tuple[SeedReport, ...]]:
     """:func:`solve`, also reporting what each seed's ball was and how well it held.
 
@@ -1280,6 +1419,10 @@ def solve_with_report(
         ``(F,)`` piecewise constant per triangle.
     seeds : Sequence of Seed
         Where the front starts, and when.
+    backend : str, optional
+        :data:`NUMPY` or :data:`KERNEL`; see :func:`solve_from_boundary`.
+    threads : int, optional
+        Workers, for :data:`KERNEL` only.
 
     Returns
     -------
@@ -1311,10 +1454,33 @@ def solve_with_report(
                 f"seed {order} starts at t = {seed.t0_s}, which is not a time"
             )
 
+    if backend not in BACKENDS:
+        raise ValueError(
+            f"{backend!r} is not a backend; the two are {NUMPY!r} and {KERNEL!r}"
+        )
+
     start, index = _adjacency(connectivity, positions.shape[0])
     combined_s = np.full(positions.shape[0], np.inf)
     reports: list[SeedReport] = []
-    for seed in seeds:
+    # **The ball is derived here whichever backend solves.** `r0`, its two bounds and the
+    # warning are policy, and `MESH.md` puts policy in Python; the kernel takes the
+    # boundary that falls out. So the two backends are compared on one boundary condition
+    # rather than on two derivations of it.
+    balls = [
+        _ball(positions, connectivity, slowness, start, index, seed) for seed in seeds
+    ]
+    kernel_s = (
+        _kernel_solve(
+            positions,
+            connectivity,
+            slowness,
+            [(ball[0], ball[1]) for ball in balls],
+            threads,
+        )
+        if backend == KERNEL
+        else None
+    )
+    for seed, ball in zip(seeds, balls, strict=True):
         (
             held,
             held_s,
@@ -1324,11 +1490,18 @@ def solve_with_report(
             slowness_spread,
             slowness_error_s,
             ring_size,
-        ) = _ball(positions, connectivity, slowness, start, index, seed)
-        times_s, (sweeps, unsplit) = _solve_held(
-            positions, connectivity, slowness, held, held_s
-        )
-        np.fmin(combined_s, times_s, out=combined_s)
+        ) = ball
+        if kernel_s is None:
+            times_s, (sweeps, unsplit) = _solve_held(
+                positions, connectivity, slowness, held, held_s
+            )
+            np.fmin(combined_s, times_s, out=combined_s)
+        else:
+            # One kernel call already combined every seed, so the counts are the whole
+            # solve's rather than this seed's and are reported as zero rather than as a
+            # number that would mean something different from the numpy path's.
+            combined_s = kernel_s
+            sweeps, unsplit = 0, 0
         reports.append(
             SeedReport(
                 vertex=seed.vertex,
@@ -1407,7 +1580,10 @@ def face_arrivals(faces: IntArray, vertex_times_s: FloatArray) -> FloatArray:
 
 
 __all__ = [
+    "BACKENDS",
+    "KERNEL",
     "MAX_SWEEP_FACTOR",
+    "NUMPY",
     "SEED_RING_DEPTH",
     "SEED_SLOWNESS_BUDGET_S",
     "SETTLED_TOLERANCE_S",

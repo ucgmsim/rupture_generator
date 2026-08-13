@@ -1303,6 +1303,148 @@ def test_the_sweep_count_stays_well_inside_its_ceiling(name: str) -> None:
 
 
 # ============================================================================
+# The Rust kernel against this module, which is its oracle
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "name", ["lattice", "alternating lattice", "scattered", "warped"]
+)
+def test_the_kernel_reproduces_the_reference(name: str) -> None:
+    """`crates/kernels/src/fim.rs` against the batched pass, on the same boundary.
+
+    The kernel exists because this module cannot reach production resolution: it is 45x
+    to 70x faster and, more importantly, `O(N)` where this is `O(N^1.5)`. That only means
+    anything if the two agree, so this is the test the kernel is built against.
+
+    **Measured: 4e-16 to 9e-16 s on all four meshes**, including the warped patch and the
+    Delaunay one, which between them exercise obtuse corners and the virtual-edge
+    unfolding. That is one or two units in the last place of a 10 s traveltime. The two run
+    different orderings -- a batched pass here, Fu et al.'s in-place Algorithm 2.1 there --
+    so agreeing at round-off is a statement about the fixed point rather than about the
+    arithmetic happening to line up.
+    """
+    vertices, faces = MESHES[name]
+    slowness = structured(vertices, faces)
+    source = nearest(vertices, (5.0, 0.0, 6.0))
+    distance_km = np.linalg.norm(vertices - vertices[source], axis=1)
+    held = np.flatnonzero(distance_km <= 3.0)
+    held_s = 0.4 * distance_km[held]
+
+    reference_s = fim.solve_from_boundary(vertices, faces, slowness, held, held_s)
+    kernel_s = fim.solve_from_boundary(
+        vertices, faces, slowness, held, held_s, backend=fim.KERNEL
+    )
+    worst_s = float(np.abs(kernel_s - reference_s).max())
+    print(f"\n{name}: worst |kernel - reference| = {worst_s:.3e} s")
+    assert worst_s < 1e-9
+
+
+@pytest.mark.slow
+def test_the_kernel_reproduces_both_convergence_slopes() -> None:
+    """The kernel inherits the method's accuracy, degraded slope and all.
+
+    The two gates of `MESH.md`'s Phase 0, re-measured through the Rust path: a point
+    boundary must still fail to be first-order accurate, and a circular one must still
+    recover slope 1.0. A kernel that quietly fixed the point-source failure would not be
+    the same method, and one that quietly broke the circular case would not be worth
+    having.
+
+    Measured, against 0.731 and 1.028 for the reference: **0.731 and 1.028**. The same
+    numbers, because the two converge to the same fixed point.
+    """
+    slopes = {}
+    for label, boundary in (
+        ("point", lambda source, distance_km: np.array([source])),
+        (
+            "circular",
+            lambda source, distance_km: np.flatnonzero(distance_km <= CIRCLE_KM),
+        ),
+    ):
+        extent_km, slowness_s_per_km = 16.0, 0.4
+        spacings, errors = [], []
+        for cells in REFINEMENTS:
+            vertices, faces = lattice(cells, extent_km)
+            source = nearest(vertices, (extent_km / 2, 0.0, extent_km / 2))
+            distance_km = np.linalg.norm(vertices - vertices[source], axis=1)
+            held = boundary(source, distance_km)
+            times_s = fim.solve_from_boundary(
+                vertices,
+                faces,
+                uniform(faces, slowness_s_per_km),
+                held,
+                slowness_s_per_km * distance_km[held],
+                backend=fim.KERNEL,
+            )
+            outside = distance_km > CIRCLE_KM
+            error_s = times_s[outside] - slowness_s_per_km * distance_km[outside]
+            spacings.append(extent_km / (cells - 1))
+            errors.append(float(np.sqrt(np.mean(error_s**2))))
+        slopes[label] = _slope(errors, spacings)
+        print(f"\nkernel, {label} boundary: L2 slope {slopes[label]:.3f}")
+
+    assert 0.5 < slopes["point"] < 0.9, "the kernel lost the reported degradation"
+    assert 0.9 < slopes["circular"] < 1.15, "the kernel is not first order"
+
+
+def test_the_kernel_agrees_across_thread_counts_over_seeds() -> None:
+    """Threading across seeds is exact; within one solve it is not, and both are bounded.
+
+    Two separate claims, measured on the CFM's Hikurangi interface in
+    `crates/kernels/src/fim.rs` and asserted here on a mesh a test can afford:
+
+    - **Across seeds, bit-identical at any thread count.** Each seed's solve owns its own
+      array, so there is nothing to race over. 2.5x on eight cores.
+    - **Within one solve, not bit-identical**, because asynchronous relaxation lands on
+      whichever fixed point thread timing takes it to, and the update has more than one at
+      the 1e-4 level. Measured spread on a million-vertex mesh: 9.1e-4 s, which is 55x
+      under the 0.05 s onset bound and 390x under the 0.35 s the model applies on purpose.
+      Worth 1.6x, and `threads=1` is what to use when reproducibility matters more.
+    """
+    vertices, faces = lattice(65, 16.0)
+    slowness = structured(vertices, faces)
+    seeds = [
+        fim.Seed(nearest(vertices, (3.0, 0.0, 3.0)), 0.0),
+        fim.Seed(nearest(vertices, (13.0, 0.0, 12.0)), 0.9),
+        fim.Seed(nearest(vertices, (8.0, 0.0, 1.0)), 0.4),
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", fim.DegradedSeed)
+        sequential = fim.solve(
+            vertices, faces, slowness, seeds, backend=fim.KERNEL, threads=1
+        )
+        for threads in (2, 4):
+            threaded = fim.solve(
+                vertices, faces, slowness, seeds, backend=fim.KERNEL, threads=threads
+            )
+            assert threaded.tobytes() == sequential.tobytes(), (
+                f"{threads} threads moved a multi-seed answer"
+            )
+        alone = [fim.Seed(seeds[0].vertex, 0.0)]
+        one = fim.solve(vertices, faces, slowness, alone, backend=fim.KERNEL, threads=1)
+        many = fim.solve(
+            vertices, faces, slowness, alone, backend=fim.KERNEL, threads=4
+        )
+    spread_s = float(np.abs(many - one).max())
+    print(f"\nwithin one solve, 4 threads move the answer by {spread_s:.3e} s")
+    assert spread_s < 1.0e-2
+
+
+def test_an_unknown_backend_is_refused_by_name() -> None:
+    """A misspelt backend names the two that exist rather than silently picking one."""
+    vertices, faces = MESHES["lattice"]
+    with pytest.raises(ValueError, match=r"'cuda' is not a backend.*'numpy'.*'kernel'"):
+        fim.solve_from_boundary(
+            vertices,
+            faces,
+            uniform(faces),
+            np.array([0]),
+            np.array([0.0]),
+            backend="cuda",
+        )
+
+
+# ============================================================================
 # Gate 4: the jump cell, on the shipped geometries
 # ============================================================================
 
