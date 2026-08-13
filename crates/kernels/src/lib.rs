@@ -18,7 +18,6 @@
 mod counts;
 pub mod eikonal;
 pub mod field;
-pub mod fim;
 pub mod pulse;
 
 use numpy::ndarray::Array2;
@@ -75,68 +74,6 @@ fn eikonal_solve<'py>(
     let times =
         Array2::from_shape_vec(extent, times).expect("the solver returns one time per input cell");
     Ok(times.into_pyarray(py))
-}
-
-/// First-arrival times over a triangulated surface, by the fast iterative method.
-///
-/// `vertices_km` is `(V, 3)` in a projected CRS with depth positive down; `faces` is
-/// `(V, 3)` vertex indices; `slowness_s_per_km` is one value per face — the triangle is
-/// the medium, per Fu et al. §2.1. `boundaries` is one already-chosen Dirichlet
-/// condition per seed, `(vertex_indices, arrival_times_s)`; the result is the pointwise
-/// minimum over them, which is what first arrival from several sources means.
-///
-/// The **analytic geodesic-ball boundary condition and the derivation of its radius stay
-/// in Python** (`rupture_generator/triangular/fim.py`), which is where the two bounds
-/// that pin it are reported. This kernel is the hot loop and nothing else.
-///
-/// `threads` is how many workers to use; `0` means one per core and `1` is the
-/// sequential Gauss–Seidel reference. Returns `(times_s, passes, vertex_updates,
-/// unsplit_obtuse_wedges)` — the three counts are the evidence for the cost claim
-/// rather than diagnostics, and `crates/kernels/src/fim.rs` says why.
-#[pyfunction]
-#[pyo3(signature = (vertices_km, faces, slowness_s_per_km, boundaries, threads=0))]
-fn fim_solve<'py>(
-    py: Python<'py>,
-    vertices_km: PyReadonlyArray2<'py, f64>,
-    faces: PyReadonlyArray2<'py, i64>,
-    slowness_s_per_km: PyReadonlyArray1<'py, f64>,
-    boundaries: Vec<(PyReadonlyArray1<'py, i64>, PyReadonlyArray1<'py, f64>)>,
-    threads: usize,
-) -> PyResult<(Bound<'py, PyArray1<f64>>, usize, usize, usize)> {
-    if vertices_km.shape()[1] != 3 {
-        return Err(PyValueError::new_err(format!(
-            "vertices_km has {} columns; a surface in space needs (V, 3) positions",
-            vertices_km.shape()[1]
-        )));
-    }
-    if faces.shape()[1] != 3 {
-        return Err(PyValueError::new_err(format!(
-            "faces has {} columns; this solver is triangular, so every face needs \
-             exactly 3 corners",
-            faces.shape()[1]
-        )));
-    }
-    let vertices = vertices_km.as_slice()?;
-    let connectivity = faces.as_slice()?;
-    let slowness = slowness_s_per_km.as_slice()?;
-    let held: Vec<(&[i64], &[f64])> = boundaries
-        .iter()
-        .map(|(at, times)| Ok((at.as_slice()?, times.as_slice()?)))
-        .collect::<PyResult<_>>()?;
-    let held: Vec<fim::Boundary<'_>> = held
-        .iter()
-        .map(|&(vertices, times_s)| fim::Boundary { vertices, times_s })
-        .collect();
-
-    let (times, report) = py
-        .detach(|| fim::solve(vertices, connectivity, slowness, &held, threads))
-        .or_else(value_error)?;
-    Ok((
-        times.into_pyarray(py),
-        report.passes,
-        report.vertex_updates,
-        report.unsplit_obtuse,
-    ))
 }
 
 /// Slip-rate pulses for every subfault, as CSR rows.
@@ -199,7 +136,6 @@ fn synthesise_pulses<'py>(
 #[pyo3(name = "_kernels")]
 fn kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eikonal_solve, m)?)?;
-    m.add_function(wrap_pyfunction!(fim_solve, m)?)?;
     m.add_function(wrap_pyfunction!(synthesise_pulses, m)?)?;
     m.add_function(wrap_pyfunction!(field::von_karman_draw, m)?)?;
     Ok(())

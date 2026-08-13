@@ -54,13 +54,19 @@ type FieldSampler = Callable[..., FloatArray]
 
 Called as ``sampler(mesh, covariance, rng)``, which is
 :func:`~rupture_generator.sampling.von_karman_field`'s own signature -- so the default
-is that function itself and there is no adapter to keep in step. It is a parameter
-rather than an import because the *sampler* is what a mesh's shape decides and the
-field models are not: circulant embedding is a lattice method by construction
-(`sampling.py`), while a triangulated segment draws the same covariance from the
-Whittle-Matern SPDE (:mod:`rupture_generator.triangular.spde`). Injecting the draw is
-what lets one rise-time model, one rake model and one perturbation model serve both,
-instead of two transcriptions free to drift.
+is that function itself and there is no adapter to keep in step.
+
+**There is one sampler in this package**: circulant embedding
+(:mod:`rupture_generator.sampling`). What this parameter carries is not a *choice* of
+sampler but the shape of the thing it draws on, which is the one thing the mesh
+container decides. A structured chart's cells are already the grid, so it takes the
+default; a triangulated segment draws on a lattice over its own parameter plane and
+projects onto its faces, so it passes
+:func:`~rupture_generator.triangular.pipeline.field_sampler`'s closure, which returns
+one value per face instead of a ``(i, j)`` array. That difference in *return shape* is
+why the two cannot be one call, and passing the draw in is what lets one rise-time
+model, one rake model and one perturbation model serve both containers instead of two
+transcriptions free to drift.
 
 Deliberately spelled ``Callable[..., FloatArray]`` rather than a protocol: the first
 argument is the chart, which the stage passes through and never inspects, and a

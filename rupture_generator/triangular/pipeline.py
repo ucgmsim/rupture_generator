@@ -1,9 +1,10 @@
 """The pipeline on a triangulated segment: the same stages, on faces instead of cells.
 
 `pipeline.py` runs the stage order for a quad lattice; this runs the same order for a
-:class:`~rupture_generator.triangular.mesh.TriangleMesh`. It exists as a second module
-rather than as a branch in the first because `MESH.md`'s phase 4 is what deletes the
-quad path, and until then the two have to be green at the same time.
+:class:`~rupture_generator.triangular.mesh.TriangleMesh`. It is a second module rather
+than a branch in the first because the two mesh containers are different types and both
+have to stay green; what the two paths no longer differ in is either *solver*, and on a
+planar fault they now draw the same random field -- see below.
 
 **What is shared, and why that is most of it.** A stage that is elementwise over
 subfaults does not care whether a subfault is a cell of a lattice or a triangle of a
@@ -20,29 +21,26 @@ because the sampler is the one thing a mesh's shape decides, and
 :func:`~rupture_generator.propagation.causal_jump` asks the chart where its fault runs
 out rather than deriving it from a lattice shape.
 
-**What is genuinely different is written here**, and it is four things:
+**The solvers are the structured track's own**, run on a lattice over the segment's
+parameter plane and projected onto its faces --
+:mod:`~rupture_generator.triangular.lattice` is where that lives and where the
+measurements for it are. So the difference between the two tracks is now the *mesh
+container* and nothing else: one wavefront solver, one field sampler, one of each model.
+
+**What is genuinely different is written here**, and it is three things:
 
 - :func:`taper_edges`. The lattice taper counts whole cells from an index end; there is
   no index end here, so the same fractions become distances to the *labelled* boundary
   in the parameter plane. Separability survives -- ``u`` and ``v`` are independent axes
   -- and so does the refusal when two ramps overlap.
-- :func:`travel_times`. `timing.travel_times` reads a spacing and sweeps a Cartesian
-  stencil; this hands the vertices and faces to
-  :func:`~rupture_generator.triangular.fim.solve`, whose slowness is per face and whose
-  answer is per vertex, and carries the answer back to faces through
-  :func:`~rupture_generator.triangular.fim.face_arrivals`.
-- :func:`draw_fields`, which assembles **one** :class:`MaternOperator` per segment and
-  draws the four fields from it. The circulant sampler's cost is the embedding and this
-  one's is the solver setup, so in both cases the geometry is paid for once. Which
-  solver, and whether the domain is padded, are :func:`matern_sampler`'s to decide and
-  its docstring carries the measurements.
-- The seed seam. A lattice seeds a *cell*; the solver here seeds *vertices*, and a
-  face's arrival is the mean of its three corners. Seeding one corner of the hypocentre
-  face would leave that face arriving ``~0.4 h S`` late -- 0.2 s at a 1 km cut, in the
-  one quantity `MESH.md` says the model's own perturbation gives no cover for -- so
-  :func:`face_seeds` seeds all three corners of the subfault the hypocentre is in. That
-  is the faithful port of "seed the cell": the structured solver's seed cell is at
-  ``t = 0`` across the whole cell too.
+- :func:`travel_times`, which reads the mesh's **true** centre depths for the slowness
+  and then hands them to the sweep. That substitution is what keeps a planar solver
+  honest on a curved fault, and
+  :func:`~rupture_generator.triangular.lattice.travel_times` carries the numbers.
+- The seed seam. A lattice seeds a *cell*, so the hypocentre's seed is the cell its own
+  face centre falls in, and every face in that cell arrives at exactly ``t0`` -- which
+  is what makes the pinned hypocentre onset exact, since projection is a gather and not
+  an interpolation.
 
 **Derived geometry is hoisted, deliberately.** The container stores nothing derived --
 `mesh.py`'s docstring argues that a derived quantity written down is a second
@@ -72,7 +70,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -98,16 +95,11 @@ from rupture_generator.pipeline import (
     speed_model,
 )
 from rupture_generator.realisation import Realisation
-from rupture_generator.triangular import fim, spde
-from rupture_generator.triangular.mesh import (
-    TriangleMesh,
-    build_surface,
-    is_paddable,
-    padded_builder,
-)
+from rupture_generator.triangular import lattice as lattice_module
+from rupture_generator.triangular.mesh import TriangleMesh, build_surface
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
     from rupture_generator.config.geometry import GeometryConfig
     from rupture_generator.sampling import VonKarmanFilterParameters
@@ -185,11 +177,6 @@ kernel that could invalidate it is ``SPIKE_SAMPLES`` growing.
 """
 
 
-class StandInField(UserWarning):
-    """The field on this segment is not a von Karman field at all. See
-    :func:`white_noise_stand_in`."""
-
-
 # ============================================================================
 # The hoisted geometry
 # ============================================================================
@@ -217,7 +204,13 @@ class SegmentGeometry:
     centres_km : FloatArray
         ``(F, 3)`` face centres.
     areas_km2 : FloatArray
-        ``(F,)`` true surface areas.
+        ``(F,)`` **true** surface areas -- the moment fold's, so there is no area
+        approximation anywhere in this pipeline to correct for.
+    lattice : lattice_module.ParameterLattice
+        The regular grid over this segment's parameter rectangle that both the sampler
+        and the wavefront run on. Derived, so it is hoisted here with the rest: the two
+        stages that use it are in different passes over the segments and would
+        otherwise build it twice.
     """
 
     vertices_km: FloatArray
@@ -225,6 +218,7 @@ class SegmentGeometry:
     parameters_km: FloatArray
     centres_km: FloatArray
     areas_km2: FloatArray
+    lattice: lattice_module.ParameterLattice
 
     @classmethod
     def of(cls, mesh: TriangleMesh) -> SegmentGeometry:
@@ -239,12 +233,15 @@ class SegmentGeometry:
         -------
         SegmentGeometry
         """
+        parameters_km = mesh.parameters_km()
+        faces = mesh.faces()
         return cls(
             vertices_km=mesh.vertices_km(),
-            faces=mesh.faces(),
-            parameters_km=mesh.parameters_km(),
+            faces=faces,
+            parameters_km=parameters_km,
             centres_km=mesh.centres(),
             areas_km2=mesh.areas_km2(),
+            lattice=lattice_module.ParameterLattice.of(parameters_km, faces),
         )
 
     @property
@@ -261,83 +258,6 @@ class SegmentGeometry:
 # ============================================================================
 # The segments
 # ============================================================================
-
-
-def refined(mesh: TriangleMesh, levels: int) -> tuple[TriangleMesh, list[spde.Level]]:
-    """A segment refined one-to-four, and the multigrid hierarchy underneath it.
-
-    **The production route to a fine mesh**, and the reason it is a route rather than
-    a call to :func:`~rupture_generator.triangular.mesh.remesh` at the target spacing.
-    The sampler's cost is set by two things that pull against each other: element
-    *shape*, which is what the V-cycle's iteration count reads, and whether a
-    hierarchy exists at all. Remeshing at the target gives the shape but no hierarchy
-    -- a lattice cut at 400 m is not a subdivision of anything, so
-    :class:`~rupture_generator.triangular.spde.MaternOperator` has to factorise, which
-    at a million vertices it cannot. Subdividing the modeller's own triangulation
-    gives a hierarchy but keeps that triangulation's shape, and on the CFM Hikurangi
-    interface that is an area spread of 4.28e+04 and 26 times the iterations.
-
-    Doing both -- remesh coarse, then subdivide up -- gives both, because
-    subdivision splits a triangle into four *similar* ones: the shape of the built
-    lattice is preserved at every level, and every level is a rung of the hierarchy by
-    construction. Measured on the curved CFM Hikurangi interface, remeshed at 3.44 km
-    and refined three times: 936,225 vertices at a 440 m median edge, 3-D area max/min
-    **1.51**, and a draw in 11.8 s against 549 s for the direct factorisation at a
-    third of that size. The field is healthy where the subdivided-source one is not --
-    after :func:`~rupture_generator.sampling.standardise` its median ``|f|`` is 0.6734
-    against the 0.6745 a standard normal gives, where subdividing the source crushes
-    the same statistic to 0.098.
-
-    So: subdivision preserving element shape is a liability on a bad mesh and a virtue
-    on a good one, and this is the good one.
-
-    What it costs against remeshing at the target directly is the **outline**. The
-    boundary staircase is resolved at the coarse spacing and stays there, since
-    refinement adds no new information about where the fault stops; at 3.44 km that is
-    a boundary within one coarse cell of the true one rather than one fine cell. The
-    fault is therefore slightly smaller than a directly-remeshed one, and the moment
-    fold closes on that area rather than around it.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The coarse segment, built at ``target spacing x 2 ** levels``.
-    levels : int
-        How many one-to-four refinements. Each quadruples the faces and roughly
-        quadruples the vertices, and halves the edge length.
-
-    Returns
-    -------
-    tuple
-        The refined segment, and its hierarchy **coarsest first** -- ``levels``
-        entries, whose last prolongation lands on the refined segment. Hand it to
-        :func:`generate` as ``hierarchies[name]``.
-
-    Raises
-    ------
-    ValueError
-        For a negative number of levels, or a refinement that folds in the frame --
-        which it cannot, since midpoints lie on the coarse faces, so this would be a
-        coarse mesh that was already inadmissible.
-    """
-    if levels < 0:
-        raise ValueError(f"a hierarchy of {levels} levels is not a hierarchy")
-
-    vertices_km = mesh.vertices_km()
-    faces = mesh.faces()
-    planes = mesh.planes()
-    hierarchy: list[spde.Level] = []
-    for _ in range(levels):
-        finer_vertices, finer_faces, prolongation = spde.subdivided(vertices_km, faces)
-        hierarchy.append((vertices_km, faces, prolongation))
-        vertices_km, faces = finer_vertices, finer_faces
-        # `subdivided` lays the four children out as four blocks over all the parent
-        # faces in order, so a child's provenance is its parent's, four times over.
-        planes = np.tile(planes, 4)
-
-    if not hierarchy:
-        return mesh, hierarchy
-    return mesh.with_triangulation(vertices_km, faces, planes), hierarchy
 
 
 def segments_of(geometry: GeometryConfig) -> Realisation:
@@ -593,248 +513,45 @@ def taper_edges(
 
 
 # ============================================================================
-# S4-S8 -- the samplers
+# S4-S8 -- the draw
 # ============================================================================
 
 
-def matern_sampler(
-    mesh: TriangleMesh,
-    geometry: SegmentGeometry,
-    covariance: VonKarmanFilterParameters,
-    coarser: Sequence[spde.Level] = (),
+def field_sampler(
+    lattice: lattice_module.ParameterLattice,
 ) -> stages.FieldSampler:
-    """The mesh-native sampler, as a draw the shared stages can take.
+    """This segment's draw, as the shared field stages take it.
 
-    One :class:`~rupture_generator.triangular.spde.MaternOperator` is assembled here
-    and every draw from it is a handful of sparse solves -- which is the counterpart of
-    the circulant sampler holding its embedding, and the reason this returns a closure
-    rather than a function that rebuilds per field. A segment draws four fields.
-
-    The returned draw ignores the covariance it is handed, because the operator was
-    built from it: the four stages of one segment all use ``source.covariance_of(name)``,
-    so there is one covariance per segment by construction, and a sampler that quietly
-    rebuilt for a second one would be the expensive thing happening invisibly. It is
-    checked rather than assumed.
-
-    **Which solver, and why the caller decides.** Given a hierarchy the shifted solves
-    are conjugate gradients preconditioned by a V-cycle, whose memory is linear in the
-    mesh; without one they are sparse factorisations, whose fill-in is not. At the
-    resolutions this track exists for that is the difference between reachable and not
-    -- 11.8 s a draw at 936 thousand vertices against 549 s at a third of that -- but a
-    hierarchy is a fact about *how the mesh was built* and cannot be recovered from the
-    mesh, so it arrives from :func:`refined` through :func:`generate` rather than being
-    guessed at here. Omitting it on a mesh small enough to factorise is not a mistake;
-    omitting it on a large one is slow rather than wrong.
-
-    **Whether the domain is padded is decided here, and by the segment's size.** The
-    SPDE's natural boundary condition reflects the covariance, and on a fault only a few
-    correlation lengths across the reflection *is* the field
-    (:func:`~rupture_generator.triangular.spde.boundary_folds` is the predicate and
-    carries the table). So a segment that folds is solved on a domain extended past it
-    and cropped back, which is the circulant sampler's own remedy. Measured on the
-    shipped ``kaikoura:0`` geometry, reading the marginal variance and the correlation at
-    one correlation length off the fault's centre:
-
-    ==========  =====================  ===============  ===============
-    magnitude   spans (strike x dip)   variance         correlation
-    ==========  =====================  ===============  ===============
-    Mw 7.0      3.97 x 2.34            1.504 -> 1.028   0.7035 -> 0.4964
-    Mw 7.5      2.23 x 1.60            2.861 -> 1.013   0.8764 -> 0.4975
-    Mw 8.0      1.25 x 1.09            6.889 -> 1.050   --
-    ==========  =====================  ===============  ===============
-
-    -- against a model whose variance is 1 and whose correlation at one length is
-    0.5005. Unpadded, an Mw 8.0 crustal segment's slip field has nearly seven times the
-    variance the model asks for.
-
-    A segment that does **not** fold is left alone, and that is a decision rather than an
-    economy: padding trades a folding error for the pad's own discretisation error, and
-    on ``kaikoura`` at the shipped magnitude -- 4.3 correlation lengths across, barely
-    folded -- the delivered correlation length went from 1.010 to 0.956 when it was
-    padded. The unpadded 1.010 was two errors cancelling; but 0.956 is no better a
-    number, and the fault does not need the pad.
-
-    Two cases fall back to the plain operator, and both say so through
-    :func:`~rupture_generator.triangular.spde.MaternOperator`'s own
-    ``DegradedCorrelation`` warning rather than silently. A segment fused across a bend
-    has no parameter lattice for a conforming pad to be built on
-    (:func:`~rupture_generator.triangular.mesh.is_paddable`), and a segment with a
-    multigrid hierarchy cannot be padded because the pad is not in the hierarchy -- which
-    is not a case production reaches, since a mesh large enough to need a hierarchy is a
-    fault far too large to fold.
+    A three-line adapter and nothing more: the stages are written against
+    :data:`~rupture_generator.stages.FieldSampler`, whose first argument is the chart
+    and which the stage never inspects, and what this segment draws from is its
+    parameter lattice rather than its chart. There is one implementation behind it --
+    :func:`~rupture_generator.triangular.lattice.draw_field` -- and it is not
+    selectable; the closure exists to bind the lattice, so that one embedding is built
+    per segment and all four of its fields come out of it, exactly as the structured
+    track's sampler holds one embedding per chart.
 
     Parameters
     ----------
-    mesh : TriangleMesh
-        The segment.
-    geometry : SegmentGeometry
-        Its hoisted geometry.
-    covariance : VonKarmanFilterParameters
-        The patch structure this segment's magnitude implies.
-    coarser : Sequence of spde.Level, optional
-        The multigrid hierarchy beneath this segment, coarsest first, from
-        :func:`refined`. Empty means factorise.
+    lattice : lattice_module.ParameterLattice
+        The segment's lattice, from its :class:`SegmentGeometry`.
 
     Returns
     -------
     stages.FieldSampler
-        Called as ``sampler(mesh, covariance, rng)``, returning one value per face.
+        Called as ``sampler(chart, covariance, rng)``, returning one value per face.
     """
-    padded = (
-        not coarser
-        and spde.boundary_folds(geometry.parameters_km, covariance)
-        and is_paddable(mesh)
-    )
-    if padded:
-        # The pad has to carry the covariance out to where the boundary now is, so its
-        # spacing is capped by the correlation length as well as by the fault's own --
-        # see `spde.PAD_RESOLUTION_LENGTHS`, and the measurement that put it there.
-        edges = mesh.edges()
-        parameters_km = geometry.parameters_km
-        fault_spacing_km = float(
-            np.median(
-                np.linalg.norm(
-                    parameters_km[edges[:, 0]] - parameters_km[edges[:, 1]], axis=-1
-                )
-            )
-        )
-        padding = spde.padded_operator(
-            padded_builder(
-                mesh,
-                pad_spacing_km=max(
-                    fault_spacing_km,
-                    spde.PAD_RESOLUTION_LENGTHS
-                    * min(
-                        covariance.correlation_length_strike_km,
-                        covariance.correlation_length_dip_km,
-                    ),
-                ),
-            ),
-            covariance,
-        )
-        one_field = padding.draw_on_faces
-    else:
-        operator = spde.MaternOperator(
-            geometry.vertices_km,
-            geometry.faces,
-            geometry.parameters_km,
-            covariance,
-            coarser=coarser,
-        )
-
-        def one_field(rng: np.random.Generator) -> FloatArray:
-            """One field, one value per face, on the fault's own domain."""
-            return spde.face_values(operator.draw(rng), geometry.faces)
 
     def draw(
         chart: object,
-        asked: VonKarmanFilterParameters,
+        covariance: VonKarmanFilterParameters,
         rng: np.random.Generator,
     ) -> FloatArray:
-        """One field of this segment's covariance, one value per face."""
+        """One field of this covariance, one value per face."""
         del chart
-        if asked != covariance:
-            raise ValueError(
-                f"this sampler was built for correlation lengths "
-                f"{covariance.correlation_length_strike_km:.4g} x "
-                f"{covariance.correlation_length_dip_km:.4g} km and is being asked for "
-                f"{asked.correlation_length_strike_km:.4g} x "
-                f"{asked.correlation_length_dip_km:.4g} km. One operator serves one "
-                "covariance; build a second sampler rather than reusing this one"
-            )
-        return one_field(rng)
+        return lattice_module.draw_field(lattice, covariance, rng)
 
     return draw
-
-
-def white_noise_stand_in(
-    mesh: TriangleMesh,
-    geometry: SegmentGeometry,
-    covariance: VonKarmanFilterParameters,
-    coarser: Sequence[spde.Level] = (),
-) -> stages.FieldSampler:
-    """**A stand-in, not a model**: independent noise per face, with no covariance.
-
-    Here for one purpose -- exercising the pipeline's plumbing at a resolution the SPDE
-    sampler cannot yet reach, because its direct sparse factorisation costs 392 s and
-    6.2 GB at 300 thousand vertices and the 400 m Hikurangi mesh has 1.19 million. It is
-    a **loud, explicit** stand-in: it warns on every construction, it is never selected
-    automatically, and :func:`generate` takes it only if a caller names it. A silent
-    fallback here would produce a rupture that looks entirely plausible and has no
-    asperities at all -- the slip field would be white noise wearing a slip
-    distribution's units.
-
-    Nothing about the taper, the moment, the wavefront or the SRF is affected by using
-    it. What is destroyed is the spatial structure of every drawn field, which is most
-    of what the model *is*.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment, unread.
-    geometry : SegmentGeometry
-        Its hoisted geometry, for the face count.
-    covariance : VonKarmanFilterParameters
-        Unread, and that is the point.
-    coarser : Sequence of spde.Level, optional
-        Unread: there is no operator here to precondition. Taken so that this is
-        interchangeable with :func:`matern_sampler` wherever a
-        :data:`SamplerFactory` is wanted.
-
-    Returns
-    -------
-    stages.FieldSampler
-
-    Warns
-    -----
-    StandInField
-        Always.
-    """
-    del mesh, covariance, coarser
-    warnings.warn(
-        "drawing this segment's fields as white noise: this is a stand-in for the "
-        "Matern sampler, not a coarser version of it. The slip field will have no "
-        "correlation structure at all, so the rupture has no asperities and its "
-        "wavelength content is the mesh's. Use it to exercise the pipeline at a "
-        "resolution the SPDE cannot yet reach, and never for a rupture anyone runs",
-        StandInField,
-        stacklevel=2,
-    )
-    faces = geometry.face_count
-
-    def draw(
-        chart: object,
-        asked: VonKarmanFilterParameters,
-        rng: np.random.Generator,
-    ) -> FloatArray:
-        """One field of independent standard normals, one value per face."""
-        del chart, asked
-        return rng.standard_normal(faces)
-
-    return draw
-
-
-type SamplerFactory = Callable[
-    [
-        TriangleMesh,
-        SegmentGeometry,
-        "VonKarmanFilterParameters",
-        "Sequence[spde.Level]",
-    ],
-    stages.FieldSampler,
-]
-"""How :func:`draw_fields` gets a segment's draw: :func:`matern_sampler`, or a stand-in.
-
-A parameter rather than an import so that the one legitimate reason to use anything
-other than the SPDE -- reaching a resolution it cannot yet factorise -- is a decision
-the caller makes and is visible in the call, rather than a fallback the pipeline takes
-when something is slow.
-
-The fourth argument is that segment's multigrid hierarchy, which :func:`generate`
-looks up by name and which is empty for a mesh that was not built by :func:`refined`.
-It is passed to every factory rather than bound into one because it is a fact about
-the *mesh*, not about the sampler, and the two are chosen independently.
-"""
 
 
 # ============================================================================
@@ -842,99 +559,52 @@ the *mesh*, not about the sampler, and the two are chosen independently.
 # ============================================================================
 
 
-def face_seeds(geometry: SegmentGeometry, face: int, t0_s: float) -> list[fim.Seed]:
-    """The seeds that start a front from one subfault: all three of its corners.
-
-    **The seam between a cell-indexed pipeline and a vertex-based solver**, and the one
-    place the two disagree about what a source is.
-    :func:`~rupture_generator.triangular.fim.solve` seeds vertices, and
-    :func:`~rupture_generator.triangular.fim.face_arrivals` gives a face the mean of its
-    three corners because the solution is piecewise linear and the mean *is* the value
-    at the centroid. Seeding one corner therefore leaves the hypocentre's own face
-    arriving late by about a third of the sum of its corner distances -- of order
-    ``0.4 h S``, which is 0.2 s at a 1 km cut and 2.6 km/s, in the one quantity
-    `MESH.md` singles out as having no perturbation to hide behind.
-
-    Seeding all three corners makes it exactly ``t0``: each corner is its own ball's
-    centre, a fixed vertex keeps its seeded time, and the mean of three ``t0`` is
-    ``t0``. That is also the faithful port of what the lattice solver does, where the
-    seed is a *cell* and the whole cell is at ``t = 0``; it is not a smeared source. The
-    three balls overlap and cost three solves, which is
-    :func:`~rupture_generator.triangular.fim.solve`'s own multi-seed contract -- first
-    arrival from several sources is the pointwise minimum over sources -- rather than a
-    new convention.
-
-    Parameters
-    ----------
-    geometry : SegmentGeometry
-        The segment's hoisted geometry.
-    face : int
-        Which face the front starts from.
-    t0_s : float
-        When it leaves: zero for a configured hypocentre, the parent's arrival plus the
-        jump delay for a triggered segment.
-
-    Returns
-    -------
-    list of fim.Seed
-        Three seeds, one per corner.
-    """
-    return [
-        fim.Seed(vertex=int(vertex), t0_s=float(t0_s))
-        for vertex in geometry.faces[face]
-    ]
-
-
 def travel_times(
     geometry: SegmentGeometry,
     shear_speed_km_s: FloatArray,
     params: timing.SpeedParams,
-    seeds: Sequence[fim.Seed],
-) -> tuple[FloatArray, tuple[fim.SeedReport, ...]]:
+    seeds: Sequence[tuple[int, int, float]],
+) -> FloatArray:
     """S7 on a triangulation: first-arrival times per face, in seconds.
 
-    `timing.travel_times`' counterpart. The speed field is `timing.speed_field`
-    unchanged -- it is elementwise in depth and shear speed, and a face has both -- and
-    what changes is the solver: `fim.solve` walks the surface's own triangles instead of
-    a Cartesian stencil, so no spacing is read and no index space exists.
+    `timing.travel_times`' counterpart, and the same solver: a factored fast sweep over
+    a regular grid. What differs is which grid and where the depths come from. The
+    sweep runs on the segment's **parameter** lattice, and the slowness it reads is
+    sampled at the curved mesh's own **true** centre depths --
+    :func:`~rupture_generator.triangular.lattice.travel_times` is where the two meet,
+    and where the wall on the off-fault cells is applied and measured.
 
-    **Slowness is per face and the answer is per vertex**, which is
-    :mod:`~rupture_generator.triangular.fim`'s own convention rather than a choice made
-    here: Fu et al. (2011) assign a constant speed to each triangle, and P1 finite
-    elements solve at vertices. The reduction back to faces is
-    :func:`~rupture_generator.triangular.fim.face_arrivals`, which is the interpolated
-    value at the centroid the moment tensor is placed at.
+    The speed field itself is `timing.speed_field` unchanged: it is elementwise in
+    depth and shear speed, and a face has both.
 
     Parameters
     ----------
     geometry : SegmentGeometry
-        The segment's hoisted geometry.
+        The segment's hoisted geometry, for the true depths and the lattice.
     shear_speed_km_s : FloatArray
         ``(F,)`` from the velocity model at each face's own centre depth.
     params : timing.SpeedParams
         How fast the front travels here.
-    seeds : Sequence of fim.Seed
-        Where the front starts, and when -- from :func:`face_seeds`.
+    seeds : Sequence of tuple
+        ``(i, j, t0_s)`` lattice cells the front leaves, and when.
 
     Returns
     -------
-    tuple
-        ``(F,)`` travel times in seconds, and one
-        :class:`~rupture_generator.triangular.fim.SeedReport` per seed. The reports are
-        returned rather than logged because ``r0``'s two bounds are evidence: a derived
-        quantity nobody measures is a configured one that has stopped being written
-        down.
+    FloatArray
+        ``(F,)`` travel times in seconds.
 
     Raises
     ------
     ValueError
-        For a speed the front cannot travel at, or anything `fim.solve` refuses.
+        For a speed the front cannot travel at, or a seed off the lattice.
     """
-    speed_km_s = timing.speed_field(geometry.depth_km, shear_speed_km_s, params)
-    vertex_s, reports = fim.solve_with_report(
-        geometry.vertices_km, geometry.faces, 1.0 / speed_km_s, seeds
+    return lattice_module.travel_times(
+        geometry.lattice,
+        geometry.depth_km,
+        shear_speed_km_s,
+        params,
+        list(seeds),
     )
-    return fim.face_arrivals(geometry.faces, vertex_s), reports
 
 
 # ============================================================================
@@ -988,22 +658,20 @@ def draw_fields(
     realisation: Realisation,
     geometries: Mapping[str, SegmentGeometry],
     config: RuptureConfig,
-    *,
-    sampler_of: SamplerFactory = matern_sampler,
-    hierarchies: Mapping[str, Sequence[spde.Level]] | None = None,
 ) -> Realisation:
     """The four drawn fields: slip pattern, rise time, rake, onset perturbation.
 
-    `pipeline.draw_fields` with two substitutions and no third: the draw comes from
-    ``sampler_of`` instead of the circulant embedding, and the taper is
-    :func:`taper_edges` instead of the lattice one. The rise-time model, the rake model
-    and the perturbation model are `stages.py`'s own, called here, so there is one of
-    each in the package.
+    `pipeline.draw_fields` with one substitution and no second: the taper is
+    :func:`taper_edges` instead of the lattice one, because a triangulation has no index
+    ends to count cells in from. The sampler is the same circulant embedding the
+    structured track draws from, on this segment's parameter lattice
+    (:func:`field_sampler`), and the rise-time model, the rake model and the
+    perturbation model are `stages.py`'s own, called here, so there is one of each in
+    the package.
 
     One batch, and the only place anything is drawn. Rise time and the perturbation both
     correlate against slip's own Gaussian, so the Gaussian and the sampler are locals
-    that never leave this function -- and the sampler is a local for a second reason
-    here: it holds a factorisation the size of the mesh.
+    that never leave this function.
 
     Parameters
     ----------
@@ -1013,25 +681,24 @@ def draw_fields(
         One per segment.
     config : RuptureConfig
         What the earthquake is.
-    sampler_of : SamplerFactory, optional
-        How to build each segment's draw. See :data:`SamplerFactory`; the default is
-        the SPDE sampler and the alternative is a stand-in that says so.
-    hierarchies : Mapping of str to Sequence of spde.Level, optional
-        Each segment's multigrid hierarchy, from :func:`refined`, keyed by the name it
-        has in the realisation. A segment not named here is sampled by factorisation.
 
     Returns
     -------
     Realisation
+
+    Raises
+    ------
+    ValueError
+        If a segment's embedding is past
+        :data:`~rupture_generator.sampling.MAXIMUM_EMBEDDING_CELLS`.
     """
     source = config.source
     random = config.random
-    hierarchies = hierarchies or {}
 
     for name, mesh in list(realisation.items()):
         geometry = geometries[name]
         covariance = source.covariance_of(name)
-        sampler = sampler_of(mesh, geometry, covariance, hierarchies.get(name, ()))
+        sampler = field_sampler(geometry.lattice)
         slip_params = stages.SlipParams(
             covariance=covariance,
             coefficient_of_variation=config.slip.coefficient_of_variation,
@@ -1146,6 +813,21 @@ def scale_moment(
     between faults is the fields' own, or a target per fault when the source states the
     division.
 
+    **The fold is over faces with true surface areas, so there is nothing to correct
+    for.** That is the point of keeping the mesh curved while the solvers are flat: a
+    flat model delivers 0.9690 of the moment it was asked for, and this delivers 1.0
+    exactly, because ``areas_km2`` is
+    :meth:`~rupture_generator.triangular.mesh.TriangleMesh.areas_km2` on the lifted
+    triangles and never a parameter-plane area. A discrepancy here is a bug rather than
+    an approximation, and the tests assert it as such.
+
+    Were the **lattice** ever to become the primary representation -- it is not, and
+    nothing here reads a cell's area -- the fix is known and is a per-cell factor of
+    ``sqrt(1 + |grad h|^2)``, which
+    :meth:`~rupture_generator.triangular.mesh.TriangleMesh.slope` already supplies.
+    Recorded as the route rather than built, because building it would be a second
+    statement of an area this package already has exactly.
+
     Parameters
     ----------
     realisation : Realisation
@@ -1196,16 +878,13 @@ def solve_onsets(
 
     The seams. The hypocentre is one flat face index rather than an ``(i, j)`` pair, and
     it is found from **true arc lengths** because "12 km along strike" means along the
-    fault. The seeds are the three corners of that face rather than one lattice cell --
-    see :func:`face_seeds`, which is where the exactness of the pinned hypocentre onset
-    comes from. And `propagation.causal_jump` returns a flat face index for both cells,
-    because that is what a triangulated chart calls a subfault; nothing else about the
-    jump search changes, including the argument that jumps leave from *arrested* tips.
-
-    Each segment also records what its seed ball actually was --
-    :data:`~rupture_generator.triangular.fim.SEED_RING_DEPTH` and
-    :data:`~rupture_generator.triangular.fim.SEED_SLOWNESS_BUDGET_S` are bounds on a
-    derived radius, and a bound nobody can see is a free parameter keeping quiet.
+    fault. That face is then turned into the one lattice cell its centre falls in, which
+    is what the sweep seeds -- and since projection is a gather rather than an
+    interpolation, the hypocentre face reads that cell's seeded ``t0`` exactly, which is
+    where the pinned onset's exactness comes from. And `propagation.causal_jump` returns
+    a flat face index for both cells, because that is what a triangulated chart calls a
+    subfault; nothing else about the jump search changes, including the argument that
+    jumps leave from *arrested* tips.
 
     Parameters
     ----------
@@ -1248,7 +927,7 @@ def solve_onsets(
         parent = realisation.tree[name]
 
         if parent is None:
-            seeds = face_seeds(geometry, hypocentre, 0.0)
+            seeds = [(*geometry.lattice.cell_of(hypocentre), 0.0)]
             pinned: int | None = hypocentre
             delay_s = config.timing.rupture_delay_s
         else:
@@ -1264,14 +943,19 @@ def solve_onsets(
                 max_distance_km=max_jump_km,
             )
             jumps[name] = jump
-            seeds = face_seeds(geometry, int(jump.child_cell), jump.arrival_s)
+            seeds = [
+                (
+                    *geometry.lattice.cell_of(int(jump.child_cell)),
+                    float(jump.arrival_s),
+                )
+            ]
             # Triggered from elsewhere: no pin and no clamp, so this segment's onsets
             # stay absolute. That is what lets a rupture propagate between faults
             # rather than restarting on each.
             pinned = None
             delay_s = 0.0
 
-        travel_time_s, reports = travel_times(
+        travel_time_s = travel_times(
             geometry,
             mesh["shear_speed_kms"],
             speed_model(config, name, mesh),
@@ -1285,12 +969,6 @@ def solve_onsets(
                 onset_params,
                 hypocentre=pinned,
                 delay_s=delay_s,
-            ),
-        ).with_attrs(
-            seed_radius_km=max(report.radius_km for report in reports),
-            seed_slowness_error_s=max(report.slowness_error_s for report in reports),
-            unsplit_obtuse_wedges=max(
-                report.unsplit_obtuse_wedges for report in reports
             ),
         )
 
@@ -1433,8 +1111,6 @@ def generate(
     config: RuptureConfig,
     geometry: Realisation,
     *,
-    sampler_of: SamplerFactory = matern_sampler,
-    hierarchies: Mapping[str, Sequence[spde.Level]] | None = None,
     synthesise: bool = True,
 ) -> Realisation:
     """Run the pipeline over a triangulated fault system.
@@ -1455,14 +1131,6 @@ def generate(
         The segments and the frame they are in, from :func:`segments_of` or
         :func:`charts_for`. **Annotated in place**: the segments, the tree and the jumps
         are written onto this object, which is also what is returned.
-    sampler_of : SamplerFactory, optional
-        How each segment's fields are drawn. The default is the SPDE sampler; passing
-        :func:`white_noise_stand_in` instead is a deliberate, warned-about choice and
-        never something this function makes on its own.
-    hierarchies : Mapping of str to Sequence of spde.Level, optional
-        Each segment's multigrid hierarchy, from :func:`refined`, keyed by the name it
-        has in ``geometry``. Segments not named here are sampled by factorisation,
-        which is what every mesh small enough to factorise wants.
     synthesise : bool, optional
         Whether to run S9 and attach each segment's slip-rate pulses. ``False`` stops
         after S8 with everything the pulses are a function of -- slip, rise time,
@@ -1482,8 +1150,9 @@ def generate(
     ------
     ValueError
         For a hypocentre off the fault, a propagation that is not a tree, an
-        unrepresentable rise time (naming the subfault), or a rupture speed the front
-        cannot travel at.
+        unrepresentable rise time (naming the subfault), a rupture speed the front
+        cannot travel at, or a segment whose embedding is past
+        :data:`~rupture_generator.sampling.MAXIMUM_EMBEDDING_CELLS`.
     """
     source = config.source
     source.check_segments(list(geometry))
@@ -1501,13 +1170,7 @@ def generate(
     if isinstance(source, PointSourceConfig):
         realisation = constant_fields(realisation, geometries, source, config.field)
     else:
-        realisation = draw_fields(
-            realisation,
-            geometries,
-            config,
-            sampler_of=sampler_of,
-            hierarchies=hierarchies,
-        )
+        realisation = draw_fields(realisation, geometries, config)
 
     realisation = scale_moment(realisation, geometries, source)
     realisation = solve_onsets(realisation, geometries, config)
@@ -1693,24 +1356,19 @@ __all__ = [
     "PULSE_SAMPLE_MARGIN",
     "STREAM_BUDGET_BYTES",
     "Realisation",
-    "SamplerFactory",
     "SegmentGeometry",
-    "StandInField",
     "attach_materials",
     "charts_for",
     "constant_fields",
     "draw_fields",
     "face_blocks",
-    "face_seeds",
+    "field_sampler",
     "generate",
-    "matern_sampler",
-    "refined",
     "scale_moment",
     "segments_of",
     "solve_onsets",
     "synthesise_pulses",
     "taper_edges",
     "travel_times",
-    "white_noise_stand_in",
     "write_rupture_mesh",
 ]

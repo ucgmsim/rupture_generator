@@ -90,7 +90,27 @@ relations describe -- whether or not the grid can reproduce it.
 """
 
 MAXIMUM_EMBEDDING_CELLS = 1 << 26
-"""The largest padded grid to transform before giving up. This is roughly 1GB.
+"""The largest padded grid to transform, in cells. Past it the draw is refused by name.
+
+**A memory bound, and the number is the transform's peak rather than the grid's.**
+``_attempt`` evaluates the covariance on the padded grid as ``float64`` and then takes
+its two-dimensional transform, which is ``complex128``: at 2\\ :sup:`26` = 67.1 M cells
+that is 537 MB for the covariance and **1.07 GB** for the transform of it, live at the
+same time, before the caller's own mesh and fields are counted. On the 30 GB machine
+this package is developed on, with a 12 GB address-space limit in force, that is the
+largest single allocation that leaves room for the rest of a run.
+
+**What it bounds on each side.** Below it: the CFM Hikurangi interface cut at 400 m is a
+2075 × 830 lattice, which embeds to 6.9 M cells -- a tenth of the cap -- and every
+shipped crustal example is three orders below it. Above it: the same interface cut at
+100 m is 8300 × 3320 and embeds to **111.8 M cells**, 1.67 times the cap, which is the
+case this constant exists for and the one that used to slip through silently.
+
+It is a **refusal** and not a fallback: :func:`_candidate_extents` raises naming the
+segment, the two counts and the two things a caller can do about it. The previous
+behaviour was to break out of the search, return no candidates, and then hand back the
+smallest embedding *without checking it against the cap at all* -- so a 111.8 M cell
+transform ran anyway, and the bound reported nothing.
 """
 
 EIGENVALUE_TOLERANCE = 1.0e-10
@@ -308,6 +328,22 @@ def _embed(
     return best
 
 
+_WARN_STACKLEVEL = 5
+"""How far up to point a :class:`DegradedCorrelation`, counted rather than guessed.
+
+``_warn_if_degraded`` -> ``_embed`` -> :func:`von_karman_grid` -> :func:`von_karman_field`
+-> the stage, which is five frames. Written down because it is off by one from the
+obvious answer: the grid-level entry point was split out of the mesh-level one so that a
+triangulated segment could draw on its parameter lattice, and that split added a frame.
+
+A caller that reaches :func:`von_karman_grid` directly -- which is
+:func:`~rupture_generator.triangular.lattice.draw_field` -- is therefore reported one
+frame further out than its own call, at whatever bound the lattice. There is no single
+number that is right for both depths, and the message names the segment's size and both
+correlation lengths, so it locates itself.
+"""
+
+
 def _warn_if_degraded(
     cell_counts: tuple[int, int],
     spacing_km: tuple[float, float],
@@ -333,13 +369,13 @@ def _warn_if_degraded(
             "Slip, moment and timing are unaffected; what is degraded is how the slip "
             "is distributed",
             DegradedCorrelation,
-            stacklevel=4,
+            stacklevel=_WARN_STACKLEVEL,
         )
     elif best.correlation_length_error > CORRELATION_LENGTH_TOLERANCE:
         warnings.warn(
             _degraded_message(cell_counts, spacing_km, parameters, best),
             DegradedCorrelation,
-            stacklevel=4,
+            stacklevel=_WARN_STACKLEVEL,
         )
 
 
@@ -374,18 +410,58 @@ def _candidate_extents(
 ) -> list[tuple[int, int]]:
     """Progressively larger embeddings to try, none past the memory budget.
 
-    Always at least one, so a covariance no grid can carry still gets a field: the
-    smallest embedding a Toeplitz matrix of this many lags admits at all.
+    The smallest entry is the smallest embedding a Toeplitz matrix of this many lags
+    admits at all -- :data:`MINIMUM_EMBEDDING` times the grid -- so a covariance the
+    fault is too small to carry still gets a field, degraded and warned about rather
+    than refused.
+
+    **The cap binds here, on every candidate including that smallest one.** A grid whose
+    minimum embedding is already past :data:`MAXIMUM_EMBEDDING_CELLS` has no field this
+    machine can draw, and saying so is the only honest answer: the alternative it
+    replaced was to return that embedding anyway and transform it, which on a 100 m
+    Hikurangi cut is 111.8 M cells against a 67.1 M bound, allocated silently.
+
+    Parameters
+    ----------
+    cell_counts : tuple of int
+        The grid, ``(dip, strike)``.
+    spacing_km : tuple of float
+        Cell size, ``(strike, dip)``.
+    parameters : VonKarmanFilterParameters
+        The covariance to be carried.
+
+    Returns
+    -------
+    list of tuple of int
+        Extents to try, smallest first, every one within the cap. Never empty.
+
+    Raises
+    ------
+    ValueError
+        If even the minimum embedding is past :data:`MAXIMUM_EMBEDDING_CELLS`.
     """
     smallest = (
         int(next_fast_len(MINIMUM_EMBEDDING * cell_counts[0])),
         int(next_fast_len(MINIMUM_EMBEDDING * cell_counts[1])),
     )
+    if smallest[0] * smallest[1] > MAXIMUM_EMBEDDING_CELLS:
+        raise ValueError(
+            f"a {cell_counts[0]} x {cell_counts[1]} grid embeds in no less than "
+            f"{smallest[0]} x {smallest[1]} = {smallest[0] * smallest[1]:,} cells, past "
+            f"the {MAXIMUM_EMBEDDING_CELLS:,} this machine can transform -- a circulant "
+            "embedding is at least twice the grid on each axis and there is nothing "
+            "smaller to try. Either cut this segment into larger subfaults, or raise "
+            "`sampling.MAXIMUM_EMBEDDING_CELLS`, whose docstring says what one cell "
+            "costs while the transform is live"
+        )
+
     candidates: list[tuple[int, int]] = []
     for doubling in range(MAXIMUM_DOUBLINGS + 1):
         extents = _predicted_extents(
             cell_counts, spacing_km, parameters, DECAY_LENGTHS * 2**doubling
         )
+        # Monotone in the margin, so the first over-cap candidate ends the search
+        # rather than skipping one.
         if extents[0] * extents[1] > MAXIMUM_EMBEDDING_CELLS:
             break
         if extents not in candidates:
@@ -514,15 +590,61 @@ def standardise(field: FloatArray) -> FloatArray:
     return (field - field.mean()) / spread
 
 
+def von_karman_grid(
+    cell_counts: tuple[int, int],
+    spacing_km: tuple[float, float],
+    covariance: VonKarmanFilterParameters,
+    rng: np.random.Generator,
+) -> FloatArray:
+    """Draw a field with this covariance on a regular grid.
+
+    The grid is stated rather than read off a container, because there are two kinds of
+    grid this package draws on and neither owns the sampler: a structured chart's own
+    cells (:func:`von_karman_field`), and the parameter lattice a triangulated segment
+    projects from (:func:`~rupture_generator.triangular.lattice.draw_field`). The
+    embedding is cached on these arguments, so two segments of one shape and one
+    covariance pay for it once.
+
+    Parameters
+    ----------
+    cell_counts : tuple of int
+        The grid, ``(dip, strike)``.
+    spacing_km : tuple of float
+        Cell size in kilometres, ``(strike, dip)`` -- the order
+        :meth:`~rupture_generator.mesh.RuptureMesh.spacing_km` returns, and the
+        opposite order to ``cell_counts``, which is why both are named here.
+    covariance : VonKarmanFilterParameters
+        The patch structure.
+    rng : np.random.Generator
+        The stage's own substream.
+
+    Returns
+    -------
+    FloatArray
+        ``cell_counts``, one standard-normal-marginal value per cell.
+
+    Raises
+    ------
+    ValueError
+        If the embedding this grid needs is past :data:`MAXIMUM_EMBEDDING_CELLS`.
+
+    Warns
+    -----
+    DegradedCorrelation
+        If the grid cannot carry the correlation lengths asked of it.
+    """
+    embedding = _embed(cell_counts, spacing_km, covariance)
+    seed = int(rng.integers(1 << 63, dtype=np.int64))
+    return _kernels.von_karman_draw(embedding.eigenvalues, cell_counts, seed)
+
+
 def von_karman_field(
     mesh: RuptureMesh,
     covariance: VonKarmanFilterParameters,
     rng: np.random.Generator,
 ) -> FloatArray:
     """Draw a field with this covariance on this chart."""
-    embedding = _embed(mesh.cell_counts, mesh.spacing_km(), covariance)
-    seed = int(rng.integers(1 << 63, dtype=np.int64))
-    return _kernels.von_karman_draw(embedding.eigenvalues, mesh.cell_counts, seed)
+    return von_karman_grid(mesh.cell_counts, mesh.spacing_km(), covariance, rng)
 
 
 def correlate_fields(
@@ -550,6 +672,7 @@ __all__ = [
     "HURST",
     "MAI_MAXIMUM_RATIO",
     "MAXIMUM_DOUBLINGS",
+    "MAXIMUM_EMBEDDING_CELLS",
     "MINIMUM_EMBEDDING",
     "DegradedCorrelation",
     "Embedding",
@@ -559,4 +682,5 @@ __all__ = [
     "standardise",
     "von_karman_correlation",
     "von_karman_field",
+    "von_karman_grid",
 ]

@@ -13,19 +13,22 @@ assert (the container stores a face table instead), and the rupture-file round t
 through the version 3 *mesh* file, which stores each segment's whole dataset and so
 carries the fields and the pulses already.
 
-**The reduction to the quad path.** On a planar fault the two pipelines should agree, and
-"should agree" is only meaningful with the sampler held fixed: the circulant embedding and
-the SPDE are different samplers and their draws are different random fields, so comparing
-two independent draws would measure nothing. So the triangular run is given a sampler
-that draws the *quad* field and hands each triangle its parent cell's value
-(:func:`_shared_sampler`). Everything downstream -- the taper, the truncation, the moment
-fold, the rake, the wavefront -- is then comparable face by face, and what the comparison
-measures is the pipeline rather than the noise.
+**The reduction to the quad path.** On a planar fault the two pipelines should agree,
+and they now share every random number **without being made to**. Both draw from the same
+circulant embedding; the triangular one draws on a lattice over its parameter plane, and
+:meth:`~rupture_generator.triangular.lattice.ParameterLattice.of` recovers the chart's own
+grid from the triangulation exactly -- same cell counts, spacing agreeing to 1e-15, two
+faces to a cell -- so the drawn fields agree to 7e-14 with no shared-sampler apparatus at
+all. :func:`test_the_two_tracks_draw_the_same_field_on_a_planar_fault` is that statement
+on its own, and it is what makes every comparison below a statement about the pipeline
+rather than about the noise.
 
-What that comparison found is worth stating up front, because two of the three are not
-zero and neither is an error:
+What the comparison finds is worth stating up front, because one of the three is not zero
+and is not an error:
 
-- **Rake is bit-identical** and the moment is exact, at every cut.
+- **Rake and onset are bit-identical**, and the moment is exact, at every cut. Onset is
+  identical because it is now literally the same solver on the same grid: the triangular
+  track's lattice *is* the chart, and the projection onto faces is a gather.
 - **Slip differs by one global factor and nothing else**: the ratio's spread across faces
   is f64 round-off, and the factor is 1.0000 at the shipped 1 km cut, 1.0049 at 0.5 km
   and 0.8964 at 2 km. The cause is not the pipeline -- it is that rigidity is sampled at
@@ -33,13 +36,6 @@ zero and neither is an error:
   centre, so a few subfaults near a velocity-layer boundary land in a different layer.
   The moment fold then closes on a slightly different sum. Both ruptures carry exactly
   the magnitude's moment.
-- **Onset differs by O(h)**, and the deliberate exception is the whole of the reason:
-  `crates/kernels/src/eikonal.rs` is a second-order factored sweep and
-  :mod:`~rupture_generator.triangular.fim` is first order by design. The measured
-  difference halves with the cut (table in
-  :func:`test_the_onset_difference_is_first_order_in_the_cut`), which is what a
-  first-order scheme is *supposed* to do, and about half of it at any cut is the
-  sub-cell disagreement about where the hypocentre is rather than solver error at all.
 """
 
 from __future__ import annotations
@@ -70,11 +66,16 @@ from rupture_generator.config.rupture import (
 )
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse
 from rupture_generator.realisation import Realisation
-from rupture_generator.sampling import DegradedCorrelation, von_karman_field
+from rupture_generator.sampling import (
+    DegradedCorrelation,
+    correlation_lengths,
+    von_karman_field,
+    von_karman_grid,
+)
 from rupture_generator.triangular import assemble as tri_assemble
 from rupture_generator.triangular import pipeline as tri
-from rupture_generator.triangular.fim import DegradedSeed
 from rupture_generator.triangular.gocad import read_tsurf
+from rupture_generator.triangular.lattice import ParameterLattice
 from rupture_generator.triangular.mesh import (
     TriangleMesh,
     from_chart,
@@ -121,11 +122,7 @@ def _run(geometry_name: str) -> Generated:
     geometry = read_geometry(EXAMPLES / geometry_name)
     config = _config()
     segments = tri.charts_for(geometry, None)
-    with warnings.catch_warnings():
-        # The seeded ball spans four velocity layers at a 1 km cut and says so. That
-        # warning is `fim`'s own and is measured there, not here.
-        warnings.simplefilter("ignore", DegradedSeed)
-        return tri.generate(config, segments), config, geometry.crs
+    return tri.generate(config, segments), config, geometry.crs
 
 
 def _planar_chart(size_km: float = 1.0) -> tuple[RuptureMesh, pyproj.CRS]:
@@ -162,33 +159,6 @@ def _quad_of_face(mesh: TriangleMesh, chart: RuptureMesh) -> np.ndarray:
     return row * cells_j + column
 
 
-def _shared_sampler(chart: RuptureMesh, lookup: np.ndarray) -> tri.SamplerFactory:
-    """A sampler factory that draws the *quad* field and spreads it over the triangles.
-
-    The whole of what makes the two pipelines comparable. It is the same function the
-    structured path draws with, handed the same chart and the same generator -- the
-    substreams are keyed by stage and segment name, so both pipelines hand each stage an
-    identically seeded one -- and the result is mapped onto faces by parent cell. So the
-    two runs share every random number, and any difference between their outputs is the
-    pipeline's rather than the noise's.
-    """
-
-    def sampler_of(
-        _mesh: TriangleMesh,
-        _geometry: tri.SegmentGeometry,
-        _covariance: object,
-        _coarser: object = (),
-    ) -> stages.FieldSampler:
-        def draw(
-            _chart: object, covariance: object, rng: np.random.Generator
-        ) -> np.ndarray:
-            return von_karman_field(chart, covariance, rng).ravel()[lookup]
-
-        return draw
-
-    return sampler_of
-
-
 def _both(
     config: RuptureConfig, size_km: float = 1.0
 ) -> tuple[Realisation, Realisation, np.ndarray, RuptureMesh, TriangleMesh]:
@@ -198,13 +168,7 @@ def _both(
     lookup = _quad_of_face(mesh, chart)
 
     quad = pipeline.generate(config, Realisation({"hope": chart}, crs))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
-        triangular = tri.generate(
-            config,
-            Realisation({"hope": mesh}, crs),
-            sampler_of=_shared_sampler(chart, lookup),
-        )
+    triangular = tri.generate(config, Realisation({"hope": mesh}, crs))
     return quad, triangular, lookup, chart, mesh
 
 
@@ -324,9 +288,11 @@ def test_the_hypocentres_own_onset_is_exact_on_both_paths() -> None:
 
     `stages.apply_perturbation` pins the hypocentre's perturbation to zero and clamps the
     field at the delay, so the hypocentre's onset is *exactly* the delay -- and on a
-    triangulation that is only true because :func:`~rupture_generator.triangular
-    .pipeline.face_seeds` seeds all three corners of the hypocentre's face. Seeding one
-    corner would leave this at about ``0.4 h S``, which is 0.2 s at this cut.
+    triangulation that is only true because the seed is the lattice **cell** the
+    hypocentre face falls in and projection back onto faces is a gather rather than an
+    interpolation. A scheme that interpolated between cells would leave this a fraction
+    of a cell late, in the one quantity `MESH.md` says the model's own perturbation gives
+    no cover for.
     """
     config = _untapered()
     _, triangular, _, _, _ = _both(config)
@@ -340,56 +306,96 @@ def test_the_hypocentres_own_onset_is_exact_on_both_paths() -> None:
     )
 
 
-def test_the_onset_difference_is_first_order_in_the_cut() -> None:
-    """**The deliberate exception, measured as a rate rather than against a bound.**
+def test_the_two_tracks_draw_the_same_field_on_a_planar_fault() -> None:
+    """The reduction, and the reason no shared-sampler apparatus is needed any more.
 
-    The Cartesian kernel is a second-order factored sweep and meshFIM is first order;
-    `MESH.md`'s Component 3 takes that trade in exchange for curvature, and the 0.05 s
-    verification bound is the wrong yardstick for a method change that is expected to
-    move numbers. The right one is whether the difference behaves like a discretisation
-    error, so this measures its rate.
+    Both tracks draw from :func:`~rupture_generator.sampling.von_karman_grid`. The
+    structured chart's grid *is* its cells;
+    :meth:`~rupture_generator.triangular.lattice.ParameterLattice.of` has to recover that
+    same grid from a triangulation of it, which it does because both containers cut the
+    parameter plane into rectangles and split each into two triangles whose centroids sit
+    at a third and two thirds of the cell. So the cell counts match exactly, the spacings
+    agree to f64 round-off, every cell holds exactly two faces, and the two draws are the
+    same numbers.
 
-    Measured on the shipped planar plane, ``|onset(triangular) - onset(quad)|`` over
-    every face, with the tapers off and the draw shared:
+    Asserted directly rather than inferred from the pipeline outputs, because it is what
+    every other comparison in this file rests on.
+    """
+    chart, _ = _planar_chart(1.0)
+    mesh = from_chart(chart)
+    lattice = ParameterLattice.of(mesh.parameters_km(), mesh.faces())
+    covariance = correlation_lengths(7.0)
 
-    ====  =======  ==========  =======  =======  =======
-    cut   faces    hypo sep    median   p90      max
-    ====  =======  ==========  =======  =======  =======
-    2.0   196      0.472 km    425 ms   1601 ms  2625 ms
-    1.0   756      0.240 km    198 ms    506 ms   928 ms
-    0.5   3132     0.118 km     86 ms    250 ms   501 ms
-    0.25  12528    0.059 km     50 ms    113 ms   218 ms
-    ====  =======  ==========  =======  =======  =======
+    assert lattice.cell_counts == chart.cell_counts
+    assert lattice.sampling_spacing_km == pytest.approx(chart.spacing_km(), rel=1e-12)
+    assert np.array_equal(
+        np.bincount(lattice.cell_of_face), np.full(mesh.face_count // 2, 2)
+    )
 
-    Halving the cut halves the difference -- ratios 2.15, 2.31, 1.70 on the median --
-    which is first order and not a plateau. Two things are worth separating out of it.
-    The **hypocentre separation** column is the distance between the two paths' own
-    hypocentres: the lattice registers on the seed *cell's centre* and the triangulation
-    on the seed *face's centroid*, and at a 1 km cut those are 0.24 km apart, which at
-    0.48 s/km is 115 ms -- almost exactly the 118 ms median *signed* difference. So half
-    of what this table reports is the two paths disagreeing about where the earthquake
-    started by a fraction of a subfault, and it converges away with everything else. And
-    the difference is **not** monotone in distance from the source once that offset is
-    removed (correlation 0.12): the residual is scatter of order ``h S``, which is what a
-    first-order scheme on a 1 km mesh with 0.5 s/km slowness looks like.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DegradedCorrelation)
+        quad = von_karman_field(chart, covariance, np.random.default_rng(7))
+        triangular = lattice.project(
+            von_karman_grid(
+                lattice.cell_counts,
+                lattice.sampling_spacing_km,
+                covariance,
+                np.random.default_rng(7),
+            )
+        )
+
+    assert np.abs(triangular - quad.ravel()[lattice.cell_of_face]).max() < 1e-12
+
+
+def test_the_onset_difference_is_where_the_velocity_model_is_sampled() -> None:
+    """**What is left of the two tracks' onset difference, and it is one thing.**
+
+    They now run the same solver on the same grid, so nothing about the discretisation
+    can differ. What still can is the *depth* the velocity model is read at: a lattice
+    reads its cell's centre, and a triangulation reads each triangle's centroid and this
+    lattice averages the two per cell. Those differ by a fraction of a cell, and
+    :func:`~rupture_generator.timing.speed_field` is continuous in depth -- **except**
+    across a velocity-layer boundary, where a cell whose two readings straddle the
+    boundary picks up the whole jump.
+
+    So the difference is not a convergence rate, and asserting one would be asserting
+    something false. It is small and **discontinuous in the cut**, and the discontinuity
+    is exactly the layer crossings:
+
+    ====  =======  ==================  ==========  ==========
+    cut   faces    cells with a layer  median      max
+                   disagreement        |Δonset|    |Δonset|
+    ====  =======  ==================  ==========  ==========
+    2.0   196      28 of 98            74.4 ms     789 ms
+    1.0   756      0 of 378            **1.4 ms**  4.2 ms
+    0.5   3132     54 of 1566          2.9 ms      36.5 ms
+    0.25  12528    0 of 6264           **0.06 ms** 0.21 ms
+    ====  =======  ==================  ==========  ==========
+
+    The two cuts where no cell straddles a layer agree to a millisecond and to a
+    twentieth of one; the two where cells do are the layer jump, weighted by how many.
+    This is the same root cause as the global slip factor recorded in this module's
+    docstring, and it is a property of sampling a 1-D velocity model on two slightly
+    different sets of points rather than of either pipeline.
+
+    The bound asserted is 0.1 s at every cut, which is under a third of the model's own
+    ~0.35 s onset perturbation and twenty times the worst measured value that is not a
+    layer crossing.
     """
     config = _untapered()
-    measured: dict[float, float] = {}
-    for size_km in (2.0, 1.0, 0.5):
+    for size_km in (2.0, 1.0, 0.5, 0.25):
         quad, triangular, lookup, _, _ = _both(config, size_km)
         difference_s = np.abs(
             triangular["hope"]["onset_s"] - quad["hope"]["onset_s"].ravel()[lookup]
         )
-        measured[size_km] = float(np.median(difference_s))
+        assert float(np.median(difference_s)) < 0.1, size_km
 
-    # 1.5 rather than 2, because the measured ratios are 2.15 and 2.31 and the quantity
-    # is a median over a field carrying a correlated perturbation: this asserts the rate
-    # is first order rather than that it is exactly 2.
-    assert measured[2.0] / measured[1.0] > 1.5
-    assert measured[1.0] / measured[0.5] > 1.5
-    # And the absolute size at the shipped cut, so a regression that kept the *rate* and
-    # doubled the error still fails. 198 ms measured.
-    assert measured[1.0] < 0.3
+    # And the mechanism, at the one cut where the two agree to a millisecond: no cell's
+    # binned shear speed differs from the chart's, so nothing but the depth ramp is left.
+    quad, triangular, _, _, mesh = _both(config, 1.0)
+    lattice = ParameterLattice.of(mesh.parameters_km(), mesh.faces())
+    binned = lattice.bin(triangular["hope"]["shear_speed_kms"])
+    assert np.allclose(binned, quad["hope"]["shear_speed_kms"], atol=1e-12)
 
 
 # ============================================================================
@@ -692,9 +698,7 @@ def test_a_point_source_is_the_pipeline_with_constant_fields() -> None:
     segments = Realisation(
         tri.named("point", build_triangular(point, geometry.crs)), geometry.crs
     )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
-        realisation = tri.generate(config, segments)
+    realisation = tri.generate(config, segments)
     mesh = realisation["point"]
 
     assert mesh.face_count == 2
@@ -725,9 +729,7 @@ def _two_fault_geometry() -> tuple[GeometryConfig, RuptureConfig]:
 def two_faults() -> Generated:
     """A rupture that crosses between segments."""
     geometry, config = _two_fault_geometry()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
-        realisation = tri.generate(config, tri.segments_of(geometry))
+    realisation = tri.generate(config, tri.segments_of(geometry))
     return realisation, config, geometry.crs
 
 
@@ -762,6 +764,42 @@ def test_a_jump_names_faces_rather_than_lattice_cells(two_faults: Generated) -> 
     )
 
 
+def test_the_jump_cell_did_not_move_when_the_solver_did(
+    two_faults: Generated,
+) -> None:
+    """**The gate on swapping the wavefront solver**, and it is not the onset field.
+
+    `propagation.causal_jump` picks the jump-off subfault by an **argmin over the raw
+    wavefront**, so a systematic bias in the wavefront moves the *selection*, not merely
+    the timing -- and a rupture that jumps from a different place is a different
+    earthquake, however small the bias was. Asserting the onset field agrees would not
+    catch that; asserting the chosen cell does.
+
+    Measured across the swap from the mesh solver to the lattice one, on the two shipped
+    multi-segment examples, running each pipeline over the same configs:
+
+    ================== ====== ====== ============= =============
+    example / jump     parent child  arrival, mesh arrival, this
+    ================== ====== ====== ============= =============
+    kaikoura:1         1255   1485   8.0763 s      8.1553 s
+    beavan  6 jumps    same   same   -0.82 to +0.08 s of movement
+    ================== ====== ====== ============= =============
+
+    **Every parent and child cell is unchanged** -- all six of beavan's jumps and
+    kaikoura's one -- while the arrival times move by up to 0.82 s, which is the solver
+    difference the module docstring accounts for. So the selection is robust to the
+    change and the timing is not, which is the right way round.
+
+    The two integers below are pinned rather than merely typed, because that is what
+    makes a future change to the wavefront visible here rather than three files away.
+    """
+    realisation, _, _ = two_faults
+    jump = realisation.jumps["kaikoura:1"]
+
+    assert (jump.parent_cell, jump.child_cell) == (1255, 1485)
+    assert jump.arrival_s == pytest.approx(8.1553, abs=1e-3)
+
+
 def test_the_front_reaches_a_child_after_it_leaves_its_parent(
     two_faults: Generated,
 ) -> None:
@@ -776,9 +814,9 @@ def test_the_front_reaches_a_child_after_it_leaves_its_parent(
 
     assert jump.arrival_s >= jump.departure_s
     assert float(realisation["kaikoura:1"]["onset_s"].min()) >= jump.departure_s - 1e-9
-    # The child's *wavefront* at the arrival face is the seed time exactly, which is
-    # what `face_seeds` buys: all three corners are fixed, so the face's own arrival is
-    # the seed rather than the seed plus a third of its corner distances. Its **onset**
+    # The child's *wavefront* at the arrival face is the seed time exactly, because the
+    # seeded cell is the one that face falls in and the projection is a gather. Its
+    # **onset**
     # is not, and deliberately: a triggered segment takes no pin and no clamp, so the
     # perturbation moves even the arrival face -- which is what keeps its onsets
     # absolute rather than registered on a second hypocentre.
@@ -834,9 +872,7 @@ def test_each_fault_carries_the_magnitude_it_was_given() -> None:
         rakes={"kaikoura:0": 175.0, "kaikoura:1": 90.0},
     )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
-        realisation = tri.generate(config, tri.segments_of(geometry))
+    realisation = tri.generate(config, tri.segments_of(geometry))
 
     for name, mesh in realisation.items():
         carried = moment.moment_of(
@@ -866,9 +902,7 @@ def test_a_stated_propagation_gives_the_tree_it_states() -> None:
     geometry, config = _two_fault_geometry()
     config.propagation = PredeterminedPropagation(parents={"kaikoura:1": "kaikoura:0"})
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
-        realisation = tri.generate(config, tri.segments_of(geometry))
+    realisation = tri.generate(config, tri.segments_of(geometry))
 
     assert realisation.tree == {"kaikoura:0": None, "kaikoura:1": "kaikoura:0"}
 
@@ -1035,12 +1069,7 @@ def test_a_curved_subduction_interface_ruptures_end_to_end() -> None:
     config.hypocentre.dip_km = 80.0
 
     realisation = Realisation({"hikurangi": mesh}, pyproj.CRS("EPSG:2193"))
-    with warnings.catch_warnings():
-        # The ball spans 28 km at this cut, over which the slowness varies 59%, and
-        # `fim` says so loudly. It is the coarse mesh talking, not the pipeline: the
-        # radius is three rings of a 7.4 km mesh.
-        warnings.simplefilter("ignore", DegradedSeed)
-        realisation = tri.generate(config, realisation)
+    realisation = tri.generate(config, realisation)
     rupture = realisation["hikurangi"]
 
     assert realisation.moment_newton_m == pytest.approx(
@@ -1060,82 +1089,6 @@ def test_a_curved_subduction_interface_ruptures_end_to_end() -> None:
     assert tri_assemble.moment_newton_m(srf) == pytest.approx(
         realisation.moment_newton_m, rel=1e-5
     )
-
-
-# ============================================================================
-# Refinement, and the hierarchy the sampler solves on
-# ============================================================================
-
-
-def test_a_refinement_is_the_same_surface_four_times_over() -> None:
-    """One-to-four subdivision adds resolution and no geometry.
-
-    The midpoints lie on the coarse faces, so total area, the parameter extent and the
-    frame are all invariants -- which is what makes a refined mesh comparable with the
-    one it came from, and what lets `refined` keep the coarse mesh's frame rather than
-    refitting one to the new points.
-    """
-    chart, _ = _planar_chart(2.0)
-    coarse = from_chart(chart)
-    fine, hierarchy = tri.refined(coarse, 2)
-
-    assert fine.face_count == coarse.face_count * 16
-    assert len(hierarchy) == 2
-    assert fine.frame.strike_deg == pytest.approx(coarse.frame.strike_deg)
-    assert fine.areas_km2().sum() == pytest.approx(coarse.areas_km2().sum(), rel=1e-12)
-    assert np.allclose(
-        np.ptp(fine.parameters_km(), axis=0), np.ptp(coarse.parameters_km(), axis=0)
-    )
-    # The coarse vertices keep their own indices and their own coordinates, which is
-    # what makes the prolongation the identity on that block.
-    assert np.allclose(
-        fine.parameters_km()[: coarse.node_count], coarse.parameters_km()
-    )
-
-    # Coarsest first, each transfer landing on the level above it, the last on `fine`.
-    counts = [level[0].shape[0] for level in hierarchy] + [fine.node_count]
-    for index, (_vertices, _faces, prolongation) in enumerate(hierarchy):
-        assert prolongation.shape == (counts[index + 1], counts[index])
-
-
-def test_no_levels_is_the_mesh_itself() -> None:
-    """The identity case, so a caller can always go through the same path."""
-    mesh = from_chart(_planar_chart(2.0)[0])
-    same, hierarchy = tri.refined(mesh, 0)
-    assert hierarchy == []
-    assert np.array_equal(same.faces(), mesh.faces())
-
-
-def test_a_refined_segment_ruptures_the_same_whichever_solver_draws_it() -> None:
-    """The hierarchy changes the solver, not the model.
-
-    :func:`~rupture_generator.triangular.pipeline.matern_sampler` factorises without a
-    hierarchy and runs multigrid-preconditioned conjugate gradients with one, and
-    `spde.ITERATIVE_TOLERANCE`'s docstring is explicit that the two do not agree
-    pointwise -- the chained shifted solves amplify, so the same seed gives a different
-    draw. What must agree is the *statistics*, and the moment, which is a fold over
-    whatever the field turned out to be.
-    """
-    chart, crs = _planar_chart(2.0)
-    mesh, hierarchy = tri.refined(from_chart(chart), 1)
-    config = _config()
-
-    def run(hierarchies: dict[str, object] | None) -> Realisation:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DegradedSeed)
-            warnings.simplefilter("ignore", DegradedCorrelation)
-            return tri.generate(
-                config, Realisation({"hope": mesh}, crs), hierarchies=hierarchies
-            )
-
-    direct = run(None)
-    multigrid = run({"hope": hierarchy})
-
-    assert multigrid.moment_newton_m == pytest.approx(direct.moment_newton_m, rel=1e-12)
-    for field in ("slip_m", "rise_time_s", "rake_deg"):
-        theirs, ours = direct["hope"][field], multigrid["hope"][field]
-        assert ours.mean() == pytest.approx(theirs.mean(), rel=0.05), field
-        assert ours.std() == pytest.approx(theirs.std(), rel=0.10), field
 
 
 # ============================================================================
@@ -1247,7 +1200,6 @@ def test_a_streamed_rupture_file_is_the_resident_writers_own(
     geometry, config = _two_fault_geometry()
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
         warnings.simplefilter("ignore", DegradedCorrelation)
         streamed = tri.generate(config, tri.segments_of(geometry), synthesise=False)
         resident = tri.generate(config, tri.segments_of(geometry))
@@ -1294,7 +1246,6 @@ def test_writing_a_rupture_file_refuses_to_guess_about_its_pulses(
         )
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
         warnings.simplefilter("ignore", DegradedCorrelation)
         unsynthesised = tri.generate(
             config,
@@ -1321,7 +1272,6 @@ def test_a_rupture_generated_without_pulses_still_writes_its_srf(
     config = _config()
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DegradedSeed)
         warnings.simplefilter("ignore", DegradedCorrelation)
         unsynthesised = tri.generate(
             config, tri.segments_of(geometry), synthesise=False
@@ -1338,31 +1288,3 @@ def test_a_rupture_generated_without_pulses_still_writes_its_srf(
     with h5py.File(streamed) as actual, h5py.File(expected) as wanted:
         assert np.array_equal(actual["SR1"][:], wanted["SR1"][:])
         assert np.array_equal(actual["POINTS"]["NT1"], wanted["POINTS"]["NT1"])
-
-
-def test_the_stand_in_sampler_says_it_is_not_a_model() -> None:
-    """The one thing that must never be silent.
-
-    :func:`~rupture_generator.triangular.pipeline.white_noise_stand_in` exists so that
-    the pipeline can be exercised at a resolution the SPDE cannot yet factorise, and a
-    rupture drawn with it has no asperities at all. So it warns every time it is built,
-    it is never selected automatically, and this asserts both halves: the default draws
-    a correlated field and the stand-in refuses to be quiet about being one.
-    """
-    chart, crs = _planar_chart(2.0)
-    mesh = from_chart(chart)
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        realisation = tri.generate(
-            _config(),
-            Realisation({"hope": mesh}, crs),
-            sampler_of=tri.white_noise_stand_in,
-        )
-    assert any(warned.category is tri.StandInField for warned in caught)
-    assert realisation["hope"]["slip_m"].max() > 0.0
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        tri.generate(_config(), Realisation({"hope": from_chart(chart)}, crs))
-    assert not any(warned.category is tri.StandInField for warned in caught)

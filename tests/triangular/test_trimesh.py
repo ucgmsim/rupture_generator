@@ -36,7 +36,6 @@ import numpy as np
 import pyproj
 import pytest
 
-from rupture_generator.config import read_geometry
 from rupture_generator.config.geometry import (
     Discretisation,
     FaultConfig,
@@ -62,8 +61,6 @@ from rupture_generator.triangular.mesh import (
     fold_margin,
     from_chart,
     implied_axes,
-    is_paddable,
-    padded_builder,
     read_mesh,
     remesh,
     stated_axes,
@@ -1299,16 +1296,18 @@ def test_a_built_mesh_is_congruent_in_the_parameter_plane() -> None:
 
 
 def test_building_beats_subdividing_by_four_orders_of_magnitude() -> None:
-    """The measurement that made the remesher the critical path.
+    """What building a mesh buys over refining the modeller's own.
 
     Subdivision preserves element shape exactly -- one-to-four splits a triangle into
     four similar ones -- so the CFM source's area ratio of 4.28e+04 and minimum angle of
-    0.018 degrees survive every level of refinement. The multigrid sampler pays for shape,
-    not resolution: 36x on the draw at matched vertex count, and V-cycle counts that double
-    per level instead of staying flat.
+    0.018 degrees survive every level of refinement, and its outline stays resolved at
+    whatever the source's spacing was.
 
-    Building at a target resolution instead: measured here at a coarse 8 km, which is
-    enough to make the point, and confirmed at 100 m in :func:`remesh`'s docstring.
+    That used to be a conditioning argument as well: element shape cost the removed SPDE
+    sampler 36x on the draw at matched vertex count. It no longer is -- both solvers run
+    on a lattice over the parameter plane now -- so what this asserts is the geometry,
+    which is what the mesh is for. Measured here at a coarse 8 km, which is enough to
+    make the point, and confirmed at 100 m in :func:`remesh`'s docstring.
     """
     points, faces, strike_deg, dip_deg, dips_left = _source_arrays("Hikurangi")
     source = TriangleMesh._from_frame(
@@ -1429,138 +1428,6 @@ def test_a_spacing_too_coarse_to_resolve_the_surface_is_refused() -> None:
             dips_left=dips_left,
             surface="Hikurangi",
         )
-
-
-# ============================================================================
-# The padded build, for the SPDE's boundary reflection
-# ============================================================================
-
-
-def test_a_zero_pad_returns_the_faults_own_arrays() -> None:
-    """The identity case, so the caller can always go through the same path."""
-    mesh = build_fault(_straight(), NZTM)[0]
-    build = padded_builder(mesh)
-    vertices, faces, parameters, fault_faces = build(0.0, 0.0)
-    assert np.array_equal(vertices, mesh.vertices_km())
-    assert np.array_equal(faces, mesh.faces())
-    assert np.array_equal(parameters, mesh.parameters_km())
-    assert np.array_equal(fault_faces, np.arange(mesh.face_count))
-
-
-def test_a_pad_extends_the_domain_and_leaves_the_fault_alone() -> None:
-    """The fault keeps its own mesh and its own coordinates; the pad is a frame round it.
-
-    Holding the fault's ``(u, v)`` fixed is what keeps the hypocentre seam where it was --
-    if padding shifted every stored parameter coordinate, the seam would move silently.
-    """
-    mesh = build_fault(_straight(), NZTM)[0]
-    build = padded_builder(mesh)
-    vertices, faces, parameters, fault_faces = build(6.0, 4.0)
-
-    assert len(fault_faces) == mesh.face_count
-    assert np.array_equal(faces[fault_faces], mesh.faces())
-    assert np.array_equal(parameters[: mesh.node_count], mesh.parameters_km())
-    assert np.array_equal(vertices[: mesh.node_count], mesh.vertices_km())
-    assert len(faces) > mesh.face_count
-
-    fault_low = mesh.parameters_km().min(axis=0)
-    fault_high = mesh.parameters_km().max(axis=0)
-    assert parameters[:, 0].min() == pytest.approx(fault_low[0] - 6.0)
-    assert parameters[:, 1].min() == pytest.approx(fault_low[1] - 4.0)
-    assert parameters[:, 0].max() == pytest.approx(fault_high[0] + 6.0)
-    assert parameters[:, 1].max() == pytest.approx(fault_high[1] + 4.0)
-    assert faces.max() < len(vertices)
-
-
-def test_a_pad_shares_the_faults_own_boundary_vertices() -> None:
-    """**The property the pad exists for**, and the one a geometric check misses.
-
-    The SPDE couples through the mesh, so a pad that surrounds the fault without sharing
-    its boundary vertices is a second connected component: it is assembled, factorised
-    and solved, and the field on the fault is the unpadded one exactly. An earlier
-    builder did that, and every assertion about the pad's extent still passed -- it
-    surrounded the fault, it was the right shape, and it changed nothing. So what is
-    asserted here is connectivity, and that the fault's boundary vertices are the ones
-    the pad is attached by.
-    """
-    from scipy.sparse import coo_matrix, csgraph
-
-    mesh = build_fault(_straight(), NZTM)[0]
-    vertices, faces, _parameters, fault_faces = padded_builder(mesh)(6.0, 4.0)
-
-    rows = faces.ravel()
-    columns = np.roll(faces, 1, axis=1).ravel()
-    adjacency = coo_matrix(
-        (np.ones(rows.size), (rows, columns)), shape=(len(vertices),) * 2
-    )
-    assert csgraph.connected_components(adjacency, directed=False)[0] == 1
-
-    # And the join is at the fault's *boundary*: the vertices shared with the pad are
-    # exactly boundary vertices, never interior ones, so nothing has been re-meshed.
-    pad_vertices = np.unique(faces[len(fault_faces) :])
-    shared = pad_vertices[pad_vertices < mesh.node_count]
-    assert shared.size > 0
-    assert np.isin(shared, np.unique(mesh.boundary_edges())).all()
-
-
-def test_a_bent_segment_says_it_cannot_be_padded() -> None:
-    """A refusal, not a pad that does nothing.
-
-    A segment fused across a bend has no parameter lattice -- the shipped ``hope`` has
-    855 distinct strike coordinates for 855 vertices, because the bend gives every node
-    its own -- so the grid-line construction has nothing to build on.
-    :data:`PADDED_LATTICE_SLACK` carries the measurement, and the sampler asks
-    :func:`is_paddable` first rather than catching this.
-    """
-    geometry = read_geometry(EXAMPLES / "hope.geometry.toml")
-    (bent,) = build_surface(geometry.surfaces[0], geometry.crs)
-    assert len(np.unique(bent.planes())) == 2
-
-    assert not is_paddable(bent)
-    with pytest.raises(ValueError, match="not a lattice"):
-        padded_builder(bent)
-
-    (straight,) = build_fault(_straight(), NZTM)[:1]
-    assert is_paddable(straight)
-
-
-def test_a_coarser_pad_costs_fewer_vertices() -> None:
-    """The pad only has to move the boundary away, so it need not be resolved finely.
-
-    Measured on a 12-by-8 cell fault padded by 6 by 4 km: at fault spacing the pad
-    multiplies the vertex count several-fold, and at four times the spacing it costs a
-    fraction of that. At 100 m that is the difference between a crustal segment staying
-    in the hundreds of thousands and going into the millions, for no modelling gain.
-    """
-    mesh = build_fault(_straight(), NZTM)[0]
-    fine = padded_builder(mesh)(6.0, 4.0)[0]
-    coarse = padded_builder(mesh, pad_spacing_km=6.0)(6.0, 4.0)[0]
-    assert len(coarse) < len(fine)
-    assert len(coarse) >= mesh.node_count
-
-
-def test_a_padded_mesh_meets_the_fault_at_the_faults_own_height() -> None:
-    """Continuity across the seam, which is what stops the pad becoming a crease.
-
-    The SPDE assembles from the lifted triangles, so a jump in ``h`` at the fault boundary
-    is geometry the cotangent Laplacian believes in -- it would put the artefact the pad
-    exists to remove onto the fault edge instead. On a planar fault the extrapolation is
-    exact, which is the case that can be checked to round-off.
-    """
-    mesh = build_fault(_straight(dip_deg=45.0), NZTM)[0]
-    vertices, _faces, parameters, _fault = padded_builder(mesh)(5.0, 5.0)
-    frame = mesh.frame
-    height = frame.project(vertices)[:, 2]
-    # A planar fault has h == 0, so a flat extrapolation must too, everywhere.
-    assert np.abs(height).max() < 1.0e-9
-    assert parameters.shape == (len(vertices), 2)
-
-
-def test_a_negative_pad_is_refused() -> None:
-    """Cropping is the sampler's own step, not something to spell as a negative pad."""
-    build = padded_builder(build_fault(_straight(), NZTM)[0])
-    with pytest.raises(ValueError, match="negative pad"):
-        build(-1.0, 0.0)
 
 
 # ============================================================================
