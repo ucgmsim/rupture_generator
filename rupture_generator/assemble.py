@@ -87,97 +87,61 @@ def plane_header(
     )
 
 
-def to_srf_file(
-    realisation: Realisation,
+POINT_COLUMNS = (
+    "longitude_deg",
+    "latitude_deg",
+    "depth_km",
+    "strike_deg",
+    "dip_deg",
+    "area_cm2",
+    "onset_s",
+    "sample_interval_s",
+    "rake_deg",
+    "slip_cm",
+    "rise_time_s",
+    "shear_speed_cm_s",
+    "density_g_cm3",
+)
+"""Every column a version 2.0 point block carries, in the order `Points` declares them.
+
+Named once because two writers fill them -- this one from a lattice and
+:func:`rupture_generator.triangular.assemble.to_srf_file` from a triangulation -- and a
+column one of them forgot would be a file of zeros that still parses.
+"""
+
+
+def srf_file(
+    headers: list[PlaneHeader],
+    columns: dict[str, list[np.ndarray]],
+    pulse_lengths: list[np.ndarray],
+    pulse_samples: list[np.ndarray],
 ) -> SrfFile:
-    """Assemble an SRF version 2.0 file from a generated rupture.
+    """One SRF file from per-segment columns already in the format's own units.
 
-    One PLANE per segment, in the realisation's own order.
-
-    Version 2.0 carries shear speed and density per point, and both are fields the
-    materials stage attached, so nothing here re-reads the velocity model. That
-    resampling used to happen in `generate_cli`, from each subfault's *stored centre
-    depth* -- a second reading of a quantity the pipeline had already computed, and one
-    that could disagree with it.
+    The half of the writing that is **not** about the shape of a chart: concatenating
+    each segment's columns into one run of points, rebuilding the CSR offsets across
+    segments, and narrowing the samples into their final buffer. A triangulated rupture
+    reaches this with different columns and a different header and needs none of it
+    written twice -- which matters more than it looks, because most of what is here is
+    memory discipline rather than arithmetic (see the comments), and a second
+    transcription would be a second place to get 20 GB of peak for a 3.8 GB answer.
 
     Parameters
     ----------
-    realisation : Realisation
-        A rupture that has been through the pipeline.
+    headers : list of PlaneHeader
+        One per segment, in the order their points follow.
+    columns : dict of str to list of np.ndarray
+        Keyed by :data:`POINT_COLUMNS`, one flat array per segment, already converted.
+    pulse_lengths : list of np.ndarray
+        Each segment's per-subfault pulse lengths.
+    pulse_samples : list of np.ndarray
+        Each segment's concatenated slip-rate samples, in metres per second.
 
     Returns
     -------
     SrfFile
-        Version 2.0, one PLANE record per segment.
-
-    Raises
-    ------
-    KeyError
-        If a segment is missing a field the format needs, which is a realisation that
-        has not been all the way through the pipeline.
+        Version 2.0.
     """
-    headers: list[PlaneHeader] = []
-    columns: dict[str, list[np.ndarray]] = {
-        name: []
-        for name in (
-            "longitude_deg",
-            "latitude_deg",
-            "depth_km",
-            "strike_deg",
-            "dip_deg",
-            "area_cm2",
-            "onset_s",
-            "sample_interval_s",
-            "rake_deg",
-            "slip_cm",
-            "rise_time_s",
-            "shear_speed_cm_s",
-            "density_g_cm3",
-        )
-    }
-    pulse_lengths: list[np.ndarray] = []
-    samples_of: list[np.ndarray] = []
-
-    for mesh in realisation.values():
-        cells_i, cells_j = mesh.cell_counts
-        subfaults = cells_i * cells_j
-        located = project_cells(mesh, realisation.crs)
-
-        hypocentre_km = (
-            (
-                float(mesh.attrs[HYPOCENTRE_STRIKE_KM]),
-                float(mesh.attrs[HYPOCENTRE_DIP_KM]),
-            )
-            if HYPOCENTRE_STRIKE_KM in mesh.attrs
-            else None
-        )
-        headers.append(plane_header(mesh, located, hypocentre_km=hypocentre_km))
-
-        def projected(name: str, dataset: xr.Dataset = located) -> np.ndarray:
-            return dataset[name].to_numpy().ravel()
-
-        interval_s = float(mesh.attrs["sample_interval_s"])
-
-        # SI leaves the package here. Slip and area cross into the format's own
-        # units; depth, angles and times are already what it wants.
-        columns["longitude_deg"].append(projected("centre_longitude_deg"))
-        columns["latitude_deg"].append(projected("centre_latitude_deg"))
-        columns["depth_km"].append(projected("centre_depth_km"))
-        columns["strike_deg"].append(projected("strike_deg"))
-        columns["dip_deg"].append(projected("dip_deg"))
-        columns["area_cm2"].append(projected("area_km2") * M2_PER_KM2 * CM2_PER_M2)
-        columns["onset_s"].append(mesh["onset_s"].ravel())
-        columns["sample_interval_s"].append(np.full(subfaults, interval_s))
-        columns["rake_deg"].append(mesh["rake_deg"].ravel())
-        columns["slip_cm"].append(mesh["slip_m"].ravel() * CM_PER_M)
-        columns["rise_time_s"].append(mesh["rise_time_s"].ravel())
-        columns["shear_speed_cm_s"].append(mesh["shear_speed_kms"].ravel() * CM_PER_KM)
-        columns["density_g_cm3"].append(mesh["density_g_cm3"].ravel())
-
-        offsets, samples = mesh.pulses  # ty: ignore[not-iterable]
-        pulse_lengths.append(np.diff(offsets))
-        samples_of.append(samples)
-
     points = Points(
         **{
             name: np.concatenate(values).astype(SRF_FLOAT)
@@ -201,7 +165,7 @@ def to_srf_file(
     # straight into the slice that segment owns, so only the destination is ever live.
     samples = np.empty(int(offsets[-1]), dtype=SRF_FLOAT)
     at = 0
-    for source in samples_of:
+    for source in pulse_samples:
         np.multiply(
             source, CM_PER_M, out=samples[at : at + source.size], casting="unsafe"
         )
@@ -248,4 +212,81 @@ def to_srf_file(
     )
 
 
-__all__ = ["plane_header", "to_srf_file"]
+def to_srf_file(
+    realisation: Realisation,
+) -> SrfFile:
+    """Assemble an SRF version 2.0 file from a generated rupture.
+
+    One PLANE per segment, in the realisation's own order.
+
+    Version 2.0 carries shear speed and density per point, and both are fields the
+    materials stage attached, so nothing here re-reads the velocity model. That
+    resampling used to happen in `generate_cli`, from each subfault's *stored centre
+    depth* -- a second reading of a quantity the pipeline had already computed, and one
+    that could disagree with it.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        A rupture that has been through the pipeline.
+
+    Returns
+    -------
+    SrfFile
+        Version 2.0, one PLANE record per segment.
+
+    Raises
+    ------
+    KeyError
+        If a segment is missing a field the format needs, which is a realisation that
+        has not been all the way through the pipeline.
+    """
+    headers: list[PlaneHeader] = []
+    columns: dict[str, list[np.ndarray]] = {name: [] for name in POINT_COLUMNS}
+    pulse_lengths: list[np.ndarray] = []
+    samples_of: list[np.ndarray] = []
+
+    for mesh in realisation.values():
+        cells_i, cells_j = mesh.cell_counts
+        subfaults = cells_i * cells_j
+        located = project_cells(mesh, realisation.crs)
+
+        hypocentre_km = (
+            (
+                float(mesh.attrs[HYPOCENTRE_STRIKE_KM]),
+                float(mesh.attrs[HYPOCENTRE_DIP_KM]),
+            )
+            if HYPOCENTRE_STRIKE_KM in mesh.attrs
+            else None
+        )
+        headers.append(plane_header(mesh, located, hypocentre_km=hypocentre_km))
+
+        def projected(name: str, dataset: xr.Dataset = located) -> np.ndarray:
+            return dataset[name].to_numpy().ravel()
+
+        interval_s = float(mesh.attrs["sample_interval_s"])
+
+        # SI leaves the package here. Slip and area cross into the format's own
+        # units; depth, angles and times are already what it wants.
+        columns["longitude_deg"].append(projected("centre_longitude_deg"))
+        columns["latitude_deg"].append(projected("centre_latitude_deg"))
+        columns["depth_km"].append(projected("centre_depth_km"))
+        columns["strike_deg"].append(projected("strike_deg"))
+        columns["dip_deg"].append(projected("dip_deg"))
+        columns["area_cm2"].append(projected("area_km2") * M2_PER_KM2 * CM2_PER_M2)
+        columns["onset_s"].append(mesh["onset_s"].ravel())
+        columns["sample_interval_s"].append(np.full(subfaults, interval_s))
+        columns["rake_deg"].append(mesh["rake_deg"].ravel())
+        columns["slip_cm"].append(mesh["slip_m"].ravel() * CM_PER_M)
+        columns["rise_time_s"].append(mesh["rise_time_s"].ravel())
+        columns["shear_speed_cm_s"].append(mesh["shear_speed_kms"].ravel() * CM_PER_KM)
+        columns["density_g_cm3"].append(mesh["density_g_cm3"].ravel())
+
+        offsets, samples = mesh.pulses  # ty: ignore[not-iterable]
+        pulse_lengths.append(np.diff(offsets))
+        samples_of.append(samples)
+
+    return srf_file(headers, columns, pulse_lengths, samples_of)
+
+
+__all__ = ["POINT_COLUMNS", "plane_header", "srf_file", "to_srf_file"]

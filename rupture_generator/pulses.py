@@ -18,15 +18,11 @@ default shape instead would silently generate a different rupture.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from rupture_generator import _kernels
 from rupture_generator.stages import DepthRamp
-
-if TYPE_CHECKING:
-    from rupture_generator.mesh import RuptureMesh
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
@@ -158,7 +154,7 @@ class PulseParams:
 
 
 def synthesise(
-    mesh: RuptureMesh,
+    depth_km: FloatArray,
     slip_m: FloatArray,
     rise_time_s: FloatArray,
     params: PulseParams,
@@ -170,6 +166,23 @@ def synthesise(
     sample at this interval. Emitting nothing there instead dropped 0.63% of the moment
     on the seed-1234 fixture, and nothing downstream could tell the difference between
     a subfault that did not slip and one whose pulse was thrown away.
+
+    Takes **depth rather than a chart**, which is the whole of what this stage reads of
+    the geometry: a subfault's own centre depth sets the rising fraction, and whether
+    that subfault is a lattice cell or a triangle changes nothing here. It also keeps
+    the caller in charge of computing the centres once rather than every stage asking
+    the mesh again, which at 2.4 million faces is seconds a pass.
+
+    Parameters
+    ----------
+    depth_km : FloatArray
+        Each subfault's centre depth, positive down. Read only when the shape's rising
+        fraction is depth-dependent.
+    slip_m : FloatArray
+        Each subfault's slip, metres.
+    rise_time_s : FloatArray
+        Each subfault's rise time, seconds.
+    params : PulseParams
 
     Returns
     -------
@@ -186,7 +199,7 @@ def synthesise(
         )
 
     if params.shape.beta is None:
-        beta = params.beta_at(mesh.centres()[..., 2]).ravel()
+        beta = params.beta_at(np.asarray(depth_km, dtype=np.float64)).ravel()
     else:
         beta = np.full(flat_slip.shape, params.shape.beta, dtype=np.float64)
 

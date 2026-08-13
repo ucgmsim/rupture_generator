@@ -10,14 +10,20 @@ from typing import TYPE_CHECKING, Annotated
 import numpy as np
 import typer
 import xarray as xr
+from scipy.spatial import KDTree
 
 from rupture_generator.formats import Format, from_path
 from rupture_generator.formats.rupture import read_rupture, segments_in
 from rupture_generator.moment import cumulative_moment, moment_rate, rigidity_pa
 from rupture_generator.scripts.errors import console
+from rupture_generator.triangular.mesh import SCHEMA_VERSION as TRIANGULAR_SCHEMA
+from rupture_generator.triangular.mesh import from_datatree, remesh
+from rupture_generator.units import M2_PER_KM2
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
+
+    from rupture_generator.triangular.mesh import TriangleMesh
 
     # A colour map already closed over its limits -- `hot` or `viridis` with the same
     # `low` and `high` the fault is drawn at, so a bar and a patch of fault showing the
@@ -51,6 +57,38 @@ further would discard detail the screen could have resolved, and drawing more wo
 paint several subfaults into one pixel.
 """
 
+TRIANGLES_PER_CELL = 2
+"""How many display triangles one cell of :data:`DEFAULT_CELL_BUDGET` buys.
+
+The budget is stated in *cells*, which on the structured track are quads, and two
+triangles tile the footprint of one quad. So a triangulation drawn at twice the cell
+budget puts the same number of pixels on each drawn face, and one number stays
+comparable across both tracks rather than needing a second nobody can weigh against
+the first.
+
+It is a budget for the **animation** rather than for the renderer: the slip mesh is
+logged again at every frame, so a million faces is not a slow first draw but a
+gigabyte of mesh per second of timeline.
+"""
+
+PULSE_BLOCK_SAMPLES = 8_000_000
+"""How many slip-rate samples to hold at once while carrying pulses onto the display.
+
+The pulses are the only part of a rupture file that does not fit: the shipped 525 m
+Hikurangi ruptures carry 400 M samples (3.2 GB of ``f64``) and the 400 m one 2.45 G
+(19.6 GB), against 30 GB of machine. Everything else a viewer needs -- vertices, faces,
+and one value per subfault per field -- is under 250 MB at 2.15 M faces, which is why
+:func:`load` reads those whole and blocks only this.
+
+A block of 8 M samples is 64 MB of ``f64``, and :func:`_carry_pulses` holds four arrays
+of that size while it works on one. That is not what sets the peak: the aggregate it is
+building is, at 0.24 GB for the 525 m rupture and 0.98 GB for the 400 m one, plus one
+scatter temporary of the same size again. So the block size trades only against the
+per-block overhead, and 8 M is far enough above the point where that matters -- the
+whole 400 M sample pass takes 8.3 s, against 0.9 s to assign the subfaults and 55 s to
+build the surface they are drawn on.
+"""
+
 AXIS_LINE = (90, 96, 104)
 """Grey enough to read as furniture rather than as data."""
 
@@ -64,27 +102,58 @@ being readable as directions."""
 
 
 @dataclasses.dataclass(frozen=True)
+class Subfaults:
+    """What the file says, at its own resolution, once the drawn mesh is coarser.
+
+    A triangular rupture is drawn on a surface built for the screen (see
+    :func:`decimate`), so the drawn cells are not the file's subfaults and a panel that
+    *counts* them -- the statistics table, the field distributions -- would be
+    describing the picture rather than the earthquake. These are the arrays those
+    panels read instead. One field per array, no geometry: 66 MB at 1.39 M faces, which
+    is the price of the histograms being about the rupture.
+    """
+
+    slip_m: np.ndarray
+    rise_time_s: np.ndarray
+    onset_s: np.ndarray
+    rake_deg: np.ndarray
+    area_m2: np.ndarray
+    rigidity_pa: np.ndarray | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class Segment:
     """One fault segment, in the local metric frame the viewer draws in.
 
-    Both input formats reduce to this, which is what lets everything below be written
+    Every input format reduces to this, which is what lets everything below be written
     once. Positions are **metres east, north and up** from the rupture's own centroid:
-    up rather than down because a viewer's vertical axis points up and both file
-    formats measure depth downwards.
+    up rather than down because a viewer's vertical axis points up and every file
+    format measures depth downwards.
 
     Attributes
     ----------
+    cells : tuple of int, or None
+        The lattice shape a structured file was stored on, which is what
+        :func:`strided` skips through. ``None`` for a triangulation, which has no
+        lattice to skip through and arrives already decimated -- see :func:`decimate`.
     corners_m : np.ndarray
-        ``(cells, 4, 3)``, anticlockwise from the shallow near corner. Unshared
-        between cells on purpose -- see the module note.
+        ``(cells, corners, 3)``, anticlockwise from the shallow near corner. Four
+        corners from a quad lattice and three from a triangulation; nothing below reads
+        the count, it fans whatever it is given. Unshared between cells on purpose --
+        see the module note.
     rigidity_pa : np.ndarray or None
         Present when the file carries the material properties the generator sampled.
-        An SRF version 2.0 does; the native format does not, and the moment release is
-        then drawn at a nominal rigidity with the panel saying so.
+        An SRF version 2.0 and a version 3 rupture do; a version 2 rupture does not,
+        and the moment release is then drawn at a nominal rigidity with the panel
+        saying so.
+    subfaults : Subfaults or None
+        The file's own values where this segment has been decimated for the screen, and
+        ``None`` where it has not -- in which case the segment *is* what the file says
+        and :attr:`population` returns it.
     """
 
     name: str
-    cells: tuple[int, int]
+    cells: tuple[int, int] | None
     corners_m: np.ndarray
     centres_m: np.ndarray
     slip_m: np.ndarray
@@ -99,10 +168,25 @@ class Segment:
     sample_interval_s: float
     hypocentre_m: np.ndarray | None = None
     rigidity_pa: np.ndarray | None = None
+    subfaults: Subfaults | None = None
 
     def values(self, variable: str) -> np.ndarray:
         """One field, flattened over subfaults."""
         return getattr(self, variable).ravel()
+
+    @property
+    def population(self) -> Segment | Subfaults:
+        """The subfaults the file holds, which is this segment unless it was decimated.
+
+        Returns
+        -------
+        Segment or Subfaults
+            Either way it carries ``slip_m``, ``rise_time_s``, ``onset_s``,
+            ``rake_deg``, ``area_m2`` and ``rigidity_pa`` under those names, so a caller
+            asking what the *rupture* looks like reads the same attributes whichever it
+            gets.
+        """
+        return self.subfaults if self.subfaults is not None else self
 
 
 # ============================================================================
@@ -178,8 +262,18 @@ COLOURMAPS = {"hot": hot, "viridis": viridis}
 # ============================================================================
 
 
-def load(path: Path) -> tuple[list[Segment], str]:
+def load(path: Path, max_cells: int = DEFAULT_CELL_BUDGET) -> tuple[list[Segment], str]:
     """Read a rupture, whatever it is written as.
+
+    Parameters
+    ----------
+    path : Path
+        A native rupture file of either schema, or a text SRF.
+    max_cells : int, optional
+        How many cells the drawn mesh may have. Only a version 3 file uses it here --
+        a triangulation is decimated on the way in, because that is what bounds the
+        pulses this has to read at all -- and the structured tracks are strided at
+        draw time instead.
 
     Returns
     -------
@@ -189,11 +283,19 @@ def load(path: Path) -> tuple[list[Segment], str]:
     Raises
     ------
     ValueError
-        For a format this cannot read.
+        For a format this cannot read, a native file that holds no rupture, or a
+        version 3 file that holds a fault surface with nothing drawn on it.
     """
     chosen = from_path(path)
     if chosen in (Format.NETCDF, Format.ZARR):
-        return _from_rupture_file(path), "native rupture file"
+        with read_rupture(path) as tree:
+            # Dispatched on what the file says it is, not on which variables it
+            # happens to carry: the two schemas share most of their vocabulary, so
+            # guessing reads a triangulation as a lattice and fails somewhere else.
+            version = int(tree.attrs.get("schema_version", 1))
+            if version >= TRIANGULAR_SCHEMA:
+                return _from_triangular_file(tree, max_cells)
+            return _from_rupture_file(tree), "native rupture file"
     if chosen is Format.SRF:
         return _from_srf(path), "SRF, mesh reconstructed from subfault centres"
     raise ValueError(
@@ -210,66 +312,64 @@ def _local_frame(
     return stacked.mean(axis=0), stacked
 
 
-def _from_rupture_file(path: Path) -> list[Segment]:
-    """The native format, where the nodes are stored and nothing is reconstructed."""
+def _from_rupture_file(tree: xr.DataTree) -> list[Segment]:
+    """The structured format, where the nodes are stored and nothing is reconstructed."""
     segments: list[Segment] = []
-    with read_rupture(path) as tree:
-        found = segments_in(tree)
-        if not found:
-            raise ValueError(f"{path} holds no rupture")
+    found = segments_in(tree)
+    if not found:
+        raise ValueError("this file holds no rupture")
 
-        origin = None
-        for name, dataset in found:
-            east = (
-                dataset["node_east_km"].to_numpy()
-                + float(dataset.attrs["origin_east_km"])
-            ) * 1000.0
-            north = (
-                dataset["node_north_km"].to_numpy()
-                + float(dataset.attrs["origin_north_km"])
-            ) * 1000.0
-            up = -dataset["node_depth_km"].to_numpy() * 1000.0
-            nodes = np.stack([east, north, up], axis=-1)
-            if origin is None:
-                origin = np.array([nodes[..., 0].mean(), nodes[..., 1].mean(), 0.0])
+    origin = None
+    for name, dataset in found:
+        east = (
+            dataset["node_east_km"].to_numpy() + float(dataset.attrs["origin_east_km"])
+        ) * 1000.0
+        north = (
+            dataset["node_north_km"].to_numpy()
+            + float(dataset.attrs["origin_north_km"])
+        ) * 1000.0
+        up = -dataset["node_depth_km"].to_numpy() * 1000.0
+        nodes = np.stack([east, north, up], axis=-1)
+        if origin is None:
+            origin = np.array([nodes[..., 0].mean(), nodes[..., 1].mean(), 0.0])
 
-            corners = (
-                np.stack(
-                    [
-                        nodes[:-1, :-1],
-                        nodes[:-1, 1:],
-                        nodes[1:, 1:],
-                        nodes[1:, :-1],
-                    ],
-                    axis=2,
-                ).reshape(-1, 4, 3)
-                - origin
+        corners = (
+            np.stack(
+                [
+                    nodes[:-1, :-1],
+                    nodes[:-1, 1:],
+                    nodes[1:, 1:],
+                    nodes[1:, :-1],
+                ],
+                axis=2,
+            ).reshape(-1, 4, 3)
+            - origin
+        )
+
+        hypocentre = None
+        if "hypocentre_strike_km" in dataset.attrs:
+            hypocentre = _hypocentre_position(dataset, nodes, origin)
+
+        segments.append(
+            Segment(
+                name=name,
+                cells=(dataset.sizes["i"], dataset.sizes["j"]),
+                corners_m=corners,
+                centres_m=corners.mean(axis=1),
+                slip_m=dataset["slip_m"].to_numpy(),
+                rise_time_s=dataset["rise_time_s"].to_numpy(),
+                onset_s=dataset["onset_s"].to_numpy(),
+                rake_deg=dataset["rake_deg"].to_numpy(),
+                area_m2=dataset["area_m2"].to_numpy(),
+                strike_deg=dataset["strike_deg"].to_numpy(),
+                dip_deg=dataset["dip_deg"].to_numpy(),
+                pulse_offsets=dataset["slip_rate_offset"].to_numpy(),
+                pulse_samples=dataset["slip_rate"].to_numpy(),
+                rigidity_pa=dataset["rigidity_pa"].to_numpy(),
+                sample_interval_s=float(dataset.attrs["sample_interval_s"]),
+                hypocentre_m=hypocentre,
             )
-
-            hypocentre = None
-            if "hypocentre_strike_km" in dataset.attrs:
-                hypocentre = _hypocentre_position(dataset, nodes, origin)
-
-            segments.append(
-                Segment(
-                    name=name,
-                    cells=(dataset.sizes["i"], dataset.sizes["j"]),
-                    corners_m=corners,
-                    centres_m=corners.mean(axis=1),
-                    slip_m=dataset["slip_m"].to_numpy(),
-                    rise_time_s=dataset["rise_time_s"].to_numpy(),
-                    onset_s=dataset["onset_s"].to_numpy(),
-                    rake_deg=dataset["rake_deg"].to_numpy(),
-                    area_m2=dataset["area_m2"].to_numpy(),
-                    strike_deg=dataset["strike_deg"].to_numpy(),
-                    dip_deg=dataset["dip_deg"].to_numpy(),
-                    pulse_offsets=dataset["slip_rate_offset"].to_numpy(),
-                    pulse_samples=dataset["slip_rate"].to_numpy(),
-                    rigidity_pa=dataset["rigidity_pa"].to_numpy(),
-                    sample_interval_s=float(dataset.attrs["sample_interval_s"]),
-                    hypocentre_m=hypocentre,
-                )
-            )
+        )
     return segments
 
 
@@ -295,6 +395,461 @@ def _hypocentre_position(
     return cell - origin
 
 
+# ============================================================================
+# The triangular track: a rupture drawn on a coarser surface of its own
+# ============================================================================
+
+
+def _from_triangular_file(
+    tree: xr.DataTree, max_cells: int
+) -> tuple[list[Segment], str]:
+    """A version 3 rupture: a triangulation, redrawn at a resolution a screen can hold.
+
+    Nothing here reconstructs geometry -- the file stores the vertices and the faces --
+    but everything is *decimated*, and that is the difference from the structured path.
+    A shipped 525 m Hikurangi rupture is 1.39 M faces and its pulses are 3.2 GB, so the
+    drawn surface is rebuilt at a display resolution by :func:`decimate` and the file's
+    own values are carried onto it: the picture is coarse, the numbers behind the
+    panels are not.
+
+    Measured end to end, under ``ulimit -v 12000000`` on a 30 GB machine, at the
+    default 50,000 cell budget:
+
+    ==================  =========  =========  =======  ========  ======  =====
+    rupture             on disk    faces      drawn    pulses    load    peak
+    ==================  =========  =========  =======  ========  ======  =====
+    Hikurangi 525 m     3.4 GB     1,389,600  95,894   400 M     90 s    1.2 GB
+    Hikurangi 400 m     20.0 GB    2,151,936  95,776   2.45 G    206 s   2.2 GB
+    ==================  =========  =========  =======  ========  ======  =====
+
+    The peak is a fifth of the smaller file and a ninth of the larger, which is the
+    point: nothing here is proportional to the pulses.
+
+    Returns
+    -------
+    tuple
+        The segments, and a sentence naming both resolutions -- because a viewer
+        drawing something other than what the file holds has to say so.
+    """
+    meshes, _ = from_datatree(tree)
+    parts = [
+        (surface if len(segments) == 1 else f"{surface}:{index}", mesh)
+        for surface, segments in meshes.items()
+        for index, mesh in enumerate(segments)
+    ]
+    if not parts:
+        raise ValueError("this file holds no rupture")
+
+    # A version 3 *mesh* file and a version 3 rupture are the same layout with and
+    # without the fields, so the difference has to be looked for rather than inferred
+    # from the schema -- and saying which field is missing is what tells a reader
+    # they are looking at a surface nothing has been drawn on yet.
+    wanted = ("slip_m", "rise_time_s", "onset_s", "rake_deg")
+    for name, mesh in parts:
+        missing = [field for field in wanted if field not in mesh]
+        if missing:
+            raise ValueError(
+                f"segment {name!r} carries no {', '.join(missing)}, so this is a fault "
+                "surface rather than a rupture on one. Generate a rupture first"
+            )
+
+    # The budget is for the picture, so it is shared out between segments the same way
+    # `MAX_ARROWS` is: a twenty-segment fault system draws twenty coarser meshes rather
+    # than twenty full ones.
+    budget = max(TRIANGLES_PER_CELL * max_cells // len(parts), 1)
+
+    segments: list[Segment] = []
+    origin: np.ndarray | None = None
+    for name, mesh in parts:
+        segment, origin = _triangular_segment(mesh, name, budget, origin)
+        segments.append(segment)
+
+    drawn = sum(len(segment.corners_m) for segment in segments)
+    subfaults = sum(mesh.face_count for _, mesh in parts)
+    if drawn == subfaults:
+        return segments, f"native triangular rupture file, {subfaults:,} faces"
+    return segments, (
+        f"native triangular rupture file, {subfaults:,} faces redrawn on {drawn:,}"
+    )
+
+
+def _triangular_segment(
+    mesh: TriangleMesh, name: str, budget: int, origin: np.ndarray | None
+) -> tuple[Segment, np.ndarray]:
+    """One segment of a version 3 file, decimated, with its fields carried across.
+
+    **How each field crosses is a decision per field, not one rule.**
+
+    - **Slip** is the area-weighted mean of the subfaults in a display cell, and the
+      cell's area is their total. That pair is what makes the drawn rupture carry the
+      file's moment exactly rather than drifting with the display resolution, and
+      `test_a_decimated_rupture_carries_the_files_moment` asserts it. Measured on a
+      shipped 525 m rupture, 1.39 M faces onto 98,468: the drawn moment is the file's to
+      2.2e-16 relative, and the total area to round-off. What the mean *does* cost is
+      the extremes, and they are reported rather than hidden -- peak slip 2.399 m drawn
+      against 2.438 m in the file, which is why the statistics panel and both static
+      histograms read :attr:`Segment.population` instead.
+    - **Rigidity** is weighted by ``area x slip`` rather than by area, which is the
+      weight that makes ``mu_cell A_cell slip_cell`` equal the subfaults' own summed
+      moment when rigidity varies across the cell. Where a cell did not slip there is
+      no moment to preserve and it falls back to the area-weighted mean.
+    - **Onset** is the *earliest* of the cell's subfaults: when the front reaches the
+      cell is when it reaches the first of them. It is a real subfault's onset rather
+      than an average, it is what the aggregated pulse below is measured from, and
+      unlike a nearest-face pick it can never report the front arriving after the cell
+      has already started to slip.
+    - **Rake, rise time, strike and dip** are the nearest subfault's, so no drawn cell
+      shows a value no subfault had -- the property the strided path kept, kept here.
+      Averaging a rake is meaningless at the wrap and averaging a rise time smears the
+      quantity being looked at.
+
+    Returns
+    -------
+    tuple
+        The segment, and the viewer's shared origin -- established by the first segment
+        so that every later one lands beside it rather than about its own centre.
+    """
+    origin_km = mesh.origin_km
+    if origin is None:
+        vertices = mesh.vertices_km()
+        origin = np.array(
+            [
+                (vertices[:, 0].mean() + origin_km[0]) * 1000.0,
+                (vertices[:, 1].mean() + origin_km[1]) * 1000.0,
+                0.0,
+            ]
+        )
+
+    areas_m2 = mesh.areas_km2() * M2_PER_KM2
+    slip_m = np.asarray(mesh["slip_m"], dtype=np.float64)
+    rigidity = (
+        np.asarray(mesh["rigidity_pa"], dtype=np.float64)
+        if "rigidity_pa" in mesh
+        else None
+    )
+    subfaults = Subfaults(
+        slip_m=slip_m,
+        rise_time_s=np.asarray(mesh["rise_time_s"], dtype=np.float64),
+        onset_s=np.asarray(mesh["onset_s"], dtype=np.float64),
+        rake_deg=np.asarray(mesh["rake_deg"], dtype=np.float64),
+        area_m2=areas_m2,
+        rigidity_pa=rigidity,
+    )
+
+    display, cell_of_face = decimate(mesh, budget)
+    cells = display.face_count
+    weight = np.bincount(cell_of_face, weights=areas_m2, minlength=cells)
+    # A display cell with no subfault of its own is possible where the drawn surface
+    # reaches past the file's -- it carries no area, no slip and no pulse, and dividing
+    # by its area would put a NaN on the picture instead of nothing.
+    safe = np.where(weight > 0.0, weight, 1.0)
+
+    def carried(values: np.ndarray) -> np.ndarray:
+        """A field's area-weighted mean over the subfaults in each display cell."""
+        return (
+            np.bincount(cell_of_face, weights=areas_m2 * values, minlength=cells) / safe
+        )
+
+    drawn_slip = carried(slip_m)
+    drawn_rigidity = None
+    if rigidity is not None:
+        moment = np.bincount(
+            cell_of_face, weights=areas_m2 * slip_m * rigidity, minlength=cells
+        )
+        slipped = weight * drawn_slip
+        drawn_rigidity = np.where(
+            slipped > 0.0,
+            moment / np.where(slipped > 0.0, slipped, 1.0),
+            carried(rigidity),
+        )
+
+    # The earliest onset in each cell, and the closest subfault to each cell's centre.
+    onset_s = np.full(cells, np.inf)
+    np.minimum.at(onset_s, cell_of_face, subfaults.onset_s)
+    onset_s = np.where(np.isfinite(onset_s), onset_s, float(subfaults.onset_s.min()))
+    nearest = KDTree(mesh.centres()).query(display.centres())[1]
+
+    strike_deg, dip_deg = mesh.strike_dip_deg()
+    corners_km = display.vertices_km()[display.faces()]
+    corners_m = _view_metres(corners_km, origin_km, origin)
+
+    offsets, samples = _carry_pulses(
+        mesh, cell_of_face, onset_s, areas_m2 / safe[cell_of_face]
+    )
+
+    return (
+        Segment(
+            name=name,
+            cells=None,
+            corners_m=corners_m,
+            centres_m=corners_m.mean(axis=1),
+            slip_m=drawn_slip,
+            rise_time_s=subfaults.rise_time_s[nearest],
+            onset_s=onset_s,
+            rake_deg=subfaults.rake_deg[nearest],
+            area_m2=weight,
+            strike_deg=strike_deg[nearest],
+            dip_deg=dip_deg[nearest],
+            pulse_offsets=offsets,
+            pulse_samples=samples,
+            sample_interval_s=float(mesh.attrs["sample_interval_s"]),
+            hypocentre_m=_triangular_hypocentre(mesh, origin),
+            rigidity_pa=drawn_rigidity,
+            # Only where the drawn cells are not the file's faces. Undecimated, the
+            # segment *is* what the file says and a second copy of it would be one
+            # more thing that could disagree with the picture.
+            subfaults=subfaults if display is not mesh else None,
+        ),
+        origin,
+    )
+
+
+def _view_metres(
+    points_km: np.ndarray, origin_km: tuple[float, float], origin_m: np.ndarray
+) -> np.ndarray:
+    """``(..., 3)`` chart positions as metres east, north and **up** about the viewer.
+
+    The one place the two conventions meet: a chart holds offsets from its surface
+    origin in kilometres with depth positive downwards, and a viewer's vertical axis
+    points up.
+    """
+    points = np.asarray(points_km, dtype=np.float64)
+    return (
+        np.stack(
+            [
+                points[..., 0] + origin_km[0],
+                points[..., 1] + origin_km[1],
+                -points[..., 2],
+            ],
+            axis=-1,
+        )
+        * 1000.0
+        - origin_m
+    )
+
+
+def display_spacing_km(area_km2: float, faces: int) -> float:
+    """The lattice spacing that cuts a surface of ``area_km2`` into about ``faces``.
+
+    :func:`~rupture_generator.triangular.mesh.remesh` cuts the parameter domain into
+    squares of the spacing it is given and splits each into two triangles, so
+    ``faces = 2 A / d**2`` and the spacing is that inverted. Solved rather than
+    searched for, and the answer is an over-estimate of the face count by exactly the
+    metric factor ``sqrt(1 + |grad h|**2)`` -- the surface is larger than its own
+    projection -- so the realised mesh comes in *under* budget, which is the safe side.
+    Measured on the shipped 525 m Hikurangi rupture: 1.89 km asked for 100,000 faces
+    and got 95,894.
+
+    Parameters
+    ----------
+    area_km2 : float
+        The surface's own area.
+    faces : int
+        How many triangles to aim for.
+
+    Returns
+    -------
+    float
+        Kilometres.
+    """
+    return math.sqrt(TRIANGLES_PER_CELL * area_km2 / faces)
+
+
+def decimate(mesh: TriangleMesh, faces: int) -> tuple[TriangleMesh, np.ndarray]:
+    """A coarser surface to draw, and which of its faces each subfault belongs to.
+
+    **A triangulation cannot be strided.** Taking every seventh cell of a lattice --
+    which is what :func:`strided_corners` does, and what a 2.15 M face rupture asks for
+    at any usable budget -- leaves a coarser *lattice*, because a quad block has
+    corners to span. Taking every 49th triangle leaves 49th of a surface: holes, not a
+    coarser fault. So the display mesh is **built** rather than sieved, by
+    :func:`~rupture_generator.triangular.mesh.remesh`, which lifts a lattice at the
+    display spacing onto the file's own surface. Every drawn vertex lies exactly on the
+    fault, the outline is the file's resolved to one display cell, and there are no
+    holes.
+
+    The subfaults are then assigned to display cells by **nearest centre**, which makes
+    the assignment a partition: every subfault lands in exactly one cell, so a sum over
+    display cells is a sum over the file's subfaults and the moment cannot leak. It
+    costs 0.87 s for 1.39 M subfaults against 95,894 cells, which is nothing beside the
+    remeshing.
+
+    **The remeshing is what this costs**, and it is worth saying where the time goes
+    rather than leaving it to be discovered: 54.9 s of the 90 s it takes to open a
+    shipped 525 m rupture, and 2.7 minutes of the 3.4 for the 400 m one. `remesh` scans
+    its *source* faces in a Python loop -- which is cheap for the pipeline, whose source
+    is a 5,218-face CFM interface, and is the whole cost here, where the source is 1.39
+    M faces and the target is 95 k. Vectorising that loop is the one change that would
+    make this fast, and it belongs in ``triangular/mesh.py`` rather than here.
+
+    Parameters
+    ----------
+    mesh : TriangleMesh
+        The file's own segment.
+    faces : int
+        The display budget, in triangles.
+
+    Returns
+    -------
+    tuple
+        The display mesh, and ``(F,)`` display-cell indices, one per subfault. A mesh
+        already inside the budget is returned unchanged, with the identity assignment,
+        so a small rupture is drawn exactly as it was stored.
+
+    Raises
+    ------
+    ValueError
+        If the display mesh cannot be built, naming the spacing it was asked for.
+        Drawing the file's own faces instead is not the fallback it looks like: the
+        slip mesh is logged once per frame, so a million faces is a gigabyte of mesh
+        per second of timeline.
+    """
+    if mesh.face_count <= faces:
+        return mesh, np.arange(mesh.face_count)
+
+    frame = mesh.frame
+    spacing_km = display_spacing_km(float(mesh.areas_km2().sum()), faces)
+    try:
+        display = remesh(
+            mesh.vertices_km(),
+            mesh.faces(),
+            spacing_km,
+            strike_deg=frame.strike_deg,
+            dip_deg=frame.dip_deg,
+            origin_east_km=mesh.origin_km[0],
+            origin_north_km=mesh.origin_km[1],
+            surface=mesh.surface,
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"{mesh.surface!r} cannot be drawn at {spacing_km:.3g} km, which is the "
+            f"spacing a budget of {faces:,} faces asks of a surface of "
+            f"{mesh.areas_km2().sum():,.0f} km2: {error}. Raise --max-cells"
+        ) from error
+
+    return display, KDTree(display.centres()).query(mesh.centres())[1]
+
+
+def _carry_pulses(
+    mesh: TriangleMesh,
+    cell_of_face: np.ndarray,
+    cell_onset_s: np.ndarray,
+    weight: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Every subfault's slip-rate pulse, summed onto the display cell that holds it.
+
+    A display cell's pulse is its subfaults' pulses, each weighted by its share of the
+    cell's area and each laid down at its own onset relative to the cell's -- so the
+    aggregate is the cell's mean slip rate through time, and integrates to exactly the
+    area-weighted mean slip that :func:`_triangular_segment` draws. Nothing about the
+    rupture's timing is averaged: a front sweeping across a display cell shows up as
+    the cell's pulse being longer than any of its subfaults', which is what it is.
+
+    **This is the only pass over the pulses, and it is blocked.** The rates arrive as
+    an unread array (:attr:`~rupture_generator.triangular.mesh.TriangleMesh
+    .pulse_rates`), and :data:`PULSE_BLOCK_SAMPLES` at a time are read, weighted and
+    scattered. The aggregate is smaller than the file's by most of the decimation
+    ratio: 30.6 M samples against 400 M on a shipped 525 m rupture and 122 M against
+    2.45 G on the 400 m one, because a display cell holds one pulse where its ~15
+    subfaults held one each. What it does not shrink by is the *whole* ratio -- the
+    cell's pulse spans its subfaults' onsets as well as their rise times, which is
+    exactly the front crossing it and is the thing worth watching.
+
+    Onsets are quantised to the sample interval, exactly as
+    :func:`~rupture_generator.moment.moment_rate` quantises them -- the same half-sample
+    error, 0.01 s at the 0.02 s these files are written at, against onsets the model
+    itself perturbs by ~0.35 s.
+
+    Returns
+    -------
+    tuple
+        The CSR ``(offsets, samples)`` of the display mesh's own pulses.
+
+    Raises
+    ------
+    ValueError
+        If the file carries no pulses, which is what a rupture generated with
+        ``synthesise=False`` looks like: it has slip and onsets but never says how
+        anything moved, so there is no animation to draw.
+    """
+    offsets, rates = mesh.pulse_offsets, mesh.pulse_rates
+    if offsets is None or rates is None:
+        raise ValueError(
+            f"{mesh.surface!r} carries no slip-rate pulses, so there is nothing to "
+            "animate. It was generated with `synthesise=False`; write it again with "
+            "the pulse model, or view an SRF of it"
+        )
+    interval_s = float(mesh.attrs["sample_interval_s"])
+    lengths = np.diff(offsets)
+
+    # Where each subfault's pulse starts inside its cell's, in samples. Non-negative
+    # because the cell's onset is the earliest of its own subfaults'.
+    shift = np.rint(
+        (np.asarray(mesh["onset_s"], dtype=np.float64) - cell_onset_s[cell_of_face])
+        / interval_s
+    ).astype(np.int64)
+
+    reach = np.zeros(len(cell_onset_s), dtype=np.int64)
+    np.maximum.at(reach, cell_of_face, shift + lengths)
+    cell_offsets = np.concatenate([[0], np.cumsum(reach)])
+
+    samples = np.zeros(int(cell_offsets[-1]), dtype=np.float64)
+    # Sample `g` of subfault `i` lands at `base[i] + g` in the aggregate, which is the
+    # whole of the scatter: no per-subfault Python loop over 1.39 M faces.
+    base = cell_offsets[cell_of_face] + shift - offsets[:-1]
+    for first, last in _face_blocks(offsets, PULSE_BLOCK_SAMPLES):
+        low, high = int(offsets[first]), int(offsets[last])
+        if high == low:
+            continue
+        block = np.asarray(rates[low:high], dtype=np.float64)
+        block *= np.repeat(weight[first:last], lengths[first:last])
+        target = np.repeat(base[first:last], lengths[first:last]) + np.arange(low, high)
+        samples += np.bincount(target, weights=block, minlength=samples.size)
+
+    return cell_offsets, samples
+
+
+def _face_blocks(offsets: np.ndarray, block_samples: int) -> Iterator[tuple[int, int]]:
+    """Face ranges holding about ``block_samples`` samples each.
+
+    Cut on the pulses rather than on the faces, because a subfault's pulse is as long
+    as its own rise time and the tapered edge of a fault has none at all: a fixed
+    number of faces is a block whose size varies by orders of magnitude, and the
+    budget is about bytes. A single subfault whose pulse is longer than the block is
+    still read whole, since a pulse is the unit that can be placed.
+    """
+    faces = len(offsets) - 1
+    first = 0
+    while first < faces:
+        last = (
+            int(np.searchsorted(offsets, offsets[first] + block_samples, "right")) - 1
+        )
+        last = min(max(last, first + 1), faces)
+        yield first, last
+        first = last
+
+
+def _triangular_hypocentre(mesh: TriangleMesh, origin: np.ndarray) -> np.ndarray | None:
+    """Where the rupture nucleated, on a triangulation.
+
+    The file records the hypocentre as the config states it -- arc lengths along strike
+    and down dip -- so this asks the chart the same question the pipeline asked when it
+    seeded the wavefront, :meth:`~rupture_generator.triangular.mesh.TriangleMesh
+    .cell_index`, and takes the centre of the face that comes back. The marker is then
+    on the subfault that nucleated rather than near it, and at the file's own
+    resolution rather than the display's, which is the one place in the viewer where a
+    cell's width would be a visible lie.
+    """
+    if "hypocentre_strike_km" not in mesh.attrs:
+        return None
+    face = mesh.cell_index(
+        float(mesh.attrs["hypocentre_strike_km"]),
+        float(mesh.attrs["hypocentre_dip_km"]),
+    )
+    corners = mesh.vertices_km()[mesh.faces()[face]]
+    return _view_metres(corners.mean(axis=0), mesh.origin_km, origin)
+
+
 def _from_srf(path: Path) -> list[Segment]:
     """An SRF, whose mesh is reconstructed from what the format does store.
 
@@ -303,6 +858,14 @@ def _from_srf(path: Path) -> list[Segment]:
     size the plane header implies. That is exact for the uniform planar grids an SRF
     describes and approximate for nothing else, which is the same assumption the
     format itself makes.
+
+    **Not for a triangular rupture's SRF**, and there is nothing in the file that says
+    so. `rupture_generator.triangular.assemble` writes one PLANE per segment with
+    ``NSTK`` the triangle count and ``NDIP`` 1, whose length and width are a *summary*
+    of the segment rather than a lattice -- so this would draw every subfault as a quad
+    the full width of the fault. That header is inert to SW4 by design and there is no
+    marker to detect it by, so the rule is the one MESH.md states: a triangular model is
+    viewed from its own rupture file, where the faces are.
     """
     from rupture_generator.srf import read_srf
 
@@ -405,17 +968,22 @@ generator sampled, and the panel says when that is."""
 def statistics(segments: list[Segment]) -> str:
     """The numbers that say what kind of earthquake this is, and the moment release.
 
+    Read off :attr:`Segment.population` rather than off the segments themselves, so
+    every number here is a statement about the rupture the file holds -- its moment,
+    its subfault count, its peak slip -- and not about the coarser surface a
+    triangulation is drawn on. On the structured track the two are the same object.
+
     Returns
     -------
-    tuple
-        A markdown summary, the total moment released up to each display time, the
-        display times, and whether the rigidity was the file's own or nominal.
+    str
+        A markdown summary.
     """
-    exact = all(segment.rigidity_pa is not None for segment in segments)
+    counted = [segment.population for segment in segments]
+    exact = all(segment.rigidity_pa is not None for segment in counted)
 
     moment_nm = 0.0
     area_m2 = 0.0
-    for segment in segments:
+    for segment in counted:
         rigidity = (
             segment.rigidity_pa
             if segment.rigidity_pa is not None
@@ -428,15 +996,13 @@ def statistics(segments: list[Segment]) -> str:
 
     magnitude = (math.log10(moment_nm) - 9.0499505) / 1.5 if moment_nm > 0 else 0.0
 
-    starts = [float(segment.onset_s.min()) for segment in segments]
+    starts = [float(segment.onset_s.min()) for segment in counted]
     # When the last subfault *stops* slipping, not when the last one starts: the
     # duration of the earthquake rather than of the front's travel.
-    ends = [
-        float((segment.onset_s + segment.rise_time_s).max()) for segment in segments
-    ]
+    ends = [float((segment.onset_s + segment.rise_time_s).max()) for segment in counted]
     duration_s = max(ends) - min(starts)
 
-    slip = np.concatenate([segment.slip_m.ravel() for segment in segments])
+    slip = np.concatenate([segment.slip_m.ravel() for segment in counted])
     caveat = (
         ""
         if exact
@@ -568,16 +1134,57 @@ def stride_for(segments: list[Segment], budget: int) -> int:
     A stride rather than a resampling: every drawn cell is a real subfault with its
     real value, and the ones between are simply not drawn. Averaging into
     super-cells would paint values no subfault has.
+
+    Only the lattice segments are counted, because they are the only ones a stride can
+    thin -- a triangulation arrives from :func:`decimate` already inside the budget,
+    and counting it would stride the lattices down on its behalf.
     """
-    total = sum(segment.slip_m.size for segment in segments)
+    total = sum(
+        segment.slip_m.size for segment in segments if segment.cells is not None
+    )
     if total <= budget:
         return 1
     return math.ceil(math.sqrt(total / budget))
 
 
+def drawn(segment: Segment, stride: int) -> tuple[np.ndarray, np.ndarray]:
+    """Which cells to colour, and the corners to draw them on.
+
+    The one place the two tracks differ in how they are thinned, and they differ
+    because a stride means something on a lattice and nothing on a triangulation --
+    :func:`decimate` says why.
+
+    Returns
+    -------
+    tuple
+        Flat indices into the segment's fields, and the matching
+        ``(drawn, corners, 3)`` positions.
+    """
+    if segment.cells is None:
+        return np.arange(len(segment.corners_m)), segment.corners_m
+    return strided(segment, stride), strided_corners(segment, stride)
+
+
+def _lattice(segment: Segment) -> tuple[int, int]:
+    """The segment's lattice shape, or a refusal naming what to use instead.
+
+    Raises
+    ------
+    ValueError
+        For a triangulation, which has no lattice to skip through: a stride would leave
+        holes rather than a coarser surface -- see :func:`decimate`.
+    """
+    if segment.cells is None:
+        raise ValueError(
+            f"{segment.name!r} is a triangulation, so it has no lattice to stride "
+            "through. Draw it with `drawn`, which decimates it instead"
+        )
+    return segment.cells
+
+
 def strided(segment: Segment, stride: int) -> np.ndarray:
     """The flat indices of the cells to draw."""
-    cells_i, cells_j = segment.cells
+    cells_i, cells_j = _lattice(segment)
     rows = np.arange(0, cells_i, stride)
     columns = np.arange(0, cells_j, stride)
     return (rows[:, None] * cells_j + columns[None, :]).ravel()
@@ -596,7 +1203,7 @@ def strided_corners(segment: Segment, stride: int) -> np.ndarray:
     refuses to give up: `strided` picks the one real subfault each block is coloured
     by, and nothing here averages.
     """
-    cells_i, cells_j = segment.cells
+    cells_i, cells_j = _lattice(segment)
     rows = np.arange(0, cells_i, stride)
     columns = np.arange(0, cells_j, stride)
     # The last cell each block reaches; the final block is short where the stride does
@@ -797,7 +1404,10 @@ def view(
     bins: Annotated[int, typer.Option(help="Histogram bins.")] = 40,
     max_cells: Annotated[
         int,
-        typer.Option(help="Cells to draw before the display is strided down."),
+        typer.Option(
+            help="Cells to draw. A lattice is strided down to this; a triangulation is "
+            "redrawn on a coarser surface of twice as many triangles."
+        ),
     ] = DEFAULT_CELL_BUDGET,
     save: Annotated[
         Path | None,
@@ -812,7 +1422,7 @@ def view(
         raise typer.Exit(1) from error
 
     try:
-        segments, provenance = load(rupture)
+        segments, provenance = load(rupture, max_cells)
     except ValueError as error:
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(1) from error
@@ -838,21 +1448,25 @@ def log_rupture(
 ) -> None:
     """Log every panel, over the rupture's own timeline."""
     stride = stride_for(segments, max_cells)
-    kept = {segment.name: strided(segment, stride) for segment in segments}
-    quads = {segment.name: strided_corners(segment, stride) for segment in segments}
+    kept, quads = {}, {}
+    for segment in segments:
+        kept[segment.name], quads[segment.name] = drawn(segment, stride)
 
-    summary = statistics(segments)
+    # The provenance leads the panel because it is the one sentence that says whether
+    # what is on screen is the file or a redrawing of it.
+    summary = f"*{provenance}*\n\n{statistics(segments)}"
     rerun.log(
         "/statistics",
         rerun.TextDocument(summary, media_type="text/markdown"),
         static=True,
     )
 
-    # The whole rupture on one clock: the earliest onset to the last pulse's end.
-    starts = [float(segment.onset_s.min()) for segment in segments]
-    ends = [
-        float((segment.onset_s + segment.rise_time_s).max()) for segment in segments
-    ]
+    # The whole rupture on one clock: the earliest onset to the last pulse's end, from
+    # the file's own subfaults rather than the drawn cells, so a decimated rupture's
+    # timeline still reaches the last subfault to stop moving.
+    counted = [segment.population for segment in segments]
+    starts = [float(segment.onset_s.min()) for segment in counted]
+    ends = [float((segment.onset_s + segment.rise_time_s).max()) for segment in counted]
     times_s = np.arange(min(starts), max(ends) + time_step, time_step)
 
     _log_static_fields(rerun, segments, kept, quads, bins)
@@ -887,6 +1501,9 @@ def log_rupture(
             )
             frame.append(current)
         # The same map and the same limits the slip mesh is drawn with, a few lines up.
+        # This one is over the *drawn* cells rather than the file's subfaults, because
+        # slip-so-far is a function of time and only the drawn cells carry a pulse each
+        # -- the static distributions above are the file's own.
         _histogram(
             rerun,
             "/histogram/slip",
@@ -905,9 +1522,15 @@ def _log_static_fields(
     quads: dict[str, np.ndarray],
     bins: int,
 ) -> None:
-    """Rise time and rake, which are properties of the finished rupture."""
-    rise = np.concatenate([segment.rise_time_s.ravel() for segment in segments])
-    rake = np.concatenate([segment.rake_deg.ravel() for segment in segments])
+    """Rise time and rake, which are properties of the finished rupture.
+
+    The two distributions are over the file's own subfaults -- neither field is a
+    function of time, so nothing forces them down to the drawn cells -- while the
+    meshes and arrows carry the drawn cells' values on the distributions' own limits.
+    """
+    counted = [segment.population for segment in segments]
+    rise = np.concatenate([segment.rise_time_s.ravel() for segment in counted])
+    rake = np.concatenate([segment.rake_deg.ravel() for segment in counted])
     low, high = float(rise.min()), float(rise.max())
 
     for segment in segments:
@@ -1178,17 +1801,25 @@ def _histogram(
 
 
 def _mesh(rerun, corners: np.ndarray, colours: np.ndarray):  # noqa: ANN001
-    """A `Mesh3D` of flat-coloured quads, two triangles each."""
-    cells = len(corners)
+    """A `Mesh3D` of flat-coloured cells, fanned into triangles.
+
+    The arity comes from ``corners.shape`` rather than being assumed: a quad lattice
+    gives four corners and a triangulation three, and a fan from corner zero reduces to
+    exactly the two-triangle split for a quad, so neither track pays for the other.
+    """
+    cells, arity = corners.shape[:2]
     vertices = corners.reshape(-1, 3).astype(np.float32)
-    base = np.arange(cells) * 4
-    triangles = np.empty((cells * 2, 3), dtype=np.uint32)
-    triangles[0::2] = np.stack([base, base + 1, base + 2], axis=-1)
-    triangles[1::2] = np.stack([base, base + 2, base + 3], axis=-1)
+    base = np.arange(cells) * arity
+    triangles = np.concatenate(
+        [
+            np.stack([base, base + corner + 1, base + corner + 2], axis=-1)
+            for corner in range(arity - 2)
+        ]
+    ).astype(np.uint32)
     return rerun.Mesh3D(
         vertex_positions=vertices,
         triangle_indices=triangles,
-        vertex_colors=np.repeat(colours, 4, axis=0),
+        vertex_colors=np.repeat(colours, arity, axis=0),
     )
 
 
@@ -1196,6 +1827,10 @@ __all__ = [
     "FIELDS",
     "CumulativeSlip",
     "Segment",
+    "Subfaults",
+    "decimate",
+    "display_spacing_km",
+    "drawn",
     "hot",
     "load",
     "moment_release",

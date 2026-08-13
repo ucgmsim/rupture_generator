@@ -31,6 +31,7 @@ gap is the propagation stage's question.
 
 from __future__ import annotations
 
+import dataclasses
 import types
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     )
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 WGS84 = pyproj.CRS("EPSG:4326")
 """What an SRF's coordinates are, and what everything downstream of one expects."""
@@ -207,6 +209,7 @@ RESERVED_FIELDS = frozenset({*NODE_VARIABLES, "plane", "slip_rate", "slip_rate_o
 RESERVED_ATTRS = frozenset({"surface", "origin_east_km", "origin_north_km"})
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
 class RuptureMesh:
     """One rupture geometry expressed as a mesh."""
 
@@ -750,6 +753,51 @@ class RuptureMesh:
         return (
             _locate(dip_km, self.dip_arc_km(), axis="dip"),
             _locate(strike_km, self.strike_arc_km(), axis="strike"),
+        )
+
+    def boundary_faces(self) -> IntArray:
+        """Flat indices of the chart's perimeter cells -- where a front runs out of fault.
+
+        All four edges. Which one a jump leaves from is settled by arrival time, in
+        :func:`~rupture_generator.propagation.causal_jump`; the surface trace is
+        deliberately *not* excluded, because it is a real arrest and excluding it would
+        be a minimum jump depth under another name.
+
+        Named for :meth:`~rupture_generator.triangular.mesh.TriangleMesh.boundary_faces`,
+        which answers the same question by edge incidence, so the jump search reads one
+        method rather than branching on what kind of chart it has.
+
+        Returns
+        -------
+        IntArray
+            Ascending flat indices into a field raveled strike-fastest.
+        """
+        rows, columns = self.cell_counts
+        on_edge = np.zeros((rows, columns), dtype=bool)
+        on_edge[(0, rows - 1), :] = True
+        on_edge[:, (0, columns - 1)] = True
+        return np.flatnonzero(on_edge.reshape(-1))
+
+    def cell_key(self, flat_index: int) -> tuple[int, int]:
+        """The ``(i, j)`` a flat cell index names -- how this chart labels a subfault.
+
+        What a :class:`~rupture_generator.propagation.Jump` records, so that
+        ``field[jump.parent_cell]`` indexes a field of this chart's own shape. A
+        triangulation's label is a plain ``int``, which is why the jump search asks the
+        chart rather than calling `numpy.unravel_index` itself.
+
+        Parameters
+        ----------
+        flat_index : int
+            An index into a field raveled strike-fastest.
+
+        Returns
+        -------
+        tuple of int
+            The cell's ``(i, j)``.
+        """
+        return tuple(
+            int(index) for index in np.unravel_index(flat_index, self.cell_counts)
         )
 
 

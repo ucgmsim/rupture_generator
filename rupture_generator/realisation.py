@@ -92,8 +92,12 @@ class Realisation(MutableMapping[str, RuptureMesh]):
                 raise ValueError("This rupture has multiple roots")
 
     @property
-    def hypocentre(self) -> tuple[int, int]:
-        """The ``(i, j)`` cell the rupture nucleated at, on the root segment.
+    def hypocentre(self) -> tuple[int, int] | int:
+        """The subfault the rupture nucleated at, on the root segment.
+
+        Labelled the way that segment's own chart labels a subfault -- an ``(i, j)`` cell
+        on a lattice, a flat face index on a triangulation -- because what the label is
+        for is indexing that segment's fields.
 
         Raises
         ------
