@@ -1,25 +1,7 @@
 //! Drawing a Gaussian random field from a circulant embedding.
 //!
-//! The Python side computes the embedding's eigenvalues once per (chart, covariance)
-//! and caches them; what repeats is the *draw*, four times per segment — slip, rise
-//! time, rake and the onset perturbation. This is that draw.
-//!
-//! # Why it is worth a kernel
-//!
-//! The numpy spelling allocates about six arrays the size of the padded grid: two
-//! standard-normal draws, their complex combination, the product with the square-rooted
-//! eigenvalues, the inverse transform's output, and the crop. On a 400x2400 embedding
-//! each is 15 MB complex, so a draw moves ~90 MB through memory to produce a 0.5 MB
-//! field. Here the noise is generated straight into the transform's own buffer, already
-//! scaled, so one allocation does the work of five.
-//!
-//! # What it does not do
-//!
-//! It does not compute the eigenvalues. That needs a modified Bessel function of the
-//! second kind at fractional order, and `scipy.special.kv` is a well-tested Cephes
-//! implementation that no Rust crate matches for provenance. It is also computed once
-//! and cached, where this runs four times, so the repeated cost is here and the risky
-//! numerics stay in Python.
+//! This rust kernel exists to reduce allocator traffic over a purely Python
+//! implementation through buffer re-use which is less ergonomic in numpy.
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
@@ -33,14 +15,6 @@ use rustfft::FftPlanner;
 
 /// One field on the fault, drawn from an embedding's eigenvalues.
 ///
-/// `eigenvalues` is the circulant embedding's spectrum on the padded grid, real and
-/// non-negative — `numpy.fft.fft2` of the wrapped covariance, which the caller has
-/// already checked. `cell_counts` is the fault's own shape, which the padded grid's
-/// leading corner is cropped to.
-///
-/// The transform is the inverse of the same convention numpy uses, scaled by
-/// `sqrt(n)`, so the field's covariance is what the eigenvalues describe rather than
-/// that divided by the grid.
 ///
 /// # Errors
 ///
@@ -82,9 +56,6 @@ pub fn von_karman_draw<'py>(
             )));
         }
         let amplitude = eigenvalue.sqrt();
-        // Unit variance in *each* part rather than jointly: only the real part of the
-        // inverse transform is kept, and a standard complex draw would halve its
-        // variance. Mirrors the Python.
         let real: f64 = StandardNormal.sample(&mut rng);
         let imaginary: f64 = StandardNormal.sample(&mut rng);
         *cell = Complex64::new(amplitude * real, amplitude * imaginary);

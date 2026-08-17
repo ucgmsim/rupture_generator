@@ -1,52 +1,12 @@
-//! Pulse synthesis: how fast each subfault slips, moment by moment.
-//!
-//! Everything before this produces *how much* each subfault slips and *when* it
-//! starts. This produces the shape in between — a time series per subfault, scaled so
-//! its integral is the subfault's slip. That series is what an SRF file carries and
-//! what a wave-propagation code convolves with.
-//!
-//! The shape is not a free choice. It has to rise sharply (rupture arrives as a
-//! stress step), peak early, and decay slowly, because that is what dynamic rupture
-//! models and kinematic inversions both produce. The surviving family is the
-//! piecewise sinusoid of Liu, Archuleta & Hartzell (2006) — genslip's `OliuP2`, the
-//! shape finite-fault production selects — plus `delta`, the single-sample impulse.
-//! The other nine of genslip's shapes are gone per `PLAN.md` §5; the vocabulary seam
-//! that refuses their names lives in Python, and this kernel takes an
-//! already-resolved [`Shape`]. The four proven aliases of `oliu_p` (`ucsb`, `ucsb2`,
-//! `ucsb-T<b>`, `ucsb-varT1`) were parametrisations of `(rise time, beta)` — exactly
-//! the two per-subfault arrays the caller already passes — so they collapse into
-//! [`Shape::OliuP`] rather than surviving as names.
-//!
-//! Units are MKS: slip in metres, samples in m/s, time in seconds. The maths is
-//! unit-agnostic — `∫ṡ dt = slip` whatever the unit — and the one place another unit
-//! system exists is the SRF boundary, which converts on output.
-//!
-//! # A rise time the sample interval cannot represent is a refusal
-//!
-//! A subfault that slips but whose rise time rounds to zero samples cannot carry its
-//! slip, and dropping it silently is `DEFECTS.md` 21 — one-sample subfaults carrying
-//! 0.63% of the moment, gone without a word. Here that is
-//! [`Error::UnrepresentableRiseTime`], naming the subfault, never an empty row. An
-//! empty row means one thing only: the subfault does not slip.
+//! Pulse synthesis for point-sources.
 
 use crate::counts::{exact, samples};
 use std::f64::consts::PI;
 
 /// The slip below which a subfault gets no pulse at all.
-///
-/// genslip's `MINSLIP` (`defs.h:15`, 0.01 cm) restated in metres: a tenth of a
-/// millimetre, far below anything a rupture model resolves. The guard is on `|slip|`,
-/// *before* any pulse is synthesised — so a subfault that does not slip gets an empty
-/// row rather than a short pulse of nothing.
-///
-/// Distinct from [`Error::UnrepresentableRiseTime`]: this is about a subfault whose
-/// slip is negligible. That one is about a subfault that does slip, sampled at a
-/// duration its shape cannot represent. Conflating them would refuse a subfault for
-/// not slipping, which is not this guard's job (`DEFECTS.md` 21).
 pub const MIN_SLIP_M: f64 = 1.0e-4;
 
-/// Which slip-rate function every subfault gets. Already resolved: name-to-shape
-/// vocabulary, including the refusal of removed names, is Python's job.
+/// Dispatchable enum of shape functions
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape<'a> {
     /// The Liu–Archuleta–Hartzell piecewise sinusoid, `beta` per subfault.
@@ -144,16 +104,12 @@ pub struct CsrPulses {
     pub samples: Vec<f64>,
 }
 
-/// One pulse per subfault, each normalised so `dt · Σ samples` is the slip.
-///
-/// The normalisation is the one thing both shapes promise, and it is what makes the
-/// moment come out right whichever is chosen. Subfaults are a flat slice; a gridded
-/// field is flattened by the caller, and every error names the flat index.
+/// Slip-normalised pulse synthesis.
 ///
 /// # Errors
 ///
 /// [`Error`]: mismatched array lengths, a non-positive `dt_s`, non-finite slip, a
-/// `beta` outside `(0, 0.5]`, or — the loud one — a slipping subfault whose rise time
+/// `beta` outside `(0, 0.5]`, or a slipping subfault whose rise time
 /// is unrepresentable at `dt_s` (`DEFECTS.md` 21).
 pub fn synthesise_pulses(
     slip_m: &[f64],
@@ -197,20 +153,7 @@ pub fn synthesise_pulses(
         }
     }
 
-    // Pass 1: how long every pulse is, without evaluating one. A pulse's length is a
-    // function of its rise time and `dt` alone -- that is all `samples` is -- so the
-    // whole offset array is known before any sinusoid is computed.
-    //
-    // Knowing it up front buys the two things pass 2 needs: one allocation of exactly
-    // the right size, and a set of disjoint output slices that threads can fill
-    // without talking to each other.
-    //
-    // The allocation is the memory half. Appending pulse by pulse grew the buffer by
-    // doubling, so the shipped twenty-fault scenario held 1.5x its final 7.6 GB at the
-    // last reallocation, on top of a `Vec` per subfault. It is *not* a speed fix --
-    // measured, the one-allocation serial fill takes the same 17 s the appending one
-    // did, because the cost is 2.4 billion `sin` and `cos` calls and not the copying.
-    // The speed comes from the threads, and the threads come from the slices.
+    // Pass 1: how long every pulse is, without evaluating one.
     let mut offsets = Vec::with_capacity(slip_m.len() + 1);
     offsets.push(0);
     let mut total = 0;
@@ -219,8 +162,6 @@ pub fn synthesise_pulses(
             match shape {
                 Shape::Delta => SPIKE_SAMPLES,
                 Shape::OliuP { .. } => match samples(rise_time_s[subfault], dt_s) {
-                    // The loud one. `DEFECTS.md` 21: this subfault slips, and no
-                    // number of samples at this interval can say how.
                     0 => {
                         return Err(Error::UnrepresentableRiseTime {
                             subfault,
@@ -263,9 +204,6 @@ pub fn synthesise_pulses(
 }
 
 /// What every pulse in a fill needs and none of it varies by subfault.
-///
-/// A record rather than eight parameters threaded through two functions, and `Copy`
-/// so a worker takes it by value: everything in it is a shared borrow or a scalar.
 #[derive(Clone, Copy)]
 struct Job<'a> {
     slip_m: &'a [f64],

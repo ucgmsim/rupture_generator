@@ -1,9 +1,4 @@
-"""What the earthquake is: the input to ``rupture-generator generate``.
-
-Stages take frozen parameter objects built from these classes. The hypocentre is the
-one quantity that changes representation downstream -- in-fault arc lengths here, a
-cell index in the pipeline -- converted in ``mesh.RuptureMesh.cell_index``.
-"""
+"""What the earthquake is: the input to ``rupture-generator generate``."""
 
 from __future__ import annotations
 
@@ -64,12 +59,7 @@ class RampConfig(ConfigObject):
 
 @dataclasses.dataclass
 class HypocentreConfig(ConfigObject):
-    """Where the rupture starts, in the fault's own coordinates.
-
-    ``strike_km`` runs from the ``j = 0`` end of the fault and ``dip_km`` from its top
-    edge; both are in-fault distances, independent of the subfault grid. ``fault``
-    names the surface it nucleated on, and so the root of the causality tree.
-    """
+    """Where the rupture starts, in the fault's own coordinates."""
 
     strike_km: DepthKm
     dip_km: DepthKm

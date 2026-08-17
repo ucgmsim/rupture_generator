@@ -1,17 +1,6 @@
 //! Factored fast sweeping: the eikonal equation with its source singularity removed.
 //!
-//! # The problem this solves
-//!
-//! Every scheme that discretises `|∇T| = s` directly loses accuracy at a point source,
-//! because `T` is not smooth there — `∇T` is discontinuous in direction — and the
-//! error that creates spreads over the whole grid. It shows up as a *failure to
-//! converge*: refining the mesh does not help, because the near-source error is a
-//! fixed fraction rather than a truncation term. Both solvers this replaced have it.
-//! `DEFECTS.md` 19 measures them at convergence ratios of 1.03 and 1.01 where a
-//! converging scheme gives 2; `tests/eikonal_contract.rs` holds whatever solver is
-//! here to the converging number.
-//!
-//! # The two papers
+//! # Reference papers
 //!
 //! > **Zhao, H. (2005).** A fast sweeping method for eikonal equations.
 //! > *Mathematics of Computation* **74**(250), 603–627.
@@ -19,80 +8,30 @@
 //! > **Fomel, S., Luo, S. & Zhao, H. (2009).** Fast sweeping method for the factored
 //! > eikonal equation. *Journal of Computational Physics* **228**(17), 6440–6455.
 //!
-//! Zhao gives the sweeping strategy: Gauss–Seidel iteration under **alternating
-//! orderings**, each following one family of characteristics, so a fixed number of
-//! sweeps covers every ray direction and the iteration count does not grow with the
-//! mesh. Fomel et al. give the factorisation.
+//! Zhao gives the sweeping strategy and Fomel et al. give the factorisation.
 //!
 //! Their **Eq. (3)** splits the traveltime multiplicatively, `T = T₀·τ`, with
 //! `|∇T₀| = S₀` (**Eq. 4**). Taking `S₀` constant and `T₀(x) = S₀·|x − x₀|` — the
 //! analytic answer for a homogeneous medium at the source's own slowness — puts the
 //! singularity entirely inside `T₀`, where it is known in closed form, and leaves `τ`
-//! smooth. In a uniform medium `τ ≡ 1` *exactly*, and the discrete equations below
-//! are satisfied by it at any grid spacing, so the scheme reproduces the analytic
-//! solution to rounding.
+//! smooth.
 //!
 //! **Eq. (5)** is what is actually solved:
 //!
 //! ```text
 //!     T₀²|∇τ|² + 2T₀τ ∇T₀·∇τ + (τ² − α²)S₀² = 0
 //! ```
-//!
-//! **Eq. (7)** discretises it at a node on each of the four triangles `ΔCEN`, `ΔCNW`,
-//! `ΔCWS`, `ΔCSE` — one per quadrant — giving a quadratic in the node's `τ`.
-//!
-//! # The causality condition is the whole thing
-//!
-//! Stated immediately after Eq. (7), and the paper's abstract calls it the key idea:
-//!
-//! ```text
-//!     τ_C·T₀(C) ≥ τ_W·T₀(W)      and      τ_C·T₀(C) ≥ τ_S·T₀(S)
-//! ```
-//!
-//! Causality is enforced on **`T`**, not on `τ`. Without it a candidate built from
-//! downwind neighbours can win, and the uniform-medium error is 0.11 — no better than
-//! plain fast marching. With it, 1e-14. It is one comparison and it is worth eleven
-//! orders of magnitude.
-//!
-//! # Multiple seeds
-//!
-//! The seed contract is **points with initial times**, not "the hypocentre" — what a
-//! rupture jumping between faults needs, and what costs a single fault nothing
-//! (`PLAN.md` S7). The factorisation is inherently per-source: `T₀` removes *one*
-//! singularity, so a multi-seed field is solved as one factored sweep per seed and
-//! the pointwise minimum of the shifted results. That is not a shortcut standing in
-//! for a "real" multi-source sweep — first arrival from several sources *is* the
-//! minimum over sources, and solving them separately is what keeps every source's
-//! near-field exact. `tests/eikonal_contract.rs` pins the equality so that a future
-//! single-pass implementation has a contract to meet.
-//!
-//! # One deliberate deviation
-//!
-//! When no root of Eq. (7) is causal on any triangle, the paper falls back to the
-//! method of characteristics along the two edges (**Eq. 8**). This uses the one-sided
-//! update `T = min(T_neighbour) + h·s` instead — the safe cap every upwind scheme
-//! carries, and what the original Fortran's head-wave terms amount to. It fires rarely
-//! on media like these: the constant-gradient case reaches its accuracy without the
-//! fallback ever being reached. Recorded here rather than left silent; if a
-//! heterogeneous case ever measures worse than expected, Eq. (8) is the first thing to
-//! add.
 
 use crate::counts::exact;
 
 /// Rounds of four sweeps before giving up on convergence.
 ///
-/// Fomel et al. report 3 for their examples, at every mesh size from 150×50 to
-/// 1200×400 — the count is a property of the medium, not of the grid, which is what
-/// Zhao's alternating orderings buy. This is a generous ceiling; the loop exits as
-/// soon as a round changes nothing.
+/// Fomel et al. show only 3 sweeps worked generally, this is a pessimistic
+/// assumption and an upper bound on compute because termination occurs at grid
+/// convergence.
 const MAX_ROUNDS: usize = 16;
 
-/// A point the rupture front starts from, and when.
-///
-/// Indices are `(i, j)` with `i` down-dip and `j` along-strike — the chart convention
-/// of `PLAN.md` §2. `t0_s` is the time the front leaves this point: zero for a
-/// configured hypocentre, a parent fault's arrival plus the jump delay for a
-/// triggered one.
+/// Location and initiation time of hypocentre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Seed {
     pub i: usize,
@@ -100,22 +39,20 @@ pub struct Seed {
     pub t0_s: f64,
 }
 
-/// What this solver refuses, in its own vocabulary.
+/// Error cases for the solver.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Error {
     /// A grid with no cells has no wavefront to solve.
     EmptyGrid { ni: usize, nj: usize },
-    /// The slowness slice does not cover the grid it claims to.
+    /// Slowness vs solver grid mismatch.
     WrongLength { ni: usize, nj: usize, got: usize },
     /// Grid spacing must be a positive, finite length on both axes.
     NonPositiveSpacing { axis: &'static str, value: f64 },
-    /// Slowness must be positive and finite everywhere: a cell no wave can cross
-    /// would make its neighbours unreachable, and the error would surface as a
-    /// solver panic far from the cell that caused it.
+    /// Slowness must be positive and finite everywhere.
     NonPositiveSlowness { i: usize, j: usize, value: f64 },
-    /// No seeds means no wavefront: every travel time would be infinite.
+    /// Solver must be supplied at least one seed.
     NoSeeds,
-    /// A seed outside the grid is a caller error, not a boundary condition.
+    /// Seeds must be located inside domain.
     SeedOutOfBounds {
         seed: usize,
         i: usize,
@@ -123,11 +60,9 @@ pub enum Error {
         ni: usize,
         nj: usize,
     },
-    /// A seed's initial time must be finite; NaN or infinity would poison every
-    /// cell its wavefront wins.
+    /// A seed's initial time must be finite.
     NonFiniteSeedTime { seed: usize, t0_s: f64 },
-    /// The sweep did not settle in [`MAX_ROUNDS`] rounds; the medium has structure
-    /// this scheme does not handle.
+    /// The sweep did not settle in [`MAX_ROUNDS`] rounds.
     DidNotSettle { rounds: usize },
 }
 
@@ -171,14 +106,13 @@ impl std::error::Error for Error {}
 
 /// First-arrival times from every seed, on the whole grid.
 ///
-/// `slowness_s_per_km` is row-major over `(ni, nj)` — `i` down-dip, `j` along-strike
-/// — and `spacing_km` is `(h_i, h_j)`, the cell size on each axis. The result has the
+/// `slowness_s_per_km` is row-major over `(ni, nj)`. The convention is: `i` down-dip, `j` along-strike
+/// and `spacing_km` is `(h_i, h_j)`, the cell size on each axis. The result has the
 /// same layout, in seconds.
 ///
 /// # Errors
 ///
-/// [`Error`], one variant per way the inputs can fail to describe a medium; nothing
-/// is clamped or silently repaired.
+/// See [`Error`].
 pub fn solve(
     slowness_s_per_km: &[f64],
     extent: (usize, usize),
@@ -198,7 +132,7 @@ pub fn solve(
 ///
 /// # Errors
 ///
-/// As [`solve`].
+/// See [`Error`].
 pub fn solve_with_rounds(
     slowness_s_per_km: &[f64],
     extent: (usize, usize),
@@ -251,10 +185,6 @@ pub fn solve_with_rounds(
         }
     }
 
-    // One factored sweep per seed, combined by pointwise minimum — see the module
-    // documentation for why the factorisation makes this the scheme rather than a
-    // shortcut. The seed's own solve starts at zero and `t0_s` shifts it afterwards:
-    // the eikonal equation is autonomous in time, so the shift is exact.
     let mut combined = vec![f64::INFINITY; slowness_s_per_km.len()];
     let mut most_rounds = 0;
     for seed in seeds {
@@ -268,13 +198,9 @@ pub fn solve_with_rounds(
 }
 
 /// The known factor `T₀` and its gradient at one node, in seconds and s/km.
-///
-/// `T₀ = S₀·r` with `r` the distance to the source, so `∇T₀ = S₀·r̂` — a unit vector
-/// scaled by the source slowness, undefined only at the source itself where the
-/// paper's Remark 1 supplies `τ = α` by l'Hôpital instead.
 struct Known {
     time_s: f64,
-    /// `(∂T₀/∂i, ∂T₀/∂j)` in physical units — the spacing is already folded in.
+    /// `(dT_0/di, dT_0/dj)` in physical units.
     gradient: (f64, f64),
 }
 
@@ -307,9 +233,8 @@ fn known_factor(
 ///
 /// # Panics
 ///
-/// If a cell is never reached. The inputs were already checked — every slowness is
-/// positive, so every cell is reachable — and the panic is a statement about the
-/// solver rather than the input.
+/// If a cell is never reached, which is considered a panic rather than an error
+/// because the solver's inputs should be checked at the boundary of the module.
 fn single_seed(
     slowness: &[f64],
     extent: (usize, usize),
@@ -320,7 +245,7 @@ fn single_seed(
     let at = |i: usize, j: usize| i * nj + j;
     let source_slowness = slowness[at(seed.i, seed.j)];
 
-    // `T₀` and `∇T₀` are analytic, so they are computed once rather than swept.
+    // Calculate the analytical solution on a homogeneous medium.
     let known: Vec<Known> = (0..ni)
         .flat_map(|i| (0..nj).map(move |j| (i, j)))
         .map(|(i, j)| known_factor(i, j, seed, spacing_km, source_slowness))
@@ -340,7 +265,7 @@ fn single_seed(
     let up: Vec<usize> = (0..ni).rev().collect();
 
     let mut rounds = 0;
-    loop {
+    for round in 1..=MAX_ROUNDS {
         let mut changed = false;
         for dips in [&down, &up] {
             for strikes in [&forward, &backward] {
@@ -359,13 +284,13 @@ fn single_seed(
                 }
             }
         }
-        rounds += 1;
         if !changed {
             break;
         }
-        if rounds >= MAX_ROUNDS {
-            return Err(Error::DidNotSettle { rounds });
-        }
+        rounds = round;
+    }
+    if rounds >= MAX_ROUNDS {
+        return Err(Error::DidNotSettle { rounds });
     }
 
     for (index, arrival) in times.iter().enumerate() {
@@ -438,14 +363,9 @@ fn update(
 
         let term = |side: Option<&(f64, f64, f64)>, gradient: f64, spacing: f64| match side {
             Some(&(arrival, factor, sign)) if arrival.is_finite() => {
-                // Remark 1: at the source `T₀` is zero and `τ = T/T₀` is 0/0. By
+                // From Fomel et al. Remark 1: at the source `T₀` is zero and `τ = T/T₀` is 0/0. By
                 // l'Hôpital, or from Eq. (5) directly, `τ(x₀) = α(x₀)` — and with
                 // `S₀` taken as the source's own slowness that is exactly 1.
-                //
-                // Leaving the source out instead makes its four neighbours
-                // unreachable by any triangle, so they fall through to the one-sided
-                // cap and the whole near-source region loses the factorisation. That
-                // is the one place this scheme's advantage actually lives.
                 let tau = if factor > 0.0 { arrival / factor } else { 1.0 };
                 Some((
                     sign * here.time_s / spacing + gradient,
@@ -474,9 +394,7 @@ fn update(
             continue;
         }
 
-        // Fomel et al.'s causality condition, on T rather than on tau. Without this
-        // a downwind neighbour can win and the scheme is no better than plain fast
-        // marching.
+        // Fomel et al.'s causality condition.
         let causal = |side: Option<&(f64, f64, f64)>| {
             side.is_none_or(|&(neighbour, _, _)| !neighbour.is_finite() || arrival >= neighbour)
         };

@@ -1,10 +1,4 @@
-"""Configuration: what a fault is, and what the earthquake on it is.
-
-Two files, because they have different lifetimes: ``rupture-generator mesh`` reads the
-geometry and ``generate`` reads the source. Importing this module registers the tagged
-unions -- `mashumaro`'s ``Discriminator(include_subtypes=True)`` resolves a ``type``
-tag against whatever subclasses have been imported, which is what the walk below does.
-"""
+"""Configuration: what a fault is, and what the earthquake on it is."""
 
 import importlib
 import pkgutil

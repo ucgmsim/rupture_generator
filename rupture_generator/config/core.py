@@ -1,10 +1,4 @@
-"""The base every config object is built on.
-
-Validation rides on the type annotation: a field declared
-``Annotated[float, in_range(0.0, 90.0)]`` is checked after construction by walking the
-class's own hints. A validator may coerce -- a non-``None`` return is written back to
-the field -- and a failure becomes mashumaro's ``InvalidFieldValue``.
-"""
+"""The base every config object is built on."""
 
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
@@ -27,7 +21,7 @@ class ConfigObject(
         Raises
         ------
         InvalidFieldValue
-            If a validator rejects a value, with the validator's own message.
+            If a validator rejects a value, with the validator's message.
         """
         hints = get_type_hints(type(self), include_extras=True)
 
@@ -55,15 +49,12 @@ class ConfigObject(
                     setattr(self, field_name, coerced)
 
     def refuse(self, field_name: str, message: str) -> None:
-        """Reject a value for a reason no single field could have caught.
-
-        Name the field the reader should change, which is not always the one that
-        looks wrong -- the CLI points at that key.
+        """Reject a value for a given reason.
 
         Raises
         ------
         InvalidFieldValue
-            Always. This exists to raise.
+            Always.
         """
         raise InvalidFieldValue(
             field_name=field_name,
@@ -74,12 +65,7 @@ class ConfigObject(
         )
 
     class Config(BaseConfig):
-        """mashumaro's settings for every config class.
-
-        The name matters: mashumaro reads an inner class called ``Config`` and ignores
-        one called ``Meta`` in silence. A subclass with its own settings must inherit
-        from *this*, or it replaces these instead of adding to them.
-        """
+        """mashumaro's settings for every config class."""
 
         serialize_by_alias = True
         omit_none = True
@@ -87,10 +73,7 @@ class ConfigObject(
 
 
 def field_path(error: Exception) -> tuple[str, Exception]:
-    """The dotted path to the field that failed, and the error that says why.
-
-    mashumaro reports a nested failure as a ``__context__`` chain; walking it collects
-    the breadcrumbs and finds the most specific error.
+    """Collect error field tracebak.
 
     Returns
     -------

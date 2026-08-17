@@ -1,12 +1,7 @@
 """What a fault surface looks like written down.
 
-The input to ``rupture-generator mesh``. It describes where the fault is and nothing
-about the earthquake on it, which is `rupture.py`'s job.
-
-Traces are written in longitude and latitude; ``crs`` names the projected coordinate
-reference system the mesh is *built* in, and the subcommand converts once on the way
-in. Connectivity is structural: a fault is an origin and a list of planes, each giving
-only where its top edge *ends*, so two planes that do not meet cannot be written down.
+Traces are written in longitude and latitude. The ``crs`` names the projected
+coordinate reference system the mesh is built in.
 """
 
 from __future__ import annotations
@@ -31,7 +26,7 @@ from rupture_generator.config.validation import (
 
 
 class CrsStrategy(SerializationStrategy, use_annotations=True):
-    """A CRS as whatever `pyproj` accepts: ``"EPSG:2193"``, ``2193``, WKT, PROJ."""
+    """A CRS as whatever `pyproj` accepts."""
 
     def serialize(self, value: pyproj.CRS) -> str:
         """The authority code, where there is one."""
@@ -49,7 +44,7 @@ CRS = dataclasses.field(
 
 @dataclasses.dataclass
 class LonLat(ConfigObject):
-    """A point on the surface: two named fields, so a config cannot swap them."""
+    """A point on the surface."""
 
     longitude_deg: Longitude
     latitude_deg: Latitude
@@ -78,13 +73,12 @@ class Discretisation(ConfigObject):
         if by_size and by_count:
             self.refuse(
                 "subfault_size_km",
-                "give either a subfault size or explicit counts, not both -- they "
-                "would disagree and there is no rule for which wins",
+                "give either a subfault size or explicit counts, not both.",
             )
         if not by_size and not by_count:
             self.refuse(
                 "subfault_size_km",
-                "a plane needs a subfault size, or a strike_count and a dip_count",
+                "a plane needs a subfault size, or a strike_count and a dip_count.",
             )
         if by_count and (self.strike_count is None or self.dip_count is None):
             missing = "dip_count" if self.dip_count is None else "strike_count"
@@ -212,7 +206,7 @@ class GeometryConfig(ConfigObject):
         if not self.crs.is_projected:
             self.refuse(
                 "crs",
-                f"{self.crs.to_string()!r} is not a projected CRS. The mesh is built in "
-                "a Cartesian frame -- give a projection covering the region, such as "
+                f"{self.crs.to_string()!r} is not a projected CRS. "
+                "Give a projection covering the region, such as "
                 "EPSG:2193 for New Zealand, rather than a geographic CRS like EPSG:4326",
             )

@@ -249,7 +249,7 @@ fn read_srf_points_v2(
             let nt = scanner.next::<usize>()?;
             #[expect(
                 clippy::cast_precision_loss,
-                reason = "sample counts are far below 2^24; the format stores them as text"
+                reason = "sample counts are far below 2^24 and the format stores them as text"
             )]
             let rise = (nt as f32) * header.dt;
 
