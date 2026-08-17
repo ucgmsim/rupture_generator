@@ -1,10 +1,8 @@
 """One rupture: the charts it happens on, and how it crossed between them.
 
-A :class:`Realisation` is a mapping of segment name to :class:`~rupture_generator.mesh.RuptureMesh`,
-plus the frame those charts are in and the tree saying which segment triggered which.
-The **same type** describes a fault system before anything has been drawn on it and
-after the whole pipeline has run, so `pipeline.generate` is a function from a
-realisation to a realisation, and a stage is a function of the same shape.
+A :class:`Realisation` maps segment name to chart, plus the frame those charts are in
+and the tree saying which segment triggered which. The **same type** describes a fault
+system before anything has been drawn on it and after the whole pipeline has run.
 """
 
 from __future__ import annotations
@@ -30,12 +28,11 @@ class Realisation(MutableMapping[str, RuptureMesh]):
     Attributes
     ----------
     segments : dict of str to RuptureMesh
-        Rupture meshes for each segment in the rupture.
+        One chart per segment.
     crs : pyproj.CRS
-        The projected frame of the rupture mesh geometry.
+        The projected frame those charts are in.
     tree : propagation.Tree of str or None
-        Which segment triggers which; a root maps to ``None``. Keyed by the
-        **child**: a child has exactly one parent, so its name names the edge.
+        Which segment triggers which; a root maps to ``None``. Keyed by the child.
     jumps : propagation.Tree of propagation.Jump
         Where and when the front crossed onto each triggered segment.
     """
@@ -95,15 +92,13 @@ class Realisation(MutableMapping[str, RuptureMesh]):
     def hypocentre(self) -> tuple[int, int] | int:
         """The subfault the rupture nucleated at, on the root segment.
 
-        Labelled the way that segment's own chart labels a subfault -- an ``(i, j)`` cell
-        on a lattice, a flat face index on a triangulation -- because what the label is
-        for is indexing that segment's fields.
+        Labelled the way that segment's own chart labels a subfault: an ``(i, j)``
+        cell on a lattice, a flat face index on a triangulation.
 
         Raises
         ------
         KeyError
-            If the root records no hypocentre, which is a rupture that has not been
-            through the wavefront solve.
+            If the root records no hypocentre, so the wavefront has not been solved.
         """
         root = self[self.root]
         return root.cell_index(
@@ -116,13 +111,12 @@ class Realisation(MutableMapping[str, RuptureMesh]):
         """The whole event's seismic moment, newton-metres.
 
         What the fields carry, summed over every segment, rather than the target they
-        were scaled to. The two agree by construction.
+        were scaled to; the two agree by construction.
 
         Raises
         ------
         KeyError
-            If a segment carries no slip, which is a rupture that has not been through
-            the moment fold.
+            If a segment carries no slip, so the moment fold has not run.
         """
         return sum(
             moment.moment_of(mesh["slip_m"], mesh["rigidity_pa"], mesh.areas_km2())

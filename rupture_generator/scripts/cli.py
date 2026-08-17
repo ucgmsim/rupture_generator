@@ -8,13 +8,8 @@ Three steps, three subcommands, and the boundary between them is a file:
     rupture-generator generate config.toml    mesh.h5  rupture.h5
     rupture-generator view      rupture.h5
 
-They are separate because their inputs have different lifetimes. A geometry is digitised
-once and reused across every realisation run on it; a source config is what varies; a
-rupture is the output. Fusing them would mean rebuilding the geometry on every run, and
-a geometry rebuilt is a geometry that can come out different.
-
-Each subcommand lives in its own module and is attached here, which is
-``nzcvm/scripts/nzcvm_cli.py``'s shape and keeps every leaf independently runnable.
+They are separate because their inputs have different lifetimes: a geometry is
+digitised once and reused, a source config is what varies, and a rupture is the output.
 """
 
 import typer

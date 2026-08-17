@@ -1,69 +1,17 @@
 """The pipeline on a triangulated segment: the same stages, on faces instead of cells.
 
 `pipeline.py` runs the stage order for a quad lattice; this runs the same order for a
-:class:`~rupture_generator.triangular.mesh.TriangleMesh`. It is a second module rather
-than a branch in the first because the two mesh containers are different types and both
-have to stay green; what the two paths no longer differ in is either *solver*, and on a
-planar fault they now draw the same random field -- see below.
+:class:`~rupture_generator.triangular.mesh.TriangleMesh`. Every stage that is
+elementwise over subfaults is `stages.py`'s own, called here unchanged. What a
+triangulation does differently is three things: the taper (:func:`taper_edges`), the
+depths the slowness is sampled at (:func:`travel_times`) and the seed seam in
+:func:`solve_onsets`. HYBRID.md and MESH.md carry the architecture.
 
-**What is shared, and why that is most of it.** A stage that is elementwise over
-subfaults does not care whether a subfault is a cell of a lattice or a triangle of a
-surface: `moment.py` is arithmetic on flat arrays, `pulses.py` takes a depth and a slip
-per subfault, and :func:`~rupture_generator.stages.rise_time_field`,
-:func:`~rupture_generator.stages.rake_field`,
-:func:`~rupture_generator.stages.onset_perturbation` and
-:func:`~rupture_generator.stages.apply_perturbation` are the models this package is
-*for*. Every one of those is called here, from `stages.py`, unchanged -- so there is
-one rise-time model and one perturbation model in the package rather than two
-transcriptions free to drift. Two things made that possible and both are small: those
-stages take the **draw** as a parameter (:data:`~rupture_generator.stages.FieldSampler`)
-because the sampler is the one thing a mesh's shape decides, and
-:func:`~rupture_generator.propagation.causal_jump` asks the chart where its fault runs
-out rather than deriving it from a lattice shape.
-
-**The solvers are the structured track's own**, run on a lattice over the segment's
-parameter plane and projected onto its faces --
-:mod:`~rupture_generator.triangular.lattice` is where that lives and where the
-measurements for it are. So the difference between the two tracks is now the *mesh
-container* and nothing else: one wavefront solver, one field sampler, one of each model.
-
-**What is genuinely different is written here**, and it is three things:
-
-- :func:`taper_edges`. The lattice taper counts whole cells from an index end; there is
-  no index end here, so the same fractions become distances to the *labelled* boundary
-  in the parameter plane. Separability survives -- ``u`` and ``v`` are independent axes
-  -- and so does the refusal when two ramps overlap.
-- :func:`travel_times`, which reads the mesh's **true** centre depths for the slowness
-  and then hands them to the sweep. That substitution is what keeps a planar solver
-  honest on a curved fault, and
-  :func:`~rupture_generator.triangular.lattice.travel_times` carries the numbers.
-- The seed seam. A lattice seeds a *cell*, so the hypocentre's seed is the cell its own
-  face centre falls in, and every face in that cell arrives at exactly ``t0`` -- which
-  is what makes the pinned hypocentre onset exact, since projection is a gather and not
-  an interpolation.
-
-**Derived geometry is hoisted, deliberately.** The container stores nothing derived --
-`mesh.py`'s docstring argues that a derived quantity written down is a second
-description of the geometry -- so ``areas_km2()``, ``centres()`` and the boundary walk
-recompute on every call. Measured on the CFM Hikurangi interface refined to 400 m
-subfaults (2.36 M faces), deriving the quantities the pipeline needs costs 15 s against
-a 6 s build. So :class:`SegmentGeometry` computes them **once per segment** in
-:func:`generate` and every stage takes it as an argument. They are deliberately *not*
-cached on the mesh: that would reintroduce exactly the coupling the container excludes.
-
-**S9 is the one stage whose output does not fit.** At a 400 m cut on the CFM Hikurangi
-interface the slip-rate pulses are 2.45 billion samples -- 19.6 GB of float64 -- so
-:func:`synthesise_pulses` attaching them to the mesh is not something a 30 GB machine
-can do, and neither is any writer that reads them off it afterwards. So ``generate``
-takes ``synthesise=False`` and stops after S8, and the writers run S9 themselves a
-block of faces at a time: :func:`face_blocks` is where a block comes from,
-:data:`STREAM_BUDGET_BYTES` is what bounds it, and the two writers are
-:func:`write_rupture_mesh` here and
-:func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` for the SRF. Measured end
-to end at 400 m: 3.89 GB peak against the 23 GB the resident route needs.
-
-:func:`write_rupture_mesh` is the only thing here that writes a file, and it writes the
-*native* format; the SRF seam is :mod:`rupture_generator.triangular.assemble`.
+S9's output does not fit at production resolution -- 2.45 billion samples, 19.6 GB of
+float64, on the CFM Hikurangi interface cut at 400 m -- so :func:`generate` takes
+``synthesise=False`` and the writers run S9 themselves a block of faces at a time.
+:func:`write_rupture_mesh` writes the *native* format; the SRF seam is
+:mod:`rupture_generator.triangular.assemble`.
 """
 
 from __future__ import annotations
@@ -110,70 +58,31 @@ IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 BOUNDARY_SAMPLES_PER_EDGE = 8
 """How finely the labelled boundary is resampled before distances are taken to it.
 
-:func:`taper_edges` measures each face's distance to the boundary as the distance to the
-nearest point of a resampled boundary polyline, which is one nearest-neighbour query
-rather than a point-to-segment test against every boundary edge. This is the resampling.
-
-**Derived from the two lengths in play, not chosen.** A polyline sampled at spacing
-``s`` reports a distance too large by at most ``s / 2`` -- the lateral offset to the
-nearest sample -- so the spacing is set to ``max(ramp width, boundary edge length) / 8``
-and the error is at most a sixteenth of whichever of those two is longer. Both branches
-are needed: tying it to the ramp alone would resample a coarse mesh's boundary
-thousands of times per edge when the ramp is narrower than a subfault, and tying it to
-the edge alone would under-resolve a ramp much finer than the mesh, which is a taper
-that spans no cells anyway.
-
-**The yardstick is the lattice taper's own precision.** `stages.taper_edges` gives the
-outermost cell the weight ``h / width`` where a true distance ramp gives ``h / (2
-width)``, so the incumbent model is itself a half-cell -- ``h / 2`` -- away from a
-distance ramp. Eight samples per edge is 8 times finer than that, and the cost is
-``8 B`` points for ``B`` boundary edges however wide or narrow the taper is.
+:func:`taper_edges` takes each face's distance to the nearest point of the resampled
+polyline, which overstates it by at most half the sample spacing. At a spacing of
+``max(ramp width, boundary edge length) / 8`` that is eight times finer than the lattice
+taper's own half-cell precision, and costs ``8 B`` points for ``B`` boundary edges.
 """
 
 
 STREAM_BUDGET_BYTES = 1 << 30
 """How much memory one block of slip-rate pulses may take while it is written out.
 
-**The one number that decides whether production resolution is reachable**, so it is a
-budget rather than a block size: :func:`face_blocks` derives the block from it and from
-the rupture's own rise times, and a rupture with longer pulses gets fewer faces per
-block rather than more memory.
-
-**What it replaces.** :func:`synthesise_pulses` attaches every pulse of every subfault
-to the mesh, and on the CFM Hikurangi interface cut at 400 m that is 2.45 **billion**
-samples -- 19.6 GB of ``f64`` from the kernel, before any writer has allocated
-anything, on a machine with 30 GB. Nothing else about a 400 m rupture is memory-bound.
-At 100 m it is worse in exact proportion, because rise time is physical and so samples
-per subfault do not change: sixteen times the faces is sixteen times the samples.
-
-What is live per sample depends on the writer.
-:func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` holds the kernel's
-``f64`` and the ``float32`` the format stores, twelve bytes, so a gibibyte is 89.5
-million samples -- about 78 thousand faces at the ~1140 samples a face the shipped
-Mw 8.5 configuration produces at ``dt = 0.005 s``, and 28 blocks for the 2.15 million
-faces of Hikurangi at 400 m. :func:`write_rupture_mesh` keeps ``f64`` throughout, so
-the same budget buys half as many faces and twice as many blocks.
-
-A gibibyte, which is comfortably under the 2 GB that is safe to hold on this machine
-beside the mesh and the fields, and far enough above the HDF5 chunk size that the point
-of blocking is bounding the peak rather than making the writes small. Measured end to
-end at 400 m: 3.89 GB peak resident for the whole run, against the 23 GB the resident
-route would need.
+A budget rather than a block size: :func:`face_blocks` derives the block from it and
+from the rupture's own rise times, so a rupture with longer pulses gets fewer faces per
+block rather than more memory. A gibibyte is comfortably under the 2 GB that is safe to
+hold beside the mesh and the fields, and far enough above the HDF5 chunk size that
+blocking bounds the peak rather than making the writes small.
 """
 
 PULSE_SAMPLE_MARGIN = 3
 """Samples a pulse may carry beyond the duration its rise time covers.
 
-Blocks are sized from a *bound* on each pulse's length rather than from the kernel's
-own rounding, because transcribing that rounding here would be a second statement of
-it, free to drift from the first. The bound needs only two facts from
-`crates/kernels/src/pulse.rs`: a resolved pulse gets "one more sample than the duration
-covers", and one too short to resolve is floored at ``SPIKE_SAMPLES = 3``. So
-``rise_time / dt + 3`` is above both, for every rise time, and a block comes out at
-worst smaller than the budget allows.
-
-It is a bound and not a count, which is what makes it safe: the only change to the
-kernel that could invalidate it is ``SPIKE_SAMPLES`` growing.
+A bound on each pulse's length, not the kernel's own rounding transcribed.
+`crates/kernels/src/pulse.rs` gives a resolved pulse one more sample than the duration
+covers and floors an unresolved one at ``SPIKE_SAMPLES = 3``, so ``rise_time / dt + 3``
+is above both for every rise time and a block comes out at worst smaller than the budget
+allows. Only ``SPIKE_SAMPLES`` growing could invalidate it.
 """
 
 
@@ -187,11 +96,10 @@ class SegmentGeometry:
     """One segment's derived geometry, computed once and passed down.
 
     Every array here is a function of the mesh's nodes and faces, and the mesh
-    recomputes each of them on every call by design. At the resolutions this track
-    exists for -- 2.36 M faces at a 400 m cut on the CFM Hikurangi interface -- that is
-    seconds a call, and there are at least three consumers of the areas and four of the
-    centres. So :func:`generate` builds one of these per segment and hands it to every
-    stage.
+    recomputes each of them on every call by design: at the 2.36 M faces a 400 m cut on
+    the CFM Hikurangi interface gives, deriving them costs 15 s against a 6 s build. So
+    :func:`generate` builds one of these per segment and hands it to every stage. They
+    are not cached on the mesh, which stores nothing derived.
 
     Attributes
     ----------
@@ -208,9 +116,8 @@ class SegmentGeometry:
         approximation anywhere in this pipeline to correct for.
     lattice : lattice_module.ParameterLattice
         The regular grid over this segment's parameter rectangle that both the sampler
-        and the wavefront run on. Derived, so it is hoisted here with the rest: the two
-        stages that use it are in different passes over the segments and would
-        otherwise build it twice.
+        and the wavefront run on. The two stages that use it are in different passes
+        over the segments and would otherwise build it twice.
     """
 
     vertices_km: FloatArray
@@ -223,11 +130,6 @@ class SegmentGeometry:
     @classmethod
     def of(cls, mesh: TriangleMesh) -> SegmentGeometry:
         """Derive everything once from a chart.
-
-        Parameters
-        ----------
-        mesh : TriangleMesh
-            The segment.
 
         Returns
         -------
@@ -264,14 +166,8 @@ def segments_of(geometry: GeometryConfig) -> Realisation:
     """Every surface of a geometry file as triangulated segments.
 
     The counterpart of `pipeline.segments_of`. There is no ``validate_chart`` step:
-    :func:`~rupture_generator.triangular.mesh.check_admissible` runs inside the builder,
-    and it is what replaces that refusal -- it names the modelling assumption ("this
-    surface is a graph over a plane") rather than a per-bend proxy for it.
-
-    Parameters
-    ----------
-    geometry : GeometryConfig
-        What the geometry file said.
+    :func:`~rupture_generator.triangular.mesh.check_admissible` runs inside the builder
+    and is what replaces that refusal.
 
     Returns
     -------
@@ -287,12 +183,8 @@ def segments_of(geometry: GeometryConfig) -> Realisation:
 def charts_for(geometry: GeometryConfig, surface_name: str | None) -> Realisation:
     """The triangulated segments of one surface.
 
-    Parameters
-    ----------
-    geometry : GeometryConfig
-        What the geometry file said.
-    surface_name : str, optional
-        Which surface. May be omitted only when the file holds exactly one.
+    ``surface_name`` may be omitted only when the geometry file holds exactly one
+    surface.
 
     Returns
     -------
@@ -336,20 +228,8 @@ def _taper_widths_km(
 
     `stages._taper_widths`' argument, one conversion earlier. There the fractions are of
     a *cell count* and round to whole cells; here they are of the segment's own
-    parameter extent and give kilometres directly, which is what MESH.md means by the
-    parameter-space form being cleaner -- no rounding, and a taper that means the same
-    fraction of the fault however finely it was cut.
-
-    The overlap refusal is kept exactly, and for the reason `stages.taper_edges` gives:
-    past half the fault a taper is a statement about the middle, and the separable and
-    overwriting forms of it disagree there.
-
-    Parameters
-    ----------
-    params : stages.SlipParams
-        Carrying the three fractions.
-    strike_km, dip_km : float
-        The segment's parameter extents.
+    parameter extent and give kilometres directly, so a taper means the same fraction of
+    the fault however finely it was cut.
 
     Returns
     -------
@@ -385,20 +265,12 @@ def _distance_to_boundary_km(
     """Distance from each point to a boundary polyline, in the parameter plane.
 
     The polyline is resampled at :data:`BOUNDARY_SAMPLES_PER_EDGE` points per edge and
-    the query is one ``cKDTree`` lookup, which is ``O(F log B)`` in the faces and the
-    boundary edges -- against ``O(F B)`` for an exact point-to-segment test, which at
-    2.36 M faces and thousands of boundary edges is 10^10 operations. That constant's
-    docstring carries the error the resampling costs and the yardstick it is measured
-    against.
+    the query is one ``cKDTree`` lookup: ``O(F log B)`` in the faces and the boundary
+    edges, against ``O(F B)`` for an exact point-to-segment test, which at 2.36 M faces
+    and thousands of boundary edges is 10^10 operations.
 
-    Parameters
-    ----------
-    points_uv : FloatArray
-        ``(n, 2)`` query points.
-    segments_uv : FloatArray
-        ``(B, 2, 2)`` boundary edges as endpoint pairs.
-    width_km : float
-        The ramp width, which sets the resampling together with the edge lengths.
+    ``points_uv`` is ``(n, 2)``, ``segments_uv`` is ``(B, 2, 2)`` boundary edges as
+    endpoint pairs, and ``width_km`` sets the resampling together with the edge lengths.
 
     Returns
     -------
@@ -411,10 +283,8 @@ def _distance_to_boundary_km(
     lengths_km = np.linalg.norm(ends - starts, axis=1)
     spacing_km = max(width_km, float(np.median(lengths_km))) / BOUNDARY_SAMPLES_PER_EDGE
 
-    # One straight run of samples for every edge, endpoints included, built by the
-    # ragged-arange identity rather than by a list of per-edge arrays: at 2.36 M faces
-    # the boundary is thousands of edges and a Python object each is what the container
-    # measurements say not to do.
+    # One straight run of samples per edge, endpoints included, built by the
+    # ragged-arange identity rather than by a list of per-edge arrays.
     steps = np.maximum(1, np.ceil(lengths_km / spacing_km)).astype(np.int64)
     counts = steps + 1
     offsets = np.cumsum(counts) - counts
@@ -433,49 +303,20 @@ def taper_edges(
     field: FloatArray,
     params: stages.SlipParams,
 ) -> FloatArray:
-    """Ramp a field to zero at the fault's edges, on a triangulation.
+    """Ramp a ``(F,)`` field to zero at the fault's edges, on a triangulation.
 
-    The triangular form of `stages.taper_edges`, and the same model: a rupture that
-    slips right up to its boundary is unphysical, because the edges are where the fault
-    stops. What changes is how "near an edge" is measured. A lattice counts whole cells
-    inward from an index end; a triangulation has no index ends, so this measures each
-    face's distance in the **parameter plane** to the boundary the label
+    The triangular form of `stages.taper_edges`, and the same model. A lattice counts
+    whole cells inward from an index end; a triangulation has no index ends, so this
+    measures each face's distance in the **parameter plane** to the boundary the label
     :meth:`~rupture_generator.triangular.mesh.TriangleMesh.boundary_labels` gives it,
     with the widths in kilometres.
 
-    **Separable, for the reason the lattice form is.** The result is the product of
-    independent ramps -- one to the lateral boundary, one to the top, one to the bottom
-    -- so a face two ramps reach is damped by both, and overlapping ramps are refused
-    outright rather than left to disagree. That the product still means what it meant is
-    a statement about the axes: ``u`` and ``v`` are independent, a top edge's outward
-    normal is a ``-v`` direction and a lateral edge's is a ``u`` one, so the lateral
-    factor is a function of ``u`` and the other two of ``v``, exactly as before. On a
+    Separable, as the lattice form is: the result is the product of independent ramps to
+    the lateral, top and bottom boundaries. ``u`` and ``v`` are independent axes and a
+    top edge's outward normal is a ``-v`` direction where a lateral edge's is a ``u``
+    one, so the lateral factor is a function of ``u`` and the other two of ``v``. On a
     rectangular parameter domain the distances *are* ``u - u_min`` and ``v - v_min``, so
     the two forms agree to the resampling error.
-
-    **Not the same numbers as the lattice taper, and deliberately.** The fraction there
-    rounds to whole cells and the outermost cell gets weight ``1 / side``, which is
-    exactly 1 -- no taper at all -- whenever the fraction rounds to one cell. That is
-    what the shipped 2% side taper does on a 56 km fault cut at 1 km. Here the same 2%
-    is 1.1 km of genuine ramp. So a planar comparison against the quad path is run with
-    the tapers off, and the difference the tapers make is reported rather than tuned
-    away.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment, for its boundary and its labels.
-    geometry : SegmentGeometry
-        Its hoisted geometry.
-    field : FloatArray
-        ``(F,)`` the field to taper.
-    params : stages.SlipParams
-        Carrying the three fractions.
-
-    Returns
-    -------
-    FloatArray
-        ``(F,)`` the field, damped near the edges.
 
     Raises
     ------
@@ -487,16 +328,14 @@ def taper_edges(
     dip_km = float(np.ptp(parameters[:, 1]))
     widths_km = _taper_widths_km(params, strike_km, dip_km)
     if not any(width_km > 0.0 for width_km in widths_km):
-        # No taper at all is a config, not a corner case -- ``top_taper`` is zero in
-        # production. Returning before the boundary is walked keeps that free, and the
-        # walk is a sort of every half-edge.
+        # No taper at all is a config, not a corner case, and returning before the
+        # boundary walk -- a sort of every half-edge -- keeps it free.
         return field
 
     centres_uv = parameters[geometry.faces].mean(axis=1)
-    # One half-edge walk for the whole taper: the edges are found once and then
-    # *handed* to the labeller, where `boundary_labels()` on its own would walk again
-    # and `boundary_edges(label)` would walk twice per label -- six passes over 6.5
-    # million half-edges at a 400 m cut, for one answer.
+    # One half-edge walk for the whole taper: the edges are found once and then *handed*
+    # to the labeller, where letting it walk again would cost six passes over 6.5
+    # million half-edges at a 400 m cut.
     edges = mesh.boundary_edges()
     labels = mesh.boundary_labels(edges)
 
@@ -522,19 +361,11 @@ def field_sampler(
 ) -> stages.FieldSampler:
     """This segment's draw, as the shared field stages take it.
 
-    A three-line adapter and nothing more: the stages are written against
+    An adapter: the stages are written against
     :data:`~rupture_generator.stages.FieldSampler`, whose first argument is the chart
     and which the stage never inspects, and what this segment draws from is its
-    parameter lattice rather than its chart. There is one implementation behind it --
-    :func:`~rupture_generator.triangular.lattice.draw_field` -- and it is not
-    selectable; the closure exists to bind the lattice, so that one embedding is built
-    per segment and all four of its fields come out of it, exactly as the structured
-    track's sampler holds one embedding per chart.
-
-    Parameters
-    ----------
-    lattice : lattice_module.ParameterLattice
-        The segment's lattice, from its :class:`SegmentGeometry`.
+    parameter lattice instead. The closure exists to bind that lattice, so one embedding
+    is built per segment and all four of its fields come out of it.
 
     Returns
     -------
@@ -568,25 +399,13 @@ def travel_times(
     """S7 on a triangulation: first-arrival times per face, in seconds.
 
     `timing.travel_times`' counterpart, and the same solver: a factored fast sweep over
-    a regular grid. What differs is which grid and where the depths come from. The
-    sweep runs on the segment's **parameter** lattice, and the slowness it reads is
-    sampled at the curved mesh's own **true** centre depths --
-    :func:`~rupture_generator.triangular.lattice.travel_times` is where the two meet,
-    and where the wall on the off-fault cells is applied and measured.
+    a regular grid. What differs is which grid and where the depths come from. The sweep
+    runs on the segment's **parameter** lattice, and the slowness it reads is sampled at
+    the curved mesh's own **true** centre depths --
+    :func:`~rupture_generator.triangular.lattice.travel_times` is where the two meet.
 
-    The speed field itself is `timing.speed_field` unchanged: it is elementwise in
-    depth and shear speed, and a face has both.
-
-    Parameters
-    ----------
-    geometry : SegmentGeometry
-        The segment's hoisted geometry, for the true depths and the lattice.
-    shear_speed_km_s : FloatArray
-        ``(F,)`` from the velocity model at each face's own centre depth.
-    params : timing.SpeedParams
-        How fast the front travels here.
-    seeds : Sequence of tuple
-        ``(i, j, t0_s)`` lattice cells the front leaves, and when.
+    ``shear_speed_km_s`` is ``(F,)`` from the velocity model at each face's own centre
+    depth, and ``seeds`` are ``(i, j, t0_s)`` lattice cells the front leaves and when.
 
     Returns
     -------
@@ -619,23 +438,10 @@ def attach_materials(
 ) -> Realisation:
     """The rock each subfault is in: shear speed, rigidity and density.
 
-    `pipeline.attach_materials` on faces, reading the depths off the hoisted geometry
-    rather than asking the mesh again. Every later stage reads these off the chart
-    rather than the model, so the moment fold, the wavefront and the SRF all describe
-    the same rock.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    velocity_model : VelocityModelConfig
-        The 1-D model.
-
-    Returns
-    -------
-    Realisation
+    `pipeline.attach_materials` on faces, reading the depths off the hoisted geometry.
+    Every later stage reads these off the chart rather than the model, so the moment
+    fold, the wavefront and the SRF all describe the same rock. ``realisation`` is
+    annotated in place and returned.
     """
     bottoms = np.asarray(velocity_model.bottom_depth_km)
     speeds = np.asarray(velocity_model.shear_speed_km_s)
@@ -663,28 +469,10 @@ def draw_fields(
 
     `pipeline.draw_fields` with one substitution and no second: the taper is
     :func:`taper_edges` instead of the lattice one, because a triangulation has no index
-    ends to count cells in from. The sampler is the same circulant embedding the
-    structured track draws from, on this segment's parameter lattice
-    (:func:`field_sampler`), and the rise-time model, the rake model and the
-    perturbation model are `stages.py`'s own, called here, so there is one of each in
-    the package.
-
-    One batch, and the only place anything is drawn. Rise time and the perturbation both
-    correlate against slip's own Gaussian, so the Gaussian and the sampler are locals
-    that never leave this function.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    config : RuptureConfig
-        What the earthquake is.
-
-    Returns
-    -------
-    Realisation
+    ends to count cells in from. One batch, and the only place anything is drawn -- rise
+    time and the perturbation both correlate against slip's own Gaussian, so that
+    Gaussian and the sampler are locals that never leave this function. ``realisation``
+    is annotated in place and returned.
 
     Raises
     ------
@@ -769,25 +557,10 @@ def constant_fields(
 ) -> Realisation:
     """The same four fields for a point source, given rather than drawn.
 
-    `pipeline.constant_fields` on faces. A point source is this pipeline with constant
-    fields, not a path of its own, so it provides exactly the names :func:`draw_fields`
-    does and no later stage asks which kind of source it has -- including the
-    perturbation, which is a field of zeros rather than a missing one.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    source : PointSourceConfig
-        Carrying the given rise time.
-    field : FieldConfig
-        Carrying the base rake.
-
-    Returns
-    -------
-    Realisation
+    `pipeline.constant_fields` on faces. It provides exactly the names
+    :func:`draw_fields` does, so no later stage asks which kind of source it has --
+    including the perturbation, which is a field of zeros rather than a missing one.
+    ``realisation`` is annotated in place and returned.
     """
     for name, mesh in list(realisation.items()):
         faces = geometries[name].face_count
@@ -807,39 +580,17 @@ def scale_moment(
 ) -> Realisation:
     """Size the slip pattern into slip, in metres. The one global fold.
 
-    `pipeline.scale_moment` verbatim in its arithmetic -- `moment.py` is flat-array
-    arithmetic and needs nothing for a triangulation -- with the areas read off the
+    `pipeline.scale_moment` verbatim in its arithmetic, with the areas read off the
     hoisted geometry. Either one factor over every segment, so how the moment divides
     between faults is the fields' own, or a target per fault when the source states the
     division.
 
-    **The fold is over faces with true surface areas, so there is nothing to correct
-    for.** That is the point of keeping the mesh curved while the solvers are flat: a
-    flat model delivers 0.9690 of the moment it was asked for, and this delivers 1.0
-    exactly, because ``areas_km2`` is
+    The fold is over faces with **true** surface areas -- ``areas_km2`` is
     :meth:`~rupture_generator.triangular.mesh.TriangleMesh.areas_km2` on the lifted
-    triangles and never a parameter-plane area. A discrepancy here is a bug rather than
-    an approximation, and the tests assert it as such.
-
-    Were the **lattice** ever to become the primary representation -- it is not, and
-    nothing here reads a cell's area -- the fix is known and is a per-cell factor of
-    ``sqrt(1 + |grad h|^2)``, which
-    :meth:`~rupture_generator.triangular.mesh.TriangleMesh.slope` already supplies.
-    Recorded as the route rather than built, because building it would be a second
-    statement of an area this package already has exactly.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    source : SourceConfig
-        What the earthquake is.
-
-    Returns
-    -------
-    Realisation
+    triangles and never a parameter-plane area -- so where a flat model delivers 0.9690
+    of the moment it was asked for, this delivers 1.0 exactly. A discrepancy here is a
+    bug rather than an approximation, and the tests assert it as such. ``realisation``
+    is annotated in place and returned.
     """
     names = list(realisation)
     patterns = [realisation[name]["slip_pattern"] for name in names]
@@ -872,32 +623,16 @@ def solve_onsets(
 ) -> Realisation:
     """S7 and S8: the wavefront, in causal order, and where the front crossed.
 
-    `pipeline.solve_onsets` with three seams changed and its argument intact. **Draws
-    nothing**: every random choice was made in :func:`draw_fields`, so the one
-    order-dependent traversal is a pure function of its inputs.
+    `pipeline.solve_onsets` with three seams changed. **Draws nothing**: every random
+    choice was made in :func:`draw_fields`, so the one order-dependent traversal is a
+    pure function of its inputs.
 
-    The seams. The hypocentre is one flat face index rather than an ``(i, j)`` pair, and
-    it is found from **true arc lengths** because "12 km along strike" means along the
-    fault. That face is then turned into the one lattice cell its centre falls in, which
-    is what the sweep seeds -- and since projection is a gather rather than an
-    interpolation, the hypocentre face reads that cell's seeded ``t0`` exactly, which is
-    where the pinned onset's exactness comes from. And `propagation.causal_jump` returns
-    a flat face index for both cells, because that is what a triangulated chart calls a
-    subfault; nothing else about the jump search changes, including the argument that
-    jumps leave from *arrested* tips.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    config : RuptureConfig
-        What the earthquake is.
-
-    Returns
-    -------
-    Realisation
+    The seams. The hypocentre is one flat face index rather than an ``(i, j)`` pair,
+    found from **true arc lengths** because "12 km along strike" means along the fault;
+    it is turned into the one lattice cell its centre falls in, which is what the sweep
+    seeds, and since projection is a gather the hypocentre face reads that cell's seeded
+    ``t0`` exactly. `propagation.causal_jump` returns a flat face index for both cells.
+    ``realisation`` is annotated in place and returned.
 
     Raises
     ------
@@ -931,9 +666,8 @@ def solve_onsets(
             pinned: int | None = hypocentre
             delay_s = config.timing.rupture_delay_s
         else:
-            # Chosen on the parent's wavefront and timed on its onset: an argmin over a
-            # hundred thousand perturbed values is an order statistic that finds the
-            # perturbation's negative tail rather than the shape of the front.
+            # Chosen on the parent's wavefront and timed on its onset: an argmin over
+            # perturbed values finds the perturbation's negative tail, not the front.
             jump = propagation.causal_jump(
                 solved[parent],
                 solved[parent]["wavefront_s"],
@@ -950,8 +684,7 @@ def solve_onsets(
                 )
             ]
             # Triggered from elsewhere: no pin and no clamp, so this segment's onsets
-            # stay absolute. That is what lets a rupture propagate between faults
-            # rather than restarting on each.
+            # stay absolute rather than restarting from zero.
             pinned = None
             delay_s = 0.0
 
@@ -972,11 +705,9 @@ def solve_onsets(
             ),
         )
 
-    # The hypocentre, in the root's own arc lengths and under the names a file uses, so
-    # the writer copies it and no segment needs a special case. Clamped to the fault's
-    # extent, which is `arc_profile`'s last knot rather than any one vertex's arc
-    # length: the vertices of a triangulation are in no particular order, so the
-    # lattice's "last node" has no counterpart here.
+    # The hypocentre, in the root's own arc lengths and under the names a file uses.
+    # Clamped to `arc_profile`'s last knot rather than to any one vertex's arc length:
+    # a triangulation's vertices are in no particular order, so there is no "last node".
     root_mesh = solved[root]
     solved[root] = root_mesh.with_attrs(
         hypocentre_strike_km=min(
@@ -1000,35 +731,21 @@ def face_blocks(
 ) -> Iterator[slice]:
     """Cut a segment's faces into runs whose pulses fit a memory budget.
 
-    **How S9 is run when its output does not fit**, and the shape both streaming
-    writers share. Consecutive runs, never a permutation: a rupture file's subfaults are
-    one ordered block per segment and the samples are every pulse concatenated in that
-    same order, so a block is a slice or it is a different rupture.
+    Consecutive runs, never a permutation: a rupture file's subfaults are one ordered
+    block per segment and the samples are every pulse concatenated in that same order,
+    so a block is a slice or it is a different rupture.
 
     The cut is made on the **pulses' own lengths**, not on a face count, because that is
-    what the memory is: a face whose rise time is four seconds carries eight hundred
-    samples at ``dt = 0.005 s`` and one at half a second carries a hundred, so a fixed
-    number of faces per block would be sized for whichever the segment happened to have.
-    :data:`PULSE_SAMPLE_MARGIN` is what makes the length a bound rather than a guess.
+    what the memory is: at ``dt = 0.005 s`` a four-second rise time carries eight
+    hundred samples where half a second carries a hundred. :data:`PULSE_SAMPLE_MARGIN`
+    is what makes the length a bound rather than a guess. A single face whose pulse
+    alone exceeds the budget still gets its own block, there being nothing smaller to
+    cut.
 
-    A single face whose pulse alone exceeds the budget still gets its own block -- there
-    is nothing smaller to cut -- so the budget is honoured except where it cannot be,
-    and that case is one pulse rather than a segment.
-
-    Parameters
-    ----------
-    rise_time_s : FloatArray
-        ``(F,)`` each face's rise time, seconds.
-    params : pulses.PulseParams
-        For the sample interval and the shape's duration scale, which are what turn a
-        rise time into a sample count.
-    budget_bytes : int, optional
-        See :data:`STREAM_BUDGET_BYTES`.
-    bytes_per_sample : int, optional
-        What one live sample costs the caller. The kernel's own ``f64`` output is
-        always 8; a writer that narrows into a second buffer before writing adds that
-        buffer's width, which is 4 for the SRF's ``float32``. Stated by the caller
-        because it is a property of the writer, not of the pulses.
+    ``rise_time_s`` is ``(F,)`` in seconds and ``bytes_per_sample`` is what one live
+    sample costs the caller: the kernel's own ``f64`` output is always 8, and a writer
+    that narrows into a second buffer before writing adds that buffer's width, which is
+    4 for the SRF's ``float32``.
 
     Yields
     ------
@@ -1053,10 +770,8 @@ def face_blocks(
         / params.sample_interval_s
         + PULSE_SAMPLE_MARGIN
     )
-    # Walk the cumulative bound and cut whenever the next face would cross the budget.
-    # `searchsorted` on the running total does that without a Python loop over faces:
-    # the cut after a block starting at `start` is the last face whose cumulative bound
-    # is still within `budget_samples` of where the block began.
+    # Walk the cumulative bound and cut whenever the next face would cross the budget;
+    # `searchsorted` on the running total does that without a Python loop over faces.
     running = np.cumsum(bound)
     start = 0
     while start < running.size:
@@ -1075,22 +790,9 @@ def synthesise_pulses(
     """S9: a slip-rate pulse per subfault, carrying that subfault's slip.
 
     `pulses.synthesise` unchanged: it takes a depth and a slip per subfault and knows
-    nothing about the shape of the chart, which is what MESH.md means by this stage
-    needing zero work. The only difference from `pipeline.synthesise_pulses` is that the
-    depths come off the hoisted geometry.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        Annotated in place, and returned.
-    geometries : Mapping of str to SegmentGeometry
-        One per segment.
-    config : RuptureConfig
-        What the earthquake is.
-
-    Returns
-    -------
-    Realisation
+    nothing about the shape of the chart. The only difference from
+    `pipeline.synthesise_pulses` is that the depths come off the hoisted geometry.
+    ``realisation`` is annotated in place and returned.
     """
     params = pulse_model(config)
 
@@ -1118,10 +820,8 @@ def generate(
     The same stage order as `pipeline.generate`, written down the same way -- as this
     function's own body. The geometry is a system nothing has been drawn on; the result
     is the same segments with the rupture attached, which is why the two are one type.
-
-    The derived geometry of every segment is computed **here, once**, and passed to
-    every stage; see :class:`SegmentGeometry` for the measurement that makes that worth
-    doing.
+    Every segment's derived geometry is computed **here, once**
+    (:class:`SegmentGeometry`) and passed to every stage.
 
     Parameters
     ----------
@@ -1133,14 +833,11 @@ def generate(
         are written onto this object, which is also what is returned.
     synthesise : bool, optional
         Whether to run S9 and attach each segment's slip-rate pulses. ``False`` stops
-        after S8 with everything the pulses are a function of -- slip, rise time,
-        depth, and the sample interval -- already attached, which is what
-        :func:`~rupture_generator.triangular.assemble.write_sw4_hdf5` wants: at a 400 m
-        cut one segment's pulses are 1.9 G samples and 15 GB of float64 held at once,
-        and that writer synthesises them a chunk of faces at a time instead. A
-        realisation generated this way carries no pulses, so
-        :func:`~rupture_generator.triangular.assemble.to_srf_file` and
-        :func:`write_rupture_mesh` will not write one.
+        after S8 with everything the pulses are a function of -- slip, rise time, depth
+        and the sample interval -- already attached, leaving the writers to synthesise
+        them a block of faces at a time. A realisation generated this way carries no
+        pulses, so :func:`~rupture_generator.triangular.assemble.to_srf_file` and
+        :func:`write_rupture_mesh` will not write one without ``params``.
 
     Returns
     -------
@@ -1188,43 +885,21 @@ def write_rupture_mesh(
 ) -> None:
     """Write a generated triangular rupture out as a version 3 mesh file.
 
-    A convenience, and an honest one: :func:`~rupture_generator.triangular.mesh
-    .write_mesh` writes each segment's whole dataset, which after the pipeline includes
-    every attached field and the CSR pulses. So the triangular track has a native round
-    trip without a rupture-file format of its own -- what MESH.md's phase 3 would add is
-    a *reader's* vocabulary (areas in square metres, node positions), not storage.
-
-    Each *segment* is written as its own surface holding one segment, because after
-    fusion a segment is what ruptures and its name is what the causality tree uses; the
-    file's group names are then the names a config selects.
+    :func:`~rupture_generator.triangular.mesh.write_mesh` writes each segment's whole
+    dataset, which after the pipeline includes every attached field and the CSR pulses.
+    Each *segment* is written as its own surface holding one segment, so the file's
+    group names are the names a config selects.
 
     **Two routes in, chosen by what the realisation carries.** A rupture whose pulses
-    are attached is written whole, which is every rupture small enough for
-    :func:`generate` to have attached them. A rupture generated with ``synthesise=False``
-    is handed ``params`` instead, and then S9 runs *here*, a block of faces at a time,
-    appended to the file and dropped -- because at a 400 m cut the pulses are 2.45 G
-    samples and 19.6 GB of ``f64``, which is the whole of the free memory on the machine
-    this was measured on. :data:`STREAM_BUDGET_BYTES` bounds the peak and
+    are attached is written whole. A rupture generated with ``synthesise=False`` is
+    handed ``params`` instead, and then S9 runs *here*, a block of faces at a time,
+    appended to the file and dropped; :data:`STREAM_BUDGET_BYTES` bounds the peak and
     :func:`face_blocks` is where a block comes from. The stored form is identical either
-    way: the same two CSR arrays under the same names, so a reader cannot tell.
+    way -- the same two CSR arrays under the same names -- so a reader cannot tell.
 
-    The streaming route writes netCDF only. A Zarr store would want the same treatment
-    through a different API and nothing needs it yet, so it refuses rather than
-    quietly holding 19.6 GB.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        A rupture that has been through the pipeline. Its own CRS is what is stored.
-    path : Path or str
-        Where to write it: ``.h5``, or ``.zarr`` for a rupture that carries its pulses.
-    params : pulses.PulseParams, optional
-        How each pulse is shaped and sampled -- from
-        `rupture_generator.pipeline.pulse_model`, the same model
-        :func:`synthesise_pulses` uses. Given, S9 runs here in blocks; omitted, the
-        realisation must carry its pulses already.
-    budget_bytes : int, optional
-        See :data:`STREAM_BUDGET_BYTES`.
+    ``path`` is ``.h5``, or ``.zarr`` for a rupture that carries its pulses: the
+    streaming route writes netCDF only, appending to a Zarr store being a different API
+    nothing needs yet. The realisation's own CRS is what is stored.
 
     Raises
     ------
@@ -1289,22 +964,11 @@ def _append_pulses(
     .with_pulses` would have stored, written into the same variables of the same group,
     but grown a block at a time so that only one block of samples is ever resident.
 
-    Through `h5netcdf` rather than `h5py`, deliberately: the file is netCDF underneath,
-    so a variable needs its dimension scales, and a bare HDF5 dataset dropped alongside
-    reads back as a phony dimension that `read_mesh` refuses. ``sample`` is created
-    unlimited because its length is the total pulse length, which is the kernel's answer
-    and is not known until the last block has been synthesised.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        The rupture, without pulses.
-    path : Path
-        The file :func:`~rupture_generator.triangular.mesh.write_mesh` just wrote.
-    params : pulses.PulseParams
-        How each pulse is shaped and sampled.
-    budget_bytes : int
-        See :data:`STREAM_BUDGET_BYTES`.
+    Through `h5netcdf` rather than `h5py`: the file is netCDF underneath, so a variable
+    needs its dimension scales, and a bare HDF5 dataset dropped alongside reads back as
+    a phony dimension that `read_mesh` refuses. ``sample`` is unlimited because its
+    length is not known until the last block has been synthesised. ``path`` is the file
+    :func:`~rupture_generator.triangular.mesh.write_mesh` just wrote.
 
     Raises
     ------

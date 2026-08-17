@@ -2,21 +2,17 @@
 
 The pipeline produces physics on charts, in SI. An SRF wants flat arrays in CGS, one
 PLANE record per segment, points ordered along strike fastest within each segment in
-turn. This is the translation, and it is the **only** place in the package where
+turn -- so a bent or multi-segment fault becomes several planes whose points follow in
+the same order. This is the translation, and the **only** place in the package where
 metres become centimetres.
 
-The plane header comes **from the mesh**, not from a reconstruction. Recomputing a
-plane centre from a fault width and a dip needs a tangent-plane approximation that is
-off by 43 m on a crustal fault and 1.9 km at subduction scale; the mesh was built in a
-projected frame where the quantity is an identity, so this asks it rather than deriving
-it worse.
+The plane header is read off the mesh rather than reconstructed: recomputing a plane
+centre from a fault width and a dip needs a tangent-plane approximation that is off by
+43 m on a crustal fault and 1.9 km at subduction scale.
 
 The one convention conversion: an SRF's ``shyp`` is measured from the along-strike
 **centre** of the plane, where the config and the mesh both measure from its ``j = 0``
-end. That subtraction happens here, at the seam that writes the format wanting it.
-
-One PLANE record per segment, its points ordered by segment, so a bent or
-multi-segment fault is written as several planes whose points follow in the same order.
+end.
 """
 
 from __future__ import annotations
@@ -46,23 +42,11 @@ def plane_header(
 ) -> PlaneHeader:
     """The PLANE record for one segment, read off its own chart.
 
-    Parameters
-    ----------
-    mesh : RuptureMesh
-        The chart the rupture is on.
-    located : xr.Dataset
-        `mesh.project_cells`' output -- the only thing here that needs the frame.
-        Passed in because :func:`to_srf_file` wants it for the point columns as well,
-        and the projection is the expensive part.
-    hypocentre_km : tuple of float, optional
-        Where the rupture started, in this segment's own arc lengths, or ``None`` for
-        a segment that does not hold it. The format has no way to say "not here", so
-        a segment without the hypocentre records zeros, which a reader of a multi-plane
-        SRF has to know already.
-
-    Returns
-    -------
-    PlaneHeader
+    ``located`` is `project_cells`' output, passed in because :func:`to_srf_file` wants
+    it for the point columns too and the projection is the expensive part.
+    ``hypocentre_km`` is in this segment's own arc lengths, or ``None`` for a segment
+    that does not hold it: the format has no way to say "not here", so such a segment
+    records zeros.
     """
     length_km = float(mesh.strike_arc_km()[-1])
     width_km = float(mesh.dip_arc_km()[-1])
@@ -104,9 +88,8 @@ POINT_COLUMNS = (
 )
 """Every column a version 2.0 point block carries, in the order `Points` declares them.
 
-Named once because two writers fill them -- this one from a lattice and
-:func:`rupture_generator.triangular.assemble.to_srf_file` from a triangulation -- and a
-column one of them forgot would be a file of zeros that still parses.
+Named once because two writers fill them, from a lattice and from a triangulation, and
+a column one of them forgot would be a file of zeros that still parses.
 """
 
 
@@ -118,13 +101,10 @@ def srf_file(
 ) -> SrfFile:
     """One SRF file from per-segment columns already in the format's own units.
 
-    The half of the writing that is **not** about the shape of a chart: concatenating
-    each segment's columns into one run of points, rebuilding the CSR offsets across
-    segments, and narrowing the samples into their final buffer. A triangulated rupture
-    reaches this with different columns and a different header and needs none of it
-    written twice -- which matters more than it looks, because most of what is here is
-    memory discipline rather than arithmetic (see the comments), and a second
-    transcription would be a second place to get 20 GB of peak for a 3.8 GB answer.
+    The half of the writing that is not about the shape of a chart: concatenating each
+    segment's columns into one run of points, rebuilding the CSR offsets across
+    segments, and narrowing the samples into their final buffer. Mostly memory
+    discipline rather than arithmetic -- see the comments.
 
     Parameters
     ----------
@@ -149,20 +129,15 @@ def srf_file(
         }
     )
 
-    # The offsets are rebuilt across segments rather than concatenated: each
-    # segment's own start at zero, and the SRF's points are one run.
+    # Offsets rebuilt across segments, not concatenated: each segment's own start at
+    # zero, and the SRF's points are one run.
     lengths = np.concatenate(pulse_lengths) if pulse_lengths else np.empty(0, np.int64)
     offsets = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
     longest = int(lengths.max()) if len(lengths) else 0
 
-    # **The samples are converted into their final buffer, not concatenated into it.**
-    # `np.concatenate` of one scaled array per segment holds the pieces and the result
-    # at once, and both in float64 -- four copies of a quantity the format stores as
-    # float32. On the shipped twenty-fault scenario that is 944 million samples, so
-    # each copy is 7.6 GB and the peak was over 20 GB for a 3.8 GB answer.
-    #
-    # `np.multiply` with `out=` does the unit conversion and the narrowing in one pass,
-    # straight into the slice that segment owns, so only the destination is ever live.
+    # Converted into the final buffer, not concatenated into it: `out=` does the unit
+    # conversion and the narrowing in one pass, so only the destination is ever live.
+    # Concatenating peaked over 20 GB for a 3.8 GB answer on the twenty-fault scenario.
     samples = np.empty(int(offsets[-1]), dtype=SRF_FLOAT)
     at = 0
     for source in pulse_samples:
@@ -171,27 +146,13 @@ def srf_file(
         )
         at += source.size
 
-    # A sample's column is its position within its own pulse, which is what makes the
-    # ragged set of pulses a CSR matrix as wide as the longest of them.
-    #
-    # **Built as a cumulative sum in a single buffer**, because the obvious spellings
-    # are not single-buffer. `concatenate([arange(n) for n in lengths])` builds an array
-    # object per subfault -- two million of them, all alive at once. `arange(total) -
-    # repeat(starts, lengths)` is vectorised but materialises three arrays the length of
-    # the samples, and at this size each one is 3.8 GB.
-    #
-    # Instead: every sample's column is one more than its predecessor's, except at the
-    # start of a row where it drops back to zero. So write those increments -- ones, and
-    # `1 - previous length` at each row start -- and integrate them in place.
-    #
-    # Only non-empty rows get a reset: an empty row shares its start position with the
-    # next one, and duplicate fancy-index writes keep the last, which would take the
-    # empty row's length instead of the real previous row's.
-    #
-    # int32 because a column is bounded by the longest pulse, and scipy wants `indices`
-    # and `indptr` in one dtype -- which int32 can carry as long as there are fewer
-    # than 2^31 samples in total. Past that, int64 and twice the memory is the only
-    # option, so the choice is made on the actual count rather than assumed.
+    # A sample's column is its position within its own pulse, built as a cumulative sum
+    # in a single buffer: every column is one more than its predecessor's except at the
+    # start of a row, where it drops to zero. So write those increments -- ones, and
+    # `1 - previous length` at each row start -- and integrate in place. Only non-empty
+    # rows get a reset, since an empty row shares its start with the next and duplicate
+    # fancy-index writes keep the last. int32 carries a column index as long as there
+    # are fewer than 2^31 samples, and scipy wants `indices` and `indptr` in one dtype.
     index_dtype = np.int32 if samples.size < np.iinfo(np.int32).max else np.int64
     within = np.ones(samples.size, dtype=index_dtype)
     if within.size:
@@ -217,23 +178,9 @@ def to_srf_file(
 ) -> SrfFile:
     """Assemble an SRF version 2.0 file from a generated rupture.
 
-    One PLANE per segment, in the realisation's own order.
-
-    Version 2.0 carries shear speed and density per point, and both are fields the
-    materials stage attached, so nothing here re-reads the velocity model. That
-    resampling used to happen in `generate_cli`, from each subfault's *stored centre
-    depth* -- a second reading of a quantity the pipeline had already computed, and one
-    that could disagree with it.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        A rupture that has been through the pipeline.
-
-    Returns
-    -------
-    SrfFile
-        Version 2.0, one PLANE record per segment.
+    One PLANE per segment, in the realisation's own order. Version 2.0's shear speed
+    and density per point are fields the materials stage attached, so nothing here
+    re-reads the velocity model.
 
     Raises
     ------
@@ -266,8 +213,8 @@ def to_srf_file(
 
         interval_s = float(mesh.attrs["sample_interval_s"])
 
-        # SI leaves the package here. Slip and area cross into the format's own
-        # units; depth, angles and times are already what it wants.
+        # SI leaves the package here: slip and area cross into the format's own units,
+        # and depth, angles and times are already what it wants.
         columns["longitude_deg"].append(projected("centre_longitude_deg"))
         columns["latitude_deg"].append(projected("centre_latitude_deg"))
         columns["depth_km"].append(projected("centre_depth_km"))

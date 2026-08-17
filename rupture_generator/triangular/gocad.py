@@ -1,34 +1,21 @@
 """Read a GOCAD TSurf: the format a 3-D fault model actually ships in.
 
 The NZ Community Fault Model v1.0 distributes its subduction interfaces as GOCAD TSurf
-files, and they are the reason :class:`~rupture_generator.triangular.mesh.TriangleMesh`
-exists: a Hikurangi interface is 5218 vertices and 9236 triangles with an irregular
-outline, which no quad lattice expresses and which
-:meth:`~rupture_generator.triangular.mesh.TriangleMesh.from_patches` cannot represent.
-
-**These files carry their own connectivity**, and that is the whole point of reading
-them rather than their vertices. A triangulation derived from the projected points --
-what `scipy.spatial.Delaunay` gives -- is positively oriented by construction, so
-testing it for folds is a tautology; the surface's own triangles are a real test with a
-real answer.
-
-The format, as much of it as this reads:
+files. These carry their own connectivity, which is the point of reading them rather
+than their vertices: a triangulation derived from the projected points is positively
+oriented by construction, so testing it for folds is a tautology. The format, as much
+of it as this reads:
 
 - ``VRTX id x y z`` (or ``PVRTX``, which adds per-vertex properties this ignores) --
   positions in the CRS named by the file's own header, in **metres**.
-- ``ZPOSITIVE Elevation`` -- so ``z`` is height and depth is ``-z``. The alternative,
-  ``ZPOSITIVE Depth``, is refused rather than guessed, because the two differ by a sign
-  on every vertex and nothing downstream would notice.
-- ``TRGL i j k`` -- **one-based** vertex indices, which is the mistake this module
-  exists to make once rather than at every call site.
-- ``TFACE`` -- a part boundary. One file may hold several connected surfaces sharing one
-  vertex numbering; each becomes its own patch, and
-  :func:`read_surfaces` hands them back separately because two disconnected sheets are
-  two Monge patches, not one.
+- ``ZPOSITIVE Elevation`` -- so ``z`` is height and depth is ``-z``. ``ZPOSITIVE
+  Depth`` is refused rather than guessed: the two differ by a sign on every vertex.
+- ``TRGL i j k`` -- **one-based** vertex indices.
+- ``TFACE`` -- a part boundary. One file may hold several connected surfaces sharing
+  one vertex numbering, and each becomes its own patch.
 
-What it deliberately does not do: no CRS is read or checked. A TSurf's header names its
-coordinate system in a vocabulary that is not EPSG, and the CFM's files say
-``NAME Default``. The caller states the CRS, the same way a geometry config does.
+No CRS is read or checked: a TSurf's header names its coordinate system in a vocabulary
+that is not EPSG, and the CFM's files say ``NAME Default``. The caller states the CRS.
 """
 
 from __future__ import annotations
@@ -53,11 +40,7 @@ _NAME = re.compile(r"^name\s*:\s*(.+)$", re.IGNORECASE)
 
 
 def _lines(path: Path) -> Iterator[str]:
-    """Every line of a TSurf, transparently through gzip.
-
-    The CFM archive is 356 KB gzipped against 1.4 MB plain, and the format is line
-    oriented, so there is no reason to hold either in memory twice.
-    """
+    """Every line of a TSurf, transparently through gzip."""
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt") as handle:
         yield from handle
@@ -66,10 +49,9 @@ def _lines(path: Path) -> Iterator[str]:
 class TSurf:
     """One TSurf file's vertices, its parts, and the name it calls itself.
 
-    Not a mesh: this is the file's contents, in kilometres and depth-positive-down, with
-    no frame fitted and no admissibility claimed. :meth:`to_mesh` is the step that turns
-    a part into a Monge patch, and it is separate because that step needs a stated
-    strike and dip the file does not carry.
+    Not a mesh: the file's contents, in kilometres and depth-positive-down, with no
+    frame fitted and no admissibility claimed. :meth:`to_mesh` turns a part into a
+    Monge patch, and is separate because it needs a strike and dip the file lacks.
     """
 
     def __init__(
@@ -77,15 +59,9 @@ class TSurf:
     ) -> None:
         """Hold what :func:`read_tsurf` parsed.
 
-        Parameters
-        ----------
-        name : str
-            What the file's header calls the surface.
-        vertices_km : FloatArray
-            ``(V, 3)`` positions, components ``(east, north, depth)``, depth positive
-            down, kilometres, **absolute** in the file's CRS.
-        parts : list of IntArray
-            One ``(F, 3)`` zero-based face table per ``TFACE``.
+        ``vertices_km`` is ``(V, 3)`` positions ``(east, north, depth)``, depth
+        positive down, kilometres, **absolute** in the file's CRS; ``parts`` is one
+        ``(F, 3)`` zero-based face table per ``TFACE``.
         """
         self.name = name
         self.vertices_km = vertices_km
@@ -108,29 +84,16 @@ class TSurf:
         dips_left: bool = False,
         surface: str | None = None,
     ) -> TriangleMesh:
-        """One part as a Monge patch, with its faces kept exactly as the file wrote them.
+        """One part as a Monge patch, its faces exactly as the file wrote them.
 
-        Positions become **offsets from the part's own origin**, taken as the minimum
-        easting and northing over its vertices. That is not cosmetic: an NZTM northing
-        reaches ~5,180 km against a ~9 km triangle, and
-        :mod:`rupture_generator.mesh` measures the rounding that costs at a factor of
-        ~400.
+        Positions become **offsets from the part's own origin**, the minimum easting
+        and northing over its vertices: an NZTM northing reaches ~5,180 km against a
+        ~9 km triangle, which costs a factor of ~400 in rounding.
 
-        Parameters
-        ----------
-        part : int, optional
-            Which ``TFACE`` to take.
-        strike_deg, dip_deg : float, optional
-            The stated geometry. A TSurf carries none, so both default to what
-            :func:`~rupture_generator.triangular.mesh.implied_axes` reads off the part's
-            own best-fit plane -- the geologist's strike and dip of that plane, from the
-            fitted normal and the vertical, never from the SVD's in-plane axes.
-        dips_left : bool, optional
-            Whether the surface dips left of the strike direction. Ignored unless
-            ``strike_deg`` is given, since the implied axes fix the sign by convention.
-        surface : str, optional
-            A name for the mesh. Defaults to the file's own, with the part appended when
-            there is more than one.
+        A TSurf carries no geometry, so ``strike_deg`` and ``dip_deg`` default to what
+        :func:`~rupture_generator.triangular.mesh.implied_axes` reads off the part's
+        own best-fit plane, and ``dips_left`` is ignored unless ``strike_deg`` is
+        given, since the implied axes fix the sign by convention.
 
         Returns
         -------
@@ -178,11 +141,6 @@ class TSurf:
 def read_tsurf(path: Path | str) -> TSurf:
     """Parse a GOCAD TSurf, gzipped or not.
 
-    Parameters
-    ----------
-    path : Path or str
-        The ``.ts`` or ``.ts.gz`` file.
-
     Returns
     -------
     TSurf
@@ -192,10 +150,8 @@ def read_tsurf(path: Path | str) -> TSurf:
     Raises
     ------
     ValueError
-        If the file declares ``ZPOSITIVE Depth`` -- this reader assumes elevation and
-        negates, and getting that backwards mirrors the surface through sea level
-        without changing anything a shape check would notice -- if it holds no
-        triangles, or if a ``TRGL`` names a vertex the file never defined.
+        If the file declares ``ZPOSITIVE Depth``, holds no triangles, or has a ``TRGL``
+        naming a vertex it never defined.
     """
     path = Path(path)
     name = path.name.split(".")[0]
@@ -257,28 +213,12 @@ def read_surfaces(
     dip_deg: float | None = None,
     dips_left: bool = False,
 ) -> list[TriangleMesh]:
-    """Every part of a TSurf as its own Monge patch.
+    """Every part of a TSurf as its own Monge patch, one per ``TFACE`` in file order.
 
     Two disconnected sheets are two patches, not one: a single best-fit plane through
-    both would describe neither, and their parameter domains would overlap, which is
-    the one thing :func:`~rupture_generator.triangular.mesh.check_admissible` cannot
-    see.
-
-    Parameters
-    ----------
-    path : Path or str
-        The ``.ts`` or ``.ts.gz`` file.
-    strike_deg, dip_deg : float, optional
-        The stated geometry, applied to every part. Left unset, each part reads its own
-        off its own best-fit plane, which is usually what is wanted for parts that are
-        separate surfaces.
-    dips_left : bool, optional
-        Whether the surfaces dip left of the strike direction.
-
-    Returns
-    -------
-    list of TriangleMesh
-        One per ``TFACE``, in file order.
+    both would describe neither, and their parameter domains would overlap -- the one
+    thing :func:`~rupture_generator.triangular.mesh.check_admissible` cannot see. A
+    stated ``strike_deg`` and ``dip_deg`` apply to every part.
     """
     surface = read_tsurf(path)
     return [

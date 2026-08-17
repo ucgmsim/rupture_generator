@@ -3,30 +3,21 @@
 A segment is a chart ``X: (i, j) -> R^3`` -- a structured grid of node positions in a
 projected Cartesian CRS the modeller named, ``i`` down-dip, ``j`` along-strike, depth
 positive down. :class:`RuptureMesh` wraps that chart as an `xarray.Dataset` and carries
-**methods, not stored copies**, for every derived quantity: cell centres, areas, local
-strike and dip, arc lengths, spacing. A derived quantity written down is a second
-description of the geometry, free to drift from the first.
-
-This module is geometry to coarse mesh, subdivision, chart validation, fusion, the
-hypocentre's arc-length-to-cell seam, and the one projected-to-WGS84 seam. It is also
-the only module in the package that imports `pyproj`.
+**methods, not stored copies**, for every derived quantity.
 
 Everything is plain vector arithmetic in the projected CRS, in kilometres: on the WGS84
 ellipsoid a 60 km subduction interface came out with cell areas 1.4e-2 low -- larger
 than the slip bound -- where in the projection the same quantities are exact
-identities. So strike computed here is **grid north**, and dip and rake cross to WGS84
-unchanged.
+identities. So strike computed here is **grid north**; dip and rake cross unchanged.
 
-Positions are **offsets from a per-surface origin**, never absolute CRS coordinates.
-An NZTM northing reaches ~5,180 km against a ~1 km subfault, so an absolute vertex is
-rounded at CRS scale -- 1.2e-12 relative against 3e-15 for offsets, a measured factor
-of ~400. The offset is taken *before any other arithmetic*, and the origin is added
-back at exactly one place: the projection seam.
+Positions are **offsets from a per-surface origin**, taken before any other arithmetic:
+an NZTM northing reaches ~5,180 km against a ~1 km subfault, so an absolute vertex is
+rounded at 1.2e-12 relative against 3e-15 for an offset. The origin is added back at
+exactly one place, the projection seam.
 
-Planes that hang the same way -- equal dip, dip direction and bottom depth, written
-down as the same numbers -- share their seam column exactly and fuse into one chart.
-Planes that do not are **two segments**, not an error: whether the rupture crosses the
-gap is the propagation stage's question.
+Planes that hang the same way -- equal dip, dip direction and bottom depth -- share
+their seam column exactly and fuse into one chart. Planes that do not are **two
+segments**, not an error.
 """
 
 from __future__ import annotations
@@ -59,17 +50,15 @@ SHARPEST_BEND_DEG = 120.0
 """The steepest trace bend a fused surface accepts.
 
 The bend column is stretched by ``1 / cos(deflection / 2)`` to lie in both planes at
-once; at 120 degrees the stretch is exactly 2, past which calling the grid uniform
-stops being defensible.
+once; at 120 degrees that stretch is exactly 2.
 """
 
 SEAM_TOLERANCE_KM = 1.0e-6
 """How far apart two planes' shared node columns may be and still be one surface.
 
-A millimetre. Planes that genuinely share a column agree to round-off -- around 1e-13
-km at fault scale -- while planes differing in dip, dip direction or width diverge by
-*kilometres*: the kaikoura example, at 70 and 55 degrees, separates by 3.5 km at its
-deepest row. Six orders above the floor and six below anything real.
+A millimetre: six orders above the round-off floor (~1e-13 km at fault scale) and six
+below anything real -- the kaikoura example, at 70 and 55 degrees, separates by 3.5 km
+at its deepest row.
 """
 
 SPACING_SPREAD = 0.10
@@ -77,16 +66,15 @@ SPACING_SPREAD = 0.10
 
 What rounding one requested size can produce: a plane of length L cut at size s gets
 cells within s/2L of s -- under 2% on a 27 km plane at 1 km, reaching 10% only at about
-five cells. More than that is a request rather than a rounding, and averaging it would
-silently split the difference.
+five cells.
 """
 
 UNIFORM_SPACING_TOLERANCE = 1.0e-9
 """Relative spread above which an edge's steps are not one spacing.
 
-The floor is f64 round-off, about 1e-15 relative, since bilinear refinement of a
-parallelogram gives exactly equal steps; the ceiling is a factor of two, the smallest
-mistake a hand-edited file is worth catching for. 1e-9 is six orders from each.
+Six orders from f64 round-off (~1e-15 relative, since bilinear refinement of a
+parallelogram gives exactly equal steps) and six from a factor of two, the smallest
+mistake a hand-edited file is worth catching for.
 """
 
 PLANARITY_TOLERANCE_KM = 1.0e-6
@@ -100,12 +88,10 @@ _MAX_BEND_SPREAD = 1.0 / np.cos(np.radians(SHARPEST_BEND_DEG / 2.0)) - 1.0
 """How far a block's line spacings may spread around their mean.
 
 What the sharpest accepted bend contributes through the stretch alone, derived from
-:data:`SHARPEST_BEND_DEG` so the two cannot drift.
-
-The stretch is not the only contribution: rotating the down-dip direction by half the
-deflection swings the block's *bottom* edge by ``depth_span / tan(dip)`` -- 46 km on a
-4 km-deep fault dipping 5 degrees, against a 27 km plane. That is why the check is on
-the measured spread rather than on the deflection.
+:data:`SHARPEST_BEND_DEG` so the two cannot drift. Rotating the down-dip direction by
+half the deflection also swings the block's *bottom* edge by ``depth_span / tan(dip)``
+-- 46 km on a 4 km-deep fault dipping 5 degrees against a 27 km plane -- which is why
+the check is on the measured spread rather than on the deflection.
 """
 
 _DOWN = np.array([0.0, 0.0, 1.0])
@@ -148,16 +134,7 @@ def _bearing_of(east: FloatArray, north: FloatArray) -> FloatArray:
 def to_projected(
     crs: pyproj.CRS, longitude_deg: float, latitude_deg: float
 ) -> tuple[float, float]:
-    """A longitude and latitude as an easting and northing, in **kilometres**.
-
-    The way in: a trace is digitised in longitude and latitude and the mesh is built in
-    the CRS, so this runs once per trace point.
-
-    Returns
-    -------
-    tuple of float
-        Easting and northing, in kilometres.
-    """
+    """A longitude and latitude as an easting and northing, in **kilometres**."""
     easting_m, northing_m = pyproj.Transformer.from_crs(
         WGS84, crs, always_xy=True
     ).transform(longitude_deg, latitude_deg)
@@ -169,23 +146,9 @@ def grid_convergence_deg(
 ) -> FloatArray:
     """The angle from true north to grid north, in degrees, at each point.
 
-    Add it to a grid azimuth to get a true one. Zero on the projection's central
-    meridian and growing away from it -- in NZTM2000 it runs from about -3.4 degrees at
-    East Cape to +5.0 in Fiordland, five times the one-degree rake bound. A strike
-    written without it is wrong by more than the SRF can express.
-
-    Parameters
-    ----------
-    crs : pyproj.CRS
-        The projected CRS the grid azimuth was measured in.
-    longitude_deg, latitude_deg : FloatArray
-        Where to evaluate it. The convergence varies across a fault, so this is per
-        subfault rather than one number for the mesh.
-
-    Returns
-    -------
-    FloatArray
-        Degrees, the same shape as the inputs.
+    Add it to a grid azimuth to get a true one. In NZTM2000 it runs from about -3.4
+    degrees at East Cape to +5.0 in Fiordland, five times the one-degree rake bound,
+    and it varies across a fault -- hence per subfault rather than once for the mesh.
     """
     factors = pyproj.Proj(crs).get_factors(longitude_deg, latitude_deg)
     return np.asarray(factors.meridian_convergence, dtype=np.float64)
@@ -197,8 +160,7 @@ def grid_convergence_deg(
 
 
 NODE_VARIABLES = ("east_km", "north_km", "depth_km")
-"""The chart's own geometry, on ``(i_node, j_node)``. What :meth:`RuptureMesh.node_dataset`
-hands out, and what a mesh file stores."""
+"""The chart's own geometry, on ``(i_node, j_node)``. What a mesh file stores."""
 
 CELL_DIMS = ("i", "j")
 """The dims a stage's field lives on: ``i`` down dip, ``j`` along strike."""
@@ -212,12 +174,6 @@ RESERVED_ATTRS = frozenset({"surface", "origin_east_km", "origin_north_km"})
 @dataclasses.dataclass(frozen=True, eq=False)
 class RuptureMesh:
     """One rupture geometry expressed as a mesh."""
-
-    # Rupture geometry is designed with a hidden dataset so that downstream
-    # callers don't rely on the details dataset. The idea here is that we will
-    # eventually drop in a triangular mesh format so, if the RuptureMesh is
-    # designed so that the abstraction doesn't leak, this should cleanly update
-    # all call-sites to mesh aware.
 
     _dataset: xr.Dataset
 
@@ -250,23 +206,20 @@ class RuptureMesh:
         Parameters
         ----------
         east_km, north_km, depth_km : FloatArray
-            Node positions, offsets from the origin, ``i`` down-dip and ``j``
-            along-strike.
+            Node offsets from the origin, ``i`` down-dip and ``j`` along-strike, km.
         origin_east_km, origin_north_km : float
-            The surface origin, in the CRS, kilometres. Held in attrs and added back
-            only at the projection seam.
+            The surface origin, in the CRS, km. Added back only at the projection seam.
         surface : str
             The surface's name, which becomes the group name in files.
         plane_of_column : FloatArray, optional
-            Which config plane each *cell* column came from, length ``n_j``.
-            Defaults to all zeros -- a single-plane chart.
+            Which config plane each *cell* column came from, length ``n_j``. Defaults
+            to all zeros -- a single-plane chart.
 
         Raises
         ------
         ValueError
             If the arrays disagree in shape, are smaller than 2x2 nodes, or carry
-            anything non-finite. A chart with one node on an axis has no cells, and a
-            NaN travels silently into every derived quantity.
+            anything non-finite.
         """
         east_km = np.asarray(east_km, dtype=np.float64)
         north_km = np.asarray(north_km, dtype=np.float64)
@@ -375,8 +328,7 @@ class RuptureMesh:
     def blocks(self) -> list[tuple[int, int, int]]:
         """Contiguous constant-plane runs, as ``(plane, start, stop)`` cell columns.
 
-        The unit of planarity and spacing on a fused chart: a bent fault is
-        *piecewise* planar, one plane per block, with the seam column shared.
+        The unit of planarity and spacing: a bent fault is *piecewise* planar.
         """
         plane = self.planes()
         boundaries = np.flatnonzero(np.diff(plane)) + 1
@@ -390,10 +342,9 @@ class RuptureMesh:
     # -------------------------------------------------------------- the fields
 
     def fields(self) -> frozenset[str]:
-        """Every attached field's name.
+        """Every attached field's name -- the variables whose dims are the cell dims.
 
-        The variables whose dims are exactly the cell dims, so no second list of names
-        has to be kept in step. Geometry is not in here; geometry is computed.
+        Geometry is not in here; geometry is computed.
         """
         return frozenset(
             str(name)
@@ -406,13 +357,12 @@ class RuptureMesh:
         return isinstance(name, str) and name in self.fields()
 
     def __getitem__(self, name: str) -> FloatArray:
-        """A field a stage attached, shaped :attr:`cell_counts`.
+        """A field a stage attached, shaped :attr:`cell_counts`, read-only.
 
         Raises
         ------
         KeyError
-            Naming the field and listing what this chart does carry -- a stage asking
-            for a field nobody drew is a pipeline written in the wrong order.
+            Naming the field and listing what this chart does carry.
         """
         if name not in self.fields():
             attached = ", ".join(sorted(self.fields())) or "nothing"
@@ -425,7 +375,7 @@ class RuptureMesh:
         view.flags.writeable = False
         return view
 
-    # These methods provide an xarray-like API without access to the underlying dataset.
+    # An xarray-like API, without handing out the underlying dataset.
 
     def with_fields(self, **arrays: FloatArray) -> RuptureMesh:
         """This chart with more cell fields on it. Functional, never in place.
@@ -434,12 +384,9 @@ class RuptureMesh:
         ------
         ValueError
             For an array that is not the chart's shape, one carrying a non-finite
-            value, or a name in :data:`RESERVED_FIELDS`.
-
-            The shape check earns its keep: xarray objects only when dimension *sizes*
-            disagree, so a transposed field on a square patch is assigned without
-            complaint and every quantity derived from it is quietly wrong. A NaN drawn
-            here would otherwise reach the SRF with nothing having raised.
+            value, or a name in :data:`RESERVED_FIELDS`. xarray objects only when
+            dimension *sizes* disagree, so a transposed field on a square patch would
+            otherwise go in unremarked.
         """
         cell_counts = self.cell_counts
         prepared = {}
@@ -462,11 +409,7 @@ class RuptureMesh:
         return self._with(self._dataset.assign(prepared))
 
     def without(self, *names: str) -> RuptureMesh:
-        """This chart with those fields dropped. Functional, never in place.
-
-        A name that is not there is not an error: dropping is a statement about the
-        result, not a claim about the history.
-        """
+        """This chart with those fields dropped. A name that is not there is fine."""
         return self._with(self._dataset.drop_vars(names, errors="ignore"))
 
     @property
@@ -475,20 +418,19 @@ class RuptureMesh:
 
         What a stage learns that is not one value per subfault: the truncation
         diagnostic, and -- on the one segment that holds it -- where the rupture
-        nucleated. Read-only, because a mutable view is a mutable chart.
+        nucleated.
         """
         return types.MappingProxyType(dict(self._dataset.attrs))
 
     def with_attrs(self, **values: Any) -> RuptureMesh:
         """This chart with the attributes given in **values.
 
-        Scalars by convention: these are written straight into a file's group
-        attributes.
+        Scalars by convention: these go straight into a file's group attributes.
 
         Raises
         ------
         ValueError
-            For a name in :data:`RESERVED_ATTRS`, which say what the chart *is*.
+            For a name in :data:`RESERVED_ATTRS`.
         """
         reserved = RESERVED_ATTRS & set(values)
         if reserved:
@@ -499,21 +441,16 @@ class RuptureMesh:
         return self._with(self._dataset.assign_attrs(**values))
 
     def with_pulses(self, offsets: np.ndarray, samples: FloatArray) -> RuptureMesh:
-        """This chart with its slip-rate pulses attached.
+        """This chart with its slip-rate pulses attached, as CSR.
 
-        Parameters
-        ----------
-        offsets : np.ndarray
-            Where each subfault's pulse starts, length ``n_i * n_j + 1``, strike
-            fastest.
-        samples : FloatArray
-            Every pulse, concatenated.
+        ``offsets`` is where each subfault's pulse starts, length ``n_i * n_j + 1`` and
+        strike-fastest; ``samples`` is every pulse, concatenated.
 
         Raises
         ------
         ValueError
-            For an indptr that is not one: the wrong length for this chart, decreasing
-            anywhere, or not ending at ``samples.size``.
+            For an indptr that is not one: wrong length, decreasing, or not ending at
+            ``samples.size``.
         """
         cells_i, cells_j = self.cell_counts
         offsets = np.asarray(offsets, dtype=np.int64)
@@ -552,7 +489,6 @@ class RuptureMesh:
             self._dataset["slip_rate"].to_numpy(),
         )
 
-    # This deliberately feeds the nodes back to the caller, but it drops the planes argument
     def node_dataset(self) -> xr.Dataset:
         """The node positions with their units, and nothing else."""
         return self._dataset[list(NODE_VARIABLES)].drop_vars("plane", errors="ignore")
@@ -576,11 +512,9 @@ class RuptureMesh:
         return 0.25 * (c0 + c1 + c2 + c3)
 
     def areas_km2(self) -> FloatArray:
-        """Cell areas, shape ``(n_i, n_j)``.
+        """Cell areas, ``(n_i, n_j)``, as two triangles split on the (0, 2) diagonal.
 
-        Split across the (0, 2) diagonal into two triangles and summed. Every cell
-        this module builds is planar, so the split does not matter -- but the formula
-        that copes with non-coplanar corners costs nothing.
+        Costs nothing extra and copes with corners that are not coplanar.
         """
         c0, c1, c2, c3 = self._corners()
 
@@ -598,13 +532,11 @@ class RuptureMesh:
     def strike_dip_deg(self) -> tuple[FloatArray, FloatArray]:
         """Per-cell strike (grid north, [0, 360)) and dip ([0, 90]), from the normal.
 
-        Both come from the cell's normal rather than its edges: on a plane the two
-        agree, and the normal is what keeps them right on a surface that is not one.
-        The absolute value on the normal's vertical component makes the dip
-        independent of the normal's sign; the strike's sign is fixed by the cell's own
-        along-strike edges, tying it to the trace direction rather than its reverse. A
-        degenerate cell reports dip 0 and the strike of its along-strike edge -- never
-        NaN, which would travel silently into an SRF.
+        From the normal rather than the edges, which is what keeps them right on a
+        surface that is not planar. The absolute value on the normal's vertical
+        component makes dip independent of the normal's sign; strike's sign comes from
+        the cell's along-strike edges, tying it to the trace direction. A degenerate
+        cell reports dip 0 and the strike of its along-strike edge, never NaN.
         """
         along_strike, down_dip = self._direction_vectors()
         normal = np.cross(along_strike, down_dip)
@@ -633,20 +565,16 @@ class RuptureMesh:
         return strike_deg, dip_deg
 
     def strike_arc_km(self) -> FloatArray:
-        """Distance along strike of each node column, measured on the top edge.
+        """Distance along strike of each node column, on the top edge, ``(n_j+1,)``.
 
-        Shape ``(n_j+1,)``, starting at zero. With the dip arc, this is what makes a
-        hypocentre expressible as two lengths rather than two indices.
+        With the dip arc, what makes a hypocentre two lengths rather than two indices.
         """
         top = self.nodes()[0]
         steps = np.linalg.norm(np.diff(top, axis=0), axis=-1)
         return np.concatenate([[0.0], np.cumsum(steps)])
 
     def dip_arc_km(self) -> FloatArray:
-        """Distance down dip of each node row, measured on the ``j = 0`` edge.
-
-        Shape ``(n_i+1,)``, starting at zero.
-        """
+        """Distance down dip of each node row on the ``j = 0`` edge, ``(n_i+1,)``."""
         near = self.nodes()[:, 0]
         steps = np.linalg.norm(np.diff(near, axis=0), axis=-1)
         return np.concatenate([[0.0], np.cumsum(steps)])
@@ -654,10 +582,8 @@ class RuptureMesh:
     def line_steps(self) -> tuple[FloatArray, FloatArray]:
         """Every along-strike and every down-dip step, as ``(strike, dip)`` arrays.
 
-        Shapes ``(n_i+1, n_j)`` and ``(n_i, n_j+1)``. Measuring every line rather than
-        one edge is what makes the uniformity assertion an actual claim about the
-        chart: a uniform edge says nothing about the interior of a surface that is not
-        a parallelogram.
+        Shapes ``(n_i+1, n_j)`` and ``(n_i, n_j+1)``. Every line, not one edge: a
+        uniform edge says nothing about the interior of a non-parallelogram.
         """
         nodes = self.nodes()
         return (
@@ -668,11 +594,9 @@ class RuptureMesh:
     def _block_cut_sizes(self) -> tuple[list[float], list[float], list[int]]:
         """Each block's realised subfault size, unstretched, and its cell count.
 
-        The **unstretched reference**, which makes comparing two blocks a question
-        about their discretisation rather than about their bends. A fused bend is a
-        trapezoid, so the two lines carrying no stretch are the *trace* and the
-        *shortest column*. Reading the size off those separates "cut at different
-        resolutions", which is a request, from "this surface bends", which is geometry.
+        The **unstretched reference**, so comparing two blocks asks about their
+        discretisation rather than their bends: on a trapezoidal fused bend the two
+        lines carrying no stretch are the *trace* and the *shortest column*.
         """
         nodes = self.nodes()
         cells_i = nodes.shape[0] - 1
@@ -691,26 +615,16 @@ class RuptureMesh:
     def spacing_km(self) -> tuple[float, float]:
         """One ``(strike, dip)`` spacing for the chart -- what the sampler gets.
 
-        Each line of the chart is evenly divided (`validate_chart` asserts it), so a
-        block's spacing is the mean of its steps, and the chart's is the
-        cell-count-weighted mean of its blocks'.
-
-        The mean rather than any one line's step, because a fused bend is a
-        *trapezoid*: rows differ from one another by up to 2.4% on the shipped ``hope``
-        example. One grid needs one number and a mean does not depend on which line it
-        was read from; `validate_chart` bounds the spread around it.
-
-        Returns
-        -------
-        tuple of float
-            ``(strike_km, dip_km)``.
+        Each line is evenly divided (`validate_chart` asserts it), so a block's spacing
+        is the mean of its steps and the chart's the cell-count-weighted mean of its
+        blocks'. A mean rather than one line's step, because a fused bend is a
+        *trapezoid*: rows differ by up to 2.4% on the shipped ``hope`` example.
 
         Raises
         ------
         ValueError
-            If the blocks were cut at resolutions too far apart to average -- judged
-            on their unstretched sizes, so a bend is never mistaken for a
-            discretisation mismatch.
+            If the blocks were cut at resolutions too far apart to average, judged on
+            their unstretched sizes so a bend is never read as a mismatch.
         """
         strike_sizes, dip_sizes, weights = self._block_cut_sizes()
         cells_i = self.cell_counts[0]
@@ -734,16 +648,9 @@ class RuptureMesh:
     def cell_index(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """The cell containing an in-fault position, as 0-based ``(i, j)``.
 
-        **The one narrow conversion seam** between the config's arc lengths and the
-        pipeline's indices, and worth keeping narrow: a hypocentre one cell off in both
-        directions correlates 0.99+ with the right answer while moving onsets by up to
-        a second.
-
-        This is not the SRF's ``shyp``, which is measured from the along-strike centre
-        and converted by the SRF writer, and not a node index. Positions exactly on an
-        interior boundary belong to the upper cell; a position exactly on the far edge
-        belongs to the last cell, because "at the bottom of the fault" is a thing
-        people write.
+        Not the SRF's ``shyp``, which is measured from the along-strike centre, and not
+        a node index. A position on an interior boundary belongs to the upper cell; one
+        exactly on the far edge belongs to the last cell.
 
         Raises
         ------
@@ -756,21 +663,10 @@ class RuptureMesh:
         )
 
     def boundary_faces(self) -> IntArray:
-        """Flat indices of the chart's perimeter cells -- where a front runs out of fault.
+        """Flat indices of the chart's perimeter cells, ascending, strike-fastest.
 
-        All four edges. Which one a jump leaves from is settled by arrival time, in
-        :func:`~rupture_generator.propagation.causal_jump`; the surface trace is
-        deliberately *not* excluded, because it is a real arrest and excluding it would
-        be a minimum jump depth under another name.
-
-        Named for :meth:`~rupture_generator.triangular.mesh.TriangleMesh.boundary_faces`,
-        which answers the same question by edge incidence, so the jump search reads one
-        method rather than branching on what kind of chart it has.
-
-        Returns
-        -------
-        IntArray
-            Ascending flat indices into a field raveled strike-fastest.
+        All four edges, including the surface trace: a front reaching the trace is a
+        real arrest, and excluding it would be a minimum jump depth under another name.
         """
         rows, columns = self.cell_counts
         on_edge = np.zeros((rows, columns), dtype=bool)
@@ -779,22 +675,10 @@ class RuptureMesh:
         return np.flatnonzero(on_edge.reshape(-1))
 
     def cell_key(self, flat_index: int) -> tuple[int, int]:
-        """The ``(i, j)`` a flat cell index names -- how this chart labels a subfault.
+        """The ``(i, j)`` a flat strike-fastest index names -- this chart's own label.
 
         What a :class:`~rupture_generator.propagation.Jump` records, so that
-        ``field[jump.parent_cell]`` indexes a field of this chart's own shape. A
-        triangulation's label is a plain ``int``, which is why the jump search asks the
-        chart rather than calling `numpy.unravel_index` itself.
-
-        Parameters
-        ----------
-        flat_index : int
-            An index into a field raveled strike-fastest.
-
-        Returns
-        -------
-        tuple of int
-            The cell's ``(i, j)``.
+        ``field[jump.parent_cell]`` indexes a field of this chart's shape.
         """
         return tuple(
             int(index) for index in np.unravel_index(flat_index, self.cell_counts)
@@ -806,14 +690,10 @@ def _refuse_mixed_resolution(
 ) -> None:
     """Refuse blocks cut at resolutions too far apart to average into one grid.
 
-    The bound scales with how *short* the shortest block is, because rounding alone
-    produces more spread on a short plane than a long one. A plane cut into ``n`` cells
-    has a realised size within ``1/(2n)`` of the size requested, so two planes can
-    differ by ``1/(2n_a) + 1/(2n_b)`` through rounding and nothing else -- a five-cell
-    plane can be a legitimate 20% from its neighbour.
-
-    Measured: the shipped Alpine-Hope traces at 100 m have planes of five cells, and a
-    flat 10% bound refused them for a spread rounding had produced.
+    The bound scales with how *short* the shortest block is: a plane cut into ``n``
+    cells has a realised size within ``1/(2n)`` of the size requested, so a five-cell
+    plane can be a legitimate 20% from its neighbour. The shipped Alpine-Hope traces at
+    100 m have planes of five cells that a flat 10% bound refused.
     """
     from_rounding = 1.0 / min(counts)
     permitted = max(SPACING_SPREAD, from_rounding)
@@ -830,8 +710,10 @@ def _refuse_mixed_resolution(
 
 
 def _locate(position_km: float, arc_km: FloatArray, *, axis: str) -> int:
-    """Which cell an arc-length position lands in. 0-based; ties go up; the far edge
-    belongs to the last cell."""
+    """Which cell an arc-length position lands in.
+
+    0-based; ties go up; the far edge belongs to the last cell.
+    """
     extent_km = float(arc_km[-1])
     if position_km < 0.0 or position_km > extent_km:
         raise ValueError(
@@ -851,21 +733,9 @@ def cell_counts(
 ) -> tuple[int, int]:
     """How many cells a plane gets, from a size or from explicit counts.
 
-    A size is a *request*: the plane is cut into whole cells, so the size actually
-    used is the plane's own length over the count. Rounded to nearest rather than down,
-    and floored at one -- a plane shorter than the size asked for is still a plane.
-
-    Parameters
-    ----------
-    discretisation : Discretisation
-        What the config asked for.
-    length_km, width_km : float
-        The plane's own dimensions, which is why this cannot happen at parse time.
-
-    Returns
-    -------
-    tuple of int
-        ``(strike_count, dip_count)`` -- cells along strike and down dip.
+    Returns ``(strike_count, dip_count)``. A size is a *request*: the plane is cut into
+    whole cells, so the size actually used is the plane's own length over the count.
+    Rounded to nearest rather than down, and floored at one.
     """
     if discretisation.subfault_size_km is not None:
         size = discretisation.subfault_size_km
@@ -882,8 +752,7 @@ def _subdivide(
 ) -> FloatArray:
     """Bilinear subdivision of a quad into ``(n_i+1, n_j+1, 3)`` nodes.
 
-    Exact for a parallelogram: both top corners step down dip by the same vector, so
-    bilinear interpolation puts nodes exactly where a direct construction would.
+    Exact for a parallelogram: both top corners step down dip by the same vector.
     ``np.arange(n+1) / n`` rather than an accumulated step, which loses the endpoint.
     """
     c0, c1, c2, c3 = corners
@@ -895,11 +764,11 @@ def _subdivide(
 
 
 def _conforming(near: object, far: object) -> bool:
-    """Whether two adjacent planes hang the same way -- exact float equality,
-    deliberately: these are values a person wrote down, and the question is whether
-    they wrote the same one. A near miss is a typo, and reading it as a segment
-    boundary places each plane where its own numbers say rather than somewhere
-    between them."""
+    """Whether two adjacent planes hang the same way.
+
+    Exact float equality: these are values a person wrote down, and the question is
+    whether they wrote the same one.
+    """
     return (
         near.dip_deg == far.dip_deg
         and near.dip_direction == far.dip_direction
@@ -910,25 +779,13 @@ def _conforming(near: object, far: object) -> bool:
 def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     """S1 + S2 for a fault: trace to planar charts, one per config plane.
 
-    Parameters
-    ----------
-    fault : FaultConfig
-        The digitised geometry: an origin, planes each giving where its top edge
-        ends, a shared top depth.
-    crs : pyproj.CRS
-        The projected CRS to build in.
-
-    Returns
-    -------
-    list of RuptureMesh
-        One chart per plane, in trace order, all sharing the surface origin. Fusing
-        conforming neighbours into segments is :func:`fuse`'s job.
+    One chart per plane, in trace order, all sharing the surface origin. Fusing
+    conforming neighbours into segments is :func:`fuse`'s job.
 
     Raises
     ------
     ValueError
-        For a repeated trace point or a bend of 120 degrees or more. Everything a
-        single field could catch is already refused by the config's own validators.
+        For a repeated trace point or a bend of 120 degrees or more.
     """
     origin_e, origin_n = to_projected(
         crs, fault.origin.longitude_deg, fault.origin.latitude_deg
@@ -970,9 +827,8 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 
     # Bottom corners per trace vertex. At a conforming junction the shared corner is
     # placed once, along the bisector, stretched by 1/cos(deflection/2) so it lies in
-    # both planes at once -- without the stretch the planes diverge below the vertex
-    # by a measured 1.285 km on the hope example. Placed once means both planes read
-    # the same value, which is what "one surface" means.
+    # both planes at once -- without the stretch the planes diverge below the vertex by
+    # a measured 1.285 km on the hope example.
     bottom_near: list[FloatArray] = [None] * count  # plane k's corner at vertex k
     bottom_far: list[FloatArray] = [None] * count  # plane k's corner at vertex k+1
 
@@ -1036,18 +892,15 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 
 
 def build_point(point: PointConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
-    """S1 + S2 for a point source: one cell, centred where it was told.
+    """S1 + S2 for a point source: an ordinary one-cell chart.
 
-    A point is given by its **centre**; a chart by its corners. The result is an
-    ordinary one-cell chart, because a point source is the pipeline with constant
-    fields, not a special type.
+    A point is given by its **centre**; a chart by its corners.
 
     Raises
     ------
     ValueError
         If the cell's top edge would be above the ground -- a 1 km cell dipping 60
-        degrees reaches 0.43 km above a centre at 0.2 km, which is in the air.
-        Silently flooring the top depth at zero would shrink the subfault instead.
+        degrees reaches 0.43 km above a centre at 0.2 km.
     """
     origin_e, origin_n = to_projected(
         crs, point.centre.longitude_deg, point.centre.latitude_deg
@@ -1094,9 +947,7 @@ def build_surface(
     surface: FaultConfig | PointConfig, crs: pyproj.CRS
 ) -> list[RuptureMesh]:
     """Discretise one surface: the dispatch the mesh CLI calls."""
-    # A local import: config.geometry imports nothing from here, but keeping the
-    # dependency one-way at module load lets `mesh` be imported without the config
-    # package and vice versa.
+    # A local import, so `mesh` can be imported without the config package.
     from rupture_generator.config.geometry import PointConfig as _PointConfig
 
     if isinstance(surface, _PointConfig):
@@ -1113,13 +964,8 @@ def seam_gap_km(near: RuptureMesh, far: RuptureMesh) -> float:
     """How far apart two charts' shared node columns are, in kilometres.
 
     The maximum over the column, not the first node: planes sharing a trace vertex
-    agree there whatever their dips, so the disagreement shows below the top edge and
-    grows with depth. Geometric rather than a list of scalar comparisons, because a
-    dip, dip-direction or width change all show up the same way and one test covers
-    all three.
-
-    Returns infinity when the columns have different node counts: planes cut into
-    different dip rows are not one grid whatever their positions.
+    agree there whatever their dips, so the disagreement grows with depth. Infinity
+    when the columns have different node counts, which is not one grid either way.
     """
     last = near.nodes()[:, -1]
     first = far.nodes()[:, 0]
@@ -1131,19 +977,15 @@ def seam_gap_km(near: RuptureMesh, far: RuptureMesh) -> float:
 def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
     """Concatenate per-plane charts into segments along strike.
 
-    Adjacent charts whose seam columns coincide (within :data:`SEAM_TOLERANCE_KM`)
-    are one surface and fuse into one chart, the shared column stored once. Charts
-    that do not are a segment boundary -- **two segments, not an error**.
+    Adjacent charts whose seam columns coincide (within :data:`SEAM_TOLERANCE_KM`) are
+    one surface and fuse, the shared column stored once. Charts that do not are a
+    segment boundary -- **two segments, not an error**.
 
     Raises
     ------
     ValueError
-        When two charts of one surface coincide at the seam but are cut into
-        different dip rows -- one surface at two resolutions is a config mistake,
-        not a segment boundary -- or when a fused segment's per-plane spacings are
-        too far apart to average (the check runs inside ``spacing_km``, but fusing
-        performs it eagerly so the refusal happens at fusion time, naming the
-        surface).
+        When two charts of one surface coincide at the seam but are cut into different
+        dip rows, or when a fused segment's spacings are too far apart to average.
     """
     if not charts:
         return []
@@ -1155,9 +997,8 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
         if gap <= SEAM_TOLERANCE_KM:
             segments[-1].append(chart)
             continue
-        # Distinguish "different geometry" from "same geometry, different cuts":
-        # the corner nodes of the seam column are shared trace/bottom vertices when
-        # the geometry conforms, whatever the discretisation.
+        # "Different geometry" or "same geometry, different cuts": the seam column's
+        # corner nodes are shared vertices when the geometry conforms, whatever the cut.
         near_corner_top = near.nodes()[0, -1]
         near_corner_bottom = near.nodes()[-1, -1]
         far_corner_top = chart.nodes()[0, 0]
@@ -1195,8 +1036,7 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
                 plane_of_column=plane_of_column,
             )
             fused.append(merged)
-        # Eager: a spacing spread past the bound should refuse at fusion, not at
-        # whichever later stage happens to ask first.
+        # Eager, so a spacing spread past the bound refuses here rather than later.
         fused[-1].spacing_km()
     return fused
 
@@ -1209,23 +1049,12 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
 def validate_chart(mesh: RuptureMesh) -> None:
     """Assert a chart satisfies the spectral sampler's assumptions.
 
-    **The temporary stage.** This is the only code allowed to know the sampler needs
-    flatness; deleting it, plus swapping the sampler, is the whole curvature migration.
-
-    Three checks, each with a different tolerance because each is a different claim.
-
-    **Every line is evenly divided.** Tight (:data:`UNIFORM_SPACING_TOLERANCE`, against
-    a measured round-off floor of ~1e-14), because bilinear subdivision divides a line
-    exactly and anything else came from somewhere this package did not build.
-
-    **Lines agree with each other to within the bend stretch.** A fused bend is a
-    *trapezoid*: its shared column is stretched by ``1/cos(deflection/2)`` so it lies
-    in both planes at once. Rows therefore differ by up to 2.4% on the shipped ``hope``
-    example, bounded by 2 at the 120-degree refusal in :func:`build_fault`. That is
-    invisible to what consumes the chart, which sees an index space and one spacing.
-
-    **Each block is planar.** Per constant-plane block, not per chart, because a fused
-    bent fault has a kink at every seam by construction.
+    The only code that knows the sampler needs flatness. Three checks, each with its
+    own tolerance because each is a different claim: every line is evenly divided (to
+    :data:`UNIFORM_SPACING_TOLERANCE`, against a measured round-off floor of ~1e-14);
+    lines agree with each other to within the bend stretch, which reaches 2.4% on the
+    shipped ``hope`` example; and each *block* is planar -- per constant-plane block,
+    because a fused bent fault has a kink at every seam by construction.
 
     Raises
     ------
@@ -1295,9 +1124,7 @@ def project_cells(mesh: RuptureMesh, crs: pyproj.CRS) -> xr.Dataset:
     """Cell-centred WGS84 positions and true-north angles, on dims ``(i, j)``.
 
     The one place the origin is added back, and the one place strike crosses from grid
-    north to true north, plus the grid convergence evaluated per subfault. Dip and area
-    cross unchanged: dip is an angle within the plane, and the fault's true area is the
-    one the modeller specified in the CRS they chose.
+    north to true north. Dip and area cross unchanged.
     """
     centres = mesh.centres()
     origin_e, origin_n = mesh.origin_km
@@ -1330,15 +1157,7 @@ def project_cells(mesh: RuptureMesh, crs: pyproj.CRS) -> xr.Dataset:
 def project_nodes(
     mesh: RuptureMesh, crs: pyproj.CRS
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """The chart's *corners* in longitude, latitude and depth.
-
-    The counterpart of :func:`project_cells` for consumers that want the mesh itself.
-
-    Returns
-    -------
-    tuple of FloatArray
-        Longitude, latitude and depth, each shaped ``(n_i+1, n_j+1)``.
-    """
+    """The chart's *corners* as longitude, latitude and depth, ``(n_i+1, n_j+1)``."""
     nodes = mesh.nodes()
     origin_e, origin_n = mesh.origin_km
     to_wgs84 = pyproj.Transformer.from_crs(crs, WGS84, always_xy=True)

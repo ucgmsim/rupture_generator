@@ -1,22 +1,17 @@
 """The mesh file: node positions, one group per plane.
 
-An ``xr.DataTree``, written to HDF5 or Zarr. One refined plane -- a chart -- per
-group: the ``(dip_node, strike_node)`` arrays are its vertices, with its topology
-implied by their shape, which is why there is no face list in the file: a structured
-grid's connectivity *is* its shape.
+An ``xr.DataTree``, written to HDF5 or Zarr. One refined plane -- a chart -- per group:
+the ``(dip_node, strike_node)`` arrays are its vertices, and there is no face list
+because a structured grid's connectivity *is* its shape.
 
 Positions are **offsets from the mesh's origin**, in kilometres, in the CRS named in
-the root attributes -- the same thing :class:`~rupture_generator.mesh.RuptureMesh`
-holds, for the same reason. The origin is stored once, in the root attributes, and
-added back by whoever wants a coordinate rather than a shape.
-
-Only the geometry is stored. Cell centres, areas, strike and dip are all functions of
-the nodes, so they are computed on read and never written.
+the root attributes. The origin is stored once, in the root, and added back by whoever
+wants a coordinate rather than a shape. Only the geometry is stored: cell centres,
+areas, strike and dip are functions of the nodes, computed on read and never written.
 
 The dims are renamed at this seam and nowhere else. In memory a chart's node dims are
-``(i_node, j_node)`` -- ``i`` down-dip, ``j`` along strike -- and the file keeps its
-original ``(dip_node, strike_node)`` spelling, so readers that never import this package
-keep working.
+``(i_node, j_node)`` -- ``i`` down-dip, ``j`` along strike -- and the file keeps the
+original ``(dip_node, strike_node)`` spelling, so outside readers keep working.
 """
 
 from __future__ import annotations
@@ -37,11 +32,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 SCHEMA_VERSION = 2
-"""Bumped when a reader of an older file would get the wrong answer rather than an error.
+"""Bumped when a reader of an older file would get a wrong answer rather than an error.
 
-Version 2 stopped storing ``propagation``: which segment triggers which is a property
-of the earthquake, not of the surfaces, and it is stated in the rupture config. A
-version 1 file still reads -- the attribute is simply ignored.
+Version 2 stopped storing ``propagation``, which is a property of the earthquake rather
+than of the surfaces. A version 1 file still reads; the attribute is ignored.
 """
 
 
@@ -51,21 +45,10 @@ def to_datatree(
     *,
     attrs: Mapping[str, Any] | None = None,
 ) -> xr.DataTree:
-    """Lay charts out as a tree: one group per plane, nested under its surface.
+    """Lay charts out as a tree: ``/<surface>/plane_<n>``, charts in trace order.
 
-    Parameters
-    ----------
-    meshes : Mapping of str to list of RuptureMesh
-        Surface name to its per-plane charts, in trace order.
-    crs : pyproj.CRS
-        The frame every position is in. Stored once, in the root.
-    attrs : Mapping, optional
-        Extra root attributes -- the config verbatim, a title.
-
-    Returns
-    -------
-    xr.DataTree
-        With ``/<surface>/plane_<n>`` groups.
+    The CRS is stored once, in the root, along with any extra ``attrs`` -- the config
+    verbatim, a title.
     """
     groups: dict[str, xr.Dataset] = {}
     origins: dict[str, list[float]] = {}
@@ -120,32 +103,24 @@ def to_datatree(
 def from_datatree(
     tree: xr.DataTree,
 ) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
-    """Rebuild charts from a tree.
+    """Rebuild charts from a tree: surface name to per-plane charts, and their CRS.
 
     The inverse of :func:`to_datatree`, and lossless: the nodes are the geometry, so
     everything derived from them comes back identical rather than close.
 
-    Returns
-    -------
-    tuple
-        Surface name to per-plane charts, and the CRS they are in.
-
     Raises
     ------
     ValueError
-        If the tree carries no CRS, or a surface has no recorded origin. Both mean
-        the file is not one of these, and reading it as one would put the fault
-        somewhere.
+        If the tree carries no CRS, or a surface has no recorded origin.
     """
     crs_name = tree.attrs.get("crs")
     if crs_name is None:
         raise ValueError("the file has no crs attribute, so its positions mean nothing")
     origins = json.loads(tree.attrs.get("origins", "{}"))
 
-    # Keyed by the *stored* plane index rather than by the order the groups come back
-    # in, because **Zarr does not preserve order**. HDF5 does preserve insertion, so
-    # trusting iteration order is green in one container and silently permutes the
-    # fault in the other -- intermittently, since the order varies between runs.
+    # Keyed by the *stored* plane index rather than by iteration order, because Zarr
+    # does not preserve order and HDF5 does: trusting it permutes the fault in one
+    # container and not the other.
     by_surface: dict[str, dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "east_km" not in node.dataset:
@@ -203,8 +178,8 @@ def write_mesh(
     Raises
     ------
     ValueError
-        If the format is not one a mesh can be written in. An SRF holds a rupture,
-        not a surface, and there is nothing sensible to put in its slip columns.
+        If the format is not one a mesh can be written in. An SRF holds a rupture, and
+        there is nothing sensible to put in its slip columns.
     """
     path = Path(path)
     chosen = resolve(path, format)
@@ -225,12 +200,7 @@ def write_mesh(
 def read_mesh(
     path: Path | str, *, format: Format = Format.INFERRED
 ) -> tuple[dict[str, list[RuptureMesh]], pyproj.CRS]:
-    """Read charts back.
-
-    Returns
-    -------
-    tuple
-        Surface name to per-plane charts, and the CRS.
+    """Read charts back: surface name to per-plane charts, and their CRS.
 
     Raises
     ------

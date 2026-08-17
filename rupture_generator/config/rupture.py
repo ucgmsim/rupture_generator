@@ -1,26 +1,8 @@
 """What the earthquake is: the input to ``rupture-generator generate``.
 
-This file is the **only** description of a rupture model: stages take frozen parameter
-objects built from these classes, kernels take scalars and arrays, and there is nothing
-left to mirror. Keeping several copies in step is what produced every wrong number the
-reduction sweep found.
-
-The one place the "configuration is the pipeline's vocabulary" rule bends is the
-**hypocentre**, which is in-fault arc lengths here and a cell index in the pipeline.
-That conversion is the mesh's, and it happens at one seam --
-``mesh.RuptureMesh.cell_index`` -- with the convention written above it.
-
-One corner relation (``mai``), one spectral shape (``von_karman``) and one slip-rate
-family (``OliuP2``) are kept. The others were documented knobs, so they are **refused
-by name with a message saying they were removed**: a reader who wrote
-``model = "somerville"`` deserves to know it was a decision, not a typo. Output
-comparison could not adjudicate this -- the Mai/Somerville crossover at M7.37 makes
-the two indistinguishable below that magnitude.
-
-The corner relation is the one with a second option, and it is not a second name:
-``custom`` states the four coefficients in the file. A name asserts a published fit
-and nothing checks the assertion, whereas coefficients are what the pipeline actually
-uses and are readable off the file.
+Stages take frozen parameter objects built from these classes. The hypocentre is the
+one quantity that changes representation downstream -- in-fault arc lengths here, a
+cell index in the pipeline -- converted in ``mesh.RuptureMesh.cell_index``.
 """
 
 from __future__ import annotations
@@ -58,21 +40,18 @@ if TYPE_CHECKING:
     from rupture_generator.mesh import RuptureMesh
 
 REMOVED_CORNER_MODELS = ("somerville", "suzuki", "given")
-"""Corner relations the rewrite removed, refused by name. What replaces them is
-``custom``, which states the coefficients instead: a name is a claim about a fit that
-output cannot check, and four numbers are checkable."""
+"""Corner relations refused by name; ``custom`` states coefficients instead."""
 
 CORNER_MODELS = ("mai", "custom")
 """The corner relations a source may name. ``mai`` is the published relation and takes
 no coefficients; ``custom`` takes all four and no name."""
 
 CORNER_COEFFICIENTS = ("strike_offset", "dip_offset", "strike_exponent", "dip_exponent")
-"""What a corner relation *is*: an exponent and an offset per axis, in
+"""An exponent and an offset per axis, in kilometres through
 ``lambda = 10 ** (exponent * Mw - offset)`` -- see `sampling.correlation_lengths`."""
 
 REMOVED_SPECTRUM_SHAPES = ("somerville", "frankel")
-"""Spectral falloffs the rewrite removed. Von Karman (Hurst 0.75) is Mai's own
-falloff; the hybrid weights that fed the others were inert."""
+"""Spectral falloffs refused by name. Von Karman (Hurst 0.75) is the one kept."""
 
 
 @dataclasses.dataclass
@@ -87,16 +66,9 @@ class RampConfig(ConfigObject):
 class HypocentreConfig(ConfigObject):
     """Where the rupture starts, in the fault's own coordinates.
 
-    Arc lengths rather than indices, and rather than the SRF's ``shyp``:
-    ``strike_km`` from the ``j = 0`` end of the fault and ``dip_km`` from its top edge.
-    Both are in-fault distances, so they mean the same thing whatever the fault is cut
-    into -- which an index does not.
-
-    ``fault`` names which surface the rupture nucleated on, and so which fault is the
-    root of the causality tree. It lives here rather than with the propagation because
-    it is a property of *this earthquake* rather than of the fault system: the same
-    geometry, ruptured from a different fault, is a different tree. Omitted when the
-    geometry has one surface, since there is nothing to choose.
+    ``strike_km`` runs from the ``j = 0`` end of the fault and ``dip_km`` from its top
+    edge; both are in-fault distances, independent of the subfault grid. ``fault``
+    names the surface it nucleated on, and so the root of the causality tree.
     """
 
     strike_km: DepthKm
@@ -136,70 +108,35 @@ class VelocityModelConfig(ConfigObject):
 
 @dataclasses.dataclass
 class SourceConfig(ConfigObject):
-    """What the earthquake is. Tagged: a finite fault and a point source enter the
-    pipeline differently -- one draws fields, the other is the constant case.
-
-    A rupture over several faults asks the same five questions of each of them: what
-    magnitude it carries, which way it slips, how it dips, what patch structure it has,
-    and what its rake field centres on. Two of the three sources answer from one number
-    for the whole event and the third from a dictionary, so the *questions* are the
-    same and only the answers differ -- which is what makes them methods here rather
-    than branches in the pipeline.
-
-    The rule that keeps this from growing: the source answers **values**, and the
-    pipeline does the arithmetic. ``alpha_t`` is physics, so it stays in `timing`.
-    """
+    """What the earthquake is: a finite fault, a point source, or per-fault values."""
 
     class Config(ConfigObject.Config):
         discriminator = Discriminator(field="type", include_subtypes=True)
 
     def check_segments(self, segments: list[str]) -> None:
-        """Refuse a source that does not describe this rupture's faults.
-
-        A no-op for a source stating one magnitude for the event, which describes any
-        number of faults by construction. Overridden where the source names faults and
-        so can name the wrong ones.
-        """
+        """Refuse a source that does not describe this rupture's faults."""
 
     def magnitude_of(self, segment: str) -> float:
         """The magnitude this segment carries."""
         return float(self.magnitude)  # ty: ignore[unresolved-attribute]
 
     def rake_of(self, segment: str) -> float:
-        """This segment's mean rake, in degrees -- the mechanism, not the field.
-
-        What `timing.alpha_t` and the rupture speed read. The rake *field*'s centre is
-        :meth:`base_rake_deg_of`, which is a different number.
-        """
+        """This segment's mean rake, in degrees -- the mechanism, not the field."""
         return float(self.average_rake_deg)  # ty: ignore[unresolved-attribute]
 
     def dip_of(self, segment: str, mesh: RuptureMesh) -> float:
-        """This segment's mean dip, in degrees.
-
-        Takes the chart because a source that does not state a dip reads it off the
-        geometry, which is exact and one fewer thing written down twice.
-        """
+        """This segment's mean dip, in degrees, read off the chart if not stated."""
         return float(self.average_dip_deg)  # ty: ignore[unresolved-attribute]
 
     def base_rake_deg_of(self, segment: str, default_deg: float) -> float:
-        """What this segment's rake *field* is centred on.
+        """What this segment's rake *field* is centred on, in degrees.
 
-        Deliberately not :meth:`rake_of`. For a source stating one average rake, the
-        field's centre is the ``[field]`` section's ``base_rake_deg`` and the average
-        rake is what the geometric correction uses -- two numbers that happen to be
-        175 degrees in every shipped example, so collapsing them would change every
-        finite rupture's rake field with nothing going red.
+        Not :meth:`rake_of`: here it is the ``[field]`` section's ``base_rake_deg``.
         """
         return default_deg
 
     def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
-        """The patch structure this segment's magnitude implies.
-
-        Per segment rather than per event, because correlation lengths scale with
-        magnitude: a fault carrying an Mw 6.3 has smaller asperities than one carrying
-        an Mw 7.9, and the event's summed magnitude would give the small fault patches
-        larger than itself.
-        """
+        """The patch structure this segment's magnitude implies."""
         return correlation_lengths(self.magnitude_of(segment))
 
 
@@ -208,17 +145,8 @@ class FiniteSourceConfig(SourceConfig):
     """A finite fault.
 
     ``model`` is the corner relation only, not the spectral shape a `[slip]` section
-    chooses independently as ``shape``. The two used to be one vocabulary, and nothing
-    checked that a `[source]` and a `[slip]` section naming different relations
-    agreed.
-
-    Two relations. ``mai`` is Mai & Beroza (2002) and carries no coefficients: they
-    are the published fit, they live in `sampling.correlation_lengths`, and a file
-    that overrode one of them would still be *called* mai while no longer being it.
-    ``custom`` is the other way round -- no published name, and all four coefficients
-    stated in the file, so what it is is readable from the file rather than from the
-    version of this package that read it. That is the seam a removed relation comes
-    back through: whoever has Somerville's coefficients and a reason writes them down.
+    chooses as ``shape``. ``mai`` is Mai & Beroza (2002) and carries no coefficients
+    -- they live in `sampling.correlation_lengths`; ``custom`` states all four here.
     """
 
     magnitude: Magnitude
@@ -278,13 +206,7 @@ class FiniteSourceConfig(SourceConfig):
                     )
 
     def corner_coefficients(self) -> dict[str, float]:
-        """The coefficients `sampling.correlation_lengths` should take, if any.
-
-        Empty for ``mai``, which is what keeps the published numbers in exactly one
-        place -- that function's own defaults -- rather than restating them here where
-        the two copies could drift. Every one of the four wrong numbers the reduction
-        sweep found was a disagreement between copies.
-        """
+        """The coefficients `sampling.correlation_lengths` takes; empty for ``mai``."""
         if self.model != "custom":
             return {}
         return {name: getattr(self, name) for name in CORNER_COEFFICIENTS}
@@ -296,11 +218,9 @@ class FiniteSourceConfig(SourceConfig):
 
 @dataclasses.dataclass
 class PointSourceConfig(SourceConfig):
-    """A point source.
+    """A point source: no spectrum, so no corner relation.
 
-    Not a finite source with fields left blank. There is no spectrum, so no corner
-    relation, and ``rise_time_s`` is given rather than derived from the moment -- as
-    the **fault-wide average**, which the depth ramp redistributes around.
+    ``rise_time_s`` is given rather than derived, as the fault-wide average in seconds.
     """
 
     magnitude: Magnitude
@@ -310,30 +230,16 @@ class PointSourceConfig(SourceConfig):
     type: Literal["point"] = "point"
 
     def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
-        """Any positive lengths will do: a point source draws no fields.
-
-        One cell has no structure to describe. The stages still want a spec, so this
-        is the shape of "the question does not arise" -- not a claim about a spectrum.
-        """
+        """Any positive lengths will do: a point source draws no fields."""
         return VonKarmanFilterParameters(1.0, 1.0)
 
 
 @dataclasses.dataclass
 class PerFaultSourceConfig(SourceConfig):
-    """A rupture whose faults each carry a magnitude of their own.
+    """A rupture whose faults each carry a magnitude and a rake of their own.
 
-    The other finite source states one magnitude for the event and lets the sampled
-    fields decide how the moment divides between faults. This one states the division:
-    each fault is scaled to its own target, and the event's magnitude is whatever they
-    sum to. Both are defensible and they are different models -- a hazard model that
-    derived each fault's magnitude from its own area has already decided the
-    partition, and a pipeline that re-derived it would be discarding that.
-
-    Rake is per fault for the same reason: a system that ruptures a strike-slip fault
-    into a normal one has two mechanisms, and one number cannot carry both.
-
-    Dip is **not** here. It is a property of the geometry, and every segment's mean
-    dip is read from its own chart -- which is exact, and one fewer thing stated twice.
+    The event's magnitude is whatever they sum to; dip is read from each segment's
+    chart rather than stated.
     """
 
     magnitudes: dict[str, float] = dataclasses.field(default_factory=dict)
@@ -367,25 +273,14 @@ class PerFaultSourceConfig(SourceConfig):
 
     @property
     def magnitude(self) -> float:
-        """The event's magnitude: what the parts sum to, in moment.
-
-        Reported rather than configured. Summing magnitudes directly would be
-        meaningless -- they are logarithms -- so this sums the moments and converts
-        back, which is the only arithmetic here that means anything.
-        """
+        """The event's magnitude: the parts summed in moment, not in magnitude."""
         total = sum(
             10.0 ** (1.5 * (value + 6.0333003)) for value in self.magnitudes.values()
         )
         return (math.log10(total) - 9.0499505) / 1.5
 
     def check_segments(self, segments: list[str]) -> None:
-        """Refuse magnitudes that do not name this rupture's faults, in either direction.
-
-        Both ways round, because they are different mistakes. A magnitude for a fault
-        that is not here is a name that did not match -- usually a surface that fused
-        into ``name:0`` and ``name:1``. A fault with no magnitude would otherwise
-        rupture carrying none, which is a fault that appears in the file and radiates
-        nothing.
+        """Refuse magnitudes that do not name this rupture's faults, both ways round.
 
         Raises
         ------
@@ -415,11 +310,7 @@ class PerFaultSourceConfig(SourceConfig):
         return float(self.rakes[segment])
 
     def dip_of(self, segment: str, mesh: RuptureMesh) -> float:
-        """This fault's mean dip, read off its chart.
-
-        Dip is a property of the geometry and is not stated here -- see the class
-        docstring. Exact, and one fewer thing written down twice.
-        """
+        """This fault's mean dip, in degrees, read off its chart."""
         return float(np.mean(mesh.strike_dip_deg()[1]))
 
     def base_rake_deg_of(self, segment: str, default_deg: float) -> float:
@@ -428,14 +319,11 @@ class PerFaultSourceConfig(SourceConfig):
 
 
 def default_wavelength_band(strike_km: float, dip_km: float) -> tuple[float, float]:
-    """The wavelength limits to use when none is given, for this grid.
+    """The wavelength limits in kilometres to use when none is given, for this grid.
 
-    No constant is right on two grids, which is why `SlipConfig` leaves both `None`
-    rather than carrying a literal. The low end comes from the grid itself,
-    ``2*sqrt(dstk*ddip)/0.8`` -- 80% of the Nyquist wavelength of a grid whose spacing
-    is the geometric mean of the strike and dip cell sizes, so the band-pass rolls off
-    at 80% of the Nyquist *wavenumber* rather than at it exactly. The high end has no
-    real bound.
+    The low end is ``2*sqrt(dstk*ddip)/0.8``, so the band-pass rolls off at 80% of the
+    Nyquist wavenumber of a grid spaced at the geometric mean of the cell sizes. The
+    high end has no real bound.
     """
     return 2.0 * math.sqrt(strike_km * dip_km) / 0.8, 1.0e15
 
@@ -445,15 +333,9 @@ class SlipConfig(ConfigObject):
     """How the slip and rake fields are shaped and trimmed.
 
     ``coefficient_of_variation`` is the slip field's spread and is dimensionless;
-    ``rake_sigma_deg`` is the rake field's and is in **degrees**. Handing one to the
-    other gives every rake a spread of 0.75 degrees where it should be 15 -- a factor
-    of twenty, on every fault. They are never both bare numbers in the same expression
-    here, and their names carry the difference.
-
-    ``min_wavelength_km`` and ``max_wavelength_km`` default to `None` rather than to a
-    literal, because the right value depends on the grid the field is sampled on --
-    see `default_wavelength_band`. Either can still be set explicitly, which is
-    honoured over the derived value.
+    ``rake_sigma_deg`` is the rake field's and is in degrees; the tapers are fractions
+    of an edge. The wavelength limits default to `None` because the right value
+    depends on the grid -- see `default_wavelength_band`.
     """
 
     shape: str = "von_karman"
@@ -477,10 +359,8 @@ class SlipConfig(ConfigObject):
             )
         if self.shape != "von_karman":
             self.refuse("shape", f"no spectral shape is spelled {self.shape!r}")
-        # Only checkable when both are given -- a `None` is filled in from the grid
-        # when the field is sampled, too late for this constructor to see, and always
-        # self-consistent by construction (`default_wavelength_band`'s low end is
-        # kilometres, its high end is 1e15).
+        # Only checkable when both are given: a `None` is filled in from the grid when
+        # the field is sampled, too late for this constructor to see.
         if (
             self.min_wavelength_km is not None
             and self.max_wavelength_km is not None
@@ -497,11 +377,9 @@ class SlipConfig(ConfigObject):
 class TimingConfig(ConfigObject):
     """How rupture time and rise time relate to slip.
 
-    ``shallow_ramp`` and ``deep_ramp`` stretch **rise time**. Rupture speed has ramps
-    of its own, which default to the rise-time ones because that is the case the four
-    independent parameters share; ``shallow_speed_ramp`` and ``deep_speed_ramp``
-    override them when they do not. One pair reaching both is a real mistake, so they
-    are separate fields.
+    ``shallow_ramp`` and ``deep_ramp`` stretch rise time; ``shallow_speed_ramp`` and
+    ``deep_speed_ramp`` do the same for rupture speed and default to the rise-time
+    pair. Ramp depths are in kilometres, times in seconds.
     """
 
     rupture_time_scale: float
@@ -523,9 +401,7 @@ class TimingConfig(ConfigObject):
     shallow_speed_factor: PositiveFloat = 0.6
     deep_speed_factor: PositiveFloat = 0.6
     # An `stype` spelling, parsed by `pulses.from_stype` -- including `ucsb-T`'s
-    # numeric suffix, which is why this is a string and not a `Literal`. The parse
-    # distinguishes "removed" from "unknown", because removed shapes are still
-    # advertised in configs people already have.
+    # numeric suffix, which is why this is a string and not a `Literal`.
     slip_rate_shape: str | None = None
     beta_shallow: PositiveFloat = 0.5
     beta_mid: PositiveFloat = 0.13
@@ -533,13 +409,7 @@ class TimingConfig(ConfigObject):
     sample_interval_s: PositiveFloat = 0.005
 
     def __post_init__(self) -> None:
-        """Validate the fields, then the one with its own vocabulary.
-
-        Parsed here so an unrecognised or removed ``stype`` is refused when the file
-        is read, naming the field, rather than partway through a generation run. The
-        C falls through to ``brune`` on a name it does not know and silently produces
-        a different rupture.
-        """
+        """Validate the fields, then parse ``slip_rate_shape``'s own vocabulary."""
         super().__post_init__()
         if self.slip_rate_shape is not None:
             try:
@@ -550,12 +420,7 @@ class TimingConfig(ConfigObject):
 
 @dataclasses.dataclass
 class FieldConfig(ConfigObject):
-    """The two per-subfault fields the geometry does not supply.
-
-    Both are constants here. The stages take them per subfault, because a mesh may
-    vary them; a config that could say so per subfault would need a way to address
-    subfaults, which is a bigger thing than this needs to be yet.
-    """
+    """The two per-subfault fields the geometry does not supply, as constants."""
 
     base_rake_deg: RakeDeg = 175.0
     velocity_fraction: VelocityFraction = 0.8
@@ -564,13 +429,7 @@ class FieldConfig(ConfigObject):
 def _key(name: str) -> int:
     """A name as a stable integer, for a spawn key.
 
-    blake2b rather than the built-in :func:`hash`, which is randomised per process for
-    strings unless ``PYTHONHASHSEED`` is set -- so the same seed would give two
-    different earthquakes in two runs, which is the one thing a seed exists to prevent.
-
-    Eight bytes is the whole of a name's identity here. A collision would hand two
-    calculations one stream; over the handful of names in a rupture, at 2**64, it does
-    not happen.
+    blake2b, not :func:`hash`, which is randomised per process for strings.
     """
     return int.from_bytes(hashlib.blake2b(name.encode(), digest_size=8).digest(), "big")
 
@@ -579,11 +438,7 @@ def _key(name: str) -> int:
 class RandomConfig(ConfigObject):
     """Which stream of numbers, and where in it.
 
-    One event seed. ``numpy.random.SeedSequence(seed)`` spawns every (stage, segment)
-    pair its own named substream, so draw order inside the pipeline does not matter
-    and changing one stage's parameters cannot change another's noise.
-    ``realisation`` selects an independent stream from the same seed, which is what
-    makes a campaign restartable.
+    ``realisation`` selects an independent stream from the same seed.
     """
 
     seed: int
@@ -596,18 +451,9 @@ class RandomConfig(ConfigObject):
             self.refuse("realisation", f"must be 0 or more, got {self.realisation}")
 
     def stream(self, *args: str) -> np.random.Generator:
-        """A generator of this event's own, named by `args`.
+        """A generator of this event's own, keyed by the names in `args`.
 
-        Noise is a pure function of the seed, the realisation index and the names --
-        typically a calculation and a segment -- so reordering or re-batching the
-        stages cannot change any field's draw. Keyed by **name**, not by position:
-        keying on a segment's index in a dict would make insertion order semantically
-        significant, so adding a fault would redraw every field on every fault after
-        it.
-
-        A draw belonging to no segment -- the causality tree, which is one draw for
-        the whole system -- passes one name. A one-name key and a two-name key are
-        different streams, so the omission collides with nothing.
+        By name rather than position, so adding a fault does not redraw the others.
         """
         spawn_key = [self.realisation, *(_key(name) for name in args)]
         return np.random.default_rng(
@@ -626,13 +472,7 @@ DECODERS = {
 
 @dataclasses.dataclass
 class PropagationConfig(ConfigObject):
-    """How a rupture crosses between the segments of a fault system.
-
-    Tagged, because the two ways of answering are different in kind rather than in
-    degree: either the tree is *computed* from how far apart the faults are, or it is
-    *stated*. A file that says nothing gets the computed form with its defaults, so a
-    rupture on one surface never has to mention this at all.
-    """
+    """How a rupture crosses between segments: a computed or a stated tree."""
 
     class Config(ConfigObject.Config):
         discriminator = Discriminator(field="type", include_subtypes=True)
@@ -643,11 +483,9 @@ class ComputedPropagation(PropagationConfig):
     """Sample which segment triggers which from how far apart they are.
 
     The probability that a rupture jumps a gap follows Shaw & Dieterich (2007):
-    certain within ``delta_km``, decaying with characteristic length ``d0_km``, and
-    beyond ``max_jump_km`` not a jump anyone models. The tree is then drawn from the
-    distribution those probabilities imply -- or, with ``strategy =
-    "maximum_likelihood"``, taken as its single most likely member, which is what a
-    campaign wanting the modal scenario rather than a sample asks for.
+    certain within ``delta_km``, decaying with characteristic length ``d0_km``, zero
+    beyond ``max_jump_km``. The tree is sampled from those probabilities, or taken as
+    its most likely member with ``maximum_likelihood``.
     """
 
     strategy: Literal["sampled", "maximum_likelihood"] = "sampled"
@@ -662,9 +500,8 @@ class PredeterminedPropagation(PropagationConfig):
     """State which segment triggers which, rather than sampling it.
 
     ``parents`` maps each triggered segment to the one that triggered it. The segment
-    that appears as nobody's child is the root, and it must be the one
-    :class:`HypocentreConfig` names -- both live in this file, and the two are checked
-    against each other when the rupture runs.
+    that is nobody's child is the root, and must be the one :class:`HypocentreConfig`
+    names.
 
     Examples
     --------
@@ -735,8 +572,7 @@ class RuptureConfig(ConfigObject):
     velocity_model: VelocityModelConfig
     source: SourceConfig
     timing: TimingConfig
-    # No default: `RandomConfig` states the seed and the realisation index outright, so
-    # a rupture that did not say which one it is cannot be reproduced.
+    # No default: a rupture that did not state its seed cannot be reproduced.
     random: RandomConfig
     slip: SlipConfig = dataclasses.field(default_factory=SlipConfig)
     field: FieldConfig = dataclasses.field(default_factory=FieldConfig)
@@ -777,8 +613,7 @@ def read_config(path: Path | str, format: str | None = None) -> RuptureConfig:
     InvalidFieldValue, MissingField
         If the file parses but does not describe a rupture.
     tomllib.TOMLDecodeError, json.JSONDecodeError, yaml.YAMLError
-        If it does not parse. The CLI renders these differently -- a syntax error
-        wants a line number and the line, and a validation error wants a key.
+        If it does not parse.
     """
     path = Path(path)
     chosen = format or path.suffix.lstrip(".").lower()
@@ -786,7 +621,7 @@ def read_config(path: Path | str, format: str | None = None) -> RuptureConfig:
 
 
 def read_geometry(path: Path | str, format: str | None = None):
-    """Read a geometry config. The counterpart of :func:`read_config`.
+    """Read a geometry config -- the counterpart of :func:`read_config`.
 
     Returns
     -------

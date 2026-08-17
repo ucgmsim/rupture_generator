@@ -1,17 +1,12 @@
 """Reading and writing SRF (Standard Rupture Format) files.
 
-The format: https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
-
 The in-memory model is arrays, one per field, named for what they hold and in what
-unit. `SrfFile.points` is a `Points`, not a table: `points.onset_s` is a float32
-array of one onset per subfault, and delaying a rupture is `points.onset_s += 1`.
-`assemble.py` fills these from a generated segment, converting SI into the
-centimetres and dyne-centimetres the format stores -- which is the only place in the
-package that conversion happens.
+unit: `points.onset_s` is a float32 array of one onset per subfault, and delaying a
+rupture is `points.onset_s += 1`. `assemble.py` fills these from a generated segment,
+converting SI into the centimetres and dyne-centimetres the format stores.
 
-Use `qcore.srf` instead if you will not read the whole file -- that one streams and
-this one does not -- or if you are already working with it. This module exists because
-it can *write*, which `qcore.srf` cannot.
+This module reads the whole file into memory; use `qcore.srf` instead to stream one.
+`SrfFile` cites the format.
 
 Examples
 --------
@@ -39,29 +34,21 @@ FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
 SUPPORTED_VERSIONS = frozenset({"1.0", "2.0"})
 """SRF versions this module reads and writes.
 
-Version 3.0 adds Vp and a full moment tensor per point. The parser does not
-implement it, so it is not listed here — and the configuration schema should not
-advertise it either.
+Version 3.0 adds Vp and a full moment tensor per point, which the parser does not
+implement.
 """
 
 
 class ParseError(Exception):
-    """Raised when a file is not valid SRF.
-
-    Two lines, copied from `source_modelling.parse_utils` rather than depended on:
-    it was the only symbol this module took from that file.
-    """
+    """Raised when a file is not valid SRF."""
 
 
 @dataclasses.dataclass(frozen=True)
 class PlaneHeader:
-    """One segment's entry in the SRF header.
+    """One segment's entry in the SRF header: the `PLANE` block as the file stores it.
 
-    This is the `PLANE` block as the file stores it, and nothing more: no projection
-    and no geometry.
-
-    `hypocentre_strike_km` is measured from the segment's along-strike **centre** and
-    `hypocentre_dip_km` from its top edge, which is the SRF's own convention.
+    Following the SRF's own convention, `hypocentre_strike_km` is measured from the
+    segment's along-strike **centre** and `hypocentre_dip_km` from its top edge.
     """
 
     centre_longitude_deg: float
@@ -86,23 +73,13 @@ class PlaneHeader:
 class Points:
     """The subfaults of an SRF, one array per field.
 
-        Every array holds one value per subfault, in the file's order: along strike
-        fastest, within each segment in turn.
-
-        `shear_speed_cm_s` and `density_g_cm3` are the version 2.0 material properties.
-        They are present together or not at all, which is what distinguishes a version
-        2.0 point block from a version 1.0 one.
-
-    Each field's name says what it holds and in what unit, so only the five that are
-        not self-evident are written down:
-
-        - ``area_cm2`` is square centimetres, which is what the format stores and what the
-          moment sum is expressed in.
-        - ``onset_s`` is the SRF's ``tinit``, and ``sample_interval_s`` its ``dt``.
-        - ``rise_time_s`` is **derived** on read as ``nt1 * dt``; the file holds ``nt1``.
-          `README.md`'s first trap is comparing it against a generated rise time.
-        - ``shear_speed_cm_s`` is **centimetres** per second, a factor of 1e5 from the
-          kilometres per second a velocity model is written in.
+    Every array holds one value per subfault, in the file's order: along strike
+    fastest, within each segment in turn. `shear_speed_cm_s` and `density_g_cm3` are
+    the version 2.0 material properties, present together or not at all. Each field's
+    name says what it holds and in what unit, with three exceptions: ``onset_s`` is the
+    SRF's ``tinit`` and ``sample_interval_s`` its ``dt``; ``rise_time_s`` is *derived*
+    on read as ``nt1 * dt``; and ``shear_speed_cm_s`` is centimetres per second, 1e5
+    from the kilometres per second a velocity model is written in.
     """
 
     longitude_deg: FloatArray
@@ -121,10 +98,6 @@ class Points:
 
     def __post_init__(self) -> None:
         """Check every array describes the same set of subfaults.
-
-        A DataFrame refused ragged columns for free. Nothing else here would notice,
-        and a column filled from the wrong array survives a round trip through the
-        file.
 
         Raises
         ------
@@ -180,39 +153,16 @@ class Points:
 
 
 class Segments(Sequence):
-    """A read-only view of an SRF's points, one segment at a time.
-
-    Parameters
-    ----------
-    planes : Sequence[PlaneHeader]
-        The header of the SRF file.
-    points : Points
-        The points of the SRF file.
-    """
+    """A read-only view of an SRF's points, one segment at a time."""
 
     def __init__(self, planes: Sequence[PlaneHeader], points: Points) -> None:
         """Initialise the Segments object."""
         self._planes = planes
         self._points = points
 
-    # ty: slice overload missing to satisfy Sequence LSP; fix by adding
-    # @overload stubs for int and slice once slice support is implemented.
     def __getitem__(self, index: int) -> Points:  # ty: ignore[invalid-method-override]
-        """Get the points of the nth segment in the SRF.
-
-        Parameters
-        ----------
-        index : int
-            The index of the segment.
-
-        Returns
-        -------
-        Points
-            The points belonging to the nth segment.
-        """
+        """Get the points of the nth segment in the SRF."""
         if not isinstance(index, int):
-            # NOTE: We are not covering this in test coverage because
-            # we intend to support slicing in the future.
             raise TypeError(
                 "Segment index must an integer, not slice or tuple"
             )  # pragma: no cover
@@ -286,7 +236,7 @@ _SW4_PLANE_FIELDS = {
 }
 """Which attribute of a `PlaneHeader` fills each SW4 plane field.
 
-Named rather than positional. The two coordinates and the two hypocentre offsets are
+Named rather than positional: the two coordinates and the two hypocentre offsets are
 adjacent and the same width, so a transposition would be silent.
 """
 
@@ -305,8 +255,7 @@ _SW4_POINT_FIELDS = {
 """Which array of a `Points` fills each SW4 point field.
 
 `VS` and `DEN` are version 2.0 only, `NT1` comes from the slip-rate matrix, and
-`SLIP2`/`NT2`/`SLIP3`/`NT3` describe rake components this format does not carry and
-stay zero.
+`SLIP2`/`NT2`/`SLIP3`/`NT3` are rake components this format does not carry.
 """
 
 
@@ -314,27 +263,15 @@ stay zero.
 class SrfFile:
     """Representation of an SRF file.
 
-    `version` is not inferred from what the points happen to carry. It is declared,
-    and the constructor refuses a declaration the points contradict — which is the
-    only way the two cannot disagree at write time.
-
-    Attributes
-    ----------
-    version : str
-        The version of this SrfFile, one of `SUPPORTED_VERSIONS`.
-    planes : list[PlaneHeader]
-        The header of the SRF file: one entry per segment.
-    points : Points
-        The subfaults, one array per field. See `Points`.
-    slip_rate : csr_array
-        A sparse array of the slip-rate function of every point, where
-        `slip_rate[i, j]` is the slip rate of the ith subfault `j` samples after its
-        own onset. Row `i` is as long as that subfault's pulse; the matrix is as wide
-        as the longest one.
+    `version` is declared rather than inferred from what the points happen to carry,
+    and the constructor refuses a declaration the points contradict. `slip_rate[i, j]`
+    is the slip rate of the ith subfault `j` samples after its **own** onset, so row
+    `i` is as long as that subfault's pulse and the matrix as wide as the longest.
 
     References
     ----------
-    SRF File Format Doc: https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
+    SRF File Format Doc.
+    https://wiki.canterbury.ac.nz/display/QuakeCore/File+Formats+Used+On+GM
     """
 
     version: str
@@ -370,16 +307,6 @@ class SrfFile:
     @classmethod
     def from_file(cls, srf_ffp: Path | str) -> Self:
         """Read an srf file from a filepath.
-
-        Parameters
-        ----------
-        srf_ffp : Path | str
-            A path-like pointing to the file.
-
-        Returns
-        -------
-        Self
-            The SRFFile instance for this path.
 
         Raises
         ------
@@ -446,13 +373,7 @@ class SrfFile:
         return cls(version, planes, points, slip_rate)
 
     def write_srf(self, srf_ffp: str | Path) -> None:
-        """Write an SRFFile object to a file.
-
-        Parameters
-        ----------
-        srf_ffp : Path
-            The path to the output SRF.
-        """
+        """Write an SRFFile object to a file."""
         planes = [
             srf_parser.PySrfPlane(
                 elon=plane.centre_longitude_deg,
@@ -496,15 +417,10 @@ class SrfFile:
             else None,
         )
 
-        # **No `indices`.** The writer walks `row_ptr` and `data` and never asks a
-        # sample which column it is in -- every pulse starts at column zero, so
-        # `indptr` already says. Widening `indices` to `uint64` to hand it over was one
-        # `uint64` per sample: 7.6 GB on the twenty-fault scenario, allocated to be
-        # ignored, and the largest single thing standing between that rupture and an
-        # SRF.
-        #
-        # `asarray` rather than `astype` for the data, which already arrives as float32
-        # from `assemble.to_srf_file`; `astype` would copy 3.8 GB to change nothing.
+        # No `indices`: every pulse starts at column zero, so `row_ptr` already says
+        # which column a sample is in, and widening `indices` to `uint64` to hand it
+        # over would be 7.6 GB of ignored buffer on the twenty-fault scenario.
+        # `asarray` rather than `astype`: the data already arrives as float32.
         slipt1 = srf_parser.PyCsrMatrix(
             row_ptr=self.slip_rate.indptr.astype(np.uint64),
             data=np.asarray(self.slip_rate.data, dtype=np.float32),
@@ -520,14 +436,8 @@ class SrfFile:
         """Write the SRF file in SW4's SRF-HDF5 format.
 
         The whole file in one block, because an `SrfFile` is the whole file already.
-        A rupture too large to be one of these is written through `Sw4Hdf5Stream`
-        directly, which is what this delegates to, so there is one statement of the
-        layout rather than two.
-
-        Parameters
-        ----------
-        output_ffp : Path
-            The path to the output HDF5 file.
+        A rupture too large to be one goes through `Sw4Hdf5Stream`, which this
+        delegates to, so there is one statement of the layout rather than two.
 
         References
         ----------
@@ -554,10 +464,9 @@ class SrfFile:
     def nt(self):  # numpydoc ignore=RT01
         """int: Samples in the longest slip-rate pulse.
 
-        **Not** the rupture's duration in samples. Each row of `slip_rate` starts at
-        column zero and the onset lives in `points.onset_s` as a float, so the matrix
-        is as wide as the longest pulse rather than as wide as the rupture. For the
-        duration, use `(points.onset_s.max() / dt) + nt`.
+        **Not** the rupture's duration in samples: every row of `slip_rate` starts at
+        column zero and the onset is a float in `points.onset_s`. For the duration, use
+        `(points.onset_s.max() / dt) + nt`.
         """
         return self.slip_rate.shape[1]
 
@@ -575,54 +484,33 @@ class SrfFile:
 SW4_POINTS_PER_CHUNK = 1 << 14
 """How many points one HDF5 chunk of the ``POINTS`` dataset holds.
 
-A resizable dataset has to be chunked, and the chunk is the unit HDF5 reads, writes
-and caches. `SW4_POINTS_DTYPE` is 68 bytes, so this is a 1.1 MB chunk -- comfortably
-above the ~64 KB below which the per-chunk B-tree overhead starts to show, and small
-enough that a reader wanting a few points does not pull a hundred megabytes. The
-point block of a whole twenty-fault rupture is a few hundred of these.
+`SW4_POINTS_DTYPE` is 68 bytes, so this is a 1.1 MB chunk -- above the ~64 KB below
+which per-chunk B-tree overhead shows, and small enough that a reader wanting a few
+points does not pull a hundred megabytes.
 """
 
 SW4_SAMPLES_PER_CHUNK = 1 << 20
 """How many slip-rate samples one HDF5 chunk of ``SR1`` holds.
 
-Four megabytes of float32. The dataset is written once, front to back, and read the
-same way, so the only thing the size trades is B-tree entries against the granularity
-of a partial read; at a 400 m cut the 2.45 G samples of one interface are 2336 of
-these. Deliberately independent of the writer's own chunking over faces
-(`rupture_generator.triangular.pipeline.STREAM_BUDGET_BYTES`) -- one is how much
-memory a producer may use and the other is how the file is laid out, and tying them
-together would make a memory budget change the bytes on disk.
+Four megabytes of float32, trading B-tree entries against the granularity of a partial
+read. Independent of the writer's own chunking over faces
+(`rupture_generator.triangular.pipeline.STREAM_BUDGET_BYTES`): that is a memory budget,
+this is the layout on disk.
 """
 
 
 class Sw4Hdf5Stream:
     """SW4's SRF-HDF5 format, written a block of points at a time.
 
-    **The layout, stated once.** `SrfFile.write_sw4_hdf5` hands over the whole file in
-    one block and a generated rupture too large to hold hands over a chunk of subfaults
-    at a time; both come through here, so there is one description of the format rather
-    than a second transcription that can drift.
-
-    What makes the incremental form possible is that this format is *append-only in
-    subfault order*: ``POINTS`` is one record per subfault and ``SR1`` is every pulse
-    concatenated in the same order, with each subfault's length in its own ``NT1``
-    field. There is no index array to rebuild across blocks and no global offset table
-    -- unlike the text path, whose CSR ``indices`` `assemble.srf_file` has to
-    construct. So a block of subfaults can be written and forgotten, and the only
-    invariant across blocks is that ``NT1`` and the samples appended agree, which is
-    what the file's own moment then checks.
+    The format is append-only in subfault order: ``POINTS`` is one record per subfault
+    and ``SR1`` is every pulse concatenated in the same order, with each subfault's
+    length in its own ``NT1`` field. There is no index array to rebuild across blocks,
+    so a block can be written and forgotten; the only invariant across blocks is that
+    ``NT1`` and the samples appended agree.
 
     ``PLANE`` is an attribute rather than a dataset and attributes cannot grow, so the
-    headers are collected and written on close. That is why this is a context manager:
-    leaving the block is what finishes the file.
-
-    Parameters
-    ----------
-    output_ffp : Path or str
-        Where to write.
-    version : str
-        The SRF version, one of `SUPPORTED_VERSIONS`. Stored as the file's ``VERSION``
-        attribute, a float32, exactly as the whole-file writer stores it.
+    headers are collected and written on close -- which is why this is a context
+    manager. ``version`` is stored as the file's ``VERSION`` attribute in float32.
 
     Examples
     --------
@@ -642,12 +530,7 @@ class Sw4Hdf5Stream:
         self._samples: h5py.Dataset | None = None
 
     def __enter__(self) -> Self:
-        """Open the file and create both datasets empty and growable.
-
-        Returns
-        -------
-        Self
-        """
+        """Open the file and create both datasets empty and growable."""
         self._file = h5py.File(self._path, "w")
         self._file.attrs.create("VERSION", np.float32(self._version))
         self._points = self._file.create_dataset(
@@ -679,12 +562,7 @@ class Sw4Hdf5Stream:
         self._file = self._points = self._samples = None
 
     def plane(self, header: PlaneHeader) -> None:
-        """Add one PLANE record. Order is the order the points follow.
-
-        Parameters
-        ----------
-        header : PlaneHeader
-        """
+        """Add one PLANE record. Order is the order the points follow."""
         self._planes.append(header)
 
     def points(
@@ -699,9 +577,7 @@ class Sw4Hdf5Stream:
         ----------
         points : Points
             The block's columns, already in the format's own units. Material
-            properties are written when they are there, which is what makes the file
-            version 2.0; the declared version is not re-checked here because
-            `SrfFile.__post_init__` is where that disagreement is caught.
+            properties are written when there, which is what makes the file 2.0.
         pulse_lengths : np.ndarray
             ``(n,)`` samples in each of this block's pulses -- the ``NT1`` column.
         samples_cm_s : np.ndarray
@@ -713,10 +589,8 @@ class Sw4Hdf5Stream:
         RuntimeError
             If called outside the context manager, where there is no open file.
         ValueError
-            If the samples handed over are not as many as the lengths claim. That is
-            the one thing a block can get wrong on its own, and it would otherwise
-            surface as a rupture whose pulses are shifted by a subfault from some
-            point onwards -- plausible, and wrong from there to the end of the file.
+            If the samples handed over are not as many as the lengths claim, which
+            would shift every later subfault's pulse.
         """
         if self._points is None or self._samples is None:
             raise RuntimeError(

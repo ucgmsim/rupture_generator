@@ -3,122 +3,34 @@
 A segment is a chart ``X(u, v) = O + u e_u + v e_v + h(u, v) n`` -- a reference plane
 and a normal displacement over it -- with the parameter domain triangulated and the
 triangulation lifted to R^3. :class:`TriangleMesh` wraps that as an `xarray.Dataset`
-and carries **methods, not stored copies**, for cell centres, areas, local strike and
-dip, arc lengths and boundaries. A derived quantity written down is a second
-description of the geometry, free to drift from the first.
+and carries methods, not stored copies, for cell centres, areas, local strike and dip,
+arc lengths and boundaries. Everything is plain vector arithmetic in the projected CRS,
+in kilometres, with positions as offsets from a per-surface origin; the one crossing to
+WGS84 belongs to :mod:`rupture_generator.mesh`.
 
-Everything is plain vector arithmetic in the projected CRS, in kilometres, and
-positions are **offsets from a per-surface origin** -- both for the reasons
-:mod:`rupture_generator.mesh` measures: on the ellipsoid a 60 km interface came out
-1.4e-2 low in area, and an absolute NZTM northing rounds ~400 times worse than an
-offset. This module adds no projection seam of its own; it is `mesh.py` that owns the
-one crossing to WGS84.
+The frame splits its two jobs. ``n`` is the best-fit plane normal, which minimises
+``|grad h|`` -- the quantity bounding both the margin before the projection folds and
+the metric error the parameter-plane solvers carry. ``e_u`` and ``e_v`` come from the
+config's stated strike and dip, never from the SVD, whose in-plane singular vectors are
+degenerate on a square patch and arbitrary in sign; they also make the covariance
+separable in ``(u, v)``, Mai & Beroza's two correlation lengths being defined along
+strike and down dip. :func:`implied_axes` supplies them when no config does.
 
-**The frame splits its two jobs**, because neither choice alone is right.
+The patch is a patch at all only if ``X -> (u, v)`` is injective, which on a
+triangulation is exactly *every triangle is positively oriented in the parameter
+plane*: :func:`check_admissible` is the refusal, :func:`fold_margin` the diagnostic.
+Connectivity always comes from the surface, never from the projection.
 
-``n`` is the **best-fit plane normal**, the smallest singular vector of the centred
-corner cloud. That is the choice which minimises ``|grad h|`` by construction, and
-``|grad h|`` is what bounds every departure from flatness the rest of the pipeline has
-to absorb: the margin before the projection folds, and the factor by which true
-surface length exceeds parameter length -- which is exactly the metric error the
-parameter-plane solvers carry (:mod:`rupture_generator.triangular.lattice`).
-Minimising it is not a convenience.
+Storing ``(u, v)`` per vertex is what makes the rest fall out: the arc lengths are the
+metric factor ``sqrt(1 + |grad h|^2)`` integrated, the hypocentre seam is a
+point-in-triangle query, and the lattice the solvers run on is a grid in ``(u, v)``.
+True surface arc lengths sit beside them, the SRF header wanting arc length where the
+covariance wants ``(u, v)``. This module does not sample, solve or taper.
 
-``e_u`` and ``e_v`` come from the **config's stated strike and dip**, never from the
-SVD. The SVD's two in-plane singular vectors are the principal axes of the *point
-cloud*: they coincide with strike and dip only when the patch is longer than it is
-wide, they are degenerate on a square patch (where a 45-degree answer is as good a fit
-as any), and their sign is arbitrary. An arbitrary sign is the reversed-strike failure
--- an SRF that looks entirely plausible and is physically backwards. Taking the axes
-from the config is also what lets the covariance be separable in ``(u, v)``: Mai's two
-correlation lengths are defined *along strike* and *down dip*, so if the parameter axes
-are strike and dip the two lengths cannot mix.
-
-On a planar fault this collapses exactly. The best-fit plane *is* the fault plane, so
-``e_u`` is the stated strike and ``e_v`` the stated dip direction: measured across every
-single-plane segment of the shipped ``beavan`` and ``kaikoura``, strike comes back to
-5.7e-14 degrees and dip to 9.9e-14, against a one-degree rake bound. The lifted
-triangles reproduce :meth:`~rupture_generator.mesh.RuptureMesh.areas_km2` to 4.4e-16
-relative and :meth:`~rupture_generator.mesh.RuptureMesh.centres` to 5.3e-15 km, both f64
-round-off at fault scale.
-
-When a surface arrives with no config to state its axes -- a 3-D fault model, a version
-2 file -- :func:`implied_axes` reads them off the fitted plane's **steepest descent**,
-which is the geologist's strike and dip of that plane. That uses only the fitted normal
-and the vertical, never the SVD's in-plane axes, so it is not the failure above: a patch
-samples a plane, it does not change which way the plane dips.
-
-**Admissibility replaces ``validate_chart``.** A Monge patch is a patch at all only if
-the projection ``X -> (u, v)`` is injective, and on a triangulation that is checkable
-as *every triangle is positively oriented in the parameter plane* -- no folds.
-:func:`check_admissible` is the refusal and :func:`fold_margin` is the diagnostic that
-goes with it; the former's docstring carries the measurements, on the shipped geometry
-and on three real subduction interfaces, and says what the check does **not** catch.
-
-**Area, depth and outline fidelity are the production constraint, so the mesh is built
-rather than refined.** :func:`remesh` samples the parameter domain at a target spacing,
-lifts every node onto the supplied surface, and takes the connectivity from the lattice
--- so the outline is resolved at the *target* spacing and the area deficit halves with
-it, where subdividing a coarse mesh leaves both at whatever the coarse spacing was. It
-reaches 100 m on full Hikurangi at 17.6 M vertices. Its docstring carries the
-measurements, and says which part of the old case for it -- the 36-fold element-shape
-penalty the removed SPDE sampler paid -- no longer applies.
-
-**The connectivity always comes from the surface, never from the projection**, and
-there are exactly two ways in. :meth:`TriangleMesh.from_patches` takes a quad lattice
-and splits every quad; :meth:`TriangleMesh.from_triangulation` takes faces that already
-exist, which is what a 3-D fault model gives (see
-:mod:`rupture_generator.triangular.gocad`). There is deliberately no constructor that
-*infers* connectivity from points. An earlier one did -- Delaunay of the projected
-``(u, v)`` -- and it was wrong in a way no shipped example could reveal, because
-Delaunay triangulates the convex **hull** and a planar fault's footprint is convex. On
-the Williams et al. (2013) Hikurangi interface it inflated a 21x21 block from 800 faces
-to 866, area by 6.6%, and ``maximum_slope`` from 0.196 to 18.35;
-:meth:`TriangleMesh.from_patches` records the measurement. Taking connectivity from the
-surface is also what makes the fold check mean anything, since a triangulation *of* the
-projection cannot be inverted with respect to it.
-
-Inferring an outline from a bare point cloud is not merely unimplemented, it is
-unreliable on this data, which is why it is absent rather than pending. Measured on the
-Hikurangi lattice-with-holes, whose true outline is known from its occupancy mask: the
-circumradius of an interior triangle ranges over 5.889 to 6.196 km and that of a
-gap-spanning one *starts at 5.941*, so the two overlap and no alpha-shape threshold
-separates them. The best available cut still admits 103 faces that are not interface.
-For a quantity whose bound is exact, 97% correct is not correct.
-
-**Storing ``(u, v)`` per vertex** is what makes the rest fall out rather than needing
-geodesic machinery: the arc lengths are the metric factor ``sqrt(1 + |grad h|^2)`` read
-off the per-face Jacobian and integrated, the hypocentre seam is a point-in-triangle
-query, the boundary labels are read off the parameter coordinates, and the lattice the
-solvers run on is a grid in ``(u, v)`` whose axes *are* strike and dip.
-
-MESH.md's storage box lists ``strike_arc_km`` and ``dip_arc_km`` among the per-vertex
-arrays. They are :meth:`~TriangleMesh.strike_arc_km` and
-:meth:`~TriangleMesh.dip_arc_km` **methods** here instead, because they are functions
-of the nodes and this package does not write derived quantities down. The decision
-MESH.md is making -- that both the parameter coordinates and the true surface arc
-lengths are available, because their consumers differ -- is kept in full: the
-covariance and the mesh are built on ``(u, v)``, while the hypocentre seam and the SRF
-header want arc length, since "the hypocentre is 12 km along strike" means along the
-fault.
-
-**The parameter domain used to be extended past the fault, and no longer is.** The SPDE
-sampler this replaced solved a PDE on a bounded domain, and its Neumann boundary
-condition reflected the covariance back in (Lindgren et al. appendix A.4) -- not an edge
-effect at fault scale, since Mai & Beroza figure 13's own 0.25-0.6 ratio bound puts a
-fault between 1.7 and 4 correlation lengths across *by construction*. That needed a
-conforming pad triangulated around every segment, and the whole construction is gone with
-the sampler: circulant embedding pads and crops by construction
-(:mod:`rupture_generator.sampling`), so **the boundary problem retires entirely**, on
-crustal faults as well as interfaces.
-
-What this module deliberately does not do: it does not sample, solve or taper, and it
-does not import :mod:`rupture_generator.triangular.lattice`. The solvers take plain
-``vertices_km``, ``faces`` and ``parameters_km`` arrays, so the geometry and the two
-things that run on it stay decoupled. It also does not generate a
-surface that folds -- :func:`check_admissible` refuses one honestly, but the escape
-hatch for a fault that turns too far is a *ruled* reference surface, which is what
-``build_fault``'s bend stretch already constructs, and nothing needs it yet.
+References
+----------
+Mai, P. M., & Beroza, G. C. (2002). A spatial random field model to characterize
+complexity in earthquake slip. *Journal of Geophysical Research*, 107(B11), 2308.
 """
 
 from __future__ import annotations
@@ -156,34 +68,23 @@ FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 SCHEMA_VERSION = 3
-"""Bumped when a reader of an older file would get the wrong answer rather than an error.
+"""Bumped when a reader of an older file would get a wrong answer, not an error.
 
-Version 3 stores a *triangulation*: a flat node table, a face table, and the per-vertex
-parameter coordinates. Versions 1 and 2 stored a structured ``(dip_node, strike_node)``
-lattice whose connectivity was its shape, so a v2 reader handed a v3 file finds no
-lattice, and a v3 reader handed a v2 file has to supply the connectivity itself --
-which :func:`from_datatree` does, triangulating the lattice on the way in.
+Version 3 stores a triangulation; versions 1 and 2 stored a structured
+``(dip_node, strike_node)`` lattice whose connectivity was its shape.
 """
 
 NODE_DIM = "node"
 """The dim a vertex quantity lives on."""
 
 FACE_DIMS = ("face",)
-"""The dims a stage's field lives on: one value per triangle, flat.
-
-Deliberately **not** nzcvm's ``i``/``j``/``k``. In that codebase those name structured
-axes in ``GridSchema`` and (vertex, cell, corner) in ``TetrahedralMeshSchema`` at the
-same time, so anything that aligns across the two broadcasts garbage without
-complaining.
-"""
+"""The dims a stage's field lives on: one value per triangle, flat."""
 
 CORNER_DIM = "corner"
-"""The dim a face's vertex indices lie along. Its *size* is the cell arity, read from
-``faces.shape`` rather than hard-coded, following ``TetrahedralMeshSchema``."""
+"""The dim a face's vertex indices lie along; its size is the cell arity."""
 
 NODE_VARIABLES = ("east_km", "north_km", "depth_km", "strike_km", "dip_km")
-"""The chart's own geometry, per vertex: three positions and the two parameter
-coordinates. What a mesh file stores, and the only thing it stores."""
+"""Per vertex: three positions and the two parameter coordinates. All a file stores."""
 
 FACE_VARIABLES = ("faces", "plane_of_face")
 """The chart's own topology and provenance, per face."""
@@ -205,44 +106,12 @@ RESERVED_ATTRS = frozenset(
 """Attribute names that say what the chart *is*, rather than what a stage learned."""
 
 DEGENERATE_MASS_FRACTION = 5.0e-6
-"""How little surface a vertex may carry, against the median, before the mesh is refused.
+"""How little surface a vertex may carry, against the median, before refusal.
 
-A vertex's lumped mass is the area it carries -- a third of every triangle it touches --
-so a vertex with almost none sits at the tip of a sliver. **This is a geometry check and
-that is now all it is.** It says the triangulation has degenerate elements, which is
-worth refusing on its own terms: areas, centre depths, boundary labels and the lattice
-spacing are all read off these triangles, and a sliver is a subfault that is not one.
-
-**Where the threshold came from, and what that is now worth.** It was derived against the
-Whittle-Matern SPDE sampler, whose lumped mass matrix has these numbers on its diagonal.
-That sweep found a cliff rather than a slope -- a healthy drawn field at a worst mass
-ratio of 1.47e-05 and a sample spread of 0.0487 at 1.47e-06, a factor of twenty across a
-factor of ten in mass -- and 5e-6 is the geometric middle of that decade, an order of
-magnitude of headroom on each side.
-
-**That sampler has been removed.** Circulant embedding on the parameter lattice reads no
-mass matrix, so the measured consequence no longer exists: nothing here claims a 5.3-fold
-suppression of the whole slip field any more, and a sliver is now ugly rather than
-catastrophic. The threshold is therefore *inherited*, and re-deriving it would mean
-measuring what a sliver costs the quantities still read off the mesh -- an area, a centre
-depth, a boundary label. That measurement has not been made.
-
-What survives is separation on real data, which is what a geometry gate has to have. As a
-fraction of each mesh's own median lumped mass, over the three NZ CFM v1.0 subduction
-interfaces:
-
-======================  =========  ===========  ==============
-interface               V          worst ratio  below 5e-6
-======================  =========  ===========  ==============
-Puyseguer               2597       7.3e-07      **1 vertex**
-Hikurangi               5218       2.4e-05      none
-Puysegur-Fiordland      2312       2.4e-05      none
-======================  =========  ===========  ==============
-
--- an order of magnitude clear on each side, and :func:`remesh` repairs Puyseguer's one
-bad vertex to 1/6. Every lattice mesh this package builds sits at exactly that 1/6, the
-worst a lattice can do being a corner vertex touching two triangles, so no mesh built here
-can approach the line.
+A vertex with almost no lumped mass sits at the tip of a sliver. 5e-6 is the geometric
+middle of the decade a sweep found a cliff across, and it separates on real data: over
+the three NZ CFM v1.0 interfaces the worst ratio is 7.3e-07 against 2.4e-05, where
+every lattice mesh built here sits at 1/6.
 """
 
 BOUNDARY_LABELS = ("top", "bottom", "lateral")
@@ -251,14 +120,9 @@ BOUNDARY_LABELS = ("top", "bottom", "lateral")
 _MINIMUM_IN_PLANE_LENGTH = float(np.sqrt(np.finfo(np.float64).eps))
 """How much of the stated strike must survive projection into the fitted plane.
 
-Not a modelling choice -- an error bound. Projecting a unit vector out of a plane
-leaves a residual of length ``L``, and the residual's *direction* carries an error of
-about ``eps / L``, because the round-off in the subtraction is absolute while the
-result being normalised is ``L``. At ``L = sqrt(eps) = 1.5e-8`` the recovered strike is
-uncertain by ``sqrt(eps)`` radians -- 8.5e-7 degrees, still six orders inside the
-one-degree rake bound -- and below it the frame would be reporting a strike it does not
-know. Real geometry sits at ``L = 1``: the stated strike lies *in* the fitted plane to
-round-off, which is what the planar collapse means.
+An error bound, not a modelling choice: a residual of length ``L`` carries a direction
+error of about ``eps / L``, so at ``L = sqrt(eps) = 1.5e-8`` the recovered strike is
+uncertain by 8.5e-7 degrees, six orders inside the one-degree rake bound.
 """
 
 _DOWN = np.array([0.0, 0.0, 1.0])
@@ -276,26 +140,8 @@ def stated_axes(
 
     Components are ``(east, north, depth)`` with depth positive down, and bearings are
     degrees clockwise from grid north -- which is why the horizontal parts are
-    ``(sin, cos)`` rather than the mathematical ``(cos, sin)``. Named by the right-hand
-    rule the same way :class:`~rupture_generator.config.geometry.PlaneConfig` is:
-    walking the trace from its first point to its last, ``dips_left=False`` dips away
-    to your right.
-
-    Parameters
-    ----------
-    strike_deg : float
-        Grid-north bearing of the trace direction.
-    dip_deg : float
-        Dip below horizontal, in ``(0, 90]``.
-    dips_left : bool, optional
-        Whether the plane dips to the left of the trace direction.
-
-    Returns
-    -------
-    tuple of FloatArray
-        The strike direction and the down-dip direction, both unit, both ``(3,)``.
-        They are orthogonal for every dip, which is what makes the planar collapse in
-        :meth:`MongeFrame.fit` exact rather than approximate.
+    ``(sin, cos)``. ``dip_deg`` is in ``(0, 90]``, and the two ``(3,)`` unit vectors
+    returned are orthogonal at every dip.
     """
     strike = np.radians(strike_deg)
     dip = np.radians(dip_deg)
@@ -315,35 +161,11 @@ def stated_axes(
 def implied_axes(points_km: FloatArray) -> tuple[float, float, bool]:
     """The strike and dip a surface implies when no config states them.
 
-    For data that arrives without a config: a 3-D fault model, or a version 2 mesh
-    file. Fit the plane, take its **steepest descent** direction, and read the strike
-    and dip off that -- which is the geologist's definition of a plane's strike and dip,
-    and is unique up to the sign convention that a plane dips to the *right* of its
-    strike (:class:`~rupture_generator.config.geometry.PlaneConfig`'s own default).
-
-    This is **not** the failure mode the module docstring rejects. That one is taking
-    the in-plane axes from the SVD's in-plane singular vectors, which are the point
-    cloud's principal axes: degenerate on a square patch and arbitrary in sign. What
-    happens here uses only the fitted **normal** -- which the design takes from the SVD
-    anyway -- crossed with the vertical, so it has no dependence on the sampling at all
-    and no sign to guess. A patch samples the plane; it does not change which way the
-    plane dips.
-
-    It is also a fixed point: feed the result to :meth:`MongeFrame.fit` and the frame
-    that comes back has exactly these axes, because the stated strike already lies in
-    the fitted plane.
-
-    Parameters
-    ----------
-    points_km : FloatArray
-        ``(n, 3)`` positions, components ``(east, north, depth)``, depth positive down.
-
-    Returns
-    -------
-    tuple
-        ``(strike_deg, dip_deg, dips_left)``, ready to pass to
-        :meth:`TriangleMesh.from_triangulation`. ``dips_left`` is always ``False``: the
-        sign is *chosen* here rather than discovered, which is the point.
+    Fit the plane through the ``(n, 3)`` positions and read the strike and dip off its
+    steepest descent direction -- the geologist's definition, unique up to the
+    convention that a plane dips to the right of its strike, so the returned
+    ``dips_left`` is always false. It uses only the fitted normal crossed with the
+    vertical, never the SVD's in-plane axes, so it does not depend on the sampling.
 
     Raises
     ------
@@ -354,8 +176,7 @@ def implied_axes(points_km: FloatArray) -> tuple[float, float, bool]:
     _, _, rotation = np.linalg.svd(points - points.mean(axis=0), full_matrices=False)
     normal = rotation[2]
 
-    # The steepest descent direction in the plane: straight down, with whatever part
-    # of it leaves the plane removed.
+    # Steepest descent in the plane: straight down, less its out-of-plane part.
     down_dip = _DOWN - float(_DOWN @ normal) * normal
     length = float(np.linalg.norm(down_dip))
     if length <= _MINIMUM_IN_PLANE_LENGTH:
@@ -376,14 +197,8 @@ class MongeFrame:
     """The reference plane a segment is a displacement over.
 
     Four vectors in the projected CRS, kilometres, components ``(east, north, depth)``:
-    an origin on the plane and an orthonormal triple with ``e_u x e_v = n``, so the
-    parameter plane is right-handed about the normal and a positively oriented triangle
-    in ``(u, v)`` is one the projection has not folded.
-
-    ``eq=False`` for the same reason
-    :class:`~rupture_generator.mesh.RuptureMesh` uses it: the generated ``__eq__``
-    would compare arrays and hand back an array, which raises the moment anything puts
-    a frame in an ``if``. Two frames are compared by comparing their axes.
+    an origin on the plane and an orthonormal triple with ``e_u x e_v = n``, so a
+    positively oriented triangle in ``(u, v)`` is one the projection has not folded.
     """
 
     origin_km: FloatArray
@@ -410,62 +225,21 @@ class MongeFrame:
     ) -> MongeFrame:
         """Fit a frame to a point cloud, with the axes taken from the config.
 
-        The normal is the smallest right singular vector of the centred cloud -- the
-        least-squares plane, which minimises the normal displacement ``h`` and so keeps
-        the margin before the projection folds as wide as this construction can. Its
-        *sign* is arbitrary out of the SVD, so it is flipped to agree with
-        ``cross(strike, dip)`` from the config; that is the only thing the config's
-        numbers decide about the normal.
-
-        The in-plane axes come from the config alone. See this module's docstring for
-        why: the SVD's in-plane axes are the cloud's principal axes, degenerate on a
-        square patch and arbitrary in sign.
-
-        **What the plane is fitted to matters more than it looks.** MESH.md says the
-        *corner* cloud, and on a planar patch that is right and costs nothing: bilinear
-        subdivision makes every interior node an affine combination of the corners, so
-        both span the same plane exactly. On a *curved* patch a plane through four
-        corners is not a fit to anything -- it interpolates four points and ignores the
-        surface between them.
-
-        Nor is a fit to every node right, even weighted by the area each carries: that
-        is a fit to the *sample*. Refine one plane of a segment and its nodes outvote
-        the others, tilting a plane that should not have moved, and ``|grad h|`` --
-        which is a statement about how the planes are oriented, not about how finely
-        they were cut -- picks up a dependence on the subfault size. Measured across a
-        factor of four in cell size on ``alpine_hope``: 4e-4 relative drift.
-
-        So the callers pass a **quadrature of the surface** instead, and this is the
-        weighted fit that consumes it; :func:`_surface_moment` builds it. The result is
-        the exact continuous least-squares plane of the surface, which subdividing a
-        triangle cannot move at all.
-
-        Parameters
-        ----------
-        corners_km : FloatArray
-            ``(n, 3)`` points to fit the plane through.
-        strike_deg, dip_deg : float
-            The config's stated geometry, in degrees.
-        dips_left : bool, optional
-            Whether the plane dips left of the trace direction.
-        weights : FloatArray, optional
-            ``(n,)`` non-negative weights, in square kilometres when they are the area
-            each node carries. Unweighted by default, which is right for a cloud whose
-            points already sample the surface evenly.
-
-        Returns
-        -------
-        MongeFrame
-            With ``origin_km`` at the weighted centroid, which lies on the fitted plane.
+        The normal is the smallest right singular vector of the centred ``(n, 3)``
+        cloud, its sign flipped to agree with the config's ``cross(strike, dip)``; the
+        in-plane axes come from the config alone, and ``origin_km`` comes back at the
+        weighted centroid. Callers pass a quadrature of the surface
+        (:func:`_surface_moment`) rather than its nodes, ``weights`` being the square
+        kilometres each point carries, which makes this the exact continuous
+        least-squares plane; a fit to the nodes drifts by 4e-4 relative across a factor
+        of four in cell size.
 
         Raises
         ------
         ValueError
             If fewer than three points are given, if the weights are the wrong shape or
             sum to nothing, or if the stated strike is perpendicular to the fitted plane
-            -- a strike that lies along the normal names no direction in the patch, which
-            means the stated geometry and the node positions are describing different
-            surfaces.
+            and so names no direction in the patch.
         """
         corners = np.asarray(corners_km, dtype=np.float64)
         if corners.ndim != 2 or corners.shape[1] != 3 or corners.shape[0] < 3:
@@ -489,8 +263,7 @@ class MongeFrame:
                 )
 
         centroid = (share[:, None] * corners).sum(axis=0) / share.sum()
-        # sqrt on the rows is what turns an unweighted SVD into a weighted least
-        # squares: the singular values are then sums of `w * residual^2`.
+        # sqrt on the rows turns an unweighted SVD into a weighted least squares.
         _, _, rotation = np.linalg.svd(
             np.sqrt(share)[:, None] * (corners - centroid), full_matrices=False
         )
@@ -521,21 +294,10 @@ class MongeFrame:
         )
 
     def translated(self, strike_km: float, dip_km: float) -> MongeFrame:
-        """The same plane with its origin moved within it. Functional, never in place.
+        """The same plane with its origin moved within it, by ``(strike_km, dip_km)``.
 
-        Moving the origin *within* the plane leaves ``h`` untouched, which is what lets
-        the builder put ``(u, v) = (0, 0)`` at the patch's shallow near corner without
-        changing the surface it describes.
-
-        Parameters
-        ----------
-        strike_km, dip_km : float
-            How far to move the origin along each in-plane axis.
-
-        Returns
-        -------
-        MongeFrame
-            A new frame with the same axes.
+        Moving it within the plane leaves ``h`` untouched, which is what lets the
+        builder put ``(u, v) = (0, 0)`` at the patch's shallow near corner.
         """
         return dataclasses.replace(
             self,
@@ -545,40 +307,18 @@ class MongeFrame:
         )
 
     def project(self, points_km: FloatArray) -> FloatArray:
-        """Points as ``(u, v, h)``: two parameter coordinates and a normal height.
-
-        Parameters
-        ----------
-        points_km : FloatArray
-            ``(..., 3)`` positions, offsets from the surface origin.
-
-        Returns
-        -------
-        FloatArray
-            ``(..., 3)``, the components along ``e_u``, ``e_v`` and ``n``.
-        """
+        """Points as ``(u, v, h)``: components along ``e_u``, ``e_v`` and ``n``."""
         basis = np.stack([self.strike_axis, self.dip_axis, self.normal], axis=1)
         return (np.asarray(points_km, dtype=np.float64) - self.origin_km) @ basis
 
     def lift(self, parameters_km: FloatArray) -> FloatArray:
-        """The inverse of :meth:`project`: ``(u, v, h)`` back to a position.
-
-        Parameters
-        ----------
-        parameters_km : FloatArray
-            ``(..., 3)`` components along ``e_u``, ``e_v`` and ``n``.
-
-        Returns
-        -------
-        FloatArray
-            ``(..., 3)`` positions, offsets from the surface origin.
-        """
+        """The inverse of :meth:`project`: ``(u, v, h)`` back to a position."""
         basis = np.stack([self.strike_axis, self.dip_axis, self.normal], axis=0)
         return self.origin_km + np.asarray(parameters_km, dtype=np.float64) @ basis
 
     @property
     def strike_deg(self) -> float:
-        """The frame's own strike: the grid-north bearing of ``e_u``, in ``[0, 360)``."""
+        """The frame's own strike: ``e_u``'s grid-north bearing, in ``[0, 360)``."""
         return float(
             np.degrees(np.arctan2(self.strike_axis[0], self.strike_axis[1])) % 360.0
         )
@@ -589,13 +329,7 @@ class MongeFrame:
         return float(np.degrees(np.arcsin(np.clip(self.dip_axis[2], -1.0, 1.0))))
 
     def to_attrs(self) -> dict[str, FloatArray]:
-        """The frame as file attributes.
-
-        Returns
-        -------
-        dict
-            Four ``(3,)`` arrays, keyed by :data:`RESERVED_ATTRS` names.
-        """
+        """The frame as four ``(3,)`` arrays, keyed by :data:`RESERVED_ATTRS` names."""
         return {
             "frame_origin_km": np.asarray(self.origin_km, dtype=np.float64),
             "strike_axis": np.asarray(self.strike_axis, dtype=np.float64),
@@ -605,18 +339,9 @@ class MongeFrame:
 
     @classmethod
     def from_attrs(cls, attrs: Mapping[str, Any]) -> MongeFrame:
-        """Read a frame back out of file attributes.
+        """Read a frame back out of what :meth:`to_attrs` wrote.
 
-        Parameters
-        ----------
-        attrs : Mapping
-            What :meth:`to_attrs` wrote.
-
-        Returns
-        -------
-        MongeFrame
-            The frame, with its axes exactly as stored -- not refitted, because a
-            refit would move the chart under its own parameter coordinates.
+        Never refitted: a refit would move the chart under its own coordinates.
         """
         return cls(
             origin_km=np.asarray(attrs["frame_origin_km"], dtype=np.float64),
@@ -637,15 +362,8 @@ class TriangleMesh:
     _dataset: xr.Dataset
 
     def __init__(self, dataset: xr.Dataset) -> None:
-        """Wrap a dataset in the layout :meth:`from_patches` builds.
-
-        Parameters
-        ----------
-        dataset : xr.Dataset
-            Carrying :data:`NODE_VARIABLES`, :data:`FACE_VARIABLES` and the frame in
-            its attributes. Not the constructor to reach for -- use
-            :meth:`from_patches`, or read a file.
-        """
+        """Wrap a dataset carrying :data:`NODE_VARIABLES`, :data:`FACE_VARIABLES` and
+        the frame. Use :meth:`from_patches` instead, or read a file."""
         self._dataset = dataset
 
     def __repr__(self) -> str:
@@ -673,65 +391,16 @@ class TriangleMesh:
         origin_north_km: float,
         surface: str,
     ) -> TriangleMesh:
-        """**The lattice builder.** Fit a frame, split every quad, lift.
+        """The lattice builder: fit a frame, split every quad, lift.
 
-        The reference frame is fitted to the patch corners and every node is projected
-        to ``(u, v)``; the connectivity is then read straight off the lattice -- two
-        triangles per quad, split on the ``(i, j) -> (i+1, j+1)`` diagonal -- and lifted
-        by taking each vertex's own position. Patches that share nodes exactly, which is
-        what a fused seam column is, are welded, so the seam is one row of vertices and
-        the triangulations either side of it conform.
-
-        **Not Delaunay of the projected points**, which is what this used to do, and the
-        reason is a measurement on a real curved surface rather than a preference. The
-        Williams et al. (2013) Hikurangi interface, largest fully populated 21x21 block:
-
-        ==========================  =======  =======
-        quantity                    lattice  Delaunay
-        ==========================  =======  =======
-        faces (must be ``2*20*20``) 800      866
-        area, km^2                  28421.0  30418.4
-        ``maximum_slope()``         0.196    18.35
-        ==========================  =======  =======
-
-        `scipy.spatial.Delaunay` triangulates the **convex hull** of the points it is
-        given. A planar fault's parameter footprint is a convex quadrilateral, so the
-        hull is the domain and nothing is added -- which is why every shipped example
-        passed. A curved surface's footprint is slightly concave (about 1% here), and
-        Delaunay fills each notch with faces that are not on the fault: 66 of them,
-        carrying 1997.4 km^2, or **6.6% of an area whose bound is exact** because moment
-        is. Their slopes reach 18.35 against a true maximum of 0.196, so
-        :meth:`maximum_slope` and :func:`check_admissible` were reading hull slivers
-        rather than the interface. And a sliver spanning a notch is a **shortcut edge**
-        in the mesh graph, and the area it carries goes straight into the moment fold.
-
-        Culling the slivers by patch membership cannot fix it: the test compared each
-        face's centroid against the quad through the patch's four *corners*, and once
-        the surface curves that quad is not the patch's parameter footprint. The
-        connectivity was never unknown -- a lattice has it -- so taking it from the
-        lattice is exact, ``O(n)``, preserves the boundary, and needs no hull reasoning
-        at all. :meth:`from_triangulation` is the entry point for a surface that arrives
-        with its own faces; there is no constructor that guesses them.
-
-        Parameters
-        ----------
-        patches : Sequence of FloatArray
-            One ``(n_i+1, n_j+1, 3)`` node lattice per config plane, ``i`` down dip and
-            ``j`` along strike, positions offsets from the surface origin.
-        strike_deg, dip_deg : float
-            The config's stated geometry for this segment.
-        dips_left : bool, optional
-            Whether the segment dips left of its trace direction.
-        origin_east_km, origin_north_km : float
-            The surface origin, in the CRS, kilometres.
-        surface : str
-            The surface's name, which becomes the group name in files.
-
-        Returns
-        -------
-        TriangleMesh
-            With exactly ``2 * n_i * n_j`` faces summed over the patches, less any the
-            weld shares.
+        ``patches`` is one ``(n_i+1, n_j+1, 3)`` node lattice per config plane, ``i``
+        down dip and ``j`` along strike, positions offset from the surface origin. The
+        connectivity is read straight off the lattice, two triangles per quad split on
+        the ``(i, j) -> (i+1, j+1)`` diagonal, and patches sharing nodes exactly are
+        welded. Not Delaunay of the projected points: that triangulates the convex
+        **hull**, and a curved surface's footprint is about 1% concave, which on the
+        Williams et al. (2013) Hikurangi interface filled the notches with 66 extra
+        faces carrying 6.6% of an area whose bound is exact.
 
         Raises
         ------
@@ -754,12 +423,9 @@ class TriangleMesh:
             raise ValueError("a segment needs at least one patch")
 
         stacked = np.concatenate([patch.reshape(-1, 3) for patch in prepared])
-        # Exact equality: a shared seam column is the *same* corner arithmetic run
-        # twice in `build_fault`, so duplicates are bitwise identical rather than
-        # close, and a tolerance here would weld two nodes that genuinely differ.
-        # `inverse` is what carries lattice position into vertex index, and it has to
-        # survive: `np.unique` sorts, so vertex order is *not* lattice order and
-        # reshaping anything per-vertex back to the lattice gives silent nonsense.
+        # Exact equality: a shared seam column is the same arithmetic run twice, so
+        # duplicates are bitwise identical. `np.unique` sorts, so vertex order is *not*
+        # lattice order -- `inverse` carries one into the other.
         vertices, inverse = np.unique(stacked, axis=0, return_inverse=True)
         welded = np.asarray(inverse).ravel()
 
@@ -771,10 +437,8 @@ class TriangleMesh:
             lattice = welded[start : start + rows * columns].reshape(rows, columns)
             start += rows * columns
             # Anticlockwise in (u, v): +u along a row, +v down a column, so the quad
-            # near -> far -> opposite -> beside turns positively and both its triangles
-            # do too. That is what makes `check_admissible` a test rather than a
-            # tautology -- the orientation now comes from the surface's own lattice
-            # instead of from a triangulation of the projection.
+            # near -> far -> opposite -> beside turns positively, and so do both its
+            # triangles.
             near, far = lattice[:-1, :-1], lattice[:-1, 1:]
             opposite, beside = lattice[1:, 1:], lattice[1:, :-1]
             split = np.stack(
@@ -827,61 +491,16 @@ class TriangleMesh:
         surface: str,
         plane_of_face: IntArray | None = None,
     ) -> TriangleMesh:
-        """**The builder for a surface that arrives with its own faces.**
+        """The builder for a surface that arrives with its own faces.
 
-        What a 3-D fault model gives you. The NZ CFM v1.0 subduction interfaces are
-        GOCAD TSurf files carrying 9236, 4090 and 4041 triangles of their own, and
-        :mod:`rupture_generator.triangular.gocad` reads them straight into this.
-
-        The connectivity is **kept exactly as given**. Nothing here triangulates,
-        retriangulates, culls or repairs: the faces are the modeller's statement about
-        what the surface is, and a builder that second-guessed them would be back in the
-        convex-hull business :meth:`from_patches` documents its way out of. The one
-        thing that *is* normalised is the global winding -- whether the modeller
-        numbered each face anticlockwise seen from the hanging wall or the footwall is a
-        convention rather than a fact, and all three CFM interfaces use the opposite one
-        to this frame. Faces disagreeing with the *majority* are the folds, and those
-        are refused; see the comment on the flip.
-
-        That also makes :func:`check_admissible` mean something on these meshes.
-        Orientation tested against a triangulation *of the projection* is a tautology --
-        `scipy.spatial.Delaunay` orients every face positively by construction -- whereas
-        orientation tested against the surface's own faces is a real question with a real
-        answer. Measured: all three CFM interfaces have **zero** inverted triangles, so
-        each is genuinely one Monge patch.
-
-        The frame is fitted to **every vertex** rather than to four corners, because a
-        triangulated interface has no corners. On a lattice patch the two are the same
-        fit -- bilinear subdivision makes every interior node an affine combination of
-        the corners -- so this is not a second convention, it is the same one where
-        corners exist and the only available one where they do not. The in-plane axes
-        still come from ``strike_deg`` and ``dip_deg`` and never from the SVD; see
-        :func:`implied_axes` for what to pass when the surface arrives without a config
-        to state them.
-
-        Parameters
-        ----------
-        vertices_km : FloatArray
-            ``(V, 3)`` positions, offsets from the surface origin, components
-            ``(east, north, depth)`` with depth positive down.
-        faces : IntArray
-            ``(F, 3)`` zero-based vertex indices, wound so that each face is
-            anticlockwise seen from the ``strike_deg``/``dip_deg`` side.
-        strike_deg, dip_deg : float
-            The stated geometry, in degrees.
-        dips_left : bool, optional
-            Whether the surface dips left of the strike direction.
-        origin_east_km, origin_north_km : float, optional
-            The surface origin, in the CRS, kilometres.
-        surface : str
-            The surface's name.
-        plane_of_face : IntArray, optional
-            ``(F,)`` provenance. Defaults to zeros -- one part.
-
-        Returns
-        -------
-        TriangleMesh
-            With ``faces`` unchanged.
+        What a 3-D fault model gives, and what
+        :mod:`rupture_generator.triangular.gocad` reads GOCAD TSurf files into.
+        ``vertices_km`` is ``(V, 3)`` offsets from the surface origin and ``faces`` is
+        ``(F, 3)`` zero-based indices, wound anticlockwise seen from the
+        ``strike_deg``/``dip_deg`` side. The connectivity is kept exactly as given; only
+        the global winding is normalised, being a convention rather than a fact, with
+        faces disagreeing with the majority refused as folds. The frame is fitted to
+        every vertex, a triangulated interface having no corners.
 
         Raises
         ------
@@ -930,28 +549,7 @@ class TriangleMesh:
         origin_north_km: float,
         surface: str,
     ) -> TriangleMesh:
-        """Project through a settled frame and lay the arrays out.
-
-        Parameters
-        ----------
-        vertices_km : FloatArray
-            ``(V, 3)`` positions.
-        faces : IntArray
-            ``(F, 3)`` vertex indices.
-        plane_of_face : IntArray
-            ``(F,)`` provenance.
-        frame : MongeFrame
-            Already fitted and already translated.
-        origin_east_km, origin_north_km : float
-            The surface origin.
-        surface : str
-            The surface's name.
-
-        Returns
-        -------
-        TriangleMesh
-            Unchecked -- the caller runs :func:`check_admissible`.
-        """
+        """Project through a fitted frame; the caller runs :func:`check_admissible`."""
         return cls._assemble(
             vertices_km=vertices_km,
             parameters_km=frame.project(vertices_km)[:, :2],
@@ -976,30 +574,7 @@ class TriangleMesh:
         origin_north_km: float,
         surface: str,
     ) -> TriangleMesh:
-        """Lay the arrays out as the dataset, with no geometry decided here.
-
-        Parameters
-        ----------
-        vertices_km : FloatArray
-            ``(V, 3)`` node positions, offsets from the surface origin.
-        parameters_km : FloatArray
-            ``(V, 2)`` parameter coordinates.
-        faces : IntArray
-            ``(F, 3)`` vertex indices.
-        plane_of_face : IntArray
-            ``(F,)`` config-plane provenance.
-        frame : MongeFrame
-            The reference frame the parameter coordinates are in.
-        origin_east_km, origin_north_km : float
-            The surface origin, in the CRS, kilometres.
-        surface : str
-            The surface's name.
-
-        Returns
-        -------
-        TriangleMesh
-            The wrapped dataset.
-        """
+        """Lay the arrays out as the dataset, with no geometry decided here."""
         dataset = xr.Dataset(
             data_vars={
                 "east_km": (
@@ -1067,36 +642,11 @@ class TriangleMesh:
     ) -> TriangleMesh:
         """The same surface in the same frame, laid on a different triangulation.
 
-        What a *refinement* is, as far as the container is concerned. The frame, the
-        origin and the surface name are kept exactly, so the parameter coordinates of
-        every vertex that survives the change do not move -- which matters because the
-        hypocentre seam, the taper and the parameter lattice the solvers run on are all
-        read off ``(u, v)``, and a frame refitted to the new points would shift all three
-        silently for no modelling reason. It is also what makes a retriangulated mesh
-        comparable with the one it came from at all.
-
-        This is deliberately *not* a mesher. It decides no geometry: the caller supplies
-        the vertices and the faces, and the only thing added here is the projection
-        through this mesh's own frame. Keeping the two apart is what lets this module
-        import neither the sampler nor the solver.
-
-        No field and no attribute a stage attached comes across -- a retriangulated mesh
-        has a different number of faces, so a per-face field is not a field on it.
-
-        Parameters
-        ----------
-        vertices_km : FloatArray
-            ``(V, 3)`` node positions, offsets from this mesh's own origin.
-        faces : IntArray
-            ``(F, 3)`` vertex indices.
-        plane_of_face : IntArray
-            ``(F,)`` config-plane provenance, which the caller carries across because
-            only the caller knows how its faces map onto the old ones.
-
-        Returns
-        -------
-        TriangleMesh
-            Admissible -- :func:`check_admissible` runs, as it does in every builder.
+        The frame, the origin and the surface name are kept exactly, so the parameter
+        coordinates of every surviving vertex do not move -- the hypocentre seam, the
+        taper and the solvers' lattice are all read off ``(u, v)``. No field and no
+        attribute comes across. ``vertices_km`` is ``(V, 3)`` offsets from this mesh's
+        origin, ``faces`` ``(F, 3)`` indices, ``plane_of_face`` ``(F,)`` provenance.
 
         Raises
         ------
@@ -1167,15 +717,7 @@ class TriangleMesh:
         return int(self._dataset.sizes[CORNER_DIM])
 
     def vertices_km(self) -> FloatArray:
-        """Node positions, ``(V, 3)``, components (east, north, depth).
-
-        Returns
-        -------
-        FloatArray
-            Offsets from the surface origin, in kilometres. This and :meth:`faces` are
-            the pair the sampler and the eikonal solver take -- plain arrays, so the
-            three components stay decoupled.
-        """
+        """Node positions, ``(V, 3)``, (east, north, depth) km from the origin."""
         return np.stack(
             [
                 self._dataset["east_km"].to_numpy(),
@@ -1186,25 +728,13 @@ class TriangleMesh:
         )
 
     def faces(self) -> IntArray:
-        """Triangles as vertex indices, ``(F, 3)``.
-
-        Returns
-        -------
-        IntArray
-            Positively oriented in the parameter plane -- see :func:`check_admissible`.
-        """
+        """Triangles as vertex indices, ``(F, 3)``, positively oriented in ``(u,v)``."""
         return self._dataset["faces"].to_numpy()
 
     def parameters_km(self) -> FloatArray:
-        """Per-vertex parameter coordinates ``(u, v)``, ``(V, 2)``.
+        """Per-vertex ``(u, v)``, ``(V, 2)``, km, zero at the shallow near corner.
 
-        Returns
-        -------
-        FloatArray
-            Along strike and down dip in the frame, in kilometres, both starting at
-            zero at the patch's shallow near corner. These are what the covariance and
-            the mesh are built on; :meth:`strike_arc_km` and :meth:`dip_arc_km` are the
-            true surface lengths that go with them.
+        :meth:`strike_arc_km` and :meth:`dip_arc_km` are the true surface lengths.
         """
         return np.stack(
             [
@@ -1215,27 +745,14 @@ class TriangleMesh:
         )
 
     def planes(self) -> IntArray:
-        """Which config plane each face came from, ``(F,)``.
-
-        Returns
-        -------
-        IntArray
-            Index into the segment's own patches, in trace order.
-        """
+        """Which config plane each face came from, ``(F,)``, in trace order."""
         return self._dataset["plane_of_face"].to_numpy()
 
     # -------------------------------------------------------------- the fields
 
     def fields(self) -> frozenset[str]:
-        """Every attached field's name.
-
-        Returns
-        -------
-        frozenset of str
-            The variables whose dims are exactly :data:`FACE_DIMS` and whose names are
-            not the chart's own, so no second list has to be kept in step. Geometry is
-            not in here; geometry is computed.
-        """
+        """Every attached field's name: the :data:`FACE_DIMS` variables that are not
+        the chart's own. Geometry is not in here; geometry is computed."""
         return frozenset(
             str(name)
             for name, variable in self._dataset.data_vars.items()
@@ -1252,8 +769,7 @@ class TriangleMesh:
         Raises
         ------
         KeyError
-            Naming the field and listing what this chart does carry -- a stage asking
-            for a field nobody drew is a pipeline written in the wrong order.
+            Naming the field and listing what this chart does carry.
         """
         if name not in self.fields():
             attached = ", ".join(sorted(self.fields())) or "nothing"
@@ -1268,11 +784,6 @@ class TriangleMesh:
 
     def with_fields(self, **arrays: FloatArray) -> TriangleMesh:
         """This chart with more face fields on it. Functional, never in place.
-
-        Returns
-        -------
-        TriangleMesh
-            A new chart; the one this was called on is untouched.
 
         Raises
         ------
@@ -1301,43 +812,18 @@ class TriangleMesh:
         return self._with(self._dataset.assign(prepared))
 
     def without(self, *names: str) -> TriangleMesh:
-        """This chart with those fields dropped. Functional, never in place.
-
-        A name that is not there is not an error: dropping is a statement about the
-        result, not a claim about the history.
-
-        Returns
-        -------
-        TriangleMesh
-            A new chart without them.
-        """
+        """This chart with those fields dropped; a name that is not there is fine."""
         return self._with(self._dataset.drop_vars(names, errors="ignore"))
 
     @property
     def attrs(self) -> Mapping[str, Any]:
-        """What this chart records about itself, read-only.
-
-        A mutable view is a mutable chart, so this is a proxy.
-
-        Returns
-        -------
-        Mapping
-            The frame and the origin, plus whatever a stage recorded -- the truncation
-            diagnostic, and on the one segment that holds it, where the rupture
-            nucleated.
-        """
+        """The frame, the origin and whatever a stage recorded, as a read-only proxy."""
         return types.MappingProxyType(dict(self._dataset.attrs))
 
     def with_attrs(self, **values: Any) -> TriangleMesh:
-        """This chart with the attributes given in ``values``.
+        """This chart with the attributes in ``values``, scalars by convention.
 
-        Scalars by convention: these are written straight into a file's group
-        attributes.
-
-        Returns
-        -------
-        TriangleMesh
-            A new chart carrying them.
+        They are written straight into a file's group attributes.
 
         Raises
         ------
@@ -1355,22 +841,10 @@ class TriangleMesh:
     def with_pulses(self, offsets: IntArray, samples: FloatArray) -> TriangleMesh:
         """This chart with its slip-rate pulses attached. Functional, never in place.
 
-        The one stage whose output is not a face field: a pulse per face, each its own
-        length, so they are carried as CSR exactly as
-        :meth:`~rupture_generator.mesh.RuptureMesh.with_pulses` carries them -- same dim
-        names, same checks, so a reader of either file finds the same two arrays.
-
-        Parameters
-        ----------
-        offsets : IntArray
-            Where each face's pulse starts, length ``face_count + 1``.
-        samples : FloatArray
-            Every pulse, concatenated.
-
-        Returns
-        -------
-        TriangleMesh
-            A new chart carrying them.
+        A pulse per face, each its own length, carried as CSR with the same dim names
+        and checks as :meth:`~rupture_generator.mesh.RuptureMesh.with_pulses`.
+        ``offsets`` is where each face's pulse starts, length ``face_count + 1``, and
+        ``samples`` is every pulse concatenated.
 
         Raises
         ------
@@ -1418,9 +892,8 @@ class TriangleMesh:
     def pulse_offsets(self) -> IntArray | None:
         """Where each face's pulse starts (CSR indptr), or ``None`` if unset.
 
-        The half of :attr:`pulses` that is one number per face rather than one per
-        sample, and therefore always affordable: 11 MB at 1.39 M faces against the 3.2
-        GB of rates it indexes into.
+        One number per face rather than one per sample, and therefore always
+        affordable: 11 MB at 1.39 M faces against the 3.2 GB of rates it indexes into.
         """
         if "slip_rate_offset" not in self._dataset:
             return None
@@ -1431,19 +904,9 @@ class TriangleMesh:
     def pulse_rates(self) -> xr.DataArray | None:
         """Every pulse concatenated, **not read**, or ``None`` if unset.
 
-        The counterpart of :attr:`pulses` for a reader that cannot afford them whole.
-        At a 400 m cut one segment's rates are 2.45 G samples and 19.6 GB of ``f64``,
-        which is more than the machine
-        :func:`~rupture_generator.triangular.pipeline.write_rupture_mesh` streams them
-        out on has; ``scripts/view.py`` slices this a block at a time on the way back
-        in, and never materialises it.
-
-        Returns
-        -------
-        xr.DataArray or None
-            Backed by whatever the dataset is backed by -- after
-            :func:`read_mesh`, an open file -- so it is sliceable only while that file
-            is open, and a slice is what triggers the read.
+        For a reader that cannot afford them whole: at a 400 m cut one segment's rates
+        are 2.45 G samples and 19.6 GB of ``f64``. Backed by whatever the dataset is
+        backed by, so after :func:`read_mesh` a slice is what triggers the read.
         """
         if "slip_rate" not in self._dataset:
             return None
@@ -1452,25 +915,14 @@ class TriangleMesh:
     # ------------------------------------------------------- derived quantities
 
     def centres(self) -> FloatArray:
-        """Face centres, ``(F, 3)`` -- the mean of the three corners.
-
-        Returns
-        -------
-        FloatArray
-            Positions, offsets from the surface origin.
-        """
+        """Face centres, ``(F, 3)``: the mean of the three corners."""
         return self.vertices_km()[self.faces()].mean(axis=1)
 
     def areas_km2(self) -> FloatArray:
-        """Face areas, ``(F,)``.
+        """Face areas, ``(F,)``: half the cross product of two edges.
 
-        Returns
-        -------
-        FloatArray
-            Half the cross product of two edges. This is exactly one of the two terms
-            :meth:`~rupture_generator.mesh.RuptureMesh.areas_km2` sums -- that formula
-            is already a two-triangle split, so the quad mesh's area is the sum of its
-            triangles' by construction rather than by approximation.
+        Exactly one of the two terms
+        :meth:`~rupture_generator.mesh.RuptureMesh.areas_km2` sums.
         """
         corners = self.vertices_km()[self.faces()]
         return 0.5 * np.linalg.norm(
@@ -1481,12 +933,7 @@ class TriangleMesh:
     def parameter_areas_km2(self) -> FloatArray:
         """**Signed** face areas in the parameter plane, ``(F,)``.
 
-        Returns
-        -------
-        FloatArray
-            Positive where the projection preserves orientation. A non-positive entry
-            is a fold: two pieces of surface over one piece of plane. This is the whole
-            of the admissibility test -- see :func:`check_admissible`.
+        A non-positive entry is a fold, which is the whole of the admissibility test.
         """
         corners = self.parameters_km()[self.faces()]
         first = corners[:, 1] - corners[:, 0]
@@ -1494,34 +941,19 @@ class TriangleMesh:
         return 0.5 * (first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0])
 
     def lumped_mass_km2(self) -> FloatArray:
-        """Surface area carried by each vertex, ``(V,)``.
+        """Surface area carried by each vertex, ``(V,)``, in square kilometres.
 
-        A third of every triangle the vertex touches -- the barycentric dual area. It
-        sums to the mesh's total area exactly, which is what makes it a partition of the
-        surface rather than an estimate of one, and it is how
-        :data:`DEGENERATE_MASS_FRACTION` finds a sliver.
-
-        Returns
-        -------
-        FloatArray
-            Square kilometres. :data:`DEGENERATE_MASS_FRACTION` says how small a share
-            is too small, and why.
+        The barycentric dual area, which sums to the total area exactly.
+        :data:`DEGENERATE_MASS_FRACTION` says how small a share is too small.
         """
         return _vertex_area_km2(self.vertices_km(), self.faces())
 
     def face_quality(self) -> FloatArray:
-        """Shape quality of each face, ``(F,)``, in ``[0, 1]``.
+        """Shape quality of each face, ``(F,)``, in ``[0, 1]``, dimensionless.
 
         ``4 sqrt(3) A / (a^2 + b^2 + c^2)``: one for an equilateral triangle, zero for a
-        degenerate one, and scale-free. A lattice split on its diagonal gives 0.866 for
-        a square cell, which is where every mesh this package builds sits.
-
-        Returns
-        -------
-        FloatArray
-            Dimensionless. Reported by :func:`check_admissible` when it refuses a mesh,
-            because "face 1966 has quality 4.8e-05" is a thing a modeller can act on and
-            "the mass matrix is singular" is not.
+        degenerate one, and 0.866 for a lattice split on its diagonal, where every mesh
+        this package builds sits.
         """
         corners = self.vertices_km()[self.faces()]
         squared = sum(
@@ -1535,13 +967,8 @@ class TriangleMesh:
     def face_normals(self) -> FloatArray:
         """Per-face unit normals, ``(F, 3)``, in the projected CRS.
 
-        Returns
-        -------
-        FloatArray
-            ``cross(X1 - X0, X2 - X0)``, normalised, so it points to the same side as
-            the frame's own normal on every positively oriented face. A face of zero
-            area gets the frame's normal rather than a NaN, which would travel silently
-            into an SRF.
+        ``cross(X1 - X0, X2 - X0)`` normalised, so it agrees with the frame's own normal
+        on every positively oriented face. A zero-area face gets the frame's, not a NaN.
         """
         corners = self.vertices_km()[self.faces()]
         normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
@@ -1553,29 +980,13 @@ class TriangleMesh:
     def slope(self) -> FloatArray:
         """Per-face ``grad h = (dh/du, dh/dv)``, ``(F, 2)``, dimensionless.
 
-        Computed **from the face normal, not from the affine map** ``dX/d(u, v)``, and
-        the difference is not cosmetic. A Monge patch's normal is proportional to
-        ``(-h_u, -h_v, 1)`` in the ``(e_u, e_v, n)`` basis, so reading ``grad h`` off the
-        normal costs one cross product and one division, and it is well conditioned
-        whenever the *triangle* is -- which is what actually matters.
-
-        The obvious alternative inverts the parameter-space edge matrix, and that matrix
-        is near-singular exactly when a face is a sliver in projection -- which real
-        meshes have: the CFM Hikurangi interface's worst face has a shape quality of
-        5.4e-04. On these three interfaces the two routes happen to agree, so the
-        fragility is not something this repository has caught in the act; it is avoided
-        on principle, because ``|grad h|`` is the number :func:`check_admissible` reports
-        and the whole construction is budgeted against, and this route has no matrix
-        inverse in it to be conditioned badly at all.
-
-        Returns
-        -------
-        FloatArray
-            ``|grad h|`` is ``tan`` of the angle between the face's normal and the
-            frame's: zero where the surface is parallel to the reference plane, and
-            growing without bound as it turns perpendicular to it. It is both the margin
-            before the projection folds and the factor ``sqrt(1 + |grad h|^2)`` by which
-            true surface length exceeds parameter length.
+        Computed from the face normal, not from the affine map ``dX/d(u, v)``: a Monge
+        patch's normal is proportional to ``(-h_u, -h_v, 1)`` in the ``(e_u, e_v, n)``
+        basis, so this needs no matrix inverse, where inverting the parameter-space edge
+        matrix is near-singular wherever a face is a sliver in projection. ``|grad h|``
+        is ``tan`` of the angle between the face's normal and the frame's, so it is both
+        the margin before the projection folds and the factor ``sqrt(1 + |grad h|^2)``
+        by which true surface length exceeds parameter length.
         """
         frame = self.frame
         normal = self.face_normals()
@@ -1588,53 +999,24 @@ class TriangleMesh:
         )
 
     def maximum_slope(self) -> float:
-        """The worst ``|grad h|`` on the patch, dimensionless.
-
-        Returns
-        -------
-        float
-            Zero on a planar segment, to round-off.
-        """
+        """The worst ``|grad h|`` on the patch. Zero on a planar patch, to round-off."""
         return float(np.linalg.norm(self.slope(), axis=-1).max(initial=0.0))
 
     def strike_dip_deg(self) -> tuple[FloatArray, FloatArray]:
-        """Per-face strike (grid north, ``[0, 360)``) and dip (``[0, 90]``).
+        """Per-face strike (grid north, ``[0, 360)``) and dip (``[0, 90]``), in degrees.
 
-        Both come from the face's normal rather than its edges: on a plane the two
-        agree, and the normal is what keeps them right on a surface that is not one.
-        The absolute value on the normal's vertical component makes the dip independent
-        of the normal's sign.
-
-        The strike's *sign* is fixed by the frame's ``e_u``, and therefore by the
-        config. That is the departure from
-        :meth:`~rupture_generator.mesh.RuptureMesh.strike_dip_deg`, which orients the
-        strike by the cell's along-strike edges: a quad has two of those and a triangle
-        has none, so the frame has to carry the orientation instead. It is worth being
-        explicit about because a reversed strike produces an SRF that looks entirely
-        plausible and is physically backwards.
-
-        Everything here is built from the face's own normal and the frame, and nothing
-        from the parameter-space affine map -- :meth:`slope` says why that map is not
-        safe to read on a real mesh. A degenerate face reports dip 0 and the frame's
-        strike, never NaN.
-
-        These are the **surface's own** strike and dip, ``e_strike = normalise(z x n)``
-        and ``e_dip = n x e_strike``, rather than anything derived from ``(u, v)``: they
-        are what the SRF header and the rake convention read, per subfault. The sampler
-        does not take them -- it works in ``(u, v)``, and
-        :func:`~rupture_generator.triangular.lattice.draw_field` says what that choice of
-        metric costs and what the alternative would be.
-
-        Returns
-        -------
-        tuple of FloatArray
-            Strike and dip, each ``(F,)``, in degrees.
+        Each ``(F,)``. The surface's own strike and dip,
+        ``e_strike = normalise(z x n)`` and ``e_dip = n x e_strike``, which is what the
+        SRF header and the rake convention read per subfault. Both come from the face's
+        normal rather than its edges -- :meth:`slope` says why the parameter-space
+        affine map is not safe to read -- and a degenerate face reports dip 0 and the
+        frame's strike. The strike's sign is fixed by the frame's ``e_u``, a triangle
+        having no along-strike edges to orient it the way a quad does.
         """
         unit = self.face_normals()
         dip_deg = np.degrees(np.arccos(np.clip(np.abs(unit[..., 2]), 0.0, 1.0)))
 
-        # cross(DOWN, n) is perpendicular to down (horizontal) and to the normal (in
-        # the face's plane): the strike direction, up to sign.
+        # cross(DOWN, n) is horizontal and in the face's plane: strike, up to sign.
         horizontal = np.cross(np.broadcast_to(_DOWN, unit.shape), unit)
         flat = np.linalg.norm(horizontal, axis=-1) == 0.0
         strike_axis = self.frame.strike_axis
@@ -1651,40 +1033,13 @@ class TriangleMesh:
     def arc_profile(self, axis: int) -> tuple[FloatArray, FloatArray]:
         """The parameter-to-arc-length map along one axis, as a knotted polyline.
 
-        The **derived** half of MESH.md's pair. Parameter length and true surface
-        length differ by exactly ``sqrt(1 + h_u^2)`` per element -- which this reads off
-        the Jacobian rather than solving for -- and the map is that factor integrated
-        across the patch:
-
-        ``S(u) = integral of M(u') du'``, where ``M`` is the *area-weighted mean* of
-        ``sqrt(1 + h_u^2)`` over the faces the patch has at ``u'``.
-
-        Averaging across dip rather than following one line ``v = const`` is the
-        deliberate choice, and it is the one the consumers want. "The hypocentre is 12
-        km along strike" and the SRF's plane length are both statements about *the
-        fault's* extent, which is one number per ``u``, not one per ``(u, v)``. It is
-        also what makes the map strictly increasing, so :meth:`cell_index` can invert it
-        and stay a query in the parameter plane -- a per-line arc length is not
-        guaranteed to be a reparameterisation at all, because two neighbouring lines can
-        differ in length.
-
-        Exact where it has to be. Each face's dip extent is taken as constant across its
-        own ``u`` span, so ``M`` is piecewise constant on the ``2F`` face endpoints and
-        the integral is a sorted cumulative sum -- no quadrature grid, no bin count to
-        choose, and ``O(F log F)``. Both the total surface area and the total parameter
-        area are preserved exactly by that flattening, and on a planar patch ``M`` is
-        identically one, so ``S(u) = u`` to round-off.
-
-        Parameters
-        ----------
-        axis : int
-            0 for strike, 1 for dip.
-
-        Returns
-        -------
-        tuple of FloatArray
-            Parameter knots, ascending, and the arc length at each -- the two arrays
-            `numpy.interp` takes, in either direction.
+        ``S(u) = integral of M(u') du'``, where ``M`` is the area-weighted mean of
+        ``sqrt(1 + h_u^2)`` over the faces the patch has at ``u'``. Averaging across dip
+        rather than following one line ``v = const`` is what the consumers want -- the
+        fault's extent is one number per ``u`` -- and it makes the map strictly
+        increasing, so :meth:`cell_index` can invert it. ``axis`` is 0 for strike and 1
+        for dip; the knots come back ascending with the arc length at each, the two
+        arrays `numpy.interp` takes.
         """
         parameters = self.parameters_km()[self.faces()][..., axis]
         low, high = parameters.min(axis=1), parameters.max(axis=1)
@@ -1692,9 +1047,8 @@ class TriangleMesh:
         if knots.size < 2:
             return knots, np.zeros_like(knots)
 
-        # A triangle in the parameter plane is a tent in `axis`; flattening it to a
-        # rectangle of the same area keeps both integrals below exact and leaves only
-        # the *shape* within one cell approximate.
+        # A triangle is a tent in `axis`; flattening it to a rectangle of the same area
+        # keeps both integrals below exact.
         density = self.parameter_areas_km2() / (high - low)
         metric = np.sqrt(1.0 + self.slope()[:, axis] ** 2)
         opens = np.searchsorted(knots, low)
@@ -1704,8 +1058,7 @@ class TriangleMesh:
             """Total weight of the faces spanning each interval between knots.
 
             A face opens at its low knot and closes at its high one, so a running sum
-            of those two events gives every interval's total in one pass -- there is no
-            per-interval search.
+            gives every interval's total in one pass.
             """
             size = knots.size + 1
             events = np.asarray(
@@ -1725,30 +1078,14 @@ class TriangleMesh:
     def strike_arc_km(self) -> FloatArray:
         """True surface distance along strike, per vertex, ``(V,)``.
 
-        Not ``u``, which is the *projected* length: the two differ by
-        ``sqrt(1 + h_u^2)``, which is 1.000 on a planar patch, 1.18 at the
-        ``|grad h| = 0.63`` the shipped ``alpine_hope`` reaches and 2.37 at the 2.14 a
-        real subduction interface reaches. This is what the
-        hypocentre spec and the SRF header extents want, because "the hypocentre is 12
-        km along strike" means along the fault. See :meth:`arc_profile`.
-
-        Returns
-        -------
-        FloatArray
-            Kilometres, zero at the patch's near end.
+        Kilometres, zero at the patch's near end. Not ``u``, the projected length: the
+        two differ by ``sqrt(1 + h_u^2)``, which reaches 2.37 on a real interface.
         """
         knots, arc_km = self.arc_profile(0)
         return np.interp(self.parameters_km()[:, 0], knots, arc_km)
 
     def dip_arc_km(self) -> FloatArray:
-        """True surface distance down dip, per vertex, ``(V,)``.
-
-        Returns
-        -------
-        FloatArray
-            Kilometres, zero at the patch's top edge. :meth:`strike_arc_km` says why
-            this is not simply ``v``.
-        """
+        """True surface distance down dip, ``(V,)`` km, zero at the patch's top edge."""
         knots, arc_km = self.arc_profile(1)
         return np.interp(self.parameters_km()[:, 1], knots, arc_km)
 
@@ -1757,26 +1094,11 @@ class TriangleMesh:
     def _edge_keys(self) -> tuple[IntArray, IntArray]:
         """Every directed edge, and the one integer that identifies it undirected.
 
-        **The canonical form is a number, not a pair**, and that is the whole of why the
-        boundary walk is affordable at production resolution. Deduplicating ``(3F, 2)``
-        pairs means ``np.unique(..., axis=0)``, which sorts rows lexicographically
-        through a structured view; the same information is ``min * V + max``, one int64,
-        and deduplicating that is a plain sort. Measured on the CFM Hikurangi interface
-        at 400 m -- 2.15 M faces, 6.46 M half-edges -- the row form takes 6.58 s and the
-        key form 0.42 s, **15.6 times**. With
-        :func:`~rupture_generator.triangular.pipeline.taper_edges` also handing its
-        edges to :meth:`boundary_labels` rather than making it walk again, the taper's
-        boundary work goes from 1.77 s to 0.53 s at that size.
-
-        The key cannot overflow at any size this package meshes: the largest is
-        ``(V - 1) V``, which stays inside int64 up to three billion vertices, against
-        the 17.6 M of Hikurangi at 100 m.
-
-        Returns
-        -------
-        tuple of IntArray
-            ``(3F, 2)`` directed edges in face order -- corner 0-1 of every face, then
-            1-2, then 2-0 -- and ``(3F,)`` their undirected keys.
+        The canonical form is ``min * V + max``, a single int64, so deduplicating is a
+        plain sort rather than ``np.unique(..., axis=0)`` over ``(3F, 2)`` rows: 15.6
+        times faster on the CFM Hikurangi interface at 400 m. The largest key is
+        ``(V - 1) V``, inside int64 up to three billion vertices. The edges come back
+        ``(3F, 2)`` in face order, corner 0-1 of every face then 1-2 then 2-0.
         """
         faces = self.faces()
         directed = np.concatenate(
@@ -1789,11 +1111,7 @@ class TriangleMesh:
     def _half_edges(self) -> tuple[IntArray, IntArray, IntArray]:
         """Every directed edge, its face, and how many faces share it undirected.
 
-        Returns
-        -------
-        tuple of IntArray
-            ``(3F, 2)`` directed edges in face order, ``(3F,)`` face indices, and
-            ``(3F,)`` incidence counts.
+        ``(3F, 2)`` edges in face order, ``(3F,)`` face indices, ``(3F,)`` counts.
         """
         directed, keys = self._edge_keys()
         of_face = np.tile(np.arange(self.face_count, dtype=np.int64), 3)
@@ -1801,35 +1119,17 @@ class TriangleMesh:
         return directed, of_face, counts[inverse.ravel()]
 
     def edges(self) -> IntArray:
-        """Every undirected edge once, ``(E, 2)``, each pair sorted ascending.
-
-        Returns
-        -------
-        IntArray
-            Built as all ``3F`` directed edges, canonicalised by :meth:`_edge_keys` and
-            deduplicated -- the same canonical form :meth:`boundary_edges` counts, so
-            there is one implementation of edge incidence rather than one per consumer.
-        """
+        """Every undirected edge once, ``(E, 2)``, keyed by :meth:`_edge_keys`."""
         _, keys = self._edge_keys()
         unique = np.unique(keys)
         return np.stack([unique // self.node_count, unique % self.node_count], axis=-1)
 
     def boundary_edges(self, label: str | None = None) -> IntArray:
-        """The edges incident to exactly one face, ``(B, 2)``.
+        """The edges incident to exactly one face, ``(B, 2)`` vertex index pairs.
 
         Directed rather than sorted: each is returned in the order its own face names
-        it, so the interior lies to its left in the parameter plane and the outward
-        normal is a rotation away. That is what :meth:`boundary_labels` reads.
-
-        Parameters
-        ----------
-        label : str, optional
-            One of :data:`BOUNDARY_LABELS`, to take only that part of the boundary.
-
-        Returns
-        -------
-        IntArray
-            Vertex index pairs.
+        it, so the interior lies to its left, which is what :meth:`boundary_labels`
+        reads. ``label`` takes only that part of the boundary.
 
         Raises
         ------
@@ -1848,18 +1148,9 @@ class TriangleMesh:
         return edges[self.boundary_labels() == label]
 
     def boundary_faces(self, label: str | None = None) -> IntArray:
-        """The faces with at least one boundary edge, ``(b,)``, ascending.
+        """The faces with at least one boundary edge, ``(b,)`` indices, ascending.
 
-        Parameters
-        ----------
-        label : str, optional
-            One of :data:`BOUNDARY_LABELS`.
-
-        Returns
-        -------
-        IntArray
-            Face indices. What the propagation stage's edge search and the taper both
-            want, from one implementation rather than three.
+        ``label``, one of :data:`BOUNDARY_LABELS`, takes only that part of the boundary.
 
         Raises
         ------
@@ -1878,39 +1169,21 @@ class TriangleMesh:
         return np.unique(on_boundary[self.boundary_labels() == label])
 
     def boundary_labels(self, edges: IntArray | None = None) -> np.ndarray:
-        """Each boundary edge as ``top``, ``bottom`` or ``lateral``, ``(B,)``.
+        """Each boundary edge as ``top``, ``bottom`` or ``lateral``, ``(B,)`` strings.
 
-        Read straight off the parameter coordinates, which is one of the things storing
-        ``(u, v)`` per vertex buys. For a positively oriented triangulation a boundary
-        edge runs with the interior on its left, so its outward normal in the parameter
-        plane is that direction turned a right angle clockwise. Whichever component of
-        that normal dominates says which boundary it is: mostly ``-v`` is the top edge,
-        mostly ``+v`` the bottom, and otherwise it runs down dip and is lateral.
-
-        Dominance rather than an angle threshold, so there is no tolerance to justify:
-        the two cases are separated by ``|n_v| = |n_u|``, which is the 45-degree
-        diagonal and the only division that does not need a number chosen.
-
-        Parameters
-        ----------
-        edges : IntArray, optional
-            ``(B, 2)`` the edges to label, from :meth:`boundary_edges`. Omitted, they
-            are walked for -- which is the whole half-edge pass again, and a caller that
-            already holds them is asking for it twice. Nothing checks that what is
-            handed over is a boundary; the labels are a function of an edge's own
-            direction and mean nothing for an interior one.
-
-        Returns
-        -------
-        np.ndarray
-            Strings, aligned with the edges.
+        Read straight off the parameter coordinates: a boundary edge runs with the
+        interior on its left, so its outward normal is that direction turned a right
+        angle clockwise, and whichever component dominates says which boundary it is.
+        Dominance rather than an angle threshold, so there is no tolerance to justify.
+        ``edges`` defaults to walking :meth:`boundary_edges`, which is the whole
+        half-edge pass again, and nothing checks that what is handed over is a
+        boundary.
         """
         if edges is None:
             edges = self.boundary_edges()
         parameters = self.parameters_km()
         direction = parameters[edges[:, 1]] - parameters[edges[:, 0]]
-        # Turn the edge direction a right angle clockwise: interior on the left means
-        # this points out of the patch.
+        # A right angle clockwise: interior on the left means this points outward.
         outward_u, outward_v = direction[:, 1], -direction[:, 0]
 
         labels = np.full(len(edges), "lateral", dtype="<U7")
@@ -1922,33 +1195,13 @@ class TriangleMesh:
     # ------------------------------------------------------- the hypocentre seam
 
     def cell_index(self, strike_km: float, dip_km: float) -> int:
-        """The face containing an in-fault position, as one flat index.
+        """The face containing an in-fault position, as one flat index in ``[0, F)``.
 
-        **The one narrow conversion seam** between the config's arc lengths and the
-        pipeline's indices, and worth keeping narrow: a hypocentre one cell off in both
-        directions correlates 0.99+ with the right answer while moving onsets by up to
-        a second.
-
-        The arguments are **true surface arc lengths**, not parameter coordinates,
-        because that is what "12 km along strike" means. Each is inverted through
-        :meth:`arc_profile` -- which is strictly increasing, so the inversion is exact
-        -- and the query itself is then a point-in-triangle test in the parameter
-        plane. On a planar patch the two coordinate systems are the same one and the
-        inversion is the identity.
-
-        This is not the SRF's ``shyp``, which is measured from the along-strike centre
-        and converted by the SRF writer, and not a vertex index. A position on a shared
-        edge belongs to the lower-numbered face, which is arbitrary but deterministic.
-
-        Parameters
-        ----------
-        strike_km, dip_km : float
-            Arc lengths from the patch's shallow near corner.
-
-        Returns
-        -------
-        int
-            A flat face index in ``[0, F)``.
+        Both arguments are true surface arc lengths from the patch's shallow near
+        corner, not parameter coordinates, because that is what "12 km along strike"
+        means. Each is inverted through :meth:`arc_profile`, which is strictly
+        increasing, and the query is then a point-in-triangle test in the parameter
+        plane. This is not the SRF's ``shyp``, measured from the along-strike centre.
 
         Raises
         ------
@@ -1987,7 +1240,7 @@ class TriangleMesh:
         if worst[best] >= 0.0:
             return best
 
-        # Outside every face. Only round-off is forgiven, measured in kilometres so the
+        # Outside every face. Only round-off is forgiven, and in kilometres so that the
         # forgiveness is a length rather than a barycentric fraction.
         diameter_km = float(
             np.linalg.norm(
@@ -2007,164 +1260,40 @@ class TriangleMesh:
         """The label this chart puts on the subfault at a flat index: the index itself.
 
         The counterpart of :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`, whose
-        answer is an ``(i, j)`` pair. A triangulation has one flat face index and no
-        lattice position, so this is the identity -- and it exists so that
-        :func:`~rupture_generator.propagation.causal_jump` can record a jump's cells
-        without knowing which kind of chart it is looking at.
-
-        Parameters
-        ----------
-        flat_index : int
-            A face index in ``[0, F)``.
-
-        Returns
-        -------
-        int
-            ``flat_index``.
+        answer is an ``(i, j)`` pair, so that
+        :func:`~rupture_generator.propagation.causal_jump` need not know which chart it
+        has.
         """
         return int(flat_index)
 
 
 # ============================================================================
-# Admissibility -- what replaces `validate_chart`
+# Admissibility
 # ============================================================================
 
 
 def check_admissible(mesh: TriangleMesh) -> None:
     """Assert a segment is a Monge patch, and a mesh anything can be solved on.
 
-    **Two claims, which fail in different ways and are both silent.**
+    Two claims. First, ``X -> (u, v)`` must be injective, or the chart describes two
+    pieces of fault at one parameter point; on a triangulation that is exactly *every
+    triangle is positively oriented in the parameter plane*, tested with no tolerance on
+    the sign of a determinant. Second, no vertex may carry less than
+    :data:`DEGENERATE_MASS_FRACTION` of the mesh's median lumped mass. Degenerate faces
+    are refused rather than dropped, arriving as they do in the input file.
 
-    The first is about the projection rather than the surface: ``X -> (u, v)`` must be
-    injective, or the chart describes two pieces of fault at one parameter point and
-    every field drawn on it is doubly defined. On a triangulation that is exactly *every
-    triangle is positively oriented in the parameter plane* -- a triangulation with no
-    folds tiles its image once.
-
-    The second is about the discretisation. No vertex may carry less than
-    :data:`DEGENERATE_MASS_FRACTION` of the mesh's median lumped mass, because a vertex
-    with negligible support sits at the tip of a sliver, and a sliver is a triangle whose
-    area, centre depth and boundary label are all being read as if it were a subfault.
-    That constant's docstring says where the threshold came from, and which part of its
-    justification went with the sampler it was derived against.
-
-    **These degenerate faces are refused rather than dropped, and that is deliberate.**
-    They arrive in the input file: they are the modeller's surface, not this package's
-    artefact, and silently deleting faces from a surface someone supplied would change
-    its area and its outline without saying so. (There is nothing left that this module
-    drops on its own -- :meth:`TriangleMesh.from_patches` builds connectivity from the
-    lattice and invents no triangles to cull.) Naming them and stopping lets the modeller
-    remesh, or drop them deliberately and own the change.
-
-    The sampler carries its own backstop for the same condition; this is the primary
-    gate and does not assume the other one runs.
-
-    No tolerance, deliberately. The quantity is the determinant of two parameter
-    differences and the test is on its **sign**, which is what injectivity is; a
-    zero-area face is a parameterisation that has collapsed and is refused on the same
-    line rather than being waved through by a nearby epsilon.
-
-    Measured here on the shipped examples at their own configured subfault sizes, as
-    total trace turning against the worst ``|grad h|`` the surface carries:
-
-    ============================  ======  =========  =========  ======  =======
-    surface                       planes  turning    |grad h|   margin  cut
-    ============================  ======  =========  =========  ======  =======
-    ``beavan`` (7 faults)         1 each  0.0 deg    4.3e-14    1.000   0.1 km
-    ``kaikoura`` (2 segments)     1 each  4.6 deg    1.7e-14    1.000   1.0 km
-    ``colombia``                  1       0.0 deg    3.8e-13    1.000   0.1 km
-    ``hope``                      2       19.7 deg   1.77e-01   0.984   1.0 km
-    ``alpine_hope``: Caswell      7       43.8 deg   6.31e-01   0.844   0.25 km
-    ``alpine_hope``: G to Jacksons  30    192.8 deg  2.25e-01   0.537   0.25 km
-    ============================  ======  =========  =========  ======  =======
-
-    ``Alpine: Caswell`` is the worst ``|grad h|`` of the 20 surfaces in
-    ``alpine_hope``; ``Alpine: George to Jacksons`` is the worst fold margin. The
-    numbers are re-measured by ``tests/triangular/test_trimesh.py`` -- the docstring is
-    the record, the test is the measurement. ``alpine_hope`` is quoted at a 0.25 km cut
-    rather than its shipped 0.1 km because the shipped cut is 2.1 million nodes and
-    triangulating all of it needs about 3 GB; ``|grad h|`` came out **bit-identical**
-    at 1.0, 0.25 and 0.1 km, which is what it should do, since it is a property of the
-    planes' orientations rather than of how finely they were cut. The fold margin is
-    not: it compares triangle areas, and at the shipped 0.1 km the same two surfaces
-    give 0.836 and 0.537.
-
-    So the shipped geometry reaches ``|grad h| = 0.63``, where true surface length
-    exceeds parameter length by 18% and the projection is still comfortably injective.
-    That is about twice MESH.md's recorded ``|grad h| <~ 0.33``, which was measured
-    before this frame existed; the margin is still wide, and the surface that has the
-    least of it is not the one that turns the most. ``Alpine: George to Jacksons``
-    turns 193 degrees in total and is perfectly admissible, because its bends largely
-    cancel. Total turning is a poor predictor and ``|grad h|`` is the real quantity,
-    which is the other reason this check is the right home for the refusal.
-
-    **Real subduction interfaces go far past that**, and the patch holds. The three NZ
-    CFM v1.0 interfaces, read with their own connectivity by
-    :mod:`rupture_generator.triangular.gocad`:
-
-    ====================  ====  ====  =======  =====  =====  ======  ====  ========
-    interface             V     F     bestdip  med    p90    max     inv   proj/true
-    ====================  ====  ====  =======  =====  =====  ======  ====  ========
-    Hikurangi             5218  9236  14.1     0.158  0.425  1.2142  **0**  0.636
-    Puyseguer             2597  4090  21.2     0.101  0.881  2.1435  **0**  0.423
-    Puysegur-Fiordland    2312  4041  22.8     0.132  0.771  1.9688  **0**  0.453
-    ====================  ====  ====  =======  =====  =====  ======  ====  ========
-
-    (``|grad h|`` quantiles area-weighted; the last column is the smallest ratio of
-    projected to true face area.) So real geometry reaches 1.2 to 2.1, six times
-    MESH.md's budget: the metric factor ``sqrt(1 + |grad h|^2)`` reaches 2.37, and
-    parameter distance differs from true surface length by up to 137% *locally* against
-    the 5% MESH.md sized against. Every one is still injective. The aggregate is far
-    milder than the local worst -- end to end the strike extent exceeds its projection
-    by 0.2 to 2.5% and the dip extent by 2.8 to 12.4% -- because the steep places are
-    localised and :meth:`TriangleMesh.arc_profile` weights by area.
-
-    ``Puyseguer`` is in that table but does not load: it fails the mesh-quality gate
-    below. Its geometry is measured here through the same code with the gate lifted,
-    because "the surface is fine and the discretisation is not" is exactly the
-    distinction the two checks exist to draw.
-
-    **Was this check vacuous? Yes, and it is not any more.** While the builder
-    triangulated the projected points, `scipy.spatial.Delaunay` oriented every face
-    positively by construction, so no surface could fail: on a synthetic fan of planes
-    each turning 45 degrees, ``|grad h|`` climbed to 2.8 and *nothing inverted*. Now the
-    connectivity comes from the surface -- the lattice in
-    :meth:`TriangleMesh.from_patches`, the file's own faces in
-    :meth:`TriangleMesh.from_triangulation` -- so orientation is a real question. The
-    zeroes in the table above are therefore a measurement rather than a tautology, and
-    ``tests/triangular/test_trimesh.py`` now builds a lattice that genuinely folds and
-    watches this refuse it, which it could not do before.
-
-    Two things it still does not catch, stated so nobody assumes otherwise. Patches that
-    **overlap each other** in the parameter plane produce no inverted face, since each
-    is individually fine; fusion already requires conforming planes that tile, so this
-    is not reachable from a config, but it is not tested for either. And a frame that
-    has stopped *meaning* strike and dip is not a fold: on that same 45-degree fan the
-    best-fit plane rotates flat, the frame's own dip falling from 60 degrees at two
-    planes to 0.015 at eight, and the patch remains a perfectly good graph over a plane
-    that is no longer the fault's. The honest signal for that is ``|grad h|`` itself,
-    which :meth:`TriangleMesh.maximum_slope` reports rather than refuses, because the
-    CFM measurement above shows 2.0 is *normal* -- so any threshold would have to be
-    argued from data nobody has, and reporting a number that can be looked at beats
-    refusing against one that was invented.
-
-    The refusal belongs here rather than in
-    :data:`~rupture_generator.mesh.SHARPEST_BEND_DEG` because here it names the
-    modelling assumption directly -- "this surface is a graph over a plane" -- rather
-    than a per-bend proxy for it, and because it applies to *any* mesh, including one
-    read from a file or refined by something that is not this builder.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment to check.
+    Measured by ``tests/triangular/test_trimesh.py``: the shipped geometry reaches
+    ``|grad h| = 0.63`` at a fold margin of 0.844, and the three NZ CFM v1.0 subduction
+    interfaces reach 1.21 to 2.14 with zero inverted triangles between them. It catches
+    neither patches that overlap each other in the parameter plane nor a frame that has
+    stopped *meaning* strike and dip, whose signal is ``|grad h|``, reported by
+    :meth:`TriangleMesh.maximum_slope` rather than refused on.
 
     Raises
     ------
     ValueError
         For a fold, naming the worst face and its signed parameter area; or for a
-        near-degenerate mesh, naming the starved vertices with their lumped mass and the
-        faces around them with their quality. Both say what the caller can do.
+        near-degenerate mesh, naming the starved vertices and the faces around them.
     """
     signed_km2 = mesh.parameter_areas_km2()
     if signed_km2.size == 0:
@@ -2222,18 +1351,9 @@ def check_admissible(mesh: TriangleMesh) -> None:
 def fold_margin(mesh: TriangleMesh) -> float:
     """How much orientation the worst face has left, as a fraction of the mean.
 
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment to measure.
-
-    Returns
-    -------
-    float
-        ``min(signed area) / mean(signed area)``. One on a patch whose triangles are
-        all the same size and orientation, zero at the fold, negative past it. A
-        margin rather than a pass/fail, so a geometry that is nearly inadmissible can
-        be *reported* before it stops being a patch at all.
+    ``min(signed area) / mean(signed area)``: one on a patch whose triangles are all the
+    same size and orientation, zero at the fold, negative past it. A margin rather than
+    a pass/fail.
     """
     signed_km2 = mesh.parameter_areas_km2()
     mean = float(signed_km2.mean())
@@ -2264,116 +1384,29 @@ def remesh(
 ) -> TriangleMesh:
     """**Build** a well-shaped mesh on a supplied surface at a target resolution.
 
-    Not a refinement of the supplied triangulation -- a replacement for it. The parameter
-    domain is sampled on a regular lattice at ``spacing_km``, every lattice node is lifted
-    onto the source surface, and the connectivity comes from the lattice.
+    A replacement for the supplied ``(V, 3)`` vertices and ``(F, 3)`` faces, not a
+    refinement of them: the parameter domain is sampled on a regular lattice at
+    ``spacing_km``, every node is lifted onto the source by piecewise-linear
+    interpolation, and the connectivity comes from the lattice. A node is kept exactly
+    when it lies inside some source face, which is both the outline test and the
+    precondition for interpolating there, so the boundary is data rather than an
+    alpha-shape guess, resolved to a staircase one cell deep. The source need not pass
+    :func:`check_admissible` but must be a graph over its own best-fit plane, and
+    ``spacing_km`` is a *request*: the extents are cut into whole cells.
 
-    **Why building beats subdividing.** One-to-four subdivision splits each triangle into
-    four *similar* ones, so it preserves element shape exactly: a badly shaped mesh stays
-    badly shaped at every level. It also adds no information about where the fault stops,
-    so the boundary staircase stays at the *coarse* spacing however many times it is
-    refined.
-
-    That used to be a **conditioning** argument first and foremost: element shape cost the
-    Whittle-Matern SPDE sampler 26 times the iterations and the mesh eikonal 2.2 times,
-    and at matched vertex count a built lattice drew in 1.71 s against 61.4 s for a
-    subdivided CFM interface -- a 36-fold penalty from shape alone. Both of those solvers
-    have been removed; the wavefront and the sampler now run on a regular lattice over the
-    parameter plane, where element shape does not enter at all. **So the 36× argument is
-    gone.** What remains is the rest of this docstring -- exact interpolation onto the
-    source surface, an outline resolved at the target spacing, and the area and shape
-    tables below -- which is what the geometry is now *for*.
-
-    **The interpolant is piecewise-linear on the source faces**, and that is a decision
-    rather than a default. It is what the source surface *means*: a triangulation is
-    exactly the claim that the surface is planar within each face, so evaluating that
-    claim is the only reading of the data that adds nothing to it. Two consequences worth
-    stating. Every new vertex lies **exactly on** the source surface, so the result is
-    inscribed rather than approximated, and where the new lattice is finer than the source
-    the new triangles are coplanar sub-triangles of source faces -- so ``|grad h|`` there
-    is the source's *exactly*, and area is preserved exactly. The only departures are new
-    triangles that straddle two source faces, which chord across the source's own kinks,
-    and the boundary.
-
-    **The boundary is not guessed.** The earlier negative result stands -- no alpha-shape
-    threshold recovers this outline, interior circumradius 5.889-6.196 km overlapping
-    gap-spanning from 5.941 -- but none is needed, because the source triangulation
-    *carries* its outline. A lattice node is kept exactly when it lies inside some source
-    face, which is simultaneously the outline test and the precondition for interpolating
-    ``h`` there; a lattice quad is kept when all four of its corners are. So the outline
-    is exact data, resolved onto the lattice at ``spacing_km``: the boundary becomes a
-    staircase whose deviation is bounded by one cell, and the area it costs is
-    ``O(spacing x perimeter)`` and is reported by the tests rather than assumed small.
-
-    **Element shape is then exact in the parameter plane and bounded in space.** Every
-    face is half a lattice cell, so in projection all faces are congruent: measured on
-    full Hikurangi at 100 m, parameter area max/min is ``1.000000000011``. What remains in
-    *three* dimensions is the metric factor and nothing else -- the 3-D area spread came
-    out ``1.5742`` against ``sqrt(1 + |grad h|max^2) = 1.5742``, agreeing to four figures,
-    so the residual spread is the surface's own curvature rather than the mesh's shape,
-    and no mesh over this surface can do better.
-
-    Measured against the source, which is the comparison that matters:
-
-    ==================  ========  ==============  =========  ===========  ======
-    Hikurangi           V         param max/min   3-D ratio  min angle    area
-    ==================  ========  ==============  =========  ===========  ======
-    CFM source          5218      --              4.28e+04   0.018 deg    --
-    built at 2 km       44049     1.0             1.553      31.6 deg     -1.49%
-    built at 1 km       175988    1.0             1.565       31.1 deg    -0.75%
-    built at 400 m      1100240   1.0             1.571       31.0 deg    -0.30%
-    built at 100 m      17598707  1.0             1.574       31.0 deg    -0.075%
-    ==================  ========  ==============  =========  ===========  ======
-
-    Four orders of magnitude off the source's area ratio, and the minimum angle goes from
-    0.018 degrees to 31. The area deficit is the boundary staircase and it **halves with
-    the spacing**, exactly the first order the argument above predicts, so it is a
-    resolution knob rather than a bias. ``|grad h|`` converges to the source's from below
-    as the chording tightens: 1.006, 1.104, 1.188, 1.204, 1.212, 1.216 against the
-    source's 1.2142.
-
-    Cost, measured, since the point of this is reaching 100 m: 3.6 s and 0.9 GB at 400 m,
-    **35.7 s and 10.8 GB at 100 m** for 17.6 M vertices and 35.2 M faces. The
-    lattice-shaped intermediates dominate, and the peak is about 600 bytes per vertex.
-    ``Puyseguer`` at 400 m is 397 k vertices in 1.1 s, and remeshing repairs it: its
-    lumped-mass ratio goes from 7.3e-07, which :data:`DEGENERATE_MASS_FRACTION` refuses,
-    to 1/6.
-
-    Parameters
-    ----------
-    vertices_km : FloatArray
-        ``(V, 3)`` source positions, offsets from the surface origin.
-    faces : IntArray
-        ``(F, 3)`` source connectivity. It need not pass :func:`check_admissible` -- a
-        source whose elements are unusable is the case this exists for -- but it must be
-        a graph over its own best-fit plane, since that is what makes the parameter
-        lattice well defined.
-    spacing_km : float
-        The target edge length. A *request*, in the sense
-        :func:`rupture_generator.mesh.cell_counts` uses: the parameter extents are cut
-        into whole cells, so the realised spacing is the extent over the count. That is
-        what makes the lattice land on the domain's corners, and it is what makes this
-        reduce exactly to :meth:`TriangleMesh.from_patches` on a planar fault.
-    strike_deg, dip_deg : float
-        The stated geometry of the source.
-    dips_left : bool, optional
-        Whether the source dips left of the strike direction.
-    origin_east_km, origin_north_km : float, optional
-        The surface origin, in the CRS, kilometres.
-    surface : str
-        The name the result carries.
-
-    Returns
-    -------
-    TriangleMesh
-        Admissible, all-congruent, at the realised spacing.
+    Measured on full Hikurangi: parameter area max/min is ``1.000000000011`` at 100 m,
+    the minimum angle holds at 31 degrees against the CFM source's 0.018, and the area
+    deficit halves with the spacing, -1.49% at 2 km to -0.075% at 100 m. Cost is 35.7 s
+    and 10.8 GB at 100 m for 17.6 M vertices. Remeshing repairs ``Puyseguer``, whose
+    lumped-mass ratio goes from the 7.3e-07 that
+    :data:`DEGENERATE_MASS_FRACTION` refuses to 1/6.
 
     Raises
     ------
     ValueError
         For a source this cannot read (see :func:`_fit_surface`), a non-positive
         spacing, or a spacing so coarse that no lattice cell falls entirely inside the
-        surface -- which names the extents so the caller can see by how much.
+        surface, which names the extents.
     """
     if not spacing_km > 0.0:
         raise ValueError(
@@ -2405,19 +1438,14 @@ def remesh(
         axis=1
     )
 
-    # One pass per source face, scattering into the lattice rather than searching the
-    # lattice for each face: F is thousands while the lattice is millions, and a face
-    # only ever touches the nodes in its own bounding box.
+    # One pass per source face, scattering into the lattice rather than searching it
+    # per face: F is thousands where the lattice is millions.
     for index in range(len(connectivity)):
         if determinant[index] == 0.0:
             continue
         # `floor` and `ceil` the wrong way round on purpose, widening the candidate
-        # block by up to one node on each side. A source face's extent is very often
-        # *exactly* a lattice coordinate -- always, on the planar fault this has to
-        # reduce to -- and then the tight bound is an integer that round-off pushes to
-        # either side, silently dropping the whole boundary ring. The barycentric test
-        # below rejects whatever is genuinely outside, so widening costs work and
-        # nothing else.
+        # block by one node each side: a source face's extent is very often exactly a
+        # lattice coordinate, and round-off in the tight bound drops the boundary ring.
         first_u = int(np.floor((corners[index, :, 0].min() - low[0]) / step[0]))
         last_u = int(np.ceil((corners[index, :, 0].max() - low[0]) / step[0]))
         first_v = int(np.floor((corners[index, :, 1].min() - low[1]) / step[1]))
@@ -2438,9 +1466,8 @@ def remesh(
             edge_one[index, 0] * offset_v - edge_one[index, 1] * offset_u
         ) / determinant[index]
         weight = np.stack([1.0 - alpha - beta, alpha, beta])
-        # A node on a shared edge is inside both faces and both give the same height,
-        # so overwriting is harmless; the tolerance is a *length* rather than a
-        # barycentric fraction, so it means the same thing on every face shape.
+        # A node on a shared edge is inside both faces at the same height, so
+        # overwriting is harmless; the tolerance is a length, not a fraction.
         inside = weight.min(axis=0) * diameter_km[index] >= -SEAM_TOLERANCE_KM
 
         target = (slice(first_v, last_v + 1), slice(first_u, last_u + 1))
@@ -2510,16 +1537,10 @@ def _fit_surface(
 ) -> tuple[FloatArray, IntArray, MongeFrame]:
     """Validate a supplied triangulation, fit its frame, and settle its winding.
 
-    Shared by :meth:`TriangleMesh.from_triangulation` and :func:`remesh`, which need the
-    same front half for different back halves -- and, importantly, ``remesh`` needs it on
-    surfaces that :func:`check_admissible` *refuses*, since repairing those is the whole
-    reason it exists.
-
-    Returns
-    -------
-    tuple
-        The vertices as float64, the faces wound to agree with the frame, and the frame
-        with its origin already moved to the parameter domain's low corner.
+    Shared by :meth:`TriangleMesh.from_triangulation` and :func:`remesh`, which needs
+    it on surfaces :func:`check_admissible` refuses. Returns the vertices as float64,
+    the faces wound to agree with the frame, and the frame with its origin already at
+    the parameter domain's low corner.
 
     Raises
     ------
@@ -2560,15 +1581,9 @@ def _fit_surface(
         float(parameters[:, 0].min()), float(parameters[:, 1].min())
     )
 
-    # Which way a modeller wound their triangles is a convention, not a fact about the
-    # surface: it says whether they numbered each face anticlockwise seen from the
-    # hanging wall or from the footwall. All three CFM interfaces are wound the opposite
-    # way to this frame, and reading that as 9236 folds would be reading a file-format
-    # convention as geology. What is *not* a convention is whether the faces agree with
-    # each other -- that is exactly injectivity -- so the total signed area fixes the
-    # convention (it is plus or minus the true area whenever the projection is
-    # injective, so its sign is unambiguous and needs no tolerance) and
-    # `check_admissible` then refuses every face that disagrees.
+    # Global winding is a file-format convention, not geology; whether the faces agree
+    # with each other is not, so the total signed area fixes the convention and
+    # `check_admissible` refuses every face that disagrees.
     corners = frame.project(points)[connectivity, :2]
     first = corners[:, 1] - corners[:, 0]
     second = corners[:, 2] - corners[:, 0]
@@ -2582,18 +1597,11 @@ def _surface_moment(
 ) -> tuple[FloatArray, FloatArray]:
     """A quadrature of the surface, for fitting a plane to it rather than to its nodes.
 
-    Returns the three edge midpoints of every face weighted by a third of its area.
-    That rule integrates any **quadratic** over a triangle exactly, and the second
-    moment a least-squares plane fit needs is quadratic, so the fit is the exact
-    continuous one: ``integral (x - c)(x - c)^T dA`` over the surface.
-
-    Exactness is the point, not elegance. Fitting to the *vertices* -- even weighted by
-    the area each carries -- is a fit to the sample: refine a segment's planes unevenly
-    and the plane tilts, so ``|grad h|`` picks up a dependence on the subfault size that
-    it has no business having. Measured on ``alpine_hope``'s first surface across a
-    factor of four in cell size: the vertex fit moved ``|grad h|`` by 4e-4 relative,
-    this one leaves it identical to 1e-15, because subdividing a planar triangle does
-    not change any integral over it.
+    The three edge midpoints of every face, weighted by a third of its area. That rule
+    integrates any quadratic over a triangle exactly, and the second moment a
+    least-squares fit needs is quadratic, so the fit is the exact continuous
+    ``integral (x - c)(x - c)^T dA``: identical to 1e-15 across a factor of four in cell
+    size, where a vertex fit moves ``|grad h|`` by 4e-4 relative.
     """
     corners = vertices_km[faces]
     area_km2 = 0.5 * np.linalg.norm(
@@ -2606,12 +1614,7 @@ def _surface_moment(
 
 
 def _vertex_area_km2(vertices_km: FloatArray, faces: IntArray) -> FloatArray:
-    """How much surface each vertex carries: a third of every triangle it touches.
-
-    The barycentric-dual area, and the weight that turns :meth:`MongeFrame.fit` from a
-    fit to the *sample* into a fit to the *surface*. Summing to the total area exactly
-    is what makes it a partition rather than an estimate.
-    """
+    """How much surface each vertex carries: the barycentric-dual area, ``(V,)``."""
     corners = vertices_km[faces]
     area_km2 = 0.5 * np.linalg.norm(
         np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=-1
@@ -2634,10 +1637,9 @@ def _vertex_area_km2(vertices_km: FloatArray, faces: IntArray) -> FloatArray:
 def _stated_geometry(nodes: FloatArray) -> tuple[float, float, bool]:
     """A structured chart's own stated strike, dip and dip side.
 
-    What the config said, read back out of the geometry it produced: the trace bearing
-    is the top edge's chord and the dip is the near column's plunge. Exact for a chart
-    this package built, which is what makes reading a version 2 file give the same
-    frame the config would have.
+    Read back out of the geometry the config produced: the trace bearing is the top
+    edge's chord and the dip is the near column's plunge, exact for a chart this package
+    built.
     """
     chord = nodes[0, -1] - nodes[0, 0]
     column = nodes[-1, 0] - nodes[0, 0]
@@ -2652,21 +1654,10 @@ def _stated_geometry(nodes: FloatArray) -> tuple[float, float, bool]:
 def from_chart(chart: RuptureMesh) -> TriangleMesh:
     """Triangulate a structured chart, one config plane at a time.
 
-    The compatibility path: a version 2 mesh file holds a ``(dip_node, strike_node)``
-    lattice and nothing else, and this is what turns one into a segment. A fused chart
-    is split back into its constant-plane blocks first, so the seam column is shared
-    exactly as it was written and ``plane_of_face`` survives the round trip.
-
-    Parameters
-    ----------
-    chart : RuptureMesh
-        A structured chart, fused or not.
-
-    Returns
-    -------
-    TriangleMesh
-        With the frame the config's own numbers would have produced -- see
-        :func:`_stated_geometry`.
+    The compatibility path for a version 2 mesh file, which holds a
+    ``(dip_node, strike_node)`` lattice and nothing else. A fused chart is split back
+    into its constant-plane blocks first, so ``plane_of_face`` survives the round trip,
+    and the frame is the one :func:`_stated_geometry` reads off the nodes.
     """
     nodes = chart.nodes()
     strike_deg, dip_deg, dips_left = _stated_geometry(nodes)
@@ -2684,31 +1675,12 @@ def from_chart(chart: RuptureMesh) -> TriangleMesh:
 def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[TriangleMesh]:
     """A fault's geometry as triangulated segments, one Monge patch each.
 
-    The trace, the bends and the seam sharing are
-    :func:`rupture_generator.mesh.build_fault`'s and :func:`rupture_generator.mesh.fuse`'s
-    -- this is the same geometry, retriangulated. A *fused segment* is the unit rather
-    than a fault or a plane, because that is the largest run of planes that is one
-    surface, and a fault whose planes hang differently is two surfaces whether or not
-    they touch.
-
-    The frame's stated strike is the segment's top-edge **chord**, first trace point to
-    last. On a single-plane segment that is the plane's own bearing exactly, which is
-    what makes the planar collapse exact; on a bent one it is the direction the segment
-    goes overall, and every departure from it is carried by ``h``. Dip and dip
-    direction come from the segment's first plane, and fusion has already required
-    every plane in the segment to state the same ones.
-
-    Parameters
-    ----------
-    fault : FaultConfig
-        The digitised geometry.
-    crs : pyproj.CRS
-        The projected CRS to build in.
-
-    Returns
-    -------
-    list of TriangleMesh
-        One per segment, in trace order.
+    The same geometry :func:`rupture_generator.mesh.build_fault` and
+    :func:`rupture_generator.mesh.fuse` produce, retriangulated, one mesh per fused
+    segment in trace order. The frame's stated strike is the segment's top-edge chord,
+    first trace point to last, so on a single-plane segment it is the plane's own
+    bearing exactly and on a bent one every departure from it is carried by ``h``. Dip
+    and dip direction come from the segment's first plane.
 
     Raises
     ------
@@ -2740,25 +1712,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[TriangleMesh]:
 
 
 def build_point(point: PointConfig, crs: pyproj.CRS) -> list[TriangleMesh]:
-    """A point source as two triangles.
-
-    A point source is the pipeline with constant fields, not a special type, so it is
-    an ordinary one-quad patch -- and its strike and dip are the only ones a config
-    states outright rather than implying through a trace, which makes it the cleanest
-    test of the frame.
-
-    Parameters
-    ----------
-    point : PointConfig
-        The catalogue entry.
-    crs : pyproj.CRS
-        The projected CRS to build in.
-
-    Returns
-    -------
-    list of TriangleMesh
-        One mesh, of two faces.
-    """
+    """A point source as two triangles: an ordinary one-quad patch."""
     chart = build_structured_point(point, crs)[0]
     return [
         TriangleMesh.from_patches(
@@ -2775,20 +1729,7 @@ def build_point(point: PointConfig, crs: pyproj.CRS) -> list[TriangleMesh]:
 def build_surface(
     surface: FaultConfig | PointConfig, crs: pyproj.CRS
 ) -> list[TriangleMesh]:
-    """Discretise one surface: the dispatch a triangular mesh CLI would call.
-
-    Parameters
-    ----------
-    surface : FaultConfig or PointConfig
-        What the geometry file said.
-    crs : pyproj.CRS
-        The projected CRS to build in.
-
-    Returns
-    -------
-    list of TriangleMesh
-        One per segment.
-    """
+    """Discretise one surface into segments: the dispatch a mesh CLI would call."""
     from rupture_generator.config.geometry import PointConfig as _PointConfig
 
     if isinstance(surface, _PointConfig):
@@ -2807,25 +1748,11 @@ def to_datatree(
     *,
     attrs: Mapping[str, Any] | None = None,
 ) -> xr.DataTree:
-    """Lay segments out as a tree: one group per segment, nested under its surface.
+    """Lay segments out as a tree of ``/<surface>/segment_<n>`` groups.
 
     Only the geometry is stored -- vertices, faces, the parameter coordinates and the
-    frame. Centres, areas, strike, dip and both arc lengths are functions of those, so
-    they are computed on read and never written.
-
-    Parameters
-    ----------
-    meshes : Mapping of str to list of TriangleMesh
-        Surface name to its segments, in trace order.
-    crs : pyproj.CRS
-        The frame every position is in. Stored once, in the root.
-    attrs : Mapping, optional
-        Extra root attributes -- the config verbatim, a title.
-
-    Returns
-    -------
-    xr.DataTree
-        With ``/<surface>/segment_<n>`` groups.
+    frame -- everything else being a function of those. ``meshes`` maps a surface name
+    to its segments in trace order, and the CRS is stored once in the root.
     """
     groups: dict[str, xr.Dataset] = {}
     origins: dict[str, list[float]] = {}
@@ -2842,8 +1769,7 @@ def to_datatree(
         "schema_version": SCHEMA_VERSION,
         "created": datetime.datetime.now(tz=datetime.UTC).isoformat(),
         "crs": crs.to_string(),
-        # One origin per surface, as JSON because an attribute is a scalar or an
-        # array and this is a mapping.
+        # One origin per surface, as JSON: an attribute is a scalar or an array.
         "origins": json.dumps(origins),
         **dict(attrs or {}),
     }
@@ -2857,32 +1783,19 @@ def from_datatree(
 
     A version 3 file is read as it was written, connectivity and all. A version 1 or 2
     file holds a structured lattice per config plane, so it is read through
-    :func:`rupture_generator.formats.mesh.from_datatree` and triangulated on the way in
-    by :func:`from_chart` -- the nodes are the geometry, so the surface comes back
-    identical and only the connectivity is new.
-
-    Parameters
-    ----------
-    tree : xr.DataTree
-        What :func:`to_datatree` wrote, or what version 2 wrote.
-
-    Returns
-    -------
-    tuple
-        Surface name to its segments, and the CRS they are in.
+    :func:`rupture_generator.formats.mesh.from_datatree` and triangulated by
+    :func:`from_chart` on the way in. Returns the surfaces mapped to their segments,
+    and the CRS.
 
     Raises
     ------
     ValueError
         If the tree carries no CRS, a surface has no recorded origin, or a surface's
-        segments are numbered with a gap -- a gap means a segment is missing rather
-        than renumbered.
+        segments are numbered with a gap, which means one is missing.
     """
     version = int(tree.attrs.get("schema_version", 1))
     if version < SCHEMA_VERSION:
-        # A local import: `formats.mesh` is the structured track's file seam, and this
-        # is the one place the triangular track reads from it. Keeping it here means
-        # `triangular.mesh` can be imported without dragging in the older format.
+        # Local import so `triangular.mesh` can be imported without the older format.
         from rupture_generator.formats.mesh import from_datatree as read_structured
 
         charts, crs = read_structured(tree)
@@ -2896,9 +1809,8 @@ def from_datatree(
         raise ValueError("the file has no crs attribute, so its positions mean nothing")
     origins = json.loads(tree.attrs.get("origins", "{}"))
 
-    # Keyed by the *stored* segment index rather than by the order the groups come back
-    # in, because Zarr does not preserve order and HDF5 does -- trusting iteration
-    # order is green in one container and silently permutes the fault in the other.
+    # Keyed by the *stored* segment index, not by the order the groups come back in:
+    # Zarr does not preserve order and HDF5 does.
     by_surface: dict[str, dict[int, xr.Dataset]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "faces" not in node.dataset:
@@ -2948,24 +1860,13 @@ def write_mesh(
 ) -> None:
     """Write segments to an HDF5 file or a Zarr store.
 
-    Parameters
-    ----------
-    meshes : Mapping of str to list of TriangleMesh
-        Surface name to its segments.
-    crs : pyproj.CRS
-        The frame every position is in.
-    path : Path or str
-        Where to write it.
-    format : Format, optional
-        Which layout; inferred from the extension by default.
-    attrs : Mapping, optional
-        Extra root attributes.
+    The layout is inferred from the extension unless ``format`` says otherwise.
 
     Raises
     ------
     ValueError
-        If the format is not one a mesh can be written in. An SRF holds a rupture, not
-        a surface, and there is nothing sensible to put in its slip columns.
+        If the format is not one a mesh can be written in: an SRF holds a rupture, not
+        a surface.
     """
     path = Path(path)
     chosen = resolve(path, format)
@@ -2988,17 +1889,8 @@ def read_mesh(
 ) -> tuple[dict[str, list[TriangleMesh]], pyproj.CRS]:
     """Read segments back, from a version 3 file or a version 2 one.
 
-    Parameters
-    ----------
-    path : Path or str
-        The file or store.
-    format : Format, optional
-        Which layout; inferred from the extension by default.
-
-    Returns
-    -------
-    tuple
-        Surface name to its segments, and the CRS.
+    The layout is inferred from the extension unless ``format`` says otherwise. Returns
+    the surface names mapped to their segments, and the CRS.
 
     Raises
     ------

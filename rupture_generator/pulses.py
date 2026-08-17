@@ -1,18 +1,12 @@
 """S9: slip-rate pulses, and the vocabulary that names their shapes.
 
-Two things live here: the **vocabulary seam** -- :func:`from_stype`, which turns the
-`stype` spelling a config file uses into a resolved shape -- and the driver that hands
-slip, rise time and shape to the pulse-synthesis kernel.
+:func:`from_stype` turns the ``stype`` spelling a config file uses into a resolved
+shape; :func:`synthesise` hands slip, rise time and shape to the kernel.
 
-One family is kept: `OliuP2`, the Liu-Archuleta pulse whose rising fraction comes from
-a depth profile, plus `delta` for the degenerate spike. The four aliases of the same
-kernel -- ``ucsb``, ``ucsb2``, ``ucsb-varT1``, ``ucsb-T<b>`` -- are parametrisations of
-it, established sample for sample, and :data:`_ALIASES` is that finding written down.
-
-The rest -- ``brune``, ``urs``, ``esg2006``, ``cos``, ``seki`` -- are **removed**, and
-the refusal names them: a config that selects one is told the shape existed and was
-removed, which is the difference between a typo and a decision. Falling through to a
-default shape instead would silently generate a different rupture.
+One family is available: `OliuP2`, the Liu-Archuleta pulse whose rising fraction comes
+from a depth profile, plus `delta` for the degenerate spike; the ``ucsb`` aliases are
+parametrisations of the same kernel. :data:`REMOVED_SHAPES` are refused **by name**
+rather than falling through to a default and silently generating a different rupture.
 """
 
 from __future__ import annotations
@@ -27,7 +21,7 @@ from rupture_generator.stages import DepthRamp
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
 REMOVED_SHAPES = ("brune", "urs", "esg2006", "cos", "seki")
-"""Shapes the rewrite removed. Refused by name, not treated as typos, because the
+"""Shapes no longer available. Refused by name, not treated as typos, because the
 production workflow's defaults file advertises them as valid spellings."""
 
 
@@ -35,16 +29,10 @@ production workflow's defaults file advertises them as valid spellings."""
 class ResolvedShape:
     """A slip-rate shape the kernel can synthesise, fully parametrised.
 
-    Attributes
-    ----------
-    kernel : str
-        ``"oliu_p"`` or ``"delta"`` -- the two shapes the kernel knows.
-    duration_scale : float
-        Multiplies the rise time before synthesis. 1 for the plain pulse; the
-        ``ucsb2`` alias doubles the duration with the peak kept in place.
-    beta : float or None
-        The rising fraction, in ``(0, 0.5]``. ``None`` means "from the depth
-        profile", which is what distinguishes `OliuP2` from its fixed-beta aliases.
+    ``kernel`` is ``"oliu_p"`` or ``"delta"``, the two the kernel knows.
+    ``duration_scale`` multiplies the rise time before synthesis. ``beta`` is the
+    rising fraction, in ``(0, 0.5]``, or ``None`` for "from the depth profile", which
+    is what distinguishes `OliuP2` from its fixed-beta aliases.
     """
 
     kernel: str
@@ -60,26 +48,21 @@ _ALIASES = {
     "ucsb-vart1": ResolvedShape("oliu_p", 1.0, 0.13),
     "delta": ResolvedShape("delta"),
 }
-"""Each alias is ``oliu_p`` with the breakpoints moved -- an identity the old
-`slip_rate_contract.rs` asserted sample for sample, which is what licenses collapsing
-them here instead of keeping five kernels."""
+"""Each alias is ``oliu_p`` with the breakpoints moved, an identity established
+sample for sample, which is what licenses collapsing them into one kernel."""
 
 
 def from_stype(stype: str) -> ResolvedShape:
     """Resolve a config file's ``stype`` spelling to a kernel shape.
 
-    Parameters
-    ----------
-    stype : str
-        ``OliuP2``, ``delta``, one of the ``ucsb`` aliases (including ``ucsb-T<b>``
-        with its numeric suffix), or a removed name.
+    ``stype`` is ``OliuP2``, ``delta``, one of the ``ucsb`` aliases (including
+    ``ucsb-T<b>`` with its numeric suffix), or a removed name.
 
     Raises
     ------
     ValueError
-        For a removed shape, saying it was removed; for anything else, saying the
-        name is unknown. The two messages differ because the reader's next step
-        differs: a removed shape is a decision to revisit, an unknown one is a typo.
+        For a removed shape, saying it was removed; for anything else, saying the name
+        is unknown. A removed shape is a decision to revisit, an unknown one a typo.
     """
     lowered = stype.lower()
 
@@ -94,8 +77,7 @@ def from_stype(stype: str) -> ResolvedShape:
         return _ALIASES[lowered]
 
     # `ucsb-T<b>` scales the duration by b and the rising fraction down to match --
-    # the one spelling that carries a number, which is why the vocabulary is strings
-    # rather than an enum.
+    # the one spelling that carries a number.
     if lowered.startswith("ucsb-t"):
         suffix = stype[len("ucsb-T") :]
         if suffix == "":
@@ -120,18 +102,11 @@ def from_stype(stype: str) -> ResolvedShape:
 class PulseParams:
     """How each subfault's slip-rate pulse is shaped and sampled.
 
-    Attributes
-    ----------
-    shape : ResolvedShape
-        Already resolved from the config's ``stype`` spelling by :func:`from_stype`,
-        so the kernel never sees a name it has to interpret.
-    shallow_ramp, mid_ramp : DepthRamp
-    beta_shallow, beta_mid, beta_deep : float
-        The rising fraction of the pulse, by depth. Shallow subfaults get the
-        largest value -- a longer rising limb, so a less impulsive pulse near the
-        free surface. Ignored when the shape carries its own fixed beta.
-    sample_interval_s : float
-        The pulse's own sample rate, and the SRF's ``dt``.
+    ``shape`` is already resolved by :func:`from_stype`, so the kernel never sees a
+    name it has to interpret. The betas are the rising fraction by depth -- shallow
+    subfaults get the largest, a longer rising limb and so a less impulsive pulse near
+    the free surface -- and are ignored when the shape carries its own fixed beta.
+    ``sample_interval_s`` is the pulse's own sample rate, and the SRF's ``dt``.
     """
 
     shape: ResolvedShape
@@ -163,32 +138,12 @@ def synthesise(
 
     The kernel guarantees ``dt * sum(pulse) == slip`` exactly, whatever the shape, and
     refuses -- naming the subfault -- one that slips at a rise time its shape cannot
-    sample at this interval. Emitting nothing there instead dropped 0.63% of the moment
-    on the seed-1234 fixture, and nothing downstream could tell the difference between
-    a subfault that did not slip and one whose pulse was thrown away.
+    sample at this interval. Emitting nothing there instead dropped 0.63% of the
+    moment on the seed-1234 fixture.
 
-    Takes **depth rather than a chart**, which is the whole of what this stage reads of
-    the geometry: a subfault's own centre depth sets the rising fraction, and whether
-    that subfault is a lattice cell or a triangle changes nothing here. It also keeps
-    the caller in charge of computing the centres once rather than every stage asking
-    the mesh again, which at 2.4 million faces is seconds a pass.
-
-    Parameters
-    ----------
-    depth_km : FloatArray
-        Each subfault's centre depth, positive down. Read only when the shape's rising
-        fraction is depth-dependent.
-    slip_m : FloatArray
-        Each subfault's slip, metres.
-    rise_time_s : FloatArray
-        Each subfault's rise time, seconds.
-    params : PulseParams
-
-    Returns
-    -------
-    tuple of np.ndarray
-        Offsets (length subfaults + 1) and concatenated samples in metres per second,
-        flattened along strike fastest.
+    Takes **depth rather than a chart**, and reads it only when the shape's rising
+    fraction is depth-dependent. Returns offsets (length subfaults + 1) and
+    concatenated samples in metres per second, flattened along strike fastest.
     """
     flat_slip = np.ascontiguousarray(slip_m, dtype=np.float64).ravel()
     flat_rise = np.ascontiguousarray(rise_time_s, dtype=np.float64).ravel()

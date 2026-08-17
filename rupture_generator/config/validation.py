@@ -4,25 +4,14 @@ A validator takes a value and either returns (accepted, optionally coerced) or r
 ``ValueError`` with a message saying what was wanted. ``ConfigObject.__post_init__``
 runs them; nothing else calls them directly.
 
-Every message follows one template -- ``"must be ..., got ..."`` -- because it ends up
-in a panel next to the key that broke, where the reader wants the *constraint* and their
-own value side by side and nothing else.
-
-The domain aliases are the point. The generic ones (``PositiveFloat``, ``Latitude``)
-could come from anywhere; the ones below them could not. ``DipDeg`` is ``(0, 90]``
-rather than ``[0, 90]`` because a fault that does not dip is not a fault this program
-describes -- and out of range, the geometry correction answers a dip of 120 degrees
-with a factor of *zero*, a valid-looking rupture with the correction silently switched
-off. Writing the range down where the field is declared is how that stops being a thing
-anyone has to remember.
+Every message follows one template -- ``"must be ..., got ..."`` -- so a panel can show
+the constraint and the reader's own value side by side.
 """
 
 from collections.abc import Callable
 from typing import Annotated, Any
 
-# ============================================================================
 # Comparisons
-# ============================================================================
 
 
 def positive(value: float | None) -> float | None:
@@ -44,9 +33,7 @@ def in_range(
 ) -> Callable[[Any], Any]:
     """Between `low` and `high`, inclusive unless `open_low`.
 
-    `open_low` exists for the ranges whose lower end is a degenerate case rather than a
-    value: a dip of zero is a horizontal fault and a magnitude of zero is not an
-    earthquake.
+    `open_low` is for ranges whose lower end is a degenerate case rather than a value.
     """
     low_bracket = "(" if open_low else "["
 
@@ -68,18 +55,14 @@ def non_empty[T](value: list[T] | str | None) -> list[T] | str | None:
     return value
 
 
-# ============================================================================
 # Generic aliases
-# ============================================================================
 
 PositiveFloat = Annotated[float, positive]
 PositiveInt = Annotated[int, positive]
 UnitInterval = Annotated[float, in_range(0.0, 1.0)]
 NonEmptyStr = Annotated[str, non_empty]
 
-# ============================================================================
 # Where things are
-# ============================================================================
 
 Longitude = Annotated[float, in_range(-180.0, 180.0)]
 Latitude = Annotated[float, in_range(-90.0, 90.0)]
@@ -87,43 +70,36 @@ Latitude = Annotated[float, in_range(-90.0, 90.0)]
 DepthKm = Annotated[float, non_negative]
 """Depth below the surface. Downwards is positive, so a negative one is in the air."""
 
-# ============================================================================
 # How long things take
-# ============================================================================
 
 Seconds = Annotated[float, non_negative]
 """A duration or a delay. Time runs one way here, so negative is not a value."""
 
-# ============================================================================
 # What a fault is
-# ============================================================================
 
 Magnitude = Annotated[float, in_range(3.0, 10.0)]
-"""Moment magnitude.
+"""Moment magnitude, in ``[3, 10]``.
 
-Bounded because both ends are typing mistakes rather than earthquakes: below 3 the
-generator's scaling relations are extrapolations of relations fitted to nothing that
-small, and 10 is larger than any earthquake ever recorded.
+Below 3 the scaling relations are extrapolations, and 10 is larger than any earthquake
+ever recorded.
 """
 
 StrikeDeg = Annotated[float, in_range(0.0, 360.0)]
 """Clockwise from north. 360 is allowed because it is a spelling of 0."""
 
 DipDeg = Annotated[float, in_range(0.0, 90.0, open_low=True)]
-"""Below horizontal, in `(0, 90]`.
+"""Below horizontal, in ``(0, 90]``.
 
-Open at zero: a horizontal fault has no down-dip direction and no strike, and the
-generator would divide by a vanishing `tan(dip)` to place its nodes. Closed at 90, which
-is a vertical fault and entirely ordinary.
+Open at zero: a horizontal fault has no down-dip direction, and placing its nodes would
+divide by a vanishing ``tan(dip)``. 90 is a vertical fault and entirely ordinary.
 """
 
 RakeDeg = Annotated[float, in_range(-180.0, 180.0)]
 """Slip direction within the plane, from the strike direction."""
 
 VelocityFraction = Annotated[float, in_range(0.0, 1.0, open_low=True)]
-"""Rupture speed as a fraction of the shear-wave speed.
+"""Rupture speed as a fraction of the shear-wave speed, in ``(0, 1]``.
 
-Bounded above at 1: this is the *configured* fraction, and the depth profile scales it
-down rather than up. A supershear rupture is a different model, not a number above one
-here.
+Bounded above at 1: the depth profile only scales this down, and a supershear rupture
+is a different model rather than a number above one here.
 """

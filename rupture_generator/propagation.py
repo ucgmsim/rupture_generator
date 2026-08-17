@@ -1,33 +1,28 @@
 """Which faults rupture, in what order, and where the front crosses between them.
 
-A multi-segment earthquake is a tree: each fault has exactly one triggering parent,
-and the root is where the rupture nucleated. This module builds that tree and then
-finds, for every edge of it, the point and time at which the front jumps.
-
-**The tree decides who triggers whom; the wavefront decides where and when.** The tree
-comes from fault separations -- sampled from them or stated outright -- and is fixed
-before any field is drawn. The jump points come from the solved wavefront on the
+A multi-segment earthquake is a tree: each fault has exactly one triggering parent, and
+the root is where the rupture nucleated. The tree comes from fault separations and is
+fixed before any field is drawn; the jump points come from the solved wavefront on the
 parent, so a rupture that reaches the far end of a fault early jumps from there rather
 than from wherever the two faults happen to be closest.
-
-Arriving somewhere is necessary for a jump and nowhere near sufficient. What triggers
-the next segment is the stress concentration of an *arrested* rupture tip, so
-:func:`causal_jump` searches only the parent's edge cells, where the front runs out of
-fault; the citations are at that function. Those two rules bracket the failure modes on
-either side -- closest approach jumps too late and at the surface, earliest arrival
-over every cell jumps too early, from the wake of a front that never stopped. Neither
-needs a minimum jump depth to fix, and none is configured here.
 
 Distances are measured in the projected frame, where a distance is an exact identity
 rather than an approximation carrying a curvature error. There is no geodesy here.
 
-Wilson's algorithm and Kruskal's are written out rather than imported: forty lines and
-twenty-five, against a dependency whose sampler semantics would become part of this
-package's contract. Writing them here also lets them take a `numpy.random.Generator`,
-which is what makes a sampled tree reproducible from the event seed. It buys a sharper
-test, too -- enumerating every spanning tree and weighting it by
-``prod(w) * prod(1 - w)`` is a genuinely different algorithm from a loop-erased random
-walk, so the enumeration is a *reference* rather than a second reading of the sampler.
+References
+----------
+Kase, Y., & Kuge, K. (2001). Rupture propagation beyond fault discontinuities:
+significance of fault strike and location.
+*Geophysical Journal International*, 147(2), 330-342.
+
+Oglesby, D. D. (2008). Rupture termination and jump on parallel offset faults.
+*Bulletin of the Seismological Society of America*, 98(1), 440-447.
+
+Shaw, B. E., & Dieterich, J. H. (2007). Probabilities for jumping fault segment
+stepovers. *Geophysical Research Letters*, 34(1), L01307.
+
+Wilson, D. B. (1996). Generating random spanning trees more quickly than the cover
+time. *Proceedings of the 28th ACM Symposium on Theory of Computing*, 296-303.
 """
 
 from __future__ import annotations
@@ -50,13 +45,7 @@ IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
 
 
 class Chart(Protocol):
-    """What this module asks of a fault segment, and no more.
-
-    A protocol rather than a concrete mesh type because every question here is about
-    positions and about where the fault stops, and neither depends on whether the
-    segment is a lattice or a triangulation. Both mesh containers satisfy it as they
-    stand.
-    """
+    """What this module asks of a fault segment: positions, and where it stops."""
 
     @property
     def surface(self) -> str:
@@ -88,19 +77,16 @@ the root mapped to ``None``."""
 MAX_JUMP_KM = 15.0
 """How far a rupture front can jump between faults at all.
 
-Beyond this the Shaw-Dieterich probability is small enough that including the edge
-only adds numerical noise to the sampler, and the fault pair is not a jump anyone
-models. Edges longer than this are removed before the graph is built rather than
-given a tiny weight, so a fault beyond reach of every other is *disconnected* and
-says so.
+Beyond this the Shaw & Dieterich (2007) probability only adds noise to the sampler, so
+longer edges are removed rather than given a tiny weight and a fault beyond reach of
+every other is *disconnected*.
 """
 
 PROBABILITY_CAP = 0.99
 """The largest jump probability an edge may carry.
 
-The sampler reweights each edge to ``w / (1 - w)``, which diverges as ``w``
-approaches one. A pair of faults a metre apart is certain to jump for every practical
-purpose, and capping keeps that certainty finite.
+The sampler reweights each edge to ``w / (1 - w)``, which diverges as ``w`` approaches
+one; the cap keeps a pair of faults a metre apart finite.
 """
 
 
@@ -112,13 +98,10 @@ def shaw_dieterich(
 ) -> float | FloatArray:
     """The probability that a rupture jumps a gap of a given width.
 
+    Shaw & Dieterich (2007): certain within ``delta_km`` and decaying with
+    characteristic length ``d0_km`` beyond it.
+
     .. math:: P(d) = \\min\\left(1, e^{-(d - \\delta) / d_0}\\right)
-
-    Shaw, B. E., & Dieterich, J. H. (2007). Probabilities for jumping fault segment
-    stepovers. *Geophysical Research Letters* **34**(1).
-
-    Certain within ``delta_km`` -- faults that nearly touch always break together --
-    and decaying with a characteristic length ``d0_km`` beyond it.
     """
     return np.minimum(1.0, np.exp(-(np.asarray(distance_km) - delta_km) / d0_km))
 
@@ -127,14 +110,8 @@ def shaw_dieterich(
 class JumpGraph:
     """Faults, and how likely the rupture is to jump between each pair.
 
-    Attributes
-    ----------
-    faults : tuple of str
-        The fault names, in a fixed order that indexes ``weights``.
-    weights : FloatArray
-        Symmetric ``(n, n)``, with **zero meaning no edge at all** rather than an
-        impossible one. A fault out of reach of every other makes the graph
-        disconnected, which is a refusal.
+    ``weights`` is symmetric ``(n, n)`` over ``faults`` in order, and zero means no
+    edge at all rather than an impossible one.
     """
 
     faults: tuple[str, ...]
@@ -183,15 +160,9 @@ def jump_graph(
 ) -> JumpGraph:
     """Turn fault separations into jump probabilities.
 
-    Parameters
-    ----------
-    distances_km : dict
-        Keyed by unordered fault pairs -- either ordering is accepted -- giving the
-        closest approach between them in kilometres.
-    faults : list of str
-        Every fault, in the order the graph will index them.
-    d0_km, delta_km, max_jump_km : float
-        Shaw-Dieterich parameters, and the gap beyond which a pair gets no edge.
+    ``distances_km`` gives closest approach in kilometres, keyed by fault pairs in
+    either ordering; ``faults`` fixes the order the graph indexes them in. Every other
+    argument is a length in kilometres.
     """
     count = len(faults)
     index = {name: position for position, name in enumerate(faults)}
@@ -217,18 +188,13 @@ def _sampling_weights(graph: JumpGraph) -> FloatArray:
 
     .. math:: P(T) \\propto \\prod_{e \\in T} w(e) \\prod_{e \\notin T} (1 - w(e))
 
-    -- a tree is likely when the jumps it makes are likely *and* the jumps it does
-    not make are unlikely. Factor out the constant:
+    and its constant factor comes out, leaving a weighted uniform spanning tree over
+    ``w / (1 - w)`` -- which is what :func:`sample_tree` draws.
 
     .. math::
         \\prod_{e \\in T} w \\prod_{e \\notin T} (1 - w)
         = \\left[\\prod_{\\text{all } e} (1 - w)\\right]
           \\prod_{e \\in T} \\frac{w}{1 - w}
-
-    The bracket does not depend on ``T``, so sampling a spanning tree with probability
-    proportional to the product of ``w / (1 - w)`` over its edges gives exactly the
-    distribution above. That is a weighted uniform spanning tree, which is what
-    :func:`sample_tree` draws.
     """
     weights = np.zeros_like(graph.weights)
     present = graph.weights > 0.0
@@ -239,27 +205,18 @@ def _sampling_weights(graph: JumpGraph) -> FloatArray:
 def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, int]]:
     """Draw a spanning tree, with each tree's probability what the model says.
 
-    Wilson's algorithm: grow the tree by loop-erased random walks. Starting from any
-    vertex not yet in the tree, walk at random -- stepping to a neighbour with
-    probability proportional to that edge's weight -- until reaching a vertex already
-    in the tree, erasing loops as they close by simply overwriting each vertex's
-    onward step. The path that survives is added, and the process repeats.
-
-    Wilson, D. B. (1996). Generating random spanning trees more quickly than the
-    cover time. *STOC '96*. The algorithm samples a spanning tree with probability
-    proportional to the product of its edge weights, which with the reweighting in
-    :func:`_sampling_weights` is the distribution the jump model asks for.
-
-    Returns
-    -------
-    list of tuple
-        The tree's edges as ``(u, v)`` index pairs, undirected and unrooted.
+    Wilson (1996): from any vertex not yet in the tree, walk at random -- stepping to a
+    neighbour with probability proportional to that edge's weight -- until reaching a
+    vertex already in the tree, overwriting each vertex's onward step to erase loops as
+    they close. The tree comes out with probability proportional to the product of its
+    edge weights, which under :func:`_sampling_weights` is the distribution wanted. Its
+    edges are returned as ``(u, v)`` index pairs, undirected and unrooted.
 
     Raises
     ------
     ValueError
-        If the graph is disconnected: there is no tree to sample, and returning a
-        forest would be a rupture that started twice.
+        If the graph is disconnected: returning a forest would be a rupture that
+        started twice.
     """
     if not graph.is_connected():
         raise ValueError(
@@ -308,14 +265,8 @@ def maximum_likelihood_tree(graph: JumpGraph) -> list[tuple[int, int]]:
     """The single most likely tree, rather than a draw from the distribution.
 
     Maximising ``prod w / (1 - w)`` over trees is maximising the sum of
-    ``log w - log(1 - w)``, which is a maximum spanning tree under those edge scores,
-    so Kruskal's algorithm gives it exactly. Used when a campaign wants the modal
-    scenario rather than a sample.
-
-    Returns
-    -------
-    list of tuple
-        The tree's edges as ``(u, v)`` index pairs.
+    ``log w - log(1 - w)``, so Kruskal's maximum spanning tree gives it exactly. Its
+    edges come back as ``(u, v)`` index pairs.
 
     Raises
     ------
@@ -358,11 +309,6 @@ def root_tree(
 ) -> Tree[str | None]:
     """Orient an undirected tree away from the fault the rupture started on.
 
-    Returns
-    -------
-    Tree of str or None
-        Each fault mapped to its triggering parent; the root mapped to ``None``.
-
     Raises
     ------
     ValueError
@@ -401,9 +347,6 @@ def root_tree(
 
 def check_tree(tree: Tree[str | None], faults: list[str], root: str) -> None:
     """Refuse a stated tree that is not one.
-
-    Every refusal here is a mistake someone can make in a config file, and each names
-    what is wrong rather than failing later with a cycle in a traversal.
 
     Raises
     ------
@@ -459,11 +402,7 @@ def check_tree(tree: Tree[str | None], faults: list[str], root: str) -> None:
 
 
 def in_topological_order(tree: Tree[str | None]) -> Iterator[str]:
-    """Every fault, each after the one that triggers it.
-
-    The order the pipeline solves in: a child's wavefront needs its parent's, so a
-    parent is always finished first.
-    """
+    """Every fault, each after the one that triggers it: the pipeline's solve order."""
     sorter = graphlib.TopologicalSorter()
     for node, parent in tree.items():
         if parent is not None:
@@ -480,35 +419,20 @@ def in_topological_order(tree: Tree[str | None]) -> Iterator[str]:
 
 
 class JumpDelay(Protocol):
-    """How long a rupture takes to cross a gap of a given width, from a given depth.
-
-    Two arguments, because the rock in the gap is not the same rock at every depth and
-    a model that pretends otherwise makes a shallow crossing look as fast as a deep
-    one. Anything else a model needs it closes over when it is built.
-    """
+    """How long a rupture takes to cross a gap of a given width, from a given depth."""
 
     def __call__(self, distance_km: FloatArray, depth_km: FloatArray) -> FloatArray:
-        """Seconds, elementwise over gap widths and the depths they are left from.
+        """Seconds, elementwise over gap widths and the **departure** depths.
 
-        ``depth_km`` is the **departure** depth: the front leaves an arrested tip at
-        that depth and crosses rock described by it.
-
-        Must be **non-negative, and monotone in distance at fixed depth**: from one
-        departure point, a wider gap never crosses faster than a narrower one.
-        :func:`causal_jump` relies on that to search nearest neighbours rather than
-        every pair, which is what makes a million-subfault rupture tractable.
+        Must be non-negative and monotone in distance at fixed depth, which is what
+        lets :func:`causal_jump` search nearest neighbours rather than every pair.
         """
         ...
 
 
 @dataclasses.dataclass(frozen=True)
 class Instantaneous:
-    """The front crosses the gap in no time.
-
-    Not physical, and useful precisely for that: the jump point is wherever the
-    parent's front arrives earliest against the geometry alone, which makes it the
-    control case for testing that a delay model changed something.
-    """
+    """The front crosses the gap in no time: the control case, not a physical one."""
 
     def __call__(self, distance_km: FloatArray, depth_km: FloatArray) -> FloatArray:
         """Zero, shaped like the distances."""
@@ -520,13 +444,8 @@ class Instantaneous:
 class DistanceOverVelocity:
     """The gap is crossed at the shear speed of the depth the front left from.
 
-    The default model. The gap is on neither fault, so neither fault's *sampled*
-    materials describe it; the shared 1-D velocity model does, read at the departure
-    depth -- the front leaves an arrested tip and crosses the rock that tip is in.
-
-    There is deliberately no constant-speed variant: a mean over parts of both faults
-    nowhere near the gap is what let a crossing at the surface trace look as fast as
-    one at seismogenic depth.
+    The default model. The gap is on neither fault, so the shared 1-D velocity model
+    describes it rather than either fault's sampled materials.
     """
 
     bottom_depth_km: FloatArray
@@ -566,27 +485,10 @@ class DistanceOverVelocity:
 class Jump:
     """Where and when a rupture front crossed from one fault to the next.
 
-    Attributes
-    ----------
-    parent_cell, child_cell : tuple of int, or int
-        The subfaults the front left from and arrived at, labelled the way their own
-        chart labels a subfault: ``(i, j)`` on a lattice, a flat face index on a
-        triangulation. Either indexes that chart's own fields, which is the property
-        the label exists for -- see
-        :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`.
-    distance_km : float
-        The gap it crossed.
-    departure_s : float
-        When the front reached the parent's jump-off point.
-    arrival_s : float
-        When it reached the child -- the departure plus the delay, and the seed time
-        the child's wavefront is solved from.
-    from_edge : bool
-        Whether the front left from an edge of the parent. ``False`` records that no
-        edge cell was within reach and the search fell back to the whole chart -- a
-        child sitting off the *face* of its parent rather than off an end. Carried on
-        the jump rather than logged, because a fallback nobody can see is a second
-        model running silently.
+    The cells are labelled as their own chart labels one: ``(i, j)`` on a lattice, a
+    flat face index on a triangulation. ``arrival_s`` is the departure plus the delay,
+    and the seed time the child's wavefront is solved from. ``from_edge`` is ``False``
+    when no edge cell was within reach and the search fell back to the whole chart.
     """
 
     parent_cell: tuple[int, int] | int
@@ -608,96 +510,38 @@ def causal_jump(
 ) -> Jump:
     """Where the front crosses to the child fault, and when it gets there.
 
+    Candidates are the parent's ``boundary_faces()``, where the front runs out of fault
+    and arrests: the trigger is the stress concentration of an arrested tip rather than
+    the wavefront sweeping by. Oglesby (2008) found jumps succeed when donor slip
+    terminates abruptly and fail when it tapers, Kase & Kuge (2001) that triggering
+    follows the front reaching the fault edge by about a second, and Fliss, Bhat,
+    Dmowska & Rice (2005) work the mechanism out for the Landers backward branch.
+
     .. math::
         (p^*, c^*) = \\arg\\min_{p \\in \\partial P,\\; c \\in C}
         \\left[\\, t_P(p) + \\mathrm{delay}\\left(\\|X_P(p) - X_C(c)\\|,\\;
         z_P(p)\\right) \\right]
 
-    **The front jumps from where it arrests, not from wherever it passes.** That is
-    the ``\\partial``: candidates are the parent's edge cells, the places the rupture
-    runs out of fault and stops. The trigger for a jump is the stress concentration of
-    an arrested rupture tip -- its stopping phase -- rather than the wavefront sweeping
-    by earlier. Oglesby (2008), *BSSA* **98**, 440, found jumps succeed when donor slip
-    terminates abruptly and fail when it tapers; Kase & Kuge (2001), *GJI* **147**, 330,
-    found triggering follows the front reaching the fault edge by about a second; Fliss,
-    Bhat, Dmowska & Rice (2005), *JGR* **110**, B06312, work the mechanism out for the
-    Landers backward branch, where the rupture arrests, radiates, and re-nucleates.
-
-    Without the restriction the minimisation takes a cell deep in the wake of the
-    front -- far from anywhere the rupture stops, and radiating essentially nothing
-    towards the child -- because a chord through intact rock at the shear speed always
-    beats the front crawling along the fault at a fraction of it. First arrival is
-    necessary for a jump and nowhere near sufficient, and treating it as sufficient is
-    what made every jump too early.
-
-    **No depth rule, and none is needed.** All four edges are candidates, the surface
-    trace included, and the arrival time decides between them: the shallow reduction in
-    :mod:`rupture_generator.timing` already makes the surface trace a late arrival, and
-    the delay is charged at the shear speed of the depth the front leaves from, which is
-    lowest there too. A jump that goes deep does so because the earthquake got there
-    first, not because a minimum depth was configured.
-
-    **Not the closest pair either.** The minimisation is over arrival time, so a front
-    that reaches a distant edge of the parent early will jump from there in preference
-    to a nearer edge it reaches late. Closest approach is a fact about the geometry;
-    this is a fact about the earthquake, and only one of them knows which way the front
-    was travelling.
-
-    **Only pairs within the jump limit are candidates**, and that bound is physics
-    rather than an optimisation. A rupture crosses a gap at roughly the shear speed
-    but propagates along a fault at a *fraction* of it, so without the bound the
-    minimisation discovers that leaving from the hypocentre and crossing tens of
-    kilometres of intact rock beats travelling there along the fault -- measured at a
-    28 km "jump" on the shipped two-segment example, arriving before the front had
-    covered a third of the first fault. The gap model is fitted to stepovers of a few
-    kilometres and says nothing about that. The same limit decides which faults are
-    connected at all, so any pair the tree contains has at least one candidate.
-
-    The search is over nearest neighbours rather than over pairs, and that is exact
-    rather than an approximation: from one departure point the delay never decreases
-    with distance, so that point's earliest arrival is always to the closest point on
-    the other fault. It is also what makes the stage tractable -- the two largest
-    faults of the shipped scenario have 145 billion pairs between them and 37,740
-    nearest neighbours, and restricting to edges cuts even that by two orders of
-    magnitude.
-
-    **Where a front runs out of fault is the chart's own answer**, not this function's:
-    a lattice's perimeter is its first and last rows and columns, and a triangulation's
-    is the faces with an edge no second face shares. Both spell it ``boundary_faces()``
-    and both return flat indices, so nothing here branches on which kind of chart it
-    has, and neither does the label a :class:`Jump` records -- see
-    :meth:`~rupture_generator.mesh.RuptureMesh.cell_key`.
-
     Parameters
     ----------
     parent, child : Chart
-        The two charts. Both hold offsets from their own surface origins, so the
-        origins are added back here before differencing -- two faults digitised
-        against different origins would otherwise be compared in different frames.
+        The two charts, whose origins are added back before differencing.
     parent_wavefront_s : FloatArray
-        When the front reached each of the parent's subfaults. **The field the choice
-        is made on**, and it should be the solved wavefront rather than the perturbed
-        onset: an argmin over a hundred thousand perturbed cells is an order statistic
-        that selects the perturbation's negative tail, not the shape of the front.
+        Seconds to each of the parent's subfaults, and the field the choice is made on.
+        Pass the solved wavefront rather than the perturbed onset: an argmin over a
+        hundred thousand perturbed cells selects the perturbation's negative tail.
     delay : JumpDelay
+        How long the crossing takes.
     parent_onset_s : FloatArray, optional
-        **The field the clock is read from**, when it differs from the one the choice
-        is made on. Choosing *where* the front left is a question about the wavefront;
-        choosing *when* it left is a question about that one cell, and there the
-        perturbation is part of the answer. Defaults to the wavefront, so a caller
-        with one field passes one field.
+        The field the clock is read from. Defaults to the wavefront.
     max_distance_km : float
-        The widest gap a jump may cross.
-
-    Returns
-    -------
-    Jump
+        The widest gap a jump may cross, in kilometres.
 
     Raises
     ------
     ValueError
-        If no pair is within the limit, which means these two faults are not close
-        enough to be part of one rupture at all.
+        If no pair is within the limit, so the two faults are not close enough to be
+        part of one rupture at all.
     """
     parent_origin = np.array([*parent.origin_km, 0.0])
     child_origin = np.array([*child.origin_km, 0.0])
@@ -711,16 +555,9 @@ def causal_jump(
     all_points = (parent.centres() + parent_origin).reshape(-1, 3)
     to_points = (child.centres() + child_origin).reshape(-1, 3)
 
-    # **Only each candidate's nearest child can win.** From one departure point the
-    # depth is fixed, so the delay there is a function of distance alone and never
-    # decreases with it:
-    #
-    #     min_c [ t_P(p) + delay(d(p, c), z(p)) ]
-    #         =  t_P(p) + delay( min_c d(p, c), z(p) )
-    #
-    # which turns a search over every pair into one nearest-neighbour query per
-    # candidate. Exact for any delay monotone in distance at fixed depth, which is the
-    # one thing :class:`JumpDelay` asks of an implementation.
+    # Only each candidate's nearest child can win, so this is one nearest-neighbour
+    # query per candidate rather than a search over pairs. Exact for any delay monotone
+    # in distance at fixed depth, which is the one thing `JumpDelay` asks for.
     from scipy.spatial import cKDTree
 
     tree = cKDTree(to_points)
@@ -730,10 +567,8 @@ def causal_jump(
     from_edge = bool((nearest_km <= max_distance_km).any())
 
     if not from_edge:
-        # A child off the *face* of its parent rather than off an end -- a splay, or a
-        # fault passing beneath the middle of another. The front never arrests within
-        # reach, so there is no arrest to jump from and the whole chart is searched
-        # instead. Recorded on the Jump rather than passed over in silence.
+        # A child off the *face* of its parent rather than off an end -- a splay, say.
+        # No arrest is within reach, so the whole chart is searched instead.
         candidates = np.arange(all_points.shape[0])
         candidate_points = all_points
         nearest_km, nearest = tree.query(candidate_points, k=1, workers=-1)
@@ -748,8 +583,7 @@ def causal_jump(
 
     delays_s = delay(nearest_km, candidate_points[:, 2])
 
-    # Chosen on the wavefront, timed on the onset. The argmin picks the cell; the cell
-    # is then asked when the rupture actually got there.
+    # Chosen on the wavefront, timed on the onset.
     chosen = int(
         np.argmin(np.where(reachable, wavefront[candidates] + delays_s, np.inf))
     )
@@ -770,15 +604,9 @@ def causal_jump(
 def closest_approach_km(first: Chart, second: Chart) -> float:
     """How near two faults come to each other, in kilometres.
 
-    What the jump probability is a function of. Measured between cell centres rather
-    than between surfaces, which understates the true closest approach by up to half
-    a subfault -- immaterial against a 15 km cutoff and a 3 km decay length, and it
-    keeps this the same quantity the jump search minimises over.
-
-    Over nearest neighbours rather than over pairs: the minimum over every pair is the
-    minimum over each point's nearest, so the tree gives the same number without the
-    matrix. The dense form held an ``(n_first, n_second, 3)`` difference, which on the
-    two largest faults of the shipped scenario is 145 billion pairs -- 3.5 TB.
+    What the jump probability is a function of. Between cell centres rather than
+    surfaces, understating the true approach by up to half a subfault -- immaterial
+    against a 15 km cutoff and a 3 km decay length.
     """
     from scipy.spatial import cKDTree
 

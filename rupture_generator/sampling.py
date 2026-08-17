@@ -1,10 +1,7 @@
 """Gaussian random fields with von Karman correlations.
 
-Sampled using the **circulant embedding method** (Dietrich & Newsam 1993; Wood & Chan 1994).
-
-The model
-
-Mai & Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
+Sampled by circulant embedding (Dietrich & Newsam 1993; Wood & Chan 1994). Mai &
+Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
 
 .. math::
 
@@ -14,6 +11,17 @@ Mai & Beroza (2002) equation (1) gives the von Karman autocorrelation directly:
 ``r`` is a **dimensionless** distance -- the separation measured in correlation
 lengths, one per axis -- and ``C`` is the standard Matern correlation of smoothness
 ``H``.
+
+References
+----------
+Dietrich, C. R., & Newsam, G. N. (1993). A fast and exact method for multidimensional
+Gaussian stochastic simulation. *Water Resources Research*, 29(8), 2861-2869.
+
+Mai, P. M., & Beroza, G. C. (2002). A spatial random field model to characterize
+complexity in earthquake slip. *Journal of Geophysical Research*, 107(B11), 2308.
+
+Wood, A. T. A., & Chan, G. (1994). Simulation of stationary Gaussian processes in
+[0,1]^d. *Journal of Computational and Graphical Statistics*, 3(4), 409-432.
 """
 
 from __future__ import annotations
@@ -35,15 +43,11 @@ if TYPE_CHECKING:
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
 HURST = 0.75
-"""The von Karman roughness exponent.
+"""The von Karman roughness exponent, and the Matern smoothness ``nu``.
 
 Mai & Beroza (2002) figure 11: the median over their 44 finite-source models is 0.75
-for the circular average, with 0.71 along strike and 0.77 down dip and no dependence
-on magnitude or faulting style. One number for both axes is theirs, not a
-simplification made here.
-
-It is the Matern smoothness ``nu``. At ``H = 0.5`` the von Karman correlation is the
-exponential one, which is why the paper finds the two fit its data comparably.
+for the circular average, with 0.71 along strike and 0.77 down dip. One number for
+both axes is theirs, not a simplification made here.
 """
 
 MINIMUM_EMBEDDING = 2
@@ -51,72 +55,52 @@ MINIMUM_EMBEDDING = 2
 
 A Toeplitz matrix of ``n`` lags embeds in a circulant of ``2n - 2``: the first row
 carries ``c(0) ... c(n-1)`` and then the mirror ``c(n-2) ... c(1)``. Anything smaller
-cannot hold the covariance, whatever fraction it is dressed up as -- which is the
-argument the old ten-percent margin did not have.
+cannot hold the covariance.
 """
 
 MAXIMUM_DOUBLINGS = 3
 """How many times the margin may be doubled before the embedding is refused.
 
-Dietrich & Newsam's recipe is to enlarge until the embedding is good enough. Starting
-from :data:`DECAY_LENGTHS` means the first try is usually the answer, so this bounds a
-correction rather than a search: three doublings reaches a margin of 24 correlation
-lengths, past which the covariance is not one this fault can carry.
+Dietrich & Newsam (1993) enlarge until the embedding is good enough; three doublings
+from :data:`DECAY_LENGTHS` reaches a margin of 24 correlation lengths, past which the
+covariance is not one this fault can carry.
 """
 
 DECAY_LENGTHS = 3.0
-"""
-How many correlation lengths of margin to try first. The aim of this parameter
-is to reduce the number of doublings we require. By guessing a reasonable
-margin, we hope to one-shot the right padding that embeds correctly the first
-time which reduces allocations.
-"""
+"""How many correlation lengths of margin to try first, chosen so that the first
+attempt usually embeds and no doubling is allocated."""
 
 CORRELATION_LENGTH_TOLERANCE = 0.02
-"""How far the field's delivered correlation length may sit from the one asked for.
-
-A fraction, per axis: 0.02 is "the fault you get has correlation lengths within two
-percent of the ones the magnitude implies".
-"""
+"""How far the delivered correlation length may sit from the one asked for: a
+fraction, per axis, so 0.02 is within two percent on each axis."""
 
 MAI_MAXIMUM_RATIO = 0.6
-"""The largest correlation length, as a fraction of the source dimension, the model was
-fitted on.
+"""The largest correlation length, as a fraction of the source dimension, that the
+model was fitted on.
 
-Mai & Beroza (2002) figure 13: across all 44 finite-source models the ratio sits between
-0.25 and 0.6 on each axis, with no dependence on magnitude. Past the upper end a segment
-is being asked to carry structure longer than itself, which is not a rupture the
-relations describe -- whether or not the grid can reproduce it.
+Mai & Beroza (2002) figure 13: across all 44 finite-source models the ratio sits
+between 0.25 and 0.6 on each axis. Past the upper end a segment is being asked to
+carry structure longer than itself.
 """
 
 MAXIMUM_EMBEDDING_CELLS = 1 << 26
-"""The largest padded grid to transform, in cells. Past it the draw is refused by name.
+"""The largest padded grid to transform, in cells; past it the draw is refused.
 
-**A memory bound, and the number is the transform's peak rather than the grid's.**
+A memory bound, and the number is the transform's peak rather than the grid's:
 ``_attempt`` evaluates the covariance on the padded grid as ``float64`` and then takes
-its two-dimensional transform, which is ``complex128``: at 2\\ :sup:`26` = 67.1 M cells
-that is 537 MB for the covariance and **1.07 GB** for the transform of it, live at the
-same time, before the caller's own mesh and fields are counted. On the 30 GB machine
-this package is developed on, with a 12 GB address-space limit in force, that is the
-largest single allocation that leaves room for the rest of a run.
+its ``complex128`` transform, so at 2\\ :sup:`26` = 67.1 M cells that is 537 MB for the
+covariance and 1.07 GB for the transform, live at the same time and before the
+caller's own mesh and fields. On a 30 GB machine with a 12 GB address-space limit that
+is the largest single allocation leaving room for the rest of a run.
 
-**What it bounds on each side.** Below it: the CFM Hikurangi interface cut at 400 m is a
-2075 × 830 lattice, which embeds to 6.9 M cells -- a tenth of the cap -- and every
-shipped crustal example is three orders below it. Above it: the same interface cut at
-100 m is 8300 × 3320 and embeds to **111.8 M cells**, 1.67 times the cap, which is the
-case this constant exists for and the one that used to slip through silently.
-
-It is a **refusal** and not a fallback: :func:`_candidate_extents` raises naming the
-segment, the two counts and the two things a caller can do about it. The previous
-behaviour was to break out of the search, return no candidates, and then hand back the
-smallest embedding *without checking it against the cap at all* -- so a 111.8 M cell
-transform ran anyway, and the bound reported nothing.
+For scale: the CFM Hikurangi interface cut at 400 m embeds to 6.9 M cells, a tenth of
+the cap; the same interface cut at 100 m embeds to 111.8 M, 1.67 times it.
 """
 
 EIGENVALUE_TOLERANCE = 1.0e-10
 """How negative an eigenvalue may be, relative to the largest, and still be round-off.
 
-Any eigenvalue larger than this is used to reject the sampling on the grounds of failing to embed.
+Anything more negative rejects the embedding.
 """
 
 
@@ -124,14 +108,8 @@ Any eigenvalue larger than this is used to reject the sampling on the grounds of
 class VonKarmanFilterParameters:
     """How far a field's structure reaches, and how rough it is.
 
-    Attributes
-    ----------
-    correlation_length_strike_km, correlation_length_dip_km : float
-        The patch size along strike and down dip. The corner of the spectrum is the
-        ellipse through the reciprocals of these, so structure larger than them is
-        flat and structure smaller falls off.
-    hurst : float
-        The von Karman roughness exponent.
+    The correlation lengths are the patch size along strike and down dip, in km: the
+    corner of the spectrum is the ellipse through their reciprocals.
     """
 
     correlation_length_strike_km: float
@@ -166,11 +144,8 @@ def correlation_lengths(
         \\lambda_{strike} = 10^{c_{s} M_w - a}, \\qquad
         \\lambda_{dip}    = 10^{c_{d} M_w - b}
 
-    The defaults are Mai & Beroza (2002), and they live here rather than in the config
-    so that `SourceConfig.corner_coefficients` can pass nothing for ``mai`` and the
-    published numbers exist in one place. The dip exponent is **a third, not 0.3333**:
-    equation (5) reads ``log(a_z) ~ -1.5 + (1/3) Mw``, so the fraction is what was
-    published and the decimal would be a transcription of it.
+    The defaults are Mai & Beroza (2002). The dip exponent is **a third, not 0.3333**:
+    their equation (5) reads ``log(a_z) ~ -1.5 + (1/3) Mw``.
     """
     return VonKarmanFilterParameters(
         correlation_length_strike_km=10.0
@@ -186,17 +161,10 @@ def von_karman_correlation(
 
     .. math:: C(r) = \\frac{G_H(r)}{G_H(0)} = \\frac{2^{1-H}}{\\Gamma(H)} r^H K_H(r)
 
-    ``G_H(r) = r^H K_H(r)`` with ``K_H`` the modified Bessel function of the second
-    kind.
-
-    The argument is a **distance in correlation lengths**, not in kilometres -- the
-    anisotropy lives in how that distance is formed (see :func:`_wrapped_distance`),
-    so this function is one-dimensional and has no axes to confuse.
-
-    ``C(1) = 0.5005`` at ``H = 0.75``: a separation of one correlation length is
-    where the field has forgotten about half of itself. That number is the whole
-    meaning of ``a``, and it is checkable against this function without running the
-    sampler at all.
+    ``K_H`` is the modified Bessel function of the second kind. The argument is a
+    **distance in correlation lengths**, not kilometres; the anisotropy lives in how
+    that distance is formed (see :func:`_wrapped_distance`). ``C(1) = 0.5005`` at
+    ``H = 0.75`` -- one correlation length is where half the field is forgotten.
     """
     distance = np.asarray(normalised_distance, dtype=np.float64)
     correlation = np.ones_like(distance)
@@ -215,17 +183,13 @@ def _wrapped_distance(
     spacing_km: tuple[float, float],
     parameters: VonKarmanFilterParameters,
 ) -> FloatArray:
-    """Distance from the origin to every cell of the periodic grid, in correlation lengths.
+    """Distance to every cell of the periodic grid, in correlation lengths.
 
     **Wrapped**, which is what makes the embedding circulant: on a periodic grid of
-    ``m`` cells the lag to cell ``p`` is ``min(p, m - p)``, because the short way round
-    is the distance. Feeding unwrapped lags here builds a Toeplitz matrix instead, whose
-    DFT is not its eigenvalues, and the field that falls out has no particular
-    covariance at all.
-
-    Each axis is divided by its own correlation length before the two are combined, so
-    the result is the ``r`` of Mai & Beroza equation (1) -- anisotropy enters here and
-    nowhere else.
+    ``m`` cells the lag to cell ``p`` is ``min(p, m - p)``, and unwrapped lags build a
+    Toeplitz matrix whose DFT is not its eigenvalues. Each axis is divided by its own
+    correlation length first, so the result is Mai & Beroza (2002) equation (1)'s
+    ``r``.
     """
     return _quadrant_distance(extents, spacing_km, parameters)[
         np.ix_(*(_wrapped_lag_index(extent) for extent in extents))
@@ -245,13 +209,9 @@ def _quadrant_distance(
 ) -> FloatArray:
     """The distinct wrapped distances only: one quadrant of the padded grid.
 
-    ``min(p, m - p)`` takes each value twice on each axis, so the full grid holds every
-    distance four times over. The covariance is a function of the distance alone, and
-    evaluating it is this module's expensive step -- a modified Bessel function per
-    point -- so it is evaluated on the quadrant and gathered out to the full grid.
-
-    Worth the indirection: on a 400x2400 embedding that is 241 thousand Bessel
-    evaluations rather than 960 thousand, and the gather is a memory copy.
+    ``min(p, m - p)`` takes each value twice on each axis, and the expensive step is a
+    modified Bessel function per point: on a 400x2400 embedding, 241 thousand
+    evaluations rather than 960 thousand.
     """
     padded_i, padded_j = extents
     strike_km, dip_km = spacing_km
@@ -275,17 +235,9 @@ class DegradedCorrelation(UserWarning):
 class Embedding:
     """A circulant embedding of one covariance on one grid.
 
-    Attributes
-    ----------
-    extents : tuple of int
-        The padded grid, ``(i, j)``.
-    eigenvalues : FloatArray
-        Non-negative eigenvalues.
-    correlation_lengths : tuple of float
-        The correlation lengths the field will actually have, ``(strike, dip)``.
-    correlation_length_error : float
-        How far :attr:`correlation_lengths` sits from what was asked for, as a
-        fraction, worst of the two axes.
+    ``extents`` is the padded grid ``(i, j)``, ``correlation_lengths`` the ones the
+    field will actually have, ``(strike, dip)``, and ``correlation_length_error`` how
+    far those sit from what was asked, as a fraction, worst axis.
     """
 
     extents: tuple[int, int]
@@ -301,10 +253,6 @@ def _embed(
     parameters: VonKarmanFilterParameters,
 ) -> Embedding:
     """Embed this covariance on this grid, as closely as the grid allows.
-
-    Returns
-    -------
-    Embedding
 
     Warns
     -----
@@ -331,16 +279,9 @@ def _embed(
 _WARN_STACKLEVEL = 5
 """How far up to point a :class:`DegradedCorrelation`, counted rather than guessed.
 
-``_warn_if_degraded`` -> ``_embed`` -> :func:`von_karman_grid` -> :func:`von_karman_field`
--> the stage, which is five frames. Written down because it is off by one from the
-obvious answer: the grid-level entry point was split out of the mesh-level one so that a
-triangulated segment could draw on its parameter lattice, and that split added a frame.
-
-A caller that reaches :func:`von_karman_grid` directly -- which is
-:func:`~rupture_generator.triangular.lattice.draw_field` -- is therefore reported one
-frame further out than its own call, at whatever bound the lattice. There is no single
-number that is right for both depths, and the message names the segment's size and both
-correlation lengths, so it locates itself.
+``_warn_if_degraded`` -> ``_embed`` -> :func:`von_karman_grid` ->
+:func:`von_karman_field` -> the stage, which is five frames. A caller reaching
+:func:`von_karman_grid` directly is reported one frame further out than its own call.
 """
 
 
@@ -408,32 +349,12 @@ def _candidate_extents(
     spacing_km: tuple[float, float],
     parameters: VonKarmanFilterParameters,
 ) -> list[tuple[int, int]]:
-    """Progressively larger embeddings to try, none past the memory budget.
+    """Progressively larger embeddings to try, smallest first, never empty.
 
     The smallest entry is the smallest embedding a Toeplitz matrix of this many lags
-    admits at all -- :data:`MINIMUM_EMBEDDING` times the grid -- so a covariance the
-    fault is too small to carry still gets a field, degraded and warned about rather
-    than refused.
-
-    **The cap binds here, on every candidate including that smallest one.** A grid whose
-    minimum embedding is already past :data:`MAXIMUM_EMBEDDING_CELLS` has no field this
-    machine can draw, and saying so is the only honest answer: the alternative it
-    replaced was to return that embedding anyway and transform it, which on a 100 m
-    Hikurangi cut is 111.8 M cells against a 67.1 M bound, allocated silently.
-
-    Parameters
-    ----------
-    cell_counts : tuple of int
-        The grid, ``(dip, strike)``.
-    spacing_km : tuple of float
-        Cell size, ``(strike, dip)``.
-    parameters : VonKarmanFilterParameters
-        The covariance to be carried.
-
-    Returns
-    -------
-    list of tuple of int
-        Extents to try, smallest first, every one within the cap. Never empty.
+    admits at all, so a covariance the fault is too small to carry still gets a field,
+    degraded and warned about rather than refused; the cap binds on that one too.
+    ``cell_counts`` is ``(dip, strike)``, ``spacing_km`` the other way round.
 
     Raises
     ------
@@ -514,14 +435,10 @@ def _relative_error(
 ) -> float:
     """How far the delivered correlation lengths are from the target's, worst axis.
 
-    Both are measured **by the same estimator on the same lags**, so the grid\'s own
-    discretisation cancels. It has to: a fault cut at 1 km carrying a 1.8 km
-    correlation length has under two samples per correlation length, and comparing an
-    interpolated crossing against the exact ``a`` there would report the grid\'s
-    coarseness as the sampler\'s error.
-
-    An axis with fewer than two cells, or one the target itself never decorrelates
-    over, contributes nothing -- there is no correlation length on it to get wrong.
+    Both are measured **by the same estimator on the same lags**, so the grid's own
+    discretisation cancels: a fault cut at 1 km carrying a 1.8 km correlation length
+    has under two samples per length, and comparing an interpolated crossing against
+    the exact ``a`` would report coarseness as error.
     """
     errors = [
         abs(got - want) / want
@@ -536,7 +453,7 @@ def _relative_error(
 
 
 def _crossing_km(profile: FloatArray, level: float, spacing_km: float) -> float:
-    """Where a covariance profile first falls to ``level``, interpolated, in kilometres."""
+    """Where a covariance profile first falls to ``level``, interpolated, in km."""
     below = np.flatnonzero(profile <= level)
     if below.size == 0 or below[0] == 0:
         return np.inf
@@ -554,9 +471,7 @@ def _predicted_extents(
     """How large the embedding has to be, from the covariance's own decay length.
 
     The fault, plus ``margin`` correlation lengths so the wrap lands where the
-    covariance has faded -- and never less than :data:`MINIMUM_EMBEDDING` times the
-    fault, which is what a Toeplitz matrix of this many lags needs whatever its
-    covariance. Rounded to a length the transform likes.
+    covariance has faded, never less than :data:`MINIMUM_EMBEDDING` times the fault.
     """
     strike_km, dip_km = spacing_km
     wanted = (
@@ -577,9 +492,8 @@ def _predicted_extents(
 def standardise(field: FloatArray) -> FloatArray:
     """Zero mean, unit sample variance.
 
-    Not needed for the variance -- the embedding delivers ``C(0) = 1`` by construction
-    -- but the stages are written as ``1 + cov * Z`` and mean the sample statistics, so
-    this is what makes that arithmetic exact on each realisation rather than on average.
+    The embedding already delivers ``C(0) = 1``; this is what makes the stages'
+    ``1 + cov * Z`` exact on each realisation rather than on average.
     """
     spread = float(field.std())
     # A one-cell chart has a single sample and hence no variance. The mesh CLI produces
@@ -598,30 +512,10 @@ def von_karman_grid(
 ) -> FloatArray:
     """Draw a field with this covariance on a regular grid.
 
-    The grid is stated rather than read off a container, because there are two kinds of
-    grid this package draws on and neither owns the sampler: a structured chart's own
-    cells (:func:`von_karman_field`), and the parameter lattice a triangulated segment
-    projects from (:func:`~rupture_generator.triangular.lattice.draw_field`). The
-    embedding is cached on these arguments, so two segments of one shape and one
-    covariance pay for it once.
-
-    Parameters
-    ----------
-    cell_counts : tuple of int
-        The grid, ``(dip, strike)``.
-    spacing_km : tuple of float
-        Cell size in kilometres, ``(strike, dip)`` -- the order
-        :meth:`~rupture_generator.mesh.RuptureMesh.spacing_km` returns, and the
-        opposite order to ``cell_counts``, which is why both are named here.
-    covariance : VonKarmanFilterParameters
-        The patch structure.
-    rng : np.random.Generator
-        The stage's own substream.
-
-    Returns
-    -------
-    FloatArray
-        ``cell_counts``, one standard-normal-marginal value per cell.
+    The embedding is cached on these arguments. ``cell_counts`` is ``(dip, strike)``;
+    ``spacing_km`` is in kilometres and ``(strike, dip)``, the opposite order and the
+    one :meth:`~rupture_generator.mesh.RuptureMesh.spacing_km` returns. Returns one
+    standard-normal-marginal value per cell.
 
     Raises
     ------
@@ -652,14 +546,10 @@ def correlate_fields(
 ) -> FloatArray:
     """A field correlated at ``rho`` with ``field_a``, on the fault.
 
-    ``rho * A + sqrt(1 - rho^2) * B``. Both operands have the same covariance and the
-    weights are the cosine and sine of one angle, so the result has it too: the
-    correlation is set without disturbing the covariance, which is what makes the blend
-    composable with whatever rescaling a stage applies afterwards.
-
-    Both fields must be unstandardised draws of the same covariance. Standardising first
-    divides each by its own sample spread, which perturbs the relation by the
-    estimator's error.
+    ``rho * A + sqrt(1 - rho^2) * B``: the weights are the cosine and sine of one
+    angle, so the result keeps the shared covariance. Both fields must be
+    **unstandardised** draws of it -- standardising first divides each by its own
+    sample spread, perturbing the relation by the estimator's error.
     """
     if not (-1.0 <= rho <= 1.0):
         raise ValueError(f"a correlation must be in [-1, 1], got {rho}")

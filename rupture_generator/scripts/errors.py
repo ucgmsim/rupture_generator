@@ -1,22 +1,15 @@
 """Turning a bad config file into something a person can act on.
 
-Two failures, rendered differently because they want different things.
+Two failures, rendered differently. A syntax error wants the line, so this prints a
+window of the file with the offending one highlighted. A validation error wants the
+*key*: the file parsed, and what is wrong is a value, so the reader needs the dotted
+path to it and the constraint it broke.
 
-A **syntax** error wants the line. The reader has a stray bracket or an unclosed string
-and needs to see where, so this prints a window of the file with the offending line
-highlighted.
+That path takes walking because mashumaro reports a nested failure as a chain whose
+outermost link is true and useless -- `config.field_path` walks to the innermost and
+collects the breadcrumbs.
 
-A **validation** error wants the *key*. The file parsed, so nothing is visibly wrong
-with it; what is wrong is a value, and the reader needs the dotted path to it and the
-constraint it broke.
-
-The path takes walking because mashumaro reports a nested failure as a chain: a bad
-dip inside a plane inside a fault arrives as an ``InvalidFieldValue`` about
-``surfaces``, whose ``__context__`` is about ``planes``, whose ``__context__`` is about
-``dip_deg``. The outermost is true and useless, so `config.field_path` walks to the
-innermost and collects the breadcrumbs.
-
-Everything here writes to **stderr**, so stdout stays pipeable.
+Everything here writes to stderr, so stdout stays pipeable.
 """
 
 from __future__ import annotations
@@ -45,11 +38,7 @@ CONTEXT_LINES = 2
 """How much of the file to show either side of a syntax error."""
 
 VALUE_WIDTH = 60
-"""How much of an offending value to print.
-
-A value can be a whole list of planes. Printing all of it buries the one word that is
-wrong under the twenty that are right.
-"""
+"""How much of an offending value to print: a value can be a whole list of planes."""
 
 
 def _brief(value: object) -> str:
@@ -180,9 +169,8 @@ def print_config_error(error: Exception) -> None:
         )
         title = "[bold red]Unknown configuration key[/bold red]"
     else:
-        # An unknown discriminator tag, or anything else mashumaro raises. Rendered
-        # plainly rather than guessed at -- a panel that invents a field name is worse
-        # than one that quotes the library.
+        # An unknown discriminator tag, or anything else mashumaro raises: quoted
+        # rather than guessed at.
         body = f"  {error}"
         title = f"[bold red]{type(error).__name__}[/bold red]"
 

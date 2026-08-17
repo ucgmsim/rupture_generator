@@ -1,9 +1,7 @@
 """``rupture-generator generate``: a config and a mesh in, a rupture out.
 
 The middle of the three subcommands. It reads a mesh file rather than a geometry
-description because a geometry is digitised once and reused across every realisation
-run on it -- rebuilding it per run would be both wasteful and a chance for it to come
-out different -- so the boundary between the two steps is a file.
+description, because a geometry is digitised once and reused across realisations.
 
 What is here is the I/O, the option handling and the summary. The pipeline is
 `rupture_generator.pipeline`, and the stage order lives there and only there.
@@ -39,14 +37,10 @@ def named_segments(
 ) -> Realisation:
     """The validated segments to generate on, named as the causality tree names them.
 
-    Without ``--surface`` every surface in the mesh takes part, which is what a
-    multi-fault rupture is; with it, one does. A surface that fuses to a single
-    segment keeps its own name, and one whose planes do not all share a seam becomes
-    ``surface:0``, ``surface:1`` -- because those parts are what rupture.
-
-    ``--plane`` selects **one plane's own chart**, before fusion: it is how a bent
-    fault gets generated a plane at a time when the fused surface is not what was
-    wanted. It needs a surface to be unambiguous.
+    Without ``--surface`` every surface in the mesh takes part. A surface that fuses to
+    a single segment keeps its own name, and one whose planes do not all share a seam
+    becomes ``surface:0``, ``surface:1``. ``--plane`` selects one plane's own chart,
+    before fusion, and needs a surface to be unambiguous.
 
     Raises
     ------
@@ -92,12 +86,7 @@ def report(
     seed: int,
     realisation_index: int,
 ) -> Table:
-    """What was generated, in the numbers someone would check it by.
-
-    Slip and moment are the two anyone reads first: a mean slip that is an order out
-    says the magnitude or the area is wrong, and both are visible here beside each
-    other.
-    """
+    """What was generated, in the numbers someone would check it by."""
     table = Table(
         title=config.title or "Rupture",
         title_justify="left",
@@ -127,8 +116,7 @@ def report(
     ):
         table.add_row(name, value)
 
-    # Who triggered whom, and where the front crossed. On a single-fault rupture the
-    # tree is one node and there is nothing to say.
+    # Who triggered whom, and where the front crossed. Empty for a single fault.
     for child, jump in realisation.jumps.items():
         table.add_row(
             f"{realisation.tree[child]} to {child}",
@@ -184,9 +172,8 @@ def generate(
     """Generate a kinematic rupture model on a mesh."""
     rupture_config: RuptureConfig = load_config(config, read_config)
 
-    # An override replaces the file's value, and **what actually ran is what gets
-    # recorded**: a rupture whose attrs disagree with how it was made cannot be
-    # regenerated from itself.
+    # An override replaces the file's value, and what actually ran is what gets
+    # recorded in the output's attrs.
     if seed is not None:
         rupture_config.random.seed = seed
     if realisation is not None:
@@ -194,9 +181,8 @@ def generate(
 
     meshes, crs = read_mesh(mesh_path)
 
-    # Everything geometric and everything physical, in one place, so a refusal from
-    # any of it renders the same way -- one red line naming the cause, rather than a
-    # traceback for a mistake in a file.
+    # Everything geometric and everything physical in one place, so a refusal from any
+    # of it renders as one red line rather than a traceback.
     try:
         geometry = named_segments(meshes, crs, surface, plane)
         result = pipeline.generate(rupture_config, geometry)
@@ -208,10 +194,8 @@ def generate(
     if chosen in (Format.SRF, Format.SRF_HDF5):
         write_srf(output, assemble.to_srf_file(result))
     else:
-        # Only the provenance is the caller's. What the rupture *is* -- the frame, the
-        # causality tree, the jumps, the moment -- the writer reads off the realisation,
-        # because a file that does not say which segment triggered which is a set of
-        # faults that happen to be in one place.
+        # Only the provenance is the caller's: the frame, the causality tree, the
+        # jumps and the moment the writer reads off the realisation.
         write_rupture(
             to_datatree(
                 result,

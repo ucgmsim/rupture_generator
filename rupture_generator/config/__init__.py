@@ -1,16 +1,9 @@
 """Configuration: what a fault is, and what the earthquake on it is.
 
-Two files, because they have different lifetimes. A geometry is digitised once and
-reused across every realisation and every magnitude run on it; a source is what varies.
-``rupture-generator mesh`` reads the first and ``generate`` reads the second.
-
-Importing this module is what registers the tagged unions. `mashumaro`'s
-``Discriminator(include_subtypes=True)`` resolves a ``type`` tag against whatever
-subclasses *exist*, so they have to have been imported; the walk below does that, and
-dropping a new surface or source kind into its module is the whole of adding one.
-
-Deliberately eager rather than lazy: a tag that fails to resolve because a module was
-never imported produces "no such type" for a type that is right there.
+Two files, because they have different lifetimes: ``rupture-generator mesh`` reads the
+geometry and ``generate`` reads the source. Importing this module registers the tagged
+unions -- `mashumaro`'s ``Discriminator(include_subtypes=True)`` resolves a ``type``
+tag against whatever subclasses have been imported, which is what the walk below does.
 """
 
 import importlib

@@ -1,21 +1,12 @@
 """What a fault surface looks like written down.
 
-The input to ``rupture-generator mesh``. It describes *where the fault is* and nothing
-about the earthquake on it, which is `rupture.py`'s job -- the two are separate files
-because a geometry is reused across realisations and a source is not.
+The input to ``rupture-generator mesh``. It describes where the fault is and nothing
+about the earthquake on it, which is `rupture.py`'s job.
 
-A trace is digitised in longitude and latitude and that is how it is written here.
-``crs`` names the projected coordinate reference system the mesh is *built* in, and the
-subcommand converts once on the way in. Which CRS is a real choice -- it is the frame
-every derived quantity is exact in, and its distortion over the region is the
-modeller's to judge -- so it is stated rather than assumed.
-
-Connectivity is structural. A ``[[fault]]`` is an origin and a list of planes, each giving only where its top edge
-*ends*. The near end is the previous plane's far end, so two planes that do not meet
-cannot be written down.
-
-There is no ``union`` type for disjoint geometries: the top-level list already *is* the
-union, and a type that said so as well would be a second way to spell the same thing.
+Traces are written in longitude and latitude; ``crs`` names the projected coordinate
+reference system the mesh is *built* in, and the subcommand converts once on the way
+in. Connectivity is structural: a fault is an origin and a list of planes, each giving
+only where its top edge *ends*, so two planes that do not meet cannot be written down.
 """
 
 from __future__ import annotations
@@ -40,12 +31,7 @@ from rupture_generator.config.validation import (
 
 
 class CrsStrategy(SerializationStrategy, use_annotations=True):
-    """A coordinate reference system as whatever `pyproj` accepts.
-
-    ``"EPSG:2193"``, ``2193``, a WKT string, a PROJ string. Serialising gives back the
-    authority code where there is one, so a config that round-trips does not grow a page
-    of WKT it did not start with.
-    """
+    """A CRS as whatever `pyproj` accepts: ``"EPSG:2193"``, ``2193``, WKT, PROJ."""
 
     def serialize(self, value: pyproj.CRS) -> str:
         """The authority code, where there is one."""
@@ -63,13 +49,7 @@ CRS = dataclasses.field(
 
 @dataclasses.dataclass
 class LonLat(ConfigObject):
-    """A point on the surface, as it is written in a catalogue or a trace file.
-
-    Two fields rather than a bare pair, so a config cannot silently swap them. The
-    ordering mistake is otherwise invisible in New Zealand, where a longitude of 172 and
-    a latitude of -43 are both plausible-looking numbers and only one of them is in
-    range -- which is exactly the near miss that makes it worth spelling out.
-    """
+    """A point on the surface: two named fields, so a config cannot swap them."""
 
     longitude_deg: Longitude
     latitude_deg: Latitude
@@ -79,14 +59,9 @@ class LonLat(ConfigObject):
 class Discretisation(ConfigObject):
     """How finely a plane is cut, given one way or the other.
 
-    ``subfault_size_km`` is the usual one and is a *request*: the plane is cut into
-    whole cells, so the size actually used is the plane's own length over the resulting
-    count. ``strike_count`` and ``dip_count`` say it exactly, for a fixture or a
-    comparison that needs a particular grid.
-
-    The rounding happens in the subcommand rather than here, because it needs the
-    plane's length and width, which need the projection. What is here is the request and
-    the refusal to accept both forms at once.
+    ``subfault_size_km`` is a *request*: the plane is cut into whole cells, so the size
+    actually used is the plane's own length over the resulting count. ``strike_count``
+    and ``dip_count`` say it exactly.
     """
 
     subfault_size_km: PositiveFloat | None = None
@@ -120,12 +95,8 @@ class Discretisation(ConfigObject):
 class PlaneConfig(ConfigObject):
     """One plane of a fault: where its top edge ends, and how it hangs from it.
 
-    Where the top edge *begins* is not here -- it is the previous plane's ``end``, or
-    the fault's ``origin``.
-
-    Dip, depth and discretisation are all per plane. A multi-segment fault whose
-    segments dip differently and reach different depths is ordinary, and each of its
-    planes becomes its own mesh.
+    Where the top edge *begins* is the previous plane's ``end``, or the fault's
+    ``origin``. Dip, depth and discretisation are per plane.
     """
 
     end: LonLat
@@ -136,11 +107,7 @@ class PlaneConfig(ConfigObject):
 
     @property
     def dips_left(self) -> bool:
-        """Whether the plane dips left of the trace direction.
-
-        Named by the right-hand rule: walking the trace from its first point to its
-        last, ``"right"`` dips away to your right.
-        """
+        """Whether the plane dips left, walking the trace from its first point."""
         return self.dip_direction == "left"
 
 
@@ -156,9 +123,7 @@ class SurfaceConfig(ConfigObject):
 class FaultConfig(SurfaceConfig):
     """A connected run of planes.
 
-    ``top_depth_km`` belongs to the fault rather than to each plane: it is the depth of
-    the trace they all hang from. A segment starting deeper than its neighbour does not
-    touch it and is a different fault.
+    ``top_depth_km`` is the depth in kilometres of the trace they all hang from.
     """
 
     name: NonEmptyStr
@@ -183,11 +148,7 @@ class FaultConfig(SurfaceConfig):
 
 @dataclasses.dataclass
 class PointConfig(SurfaceConfig):
-    """A point source: one subfault, centred where it is told.
-
-    Given by its *centre* rather than by a top edge, because that is how a catalogue
-    gives one. The conversion to a one-cell plane is the library's.
-    """
+    """A point source: one subfault, given by its centre rather than a top edge."""
 
     name: NonEmptyStr
     centre: LonLat

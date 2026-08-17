@@ -1,15 +1,11 @@
 """``rupture-generator mesh``: a geometry description in, a mesh file out.
 
-The step that turns a fault written down as a trace into subfault positions. It is its
-own subcommand rather than part of ``generate`` because a geometry is digitised once
-and reused -- across realisations, across magnitudes, across whole studies -- and
-rebuilding it every run would be both wasteful and a chance for it to come out
-different.
+The step that turns a fault written down as a trace into subfault positions, kept
+separate from ``generate`` because a geometry is digitised once and reused across
+realisations.
 
 Everything geometric lives in `rupture_generator.mesh`; what is here is the I/O, the
-error rendering, and the summary table. The table is the reason the rounding is worth
-showing: a config asks for a subfault *size*, a mesh is cut into whole *cells*, and
-the size actually used is printed beside the one asked for.
+error rendering, and the summary table.
 """
 
 from __future__ import annotations
@@ -33,14 +29,10 @@ from rupture_generator.scripts.errors import console, load_config
 def summarise(meshes: dict[str, list[RuptureMesh]], crs: pyproj.CRS) -> Table:
     """What was built, so a reader can see it is the fault they meant.
 
-    The first thing anyone wants after discretising is to check the numbers, and the
-    one they cannot get from the config alone is the subfault size *actually* used --
-    a request of 1.0 km on a 39.7 km plane becomes 0.99 km, because the plane is cut
-    into whole cells.
-
-    Strike is reported **true**, not grid. The mesh works from the projection's
-    northing axis, and in NZTM that is up to five degrees off true north -- a number
-    in a summary table will be read as a compass bearing, so it has to be one.
+    The number the config alone does not give is the subfault size *actually* used: a
+    request of 1.0 km on a 39.7 km plane becomes 0.99 km, because the plane is cut into
+    whole cells. Strike is reported **true**, not grid -- in NZTM the projection's
+    northing axis is up to five degrees off true north.
     """
     table = Table(
         title=f"Mesh in {crs.to_string()}",

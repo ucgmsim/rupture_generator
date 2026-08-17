@@ -2,34 +2,26 @@
 
 An ``xr.DataTree``, **one group per segment**, written to HDF5 or Zarr. A segment is
 the pipeline's unit -- one chart, one field of each kind, one wavefront -- so a group
-is exactly what a stage produced, and "the pipeline returns an annotated mesh" and
-"the pipeline's output is the file" are the same statement.
+is exactly what a stage produced.
 
 A segment may span several config planes where their seams coincide; the ``plane``
-coordinate on the strike axis records which one each cell column came from, so the
-provenance survives without the file having to be cut the way the config was written.
+coordinate on the strike axis records which one each cell column came from.
 
 Each group carries the node positions as well as the fields, so a rupture file is
-everything a viewer or a consumer needs: a slip field without its geometry is a grid of
-numbers, and a pair of files can be separated.
-
-Two coordinate systems, neither redundant. The **nodes** are projected offsets, exactly
-as the mesh file holds them -- the geometry, and what a renderer draws. The **cell**
-variables are WGS84, what an SRF is written from and what consumers expect.
+everything a viewer or a consumer needs. Two coordinate systems, neither redundant: the
+**nodes** are projected offsets, exactly as the mesh file holds them, and the **cell**
+variables are WGS84, what an SRF is written from.
 
 Units are SI: slip in metres, slip rate in metres per second, moment in newton-metres,
 area in square metres. The centimetres the SRF format wants appear in `srf.py` and
 nowhere else, and every variable carries its unit.
 
-The pulses are ragged, so they are stored as CSR. ``data``/``indptr`` is the layout the
-kernel already produces and `scipy.sparse.csr_array` already wants, so nothing is
-translated on either side.
-
-**The ``indices`` of that triple are not stored**: every pulse starts at column zero and
-runs contiguously, so a sample's column is a function of ``indptr`` alone. Writing them
-down doubles the file -- 7.6 GB of int64 restating 7.6 GB of float64 on the shipped
-twenty-fault scenario, the array that used to exhaust memory before the rupture could be
-written at all. `assemble.to_srf_file` rebuilds them where `scipy.sparse` insists.
+The pulses are ragged, so they are stored as CSR ``data``/``indptr`` -- the layout the
+kernel already produces and `scipy.sparse.csr_array` already wants. **The ``indices``
+of that triple are not stored**: every pulse starts at column zero and runs
+contiguously, so a sample's column is a function of ``indptr`` alone, and writing them
+down would add 7.6 GB of int64 to the shipped twenty-fault scenario.
+`assemble.to_srf_file` rebuilds them where `scipy.sparse` insists.
 """
 
 from __future__ import annotations
@@ -55,8 +47,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 2
 """Version 2 made the units SI and a group a segment.
 
-A reader of a version-1 file would take metres for centimetres, which is the kind of
-disagreement a version number exists for.
+A reader of a version-1 file would take metres for centimetres.
 """
 
 CELL_VARIABLES = {
@@ -96,8 +87,7 @@ FILE_FIELDS = (
 )
 """The fields a rupture file stores, read off the chart by name.
 
-The whitelist keeps the pipeline's *working* fields out: a file is a rupture rather
-than a trace of how one was made.
+A whitelist, so the pipeline's *working* fields stay out.
 """
 
 
@@ -111,32 +101,16 @@ def to_dataset(
 ) -> xr.Dataset:
     """One segment's rupture and geometry, as a dataset.
 
-    The fields are **on the chart**, so this reads them off rather than being told
-    them: a field the pipeline stops producing fails here, naming the segment and the
-    field, rather than at a call site the pipeline no longer has.
-
-    The hypocentre is not a parameter either. Only the segment the rupture nucleated on
-    carries one, in its own attrs, so this copies what the chart records -- writing it
-    into every group claimed three hypocentres for one earthquake.
-
-    Parameters
-    ----------
-    mesh : RuptureMesh
-        A chart the pipeline has finished with: the file's fields, and its pulses.
-    crs : pyproj.CRS
-        The frame its nodes are in -- the one projection seam.
-    segment_name : str, optional
-        What the causality tree calls this segment. Stored because a surface can yield
-        several segments, which would otherwise be distinguishable only by the group
-        name -- a convention rather than a record.
-    sample_interval_s, moment_newton_m : float
+    The fields and the hypocentre are **on the chart**, so this reads them off rather
+    than being told them. Only the segment the rupture nucleated on carries a
+    hypocentre; ``segment_name`` is stored because one surface can yield several
+    segments, which the group name alone records only by convention.
 
     Raises
     ------
     KeyError
-        If a field the file stores is not on the chart. A realisation that has not been
-        all the way through the pipeline is not a rupture, and writing one with holes in
-        it produces a file whose readers fail instead.
+        If a field the file stores is not on the chart, so the realisation has not been
+        all the way through the pipeline.
     ValueError
         If the chart carries no pulses.
     """
@@ -247,21 +221,12 @@ def to_datatree(
 ) -> xr.DataTree:
     """A generated rupture as an event tree: one group per segment.
 
-    **The seam the pipeline does not cross.** `pipeline.generate` produces a
-    `Realisation` and stops. Which fields the file stores, what the groups are called,
-    and which working fields are dropped are decided here -- which removes the
-    inversion the pipeline used to carry, where it imported this module, called it once
-    per segment, and so made the file layout something you had to read in order to read
-    the stage order.
+    **The seam the pipeline does not cross.** Which fields the file stores, what the
+    groups are called, and which working fields are dropped are decided here.
 
-    Parameters
-    ----------
-    realisation : Realisation
-        A rupture that has been through the pipeline.
-    attrs : Mapping, optional
-        The **caller's** provenance: a title, the config verbatim, the seed and the
-        realisation index. What the rupture *is* -- the frame, the causality tree, the
-        jumps, the event moment -- comes off the realisation and is written either way.
+    ``attrs`` is the **caller's** provenance: a title, the config verbatim, the seed and
+    the realisation index. What the rupture *is* -- the frame, the causality tree, the
+    jumps, the event moment -- comes off the realisation and is written either way.
     """
     # Once, not once per segment: the property sums over every chart, so reading it
     # inside the comprehension would make the writer quadratic in the segment count.
@@ -269,8 +234,7 @@ def to_datatree(
     tree = xr.DataTree.from_dict(
         {
             # A colon is a path separator to a datatree, and a fused surface's parts
-            # are called `kaikoura:0`. The segment's own name is in its attrs, which is
-            # what `segments_in` reads it back by.
+            # are called `kaikoura:0`. `segments_in` reads the name back from attrs.
             f"{name.replace(':', '_')}/segment": to_dataset(
                 mesh,
                 realisation.crs,
@@ -341,9 +305,7 @@ def read_rupture(path: Path | str, *, format: Format = Format.INFERRED) -> xr.Da
 
 
 def segments_in(tree: xr.DataTree) -> list[tuple[str, xr.Dataset]]:
-    """Every segment in a rupture tree, in a stable order.
-
-    Zarr does not preserve order when saved.
+    """Every segment in a rupture tree, sorted by group path, since Zarr does not.
 
     Returns
     -------

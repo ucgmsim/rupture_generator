@@ -1,36 +1,21 @@
 """Turning a triangulated rupture into an SRF file: one point per triangle.
 
-`assemble.py` writes a lattice segment as a PLANE whose ``NSTK x NDIP`` says how its
-points are laid out. A triangulation has no such layout, so this writes **one PLANE per
-segment with ``NSTK = n_triangles`` and ``NDIP = 1``**, and every triangle carries its
-own longitude, latitude, depth, strike, dip, rake, area and slip as a point. The header's
-geometry is a summary rather than a construction, and nothing reconstructs a subfault
-from it.
+A triangulation has no ``NSTK x NDIP`` layout, so each segment becomes one PLANE with
+``NSTK = n_triangles`` and ``NDIP = 1``, and every triangle carries its own longitude,
+latitude, depth, strike, dip, rake, area and slip as a point. The header's geometry is
+a summary, not a construction.
 
-**That is safe for SW4, and the reason is in SW4's source rather than in this docstring's
-confidence.** Both readers `sscanf` the plane fields, print them and discard them: in the
-text reader the plane variables are scoped to the loop body and die at its closing brace
-(`sw4/src/parseInputFile.C:6249-6261`), and the HDF5 reader `free`s the metadata on the
-line before it opens the ``POINTS`` dataset (`sw4/src/readhdf5.C:1066`). The point count
-comes from the ``POINTS`` line alone and there is no ``nstk * ndip == npts`` check
-anywhere. So the header is geometrically inert to SW4.
+That is safe for SW4: both readers `sscanf` the plane fields, print them and discard
+them (`sw4/src/parseInputFile.C:6249-6261`, `sw4/src/readhdf5.C:1066`), the point count
+comes from the ``POINTS`` line alone, and there is no ``nstk * ndip == npts`` check. It
+is not inert to everything else -- any consumer that rebuilds geometry from the header
+gets nonsense, including this package's own `scripts/view.py`.
 
-**It is not inert to everything else**, and that is the caveat rather than a detail. Any
-consumer that rebuilds geometry from the header gets nonsense from this file --
-including this package's own `scripts/view.py`, which strides quads out of
-``strike_count`` and ``dip_count``. A viewer for a triangular rupture has to read the
-mesh file, where the faces are; MESH.md's phase 3 is where that happens.
-
-**HDF5 is the chosen path**, which settles a question the text path leaves open: the two
-disagree about the shear modulus, because the text reader ignores ``VS`` and ``DEN`` and
-takes ``mu`` from the SW4 grid while the HDF5 reader uses the file's own. This module
-fills ``VS`` and ``DEN`` from the materials stage, so the moment the file states is the
-moment the pipeline scaled to -- and :func:`moment_newton_m` computes it from the file's
-own columns, in the file's own units, so it can be checked against SW4's printed
-``made %i point moment tensor sources`` tally. Choosing HDF5 also removes the low-slip
-filter as a constraint: a single-precision text build drops any point whose
-``dt sum(sdot)`` is under 1e-4 m and warns only ten times, which is exactly what an edge
-taper produces.
+HDF5 is the chosen path. The text reader ignores ``VS`` and ``DEN`` and takes ``mu``
+from the SW4 grid where the HDF5 reader uses the file's own; this module fills them
+from the materials stage, so the moment the file states is the moment the pipeline
+scaled to. HDF5 also avoids the text path's low-slip filter, which drops any point
+whose ``dt sum(sdot)`` is under 1e-4 m -- exactly what an edge taper produces.
 """
 
 from __future__ import annotations
@@ -79,20 +64,9 @@ def project_faces(
 ) -> dict[str, FloatArray]:
     """Face centres in WGS84, with true-north strike and dip, one value per face.
 
-    The triangular counterpart of `mesh.project_cells`, and the same two crossings: the
-    origin is added back, and strike crosses from grid north to true north with the grid
-    convergence evaluated **per face** rather than once for the segment. Dip and area
-    cross unchanged -- dip is an angle within the surface, and the fault's true area is
-    the one the modeller specified in the CRS they chose.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment, for its strike and dip per face.
-    geometry : SegmentGeometry
-        Its hoisted geometry, for the centres.
-    crs : pyproj.CRS
-        The projected frame the positions are in.
+    The triangular counterpart of `mesh.project_cells`: the origin is added back, and
+    strike crosses from grid north to true north with the grid convergence evaluated
+    **per face**. Dip crosses unchanged, being an angle within the surface.
 
     Returns
     -------
@@ -132,35 +106,16 @@ def plane_header(
 ) -> PlaneHeader:
     """The PLANE record for one triangulated segment.
 
-    ``NSTK`` is the segment's triangle count and ``NDIP`` is 1, which is how the point
-    block's length is stated without claiming a lattice. Everything else is a **summary
-    of the segment**, not a construction of it: the centre is the mean of the face
-    centres, the length and width are the segment's own arc extents, the strike and dip
-    are the reference frame's, and the top depth is the shallowest node. A reader that
-    treats those as a rectangle gets a rectangle that does not exist -- see this module's
-    docstring for why SW4 does not, and who does.
+    ``NSTK`` is the segment's triangle count and ``NDIP`` is 1, which states the point
+    block's length without claiming a lattice. Everything else summarises the segment:
+    the centre is the mean of the face centres, the length and width are its own arc
+    extents, the strike and dip are the reference frame's, and the top depth is the
+    shallowest node.
 
-    ``shyp`` keeps the one convention conversion `assemble.plane_header` makes: the SRF
+    ``shyp`` keeps `assemble.plane_header`'s one convention conversion: the SRF
     measures the hypocentre from the plane's along-strike **centre**, where the config
-    and the mesh measure from the ``u = 0`` end.
-
-    Parameters
-    ----------
-    mesh : TriangleMesh
-        The segment.
-    geometry : SegmentGeometry
-        Its hoisted geometry.
-    located : Mapping of str to FloatArray
-        :func:`project_faces`' output, passed in because the projection is the expensive
-        part and the point columns want it too.
-    hypocentre_km : tuple of float, optional
-        Where the rupture started, in this segment's own arc lengths, or ``None`` for a
-        segment that does not hold it. The format has no way to say "not here", so a
-        segment without the hypocentre records zeros.
-
-    Returns
-    -------
-    PlaneHeader
+    and the mesh measure from the ``u = 0`` end. ``hypocentre_km`` is ``None`` for a
+    segment that does not hold it, which the format can only record as zeros.
     """
     length_km = float(mesh.arc_profile(0)[1][-1])
     width_km = float(mesh.arc_profile(1)[1][-1])
@@ -189,23 +144,9 @@ def to_srf_file(
     """Assemble an SRF version 2.0 file from a generated triangular rupture.
 
     One PLANE per segment in the realisation's own order, and one point per triangle.
-    The unit conversions and the CSR assembly are `assemble.srf_file`'s, unchanged: this
-    module's whole job is the per-face columns and the header, because everything after
-    that is the same file.
-
-    Parameters
-    ----------
-    realisation : Realisation
-        A rupture that has been all the way through
-        :func:`rupture_generator.triangular.pipeline.generate`.
-    geometries : Mapping of str to SegmentGeometry, optional
-        The hoisted geometry of each segment. Derived here if omitted, which costs one
-        pass over the faces per segment -- pass the pipeline's own to avoid it.
-
-    Returns
-    -------
-    SrfFile
-        Version 2.0, one PLANE record per segment.
+    The unit conversions and the CSR assembly are `assemble.srf_file`'s, unchanged.
+    ``geometries`` is derived here if omitted, at one pass over the faces per segment --
+    pass the pipeline's own to avoid it.
 
     Raises
     ------
@@ -269,25 +210,17 @@ def write_sw4_hdf5(
 ) -> None:
     """Write a generated triangular rupture straight out as an SRF-HDF5 file.
 
-    **S9 and the writer, fused**, and that is the whole point rather than an
-    optimisation. :func:`~rupture_generator.triangular.pipeline.synthesise_pulses`
-    attaches every pulse of every subfault to the mesh, and at a 400 m cut on the CFM
-    Hikurangi interface that is 1.9 G samples -- 15 GB of ``f64`` -- before the writer
-    has allocated anything. So the pulses are synthesised **here**, a block of faces at
-    a time, converted, appended and dropped; :data:`STREAM_BUDGET_BYTES` is what bounds
-    the peak and :func:`face_blocks` is where a block comes from.
+    Pulse synthesis and writing are fused: attaching every pulse of every subfault to
+    the mesh first is 15 GB of ``f64`` at a 400 m cut on the CFM Hikurangi interface,
+    so the pulses are synthesised here a block of faces at a time, converted, appended
+    and dropped. :data:`STREAM_BUDGET_BYTES` bounds the peak and :func:`face_blocks` is
+    where a block comes from; a rupture that fits in memory goes through
+    :func:`to_srf_file` instead, and the two share `srf.Sw4Hdf5Stream`.
 
-    A rupture that will fit in memory does not need this. It goes through
-    :func:`to_srf_file`, which produces a whole `SrfFile` -- readable, sliceable, and
-    what every test asserts against. The two share the format through
-    `srf.Sw4Hdf5Stream`, so there is one statement of the layout.
-
-    Pulses already attached to the realisation are **not** read. Doing so would be a
-    second path through this function, exercised only by the small ruptures that do not
-    need it, for the case that is precisely the one that cannot hold them; the pulse
-    kernel is deterministic in its inputs, so what is written is what
-    ``synthesise_pulses`` would have attached. Run the pipeline with
-    ``synthesise=False`` and nothing is computed twice.
+    Pulses already attached to the realisation are **not** read; the kernel is
+    deterministic in its inputs, so what is written is what ``synthesise_pulses`` would
+    have attached. Run the pipeline with ``synthesise=False`` and nothing is computed
+    twice.
 
     Parameters
     ----------
@@ -298,9 +231,8 @@ def write_sw4_hdf5(
         :func:`~rupture_generator.triangular.pipeline.generate`, with or without its
         pulses.
     params : pulses.PulseParams
-        How each pulse is shaped and sampled -- from
-        `rupture_generator.pipeline.pulse_model`, which is the same model
-        ``synthesise_pulses`` uses. Its ``sample_interval_s`` is the file's ``dt``.
+        How each pulse is shaped and sampled. Its ``sample_interval_s`` is the file's
+        ``dt``.
     geometries : Mapping of str to SegmentGeometry, optional
         The hoisted geometry of each segment. Derived here if omitted.
     budget_bytes : int, optional
@@ -312,10 +244,9 @@ def write_sw4_hdf5(
         If a segment is missing a field the format needs, which is a realisation that
         has not been all the way through the pipeline.
     ValueError
-        For a subfault whose rise time the sample interval cannot represent, naming the
-        segment and the block as well as the subfault -- the kernel numbers subfaults
-        within the block it was handed, and a block-local index reported as a global
-        one would name the wrong triangle.
+        For a subfault whose rise time the sample interval cannot represent. The
+        message names the segment and the block as well as the subfault, because the
+        kernel numbers subfaults within the block it was handed.
     """
     with Sw4Hdf5Stream(path, "2.0") as stream:
         for name, mesh in realisation.items():
@@ -336,9 +267,8 @@ def write_sw4_hdf5(
                 plane_header(mesh, geometry, located, hypocentre_km=hypocentre_km)
             )
 
-            # SI leaves the package here, exactly as in `to_srf_file`, and for the
-            # whole segment at once: the point columns are one float per face and the
-            # pulses are hundreds, so it is only the pulses that need blocking.
+            # SI leaves the package here, for the whole segment at once: the point
+            # columns are one float per face, so only the pulses need blocking.
             depth_km = geometry.depth_km
             slip_m = mesh["slip_m"]
             rise_time_s = mesh["rise_time_s"]
@@ -379,11 +309,8 @@ def write_sw4_hdf5(
                         f"subfaults from {block.start}: {error}"
                     ) from error
 
-                # Converted into its final buffer rather than concatenated into one:
-                # `np.multiply` with `out=` does the unit conversion and the narrowing
-                # in one pass, so only the destination is ever live beside the
-                # kernel's own output. `assemble.srf_file` makes the same move for the
-                # same reason.
+                # Converted into its final buffer rather than concatenated into one, so
+                # only the destination is live beside the kernel's own output.
                 block_samples = np.empty(samples.size, dtype=SRF_FLOAT)
                 np.multiply(samples, CM_PER_M, out=block_samples, casting="unsafe")
                 del samples
@@ -405,19 +332,9 @@ def hdf5_moment_newton_m(path: Path | str) -> float:
 
     :func:`moment_newton_m` for a file too large to read: the same arithmetic on the
     same four columns, read a slab at a time off disk, and never touching ``SR1`` --
-    which is 99% of the file and carries no moment, since the kernel normalises every
-    pulse so that ``dt sum(sdot)`` is the point's own slip.
-
-    This is what keeps the check MESH.md asks for available at production resolution.
-    A streaming writer's characteristic failure is dropping or duplicating a block of
-    points at a block boundary, and the moment is the quantity that sees it: the
-    pipeline's own moment is a sum over exactly the faces that exist, so the two agree
-    only if every face was written exactly once.
-
-    Parameters
-    ----------
-    path : Path or str
-        An SRF-HDF5 file.
+    which carries no moment, since the kernel normalises every pulse so that
+    ``dt sum(sdot)`` is the point's own slip. It catches a streaming writer dropping or
+    duplicating a block of points.
 
     Returns
     -------
@@ -439,9 +356,8 @@ def hdf5_moment_newton_m(path: Path | str) -> float:
             )
         points = file["POINTS"]
         moment_dyne_cm = 0.0
-        # A slab at a time, at a size that is a read granularity and nothing else: a
-        # million records of `SW4_POINTS_DTYPE` is 68 MB, small beside the file and
-        # large enough that the per-read overhead does not show.
+        # A slab at a time: a million records of `SW4_POINTS_DTYPE` is 68 MB, large
+        # enough that the per-read overhead does not show.
         for start in range(0, points.shape[0], 1 << 20):
             slab = points[start : start + (1 << 20)]
             moment_dyne_cm += float(
@@ -458,20 +374,12 @@ def hdf5_moment_newton_m(path: Path | str) -> float:
 def moment_newton_m(srf: SrfFile) -> float:
     """The moment an SRF file states, summed from its own columns.
 
-    Not the moment the pipeline scaled to -- **the one the file carries**, in the units
-    it carries it in, so that it can be compared against what a consumer computes.
-    MESH.md asks for exactly this comparison against SW4's printed
-    ``made %i point moment tensor sources`` tally, because that is the only check that
-    catches SW4's low-slip filter quietly eating tapered edges.
+    Not the moment the pipeline scaled to -- **the one the file carries**, so that it
+    can be compared against SW4's printed ``made %i point moment tensor sources``
+    tally, the only check that catches SW4's low-slip filter eating tapered edges.
 
     In CGS, rigidity is ``rho vs^2`` in dyne per square centimetre and a dyne-centimetre
-    is 1e-7 newton-metres; the columns are float32, so this reads them in float64 and
-    the answer is good to about six figures rather than to round-off.
-
-    Parameters
-    ----------
-    srf : SrfFile
-        A version 2.0 file, whose points carry ``VS`` and ``DEN``.
+    is 1e-7 newton-metres; the columns are float32, so this reads them in float64.
 
     Returns
     -------
@@ -482,8 +390,7 @@ def moment_newton_m(srf: SrfFile) -> float:
     ------
     ValueError
         If the points carry no material properties, which is a version 1.0 file, where
-        the shear modulus comes from whatever grid the file is run against and the
-        question has no answer here.
+        the shear modulus comes from whatever grid the file is run against.
     """
     points = srf.points
     if points.shear_speed_cm_s is None or points.density_g_cm3 is None:

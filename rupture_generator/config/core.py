@@ -1,28 +1,9 @@
 """The base every config object is built on.
 
-One class, and the thing it does that is not obvious: **validation rides on the type
-annotation**. A field declared ``Annotated[float, in_range(0.0, 90.0)]`` is checked
-after construction by walking the class's own hints, so the constraint lives beside the
-type rather than in a separate schema or a hand-written ``__post_init__`` per class.
-
-Three consequences worth knowing before writing a config class.
-
-A validator may **coerce**. A non-``None`` return is written back to the field, which is
-how a path gets resolved and a longitude gets folded. Returning nothing means "accepted
-as is", which is what most of them do.
-
-A failure becomes mashumaro's own ``InvalidFieldValue``, carrying the field name, its
-declared type, the offending value and the class it belongs to. That matters because it
-is the same exception mashumaro raises for a decode failure, so the CLI renders a bad
-*value* and a bad *type* through one path -- see ``scripts/errors.py``.
-
-``forbid_extra_keys`` is on. A misspelt key is an error rather than a silently ignored
-line. The alternative -- never asking for names it does not recognise -- is how five
-parameters came to be silently discarded in production for years.
-
-Copied, deliberately and almost verbatim, from ``nzcvm/config/core.py``. It is fifty
-lines and it is the whole mechanism; a second version of it that drifted would be worse
-than a shared one that did not.
+Validation rides on the type annotation: a field declared
+``Annotated[float, in_range(0.0, 90.0)]`` is checked after construction by walking the
+class's own hints. A validator may coerce -- a non-``None`` return is written back to
+the field -- and a failure becomes mashumaro's ``InvalidFieldValue``.
 """
 
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
@@ -38,11 +19,7 @@ from mashumaro.mixins.yaml import DataClassYAMLMixin
 class ConfigObject(
     DataClassJSONMixin, DataClassYAMLMixin, DataClassTOMLMixin, DataClassDictMixin
 ):
-    """A dataclass that reads from TOML, YAML, JSON or a dict, and validates itself.
-
-    Subclasses get ``from_dict``/``to_dict`` and the three format pairs from mashumaro,
-    and the ``Annotated`` validator sweep from here.
-    """
+    """A dataclass that reads from TOML, YAML, JSON or a dict, and validates itself."""
 
     def __post_init__(self) -> None:
         """Run every validator attached to an ``Annotated`` field.
@@ -50,8 +27,7 @@ class ConfigObject(
         Raises
         ------
         InvalidFieldValue
-            If a validator rejects a value. The message is the validator's own, so it
-            says what was wanted rather than which check ran.
+            If a validator rejects a value, with the validator's own message.
         """
         hints = get_type_hints(type(self), include_extras=True)
 
@@ -81,13 +57,8 @@ class ConfigObject(
     def refuse(self, field_name: str, message: str) -> None:
         """Reject a value for a reason no single field could have caught.
 
-        For invariants *between* fields -- a bottom depth above a top one, a
-        discretisation given twice. Raising ``InvalidFieldValue`` rather than a bare
-        ``ValueError`` is what makes the CLI point at a key: it carries the field name,
-        so the error panel names ``bottom_depth_km`` rather than the class.
-
-        Pick the field the reader should *change*, which is not always the one that
-        looks wrong.
+        Name the field the reader should change, which is not always the one that
+        looks wrong -- the CLI points at that key.
 
         Raises
         ------
@@ -105,15 +76,9 @@ class ConfigObject(
     class Config(BaseConfig):
         """mashumaro's settings for every config class.
 
-        **The name matters.** mashumaro reads an inner class called ``Config``; one
-        called ``Meta`` is ignored in silence, and every setting in it does nothing. The
-        version of this pattern that was copied from spelled it ``Meta``, so its
-        ``forbid_extra_keys`` had never once refused a misspelt key.
-
-        A subclass that needs its own settings -- a `Discriminator`, say -- must inherit
-        from *this* rather than from `BaseConfig`, or it replaces these instead of
-        adding to them. `tests/test_config.py::TestMisspellingsAreErrors` is
-        parametrised over the sections for exactly that reason.
+        The name matters: mashumaro reads an inner class called ``Config`` and ignores
+        one called ``Meta`` in silence. A subclass with its own settings must inherit
+        from *this*, or it replaces these instead of adding to them.
         """
 
         serialize_by_alias = True
@@ -124,16 +89,14 @@ class ConfigObject(
 def field_path(error: Exception) -> tuple[str, Exception]:
     """The dotted path to the field that failed, and the error that says why.
 
-    mashumaro reports a nested failure as a chain: the outer object says "``planes`` has
-    an invalid value", and its ``__context__`` says which field of which plane. Walking
-    the chain collects the breadcrumbs and finds the *most specific* error, which is the
-    one worth showing.
+    mashumaro reports a nested failure as a ``__context__`` chain; walking it collects
+    the breadcrumbs and finds the most specific error.
 
     Returns
     -------
     tuple of (str, Exception)
-        The dotted path, and the innermost ``InvalidFieldValue`` or ``MissingField``.
-        The path is ``"<unknown>"`` if the chain carried no field names at all.
+        The dotted path, ``"<unknown>"`` if the chain carried no field names, and the
+        innermost ``InvalidFieldValue`` or ``MissingField``.
     """
     from mashumaro.exceptions import ExtraKeysError, MissingField
 
@@ -143,8 +106,7 @@ def field_path(error: Exception) -> tuple[str, Exception]:
 
     while current is not None:
         # `ExtraKeysError` is included because a misspelt key raises one *inside* an
-        # `InvalidFieldValue` about the whole containing list. Reporting the outer one
-        # dumps every plane of the fault and never says which word is wrong.
+        # `InvalidFieldValue` about the whole containing list.
         if isinstance(current, InvalidFieldValue | MissingField | ExtraKeysError):
             innermost = current
             if getattr(current, "field_name", None):

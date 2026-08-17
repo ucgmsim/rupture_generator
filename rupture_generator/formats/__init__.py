@@ -4,9 +4,8 @@ One enum, one inference rule and one dispatch: a :class:`Format` with an ``INFER
 member, a :func:`from_path` that reads the extension, and a ``match`` per writer.
 
 ``.srf.h5`` is SW4's SRF-in-HDF5 and ``.h5`` is this package's own format, so inference
-looks at the last *two* suffixes first. Getting that backwards writes a native rupture
-where a consumer expects SW4's layout -- both are HDF5, so nothing downstream notices
-until it reads a dataset that is not there.
+looks at the last *two* suffixes first. Both are HDF5, so getting it backwards is not
+noticed downstream until something reads a dataset that is not there.
 """
 
 from enum import StrEnum, auto
@@ -33,19 +32,14 @@ class Format(StrEnum):
     """The same layout, as a Zarr store. A directory rather than a file."""
 
     SRF = auto()
-    """The Standard Rupture Format, as text. Six significant figures and no provenance."""
+    """The Standard Rupture Format, as text. Six significant figures, no provenance."""
 
     SRF_HDF5 = auto()
-    """SW4's SRF-in-HDF5. Someone else's layout, specified in someone else's manual."""
+    """SW4's SRF-in-HDF5, specified in someone else's manual."""
 
 
 def from_path(path: Path | str) -> Format:
     """Infer a format from a path's extension.
-
-    Parameters
-    ----------
-    path : Path or str
-        Where the file is going, or came from.
 
     Returns
     -------
@@ -55,8 +49,7 @@ def from_path(path: Path | str) -> Format:
     Raises
     ------
     ValueError
-        If the extension names nothing. Guessing would write a rupture in a layout
-        nobody asked for.
+        If the extension names nothing.
 
     Examples
     --------
@@ -71,8 +64,7 @@ def from_path(path: Path | str) -> Format:
     """
     path = Path(path)
 
-    # Two suffixes first: `.srf.h5` is SW4's and `.h5` is ours, and the specific one has
-    # to win or a native file goes out wearing SW4's name.
+    # Two suffixes first: `.srf.h5` is SW4's and `.h5` ours, so the specific one wins.
     if "".join(path.suffixes[-2:]).lower() in {".srf.h5", ".srf.hdf5"}:
         return Format.SRF_HDF5
 
