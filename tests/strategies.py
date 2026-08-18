@@ -1,8 +1,8 @@
 """Hypothesis strategies for the things the pipeline takes in.
 
-One module per language, per `PLAN.md` section 6: *"A property holds for generated
-grids, seeds, magnitudes, hypocentres, and trees -- shrinkable strategies, shared in
-one module per language."* The Rust half is ``crates/kernels/tests/common``.
+One module per language: a property holds for generated grids, seeds, magnitudes,
+hypocentres and trees, and the strategies that shrink them are shared rather than
+rewritten per test module. The Rust half is ``crates/kernels/tests/common``.
 
 Ranges are physical, and stated as such: a fault is between a kilometre and a couple
 of hundred long, dips somewhere in ``(0, 90]``, reaches tens of kilometres down. Where

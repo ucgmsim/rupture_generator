@@ -84,6 +84,7 @@ class SlipParams:
     top_taper: float = 0.0
     bottom_taper: float = 0.0
 
+
 def _taper_widths(
     params: SlipParams, cells_i: int, cells_j: int
 ) -> tuple[int, int, int]:
@@ -326,9 +327,7 @@ def onset_perturbation(
     :func:`apply_perturbation`.
     """
     independent = sampler(mesh, covariance, rng)
-    return standardise(
-        correlate_fields(slip_draw, independent, params.correlation)
-    )
+    return standardise(correlate_fields(slip_draw, independent, params.correlation))
 
 
 def apply_perturbation(

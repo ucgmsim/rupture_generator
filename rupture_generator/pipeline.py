@@ -506,7 +506,6 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
 
 # ============================================================================
 # The config boundary: what the file says, as the parameter objects a stage takes.
-# Public and shared -- `triangular.pipeline` calls these rather than transcribing them.
 # ============================================================================
 
 

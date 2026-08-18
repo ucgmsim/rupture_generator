@@ -63,7 +63,7 @@ proptest! {
 
     /// A multi-seed solve is the pointwise minimum of its single-seed solves.
     ///
-    /// The property `PLAN.md` S7's seed contract rests on: first arrival from
+    /// The property the seed contract rests on: first arrival from
     /// several sources *is* the minimum over sources. Today the implementation
     /// solves per seed and combines, so this is exact to the bit — asserted that
     /// tightly on purpose, because this test is the contract a future single-pass

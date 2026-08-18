@@ -3,8 +3,8 @@
 //! Two functions cross the Python boundary — [`eikonal::solve`] and
 //! [`pulse::synthesise_pulses`] — as `rupture_generator._kernels`. No RNG (noise is
 //! drawn in numpy and arrives as arrays), no spec structs (parameters arrive as
-//! scalars and arrays; the single copy of every default lives in Python), per
-//! `PLAN.md` §3.5. The maths lives in [`eikonal`] and [`pulse`] over plain slices,
+//! scalars and arrays; the single copy of every default lives in Python). The maths
+//! lives in [`eikonal`] and [`pulse`] over plain slices,
 //! where `tests/` can generate inputs for it; this file only marshals numpy arrays
 //! in and out.
 

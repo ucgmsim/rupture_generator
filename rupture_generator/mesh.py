@@ -1154,24 +1154,6 @@ def project_cells(mesh: RuptureMesh, crs: pyproj.CRS) -> xr.Dataset:
     )
 
 
-def project_nodes(
-    mesh: RuptureMesh, crs: pyproj.CRS
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """The chart's *corners* as longitude, latitude and depth, ``(n_i+1, n_j+1)``."""
-    nodes = mesh.nodes()
-    origin_e, origin_n = mesh.origin_km
-    to_wgs84 = pyproj.Transformer.from_crs(crs, WGS84, always_xy=True)
-    longitude_deg, latitude_deg = to_wgs84.transform(
-        (origin_e + nodes[..., 0]) * M_PER_KM,
-        (origin_n + nodes[..., 1]) * M_PER_KM,
-    )
-    return (
-        np.asarray(longitude_deg, dtype=np.float64),
-        np.asarray(latitude_deg, dtype=np.float64),
-        nodes[..., 2],
-    )
-
-
 __all__ = [
     "PLANARITY_TOLERANCE_KM",
     "SEAM_TOLERANCE_KM",
@@ -1187,7 +1169,6 @@ __all__ = [
     "fuse",
     "grid_convergence_deg",
     "project_cells",
-    "project_nodes",
     "seam_gap_km",
     "to_projected",
     "validate_chart",

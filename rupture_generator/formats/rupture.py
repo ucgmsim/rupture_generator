@@ -251,10 +251,7 @@ def to_datatree(
         "crs": realisation.crs.to_string(),
         "causality_tree": json.dumps(realisation.tree),
         "jumps": json.dumps(
-            {
-                name: dataclasses.asdict(jump)
-                for name, jump in realisation.jumps.items()
-            }
+            {name: dataclasses.asdict(jump) for name, jump in realisation.jumps.items()}
         ),
         "moment_newton_m": moment_newton_m,
         **dict(attrs or {}),
@@ -324,29 +321,11 @@ def segments_in(tree: xr.DataTree) -> list[tuple[str, xr.Dataset]]:
     ]
 
 
-def mesh_of(dataset: xr.Dataset) -> RuptureMesh:
-    """The chart a segment was generated on, rebuilt from its stored nodes.
-
-    Lossless: the nodes are the geometry, so every derived quantity comes back
-    identical rather than close.
-    """
-    return RuptureMesh.from_nodes(
-        dataset["node_east_km"].to_numpy(),
-        dataset["node_north_km"].to_numpy(),
-        dataset["node_depth_km"].to_numpy(),
-        origin_east_km=float(dataset.attrs["origin_east_km"]),
-        origin_north_km=float(dataset.attrs["origin_north_km"]),
-        surface=str(dataset.attrs["surface"]),
-        plane_of_column=dataset["plane"].to_numpy(),
-    )
-
-
 __all__ = [
     "CELL_VARIABLES",
     "FILE_FIELDS",
     "NODE_VARIABLES",
     "SCHEMA_VERSION",
-    "mesh_of",
     "read_rupture",
     "segments_in",
     "to_dataset",

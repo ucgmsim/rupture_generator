@@ -79,7 +79,9 @@ def test_a_realisation_is_an_independent_earthquake() -> None:
     first = RandomConfig(seed=1234, realisation=0)
     second = RandomConfig(seed=1234, realisation=1)
 
-    assert not np.array_equal(_draw(first, "slip", "hope"), _draw(second, "slip", "hope"))
+    assert not np.array_equal(
+        _draw(first, "slip", "hope"), _draw(second, "slip", "hope")
+    )
 
 
 def test_an_event_level_draw_is_not_any_segments() -> None:
@@ -148,9 +150,7 @@ def test_a_name_keys_the_same_stream_in_every_process() -> None:
     within one process the built-in ``hash`` is perfectly consistent, so a test in this
     interpreter would pass on an implementation that reproduces nothing.
     """
-    program = (
-        "from rupture_generator.config.rupture import _key; print(_key('hope'), _key('slip'))"
-    )
+    program = "from rupture_generator.config.rupture import _key; print(_key('hope'), _key('slip'))"
     runs = {
         subprocess.run(
             [sys.executable, "-c", program],

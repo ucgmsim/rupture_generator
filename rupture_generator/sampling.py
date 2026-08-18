@@ -483,7 +483,9 @@ def _predicted_extents(
         max(
             MINIMUM_EMBEDDING * cell_counts[1],
             cell_counts[1]
-            + int(np.ceil(margin * parameters.correlation_length_strike_km / strike_km)),
+            + int(
+                np.ceil(margin * parameters.correlation_length_strike_km / strike_km)
+            ),
         ),
     )
     return (int(next_fast_len(wanted[0])), int(next_fast_len(wanted[1])))

@@ -184,7 +184,7 @@ def test_a_realised_field_is_real_and_finite(
 @SETTINGS
 @given(drawn=charts_with_covariances())
 def test_the_embedding_delivers_the_correlation_length_it_was_asked_for(
-    drawn: tuple[RuptureMesh, VonKarmanFilterParameters]
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters],
 ) -> None:
     """The contract, in the units the model is parameterised in.
 
@@ -240,7 +240,7 @@ def test_a_correlation_length_is_where_the_field_has_forgotten_half_of_itself(
 @SETTINGS
 @given(drawn=charts_with_covariances())
 def test_the_embedding_pads_to_at_least_twice_the_fault(
-    drawn: tuple[RuptureMesh, VonKarmanFilterParameters]
+    drawn: tuple[RuptureMesh, VonKarmanFilterParameters],
 ) -> None:
     """A Toeplitz matrix of n lags needs 2n-2 to embed, so a fraction will not do.
 
@@ -308,7 +308,6 @@ def test_the_realised_correlation_follows_the_requested_one() -> None:
             other = standardise(correlate_fields(reference, independent, rho))
             realised.append(float(np.corrcoef(first.ravel(), other.ravel())[0, 1]))
         assert float(np.mean(realised)) == pytest.approx(rho, abs=0.06)
-
 
 
 @given(magnitude=MAGNITUDES)
@@ -465,9 +464,7 @@ def test_the_scaled_slip_carries_the_target_moment(
     -- six missing subfaults' worth, where in float64 one missing subfault is visible.
     """
     mesh, covariance = drawn
-    pattern, _, _ = slip_pattern(
-        mesh, SlipParams(covariance=covariance), _rng(seed)
-    )
+    pattern, _, _ = slip_pattern(mesh, SlipParams(covariance=covariance), _rng(seed))
     depth_km = mesh.centres()[..., 2]
     _, rigidity = sample_velocity_model(
         depth_km,
@@ -693,9 +690,7 @@ def test_the_mean_rise_time_is_the_requested_average(
     """
     mesh, covariance = drawn
     rng = _rng(seed)
-    _, gaussian, reference = slip_pattern(
-        mesh, SlipParams(covariance=covariance), rng
-    )
+    _, gaussian, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
 
     average_s = 1.5
     interval_s = 0.005
@@ -768,7 +763,7 @@ def test_a_slip_exponent_below_the_floor_is_refused() -> None:
             reference,
             RiseTimeParams(average_s=1.0, slip_exponent=0.05),
             rng,
-                VonKarmanFilterParameters(1.8, 1.8),
+            VonKarmanFilterParameters(1.8, 1.8),
             sample_interval_s=0.005,
         )
 
@@ -1008,9 +1003,7 @@ def _onset_setup(
         cells_j * strike_km / 3.0, cells_i * dip_km / 3.0
     )
     rng = _rng(seed)
-    _, _, reference = slip_pattern(
-        mesh, SlipParams(covariance=covariance), rng
-    )
+    _, _, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
     shear_speed = np.full(mesh.cell_counts, 3.3)
     return shear_speed, reference, rng, covariance
 
@@ -1138,9 +1131,7 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
 
     def onset_for(velocity_fraction: float) -> np.ndarray:
         rng = _rng(99)
-        _, _, reference = slip_pattern(
-            mesh, SlipParams(covariance=covariance), rng
-        )
+        _, _, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
         travel = travel_times(
             mesh,
             shear_speed,

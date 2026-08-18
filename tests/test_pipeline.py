@@ -259,9 +259,7 @@ def test_a_single_plane_fault_generates(tmp_path: Path) -> None:
     assert len(charts) == 1
     validate_chart(charts[0])
 
-    realisation = generate(
-        _config(), Realisation(named("hope", charts), geometry.crs)
-    )
+    realisation = generate(_config(), Realisation(named("hope", charts), geometry.crs))
     segment = only(realisation)
 
     assert set(np.unique(segment["plane"].to_numpy())) == {0}
@@ -272,7 +270,7 @@ def test_a_single_plane_fault_generates(tmp_path: Path) -> None:
 def test_a_point_source_is_the_pipeline_with_constant_fields() -> None:
     """One cell, constant everything, and the same stages.
 
-    `PLAN.md` section 5: a point source is not a separate path. Its slip is uniform,
+    A point source is not a separate path. Its slip is uniform,
     its rake is the configured base, its rise time is the one it was given rather
     than one derived from the moment -- and it still carries the magnitude's moment
     and still goes through pulse synthesis.
@@ -576,7 +574,9 @@ def test_a_mesh_file_carries_a_bent_fault_into_the_pipeline(tmp_path: Path) -> N
     restored, crs = read_mesh(path)
 
     direct = generate(_config(), Realisation(named("hope", fuse(charts)), geometry.crs))
-    through_file = generate(_config(), Realisation(named("hope", fuse(restored["hope"])), crs))
+    through_file = generate(
+        _config(), Realisation(named("hope", fuse(restored["hope"])), crs)
+    )
 
     assert np.array_equal(
         only(direct)["slip_m"].to_numpy(),

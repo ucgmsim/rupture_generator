@@ -593,8 +593,8 @@ def test_a_shallow_fault_that_turns_sharply_has_no_single_spacing() -> None:
 def test_validation_says_nothing_about_padding_or_even_extents() -> None:
     """An odd-sized chart is fine. Padding is the sampler's private business.
 
-    `PLAN.md` section 5 deletes "padded-extent assertions outside SpectralSampler";
-    this is the assertion that they stayed deleted.
+    Padded-extent assertions belong inside the sampler and nowhere else; this is the
+    assertion that none leaked back out into validation.
     """
     east, north = np.meshgrid(np.arange(8.0), np.arange(6.0))
     odd = RuptureMesh.from_nodes(
@@ -650,8 +650,8 @@ def test_a_point_source_is_one_cell_of_the_size_it_asked_for(
 ) -> None:
     """A point source is an ordinary one-cell chart, centred where it was told.
 
-    Not a special type: `PLAN.md` section 5 makes a point source the pipeline with
-    constant fields, so everything downstream must be able to treat it as a chart.
+    Not a special type: a point source is the pipeline with constant fields, so
+    everything downstream must be able to treat it as a chart.
     """
     (chart,) = build_point(point, NZTM)
 
@@ -702,7 +702,9 @@ def _chart() -> RuptureMesh:
         FaultConfig(
             name="hope",
             origin=LonLat(longitude_deg=172.0, latitude_deg=-42.0),
-            planes=[_plane(LonLat(longitude_deg=172.3, latitude_deg=-42.0), size_km=2.0)],
+            planes=[
+                _plane(LonLat(longitude_deg=172.3, latitude_deg=-42.0), size_km=2.0)
+            ],
         ),
         NZTM,
     )
@@ -870,9 +872,8 @@ def test_a_chart_prints_as_its_shape_rather_than_its_arrays() -> None:
     chart = _chart().with_fields(slip_m=np.ones(_chart().cell_counts))
     cells_i, cells_j = chart.cell_counts
 
-    # A count rather than a shape: the triangular track replaces `cell_counts` with a
-    # single `int`, so a chart that prints `7x12` prints something a triangulation of
-    # the same fault cannot.
+    # A count rather than a shape: `7x12` says the chart is a lattice, which is what
+    # `strided` and the SRF PLANE header both rely on.
     assert repr(chart) == (
         f"RuptureMesh('hope', {cells_i * cells_j} cells, fields: slip_m)"
     )

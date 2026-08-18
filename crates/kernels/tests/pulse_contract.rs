@@ -5,9 +5,9 @@
 //! below depends on the pulse being *that* function — a different source-time
 //! function that conserves slip, starts and ends at rest, and gets more impulsive as
 //! `beta` falls would satisfy all of it. That is the point: the contract is the
-//! physics, not the formula. Quantified over generated `(slip, rise time, dt, beta)`
-//! per `PLAN.md` §6, including rise times *below* what `dt` can represent, because
-//! the refusal is as much the contract as the pulse.
+//! physics, not the formula. Quantified over generated `(slip, rise time, dt, beta)`,
+//! including rise times *below* what `dt` can represent, because the refusal is as
+//! much the contract as the pulse.
 
 mod common;
 

@@ -493,9 +493,8 @@ SW4_SAMPLES_PER_CHUNK = 1 << 20
 """How many slip-rate samples one HDF5 chunk of ``SR1`` holds.
 
 Four megabytes of float32, trading B-tree entries against the granularity of a partial
-read. Independent of the writer's own chunking over faces
-(`rupture_generator.triangular.pipeline.STREAM_BUDGET_BYTES`): that is a memory budget,
-this is the layout on disk.
+read. Independent of any memory budget a streaming writer works to: that bounds what is
+held at once, this is the layout on disk.
 """
 
 
