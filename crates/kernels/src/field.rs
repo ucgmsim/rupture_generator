@@ -10,8 +10,8 @@ use pyo3::prelude::*;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
 use rand_pcg::Pcg64;
-use rustfft::num_complex::Complex64;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex64;
 
 /// One field on the fault, drawn from an embedding's eigenvalues.
 ///
