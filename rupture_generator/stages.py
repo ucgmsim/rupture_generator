@@ -21,23 +21,27 @@ from rupture_generator.sampling import (
 )
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
+IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
+BoolArray = np.ndarray[tuple[int, ...], np.dtype[np.bool_]]
 
 
 class Chart(Protocol):
-    """The whole of what a field stage asks of a chart: where its subfaults are."""
+    """The whole of what a field stage asks of a chart."""
 
     def centres(self) -> FloatArray:
         """Subfault centres, positions with depth last."""
+        ...
+
+    def occupied(self) -> BoolArray:
+        """Which cells are really fault. All true unless the chart says otherwise."""
         ...
 
 
 type FieldSampler = Callable[..., FloatArray]
 """Draws one field of a segment's covariance, one value per subfault.
 
-Called as ``sampler(mesh, covariance, rng)``; the chart is passed through and
-otherwise unread. A lattice takes
-:func:`~rupture_generator.sampling.von_karman_field`; a triangulated segment passes a
-closure returning one value per face instead of an ``(i, j)`` array.
+Called as ``sampler(mesh, covariance, rng)``; the chart is passed through and otherwise
+unread, so a stage can be given a fixed field by passing a closure that ignores it.
 """
 
 
@@ -109,29 +113,60 @@ def _taper_widths(
     return side, top, bottom
 
 
-def taper_edges(field: FloatArray, params: SlipParams) -> FloatArray:
+def _reach(mask: BoolArray, axis: int, *, reverse: bool) -> IntArray:
+    """How many occupied cells run up to each cell along one direction, inclusive.
+
+    One for a cell whose neighbour on that side is off the fault or off the grid, and
+    counting up from there. This is what makes a taper follow a ragged outline: on a
+    chart that is fault everywhere it is just the index, so the ramps below are the
+    index ramps they always were.
+    """
+    ordered = np.flip(mask, axis=axis) if reverse else mask
+    ordered = np.moveaxis(ordered, axis, 0)
+    counted = np.zeros(ordered.shape, dtype=np.int64)
+    running = np.zeros(ordered.shape[1], dtype=np.int64)
+    for line in range(ordered.shape[0]):
+        running = np.where(ordered[line], running + 1, 0)
+        counted[line] = running
+    counted = np.moveaxis(counted, 0, axis)
+    return np.flip(counted, axis=axis) if reverse else counted
+
+
+def taper_edges(
+    field: FloatArray, params: SlipParams, occupied: BoolArray | None = None
+) -> FloatArray:
     """Ramp a field to zero at the fault's edges.
 
-    Applied after truncation and before the moment scaling. Separable: the product
-    of two independent one-dimensional ramps, so a cell both reach is damped by both.
-    The lattice form -- widths in whole cells, ramps along the index axes.
+    Applied after truncation and before the moment scaling. Separable: the product of
+    four independent ramps, one per edge, so a cell two of them reach is damped by
+    both. Widths are in whole cells.
+
+    The edge is the **fault's**, not the chart's. On a chart that fills its rectangle
+    those are the same thing and the ramps run from the index bounds. On one resampled
+    from a modeller's outline they are not: the ramp starts wherever the fault does
+    along that axis, so an interface tapers into its own trench and down-dip limit
+    rather than into the corner of a bounding box, and unoccupied cells come back zero.
+
+    Which edge is which still comes off the axes rather than off the outline: up-dip is
+    ``i`` decreasing whatever shape the boundary is there. That is exact for an
+    interface whose outline runs along strike and down dip, which is what a subduction
+    model ships, and approximate for one with a boundary cutting across.
     """
     cells_i, cells_j = field.shape
     side, top, bottom = _taper_widths(params, cells_i, cells_j)
+    mask = np.ones(field.shape, dtype=bool) if occupied is None else occupied
 
-    along_strike = np.ones(cells_j)
-    for offset in range(side):
-        ramp = (offset + 1) / side
-        along_strike[offset] *= ramp
-        along_strike[cells_j - 1 - offset] *= ramp
+    ramp = np.ones(field.shape, dtype=np.float64)
+    for width, axis, reverse in (
+        (top, 0, False),
+        (bottom, 0, True),
+        (side, 1, False),
+        (side, 1, True),
+    ):
+        if width > 0:
+            ramp *= np.minimum(_reach(mask, axis, reverse=reverse) / width, 1.0)
 
-    down_dip = np.ones(cells_i)
-    for offset in range(top):
-        down_dip[offset] *= (offset + 1) / top
-    for offset in range(bottom):
-        down_dip[cells_i - 1 - offset] *= (offset + 1) / bottom
-
-    return field * down_dip[:, None] * along_strike[None, :]
+    return field * ramp * mask
 
 
 def slip_pattern(
@@ -140,7 +175,7 @@ def slip_pattern(
     rng: np.random.Generator,
     *,
     sampler: FieldSampler = von_karman_field,
-    taper: Callable[[FloatArray, SlipParams], FloatArray] = taper_edges,
+    taper: Callable[..., FloatArray] = taper_edges,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
     """S4, up to the moment: a non-negative, tapered, unit-ish slip pattern.
 
@@ -154,7 +189,9 @@ def slip_pattern(
     gaussian = standardise(drawn)
     pattern = 1.0 + params.coefficient_of_variation * gaussian
     pattern = np.maximum(pattern, 0.0)
-    return taper(pattern, params), gaussian, drawn
+    # A chart that fills its rectangle reports an all-true mask, so this is the
+    # rectangular taper there and the outline-following one only where it differs.
+    return taper(pattern, params, mesh.occupied()), gaussian, drawn
 
 
 def truncated_fraction(gaussian: FloatArray, params: SlipParams) -> float:

@@ -36,6 +36,21 @@ vertical."""
 REVERSE_RAKE_DEG = 90.0
 """Pure reverse slip, where the correction is at full strength."""
 
+OFF_FAULT_SLOWNESS_FACTOR = 10.0
+"""What the slowness of an unoccupied cell is multiplied by.
+
+A chart resampled from a modeller's outline is a rectangle and the fault inside it is
+not, so the sweep would otherwise run the front through cells that are not fault and
+arrive around the outline's concavities early.
+
+Swept over x10 to x10\\ :sup:`5` on both CFM subduction interfaces: the arrival field is
+bit-identical from x10 upward, so there is nothing above it left to buy. The wall is
+finite because the kernel refuses non-finite slowness. It stops the front rather than
+slowing it, and does not disturb Fomel et al.'s multiplicative factorisation -- on a
+uniform medium inside a rectangular fault the maximum error is 1.3e-13 s with the wall
+and without it, so ``tau = 1`` survives it exactly.
+"""
+
 
 def alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
     """Graves & Pitarka's geometric correction, in ``[1/1.1, 1]``.
@@ -154,12 +169,28 @@ def travel_times(
     triples -- points the front leaves at known times, one for a hypocentre and
     several for a fault triggered along an edge, which leaves no "the hypocentre"
     special case to get off by one.
+
+    Cells the chart marks unoccupied are walled off by
+    :data:`OFF_FAULT_SLOWNESS_FACTOR` rather than removed, since the sweep wants a
+    rectangle. They need no invented medium first: an unoccupied cell has real corners
+    and so a real depth, and the velocity model answers there like anywhere else.
+
+    The metric error is what no wall removes: the sweep measures ``|d(u, v)|`` where
+    the front travels ``|dX|``, so on a curved surface paths are short by its own
+    stretch. On the two CFM subduction interfaces that is a median of -0.14 to +0.03 s
+    against ruptures 143 to 255 s long.
     """
     speed = speed_field(mesh.centres()[..., 2], shear_speed_km_s, params)
+    slowness = 1.0 / speed
+    occupied = mesh.occupied()
+    if not occupied.all():
+        slowness = np.where(occupied, slowness, slowness * OFF_FAULT_SLOWNESS_FACTOR)
     strike_km, dip_km = mesh.spacing_km()
     # The solver steps in index space: `i` is down dip, `j` along strike, so the
     # spacings go in that order.
-    return _kernels.eikonal_solve(1.0 / speed, (dip_km, strike_km), seeds)
+    return _kernels.eikonal_solve(
+        np.ascontiguousarray(slowness), (dip_km, strike_km), seeds
+    )
 
 
 __all__ = [

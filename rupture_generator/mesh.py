@@ -31,6 +31,7 @@ import numpy as np
 import pyproj
 import xarray as xr
 
+from rupture_generator.errors import GeometryError
 from rupture_generator.units import M_PER_KM
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 IntArray = np.ndarray[tuple[int, ...], np.dtype[np.int64]]
+BoolArray = np.ndarray[tuple[int, ...], np.dtype[np.bool_]]
 
 WGS84 = pyproj.CRS("EPSG:4326")
 """What an SRF's coordinates are, and what everything downstream of one expects."""
@@ -165,7 +167,9 @@ NODE_VARIABLES = ("east_km", "north_km", "depth_km")
 CELL_DIMS = ("i", "j")
 """The dims a stage's field lives on: ``i`` down dip, ``j`` along strike."""
 
-RESERVED_FIELDS = frozenset({*NODE_VARIABLES, "plane", "slip_rate", "slip_rate_offset"})
+RESERVED_FIELDS = frozenset(
+    {*NODE_VARIABLES, "plane", "occupied", "slip_rate", "slip_rate_offset"}
+)
 """Names a stage may not attach a field under."""
 
 RESERVED_ATTRS = frozenset({"surface", "origin_east_km", "origin_north_km"})
@@ -200,6 +204,8 @@ class RuptureMesh:
         origin_north_km: float,
         surface: str,
         plane_of_column: FloatArray | None = None,
+        occupied: BoolArray | None = None,
+        parameter_spacing_km: tuple[float, float] | None = None,
     ) -> RuptureMesh:
         """Build a chart from node position arrays of shape ``(n_i+1, n_j+1)``.
 
@@ -214,12 +220,21 @@ class RuptureMesh:
         plane_of_column : FloatArray, optional
             Which config plane each *cell* column came from, length ``n_j``. Defaults
             to all zeros -- a single-plane chart.
+        occupied : BoolArray, optional
+            Which cells are really fault, ``(n_i, n_j)``. Omit for a chart that fills
+            its own rectangle, which is every fault built from a config; a surface
+            resampled from a modeller's outline does not. See :attr:`occupied`.
+        parameter_spacing_km : tuple of float, optional
+            ``(strike, dip)`` cell size in the chart's own parameters, for a chart cut
+            on a regular grid over a reference plane. Omit for a chart built from a
+            config, whose spacing is measured from its nodes. See
+            :meth:`parameter_spacing_km`.
 
         Raises
         ------
-        ValueError
-            If the arrays disagree in shape, are smaller than 2x2 nodes, or carry
-            anything non-finite.
+        GeometryError
+            If the arrays disagree in shape, are smaller than 2x2 nodes, carry anything
+            non-finite, or the mask is the wrong shape or empty.
         """
         east_km = np.asarray(east_km, dtype=np.float64)
         north_km = np.asarray(north_km, dtype=np.float64)
@@ -251,6 +266,32 @@ class RuptureMesh:
                 f"{cells_j} cell columns"
             )
 
+        cells = (east_km.shape[0] - 1, cells_j)
+        coords: dict[str, Any] = {"plane": ("j", plane_of_column)}
+        if occupied is not None:
+            mask = np.asarray(occupied, dtype=bool)
+            if mask.shape != cells:
+                raise GeometryError(
+                    f"the occupancy mask is shaped {mask.shape} for a chart of "
+                    f"{cells} cells"
+                )
+            if not mask.any():
+                raise GeometryError(
+                    f"{surface!r} has no occupied cells, so the surface does not "
+                    "reach its own parameter rectangle anywhere"
+                )
+            coords["occupied"] = (CELL_DIMS, mask)
+
+        extra: dict[str, Any] = {}
+        if parameter_spacing_km is not None:
+            strike_km, dip_km = (float(value) for value in parameter_spacing_km)
+            if not (strike_km > 0.0 and dip_km > 0.0):
+                raise GeometryError(
+                    f"the parameter spacing must be positive, got "
+                    f"({strike_km}, {dip_km})"
+                )
+            extra["parameter_spacing_km"] = np.array([strike_km, dip_km])
+
         dataset = xr.Dataset(
             data_vars={
                 "east_km": (
@@ -278,11 +319,12 @@ class RuptureMesh:
                     },
                 ),
             },
-            coords={"plane": ("j", plane_of_column)},
+            coords=coords,
             attrs={
                 "surface": surface,
                 "origin_east_km": float(origin_east_km),
                 "origin_north_km": float(origin_north_km),
+                **extra,
             },
         )
         return cls(dataset)
@@ -324,6 +366,42 @@ class RuptureMesh:
     def planes(self) -> FloatArray:
         """Which config plane each cell column came from, length ``n_j``."""
         return self._dataset["plane"].to_numpy()
+
+    def parameter_spacing_km(self) -> tuple[float, float] | None:
+        """``(strike, dip)`` cell size in the chart's own parameters, or ``None``.
+
+        Set when the chart was cut on a regular grid over a reference plane -- a
+        resampled curved surface. Such a chart is uniform *in its parameters* by
+        construction while its lifted node spacing varies with the curvature, so this
+        is the spacing the sampler and the sweep want, and measuring one from the nodes
+        instead would read the surface's own stretch as a discretisation.
+
+        ``None`` for a chart built from a config, whose grid is flat and whose spacing
+        is therefore measured from the nodes themselves.
+        """
+        stored = self._dataset.attrs.get("parameter_spacing_km")
+        if stored is None:
+            return None
+        strike_km, dip_km = (float(value) for value in np.asarray(stored).reshape(2))
+        return (strike_km, dip_km)
+
+    def occupied(self) -> BoolArray:
+        """Which cells are really fault, shaped :attr:`cell_counts`.
+
+        A chart is a rectangle in its own parameters, and a fault built from a config
+        fills that rectangle exactly -- for those this is all true, and every caller
+        that ignores it stays correct.
+
+        A surface resampled from a modeller's triangulation does not: the CFM
+        Hikurangi interface fills about two thirds of the rectangle its outline spans,
+        and the rest is cells that exist only because the grid is rectangular. They
+        carry positions, because the grid needs corners, and they carry no fault. What
+        reads this: the wavefront walls them off, the moment does not count them, and
+        the SRF does not write them.
+        """
+        if "occupied" not in self._dataset.coords:
+            return np.ones(self.cell_counts, dtype=bool)
+        return np.asarray(self._dataset["occupied"].to_numpy(), dtype=bool)
 
     def blocks(self) -> list[tuple[int, int, int]]:
         """Contiguous constant-plane runs, as ``(plane, start, stop)`` cell columns.
@@ -615,9 +693,10 @@ class RuptureMesh:
     def spacing_km(self) -> tuple[float, float]:
         """One ``(strike, dip)`` spacing for the chart -- what the sampler gets.
 
-        Each line is evenly divided (`validate_chart` asserts it), so a block's spacing
-        is the mean of its steps and the chart's the cell-count-weighted mean of its
-        blocks'. A mean rather than one line's step, because a fused bend is a
+        A chart cut on a reference plane states its own spacing and this returns it;
+        see :meth:`parameter_spacing_km`. Otherwise each line is evenly divided
+        (`validate_chart` asserts it), so a block's spacing is the mean of its steps
+        and the chart's the cell-count-weighted mean of its blocks'. A mean rather than one line's step, because a fused bend is a
         *trapezoid*: rows differ by up to 2.4% on the shipped ``hope`` example.
 
         Raises
@@ -626,6 +705,10 @@ class RuptureMesh:
             If the blocks were cut at resolutions too far apart to average, judged on
             their unstretched sizes so a bend is never read as a mismatch.
         """
+        stated = self.parameter_spacing_km()
+        if stated is not None:
+            return stated
+
         strike_sizes, dip_sizes, weights = self._block_cut_sizes()
         cells_i = self.cell_counts[0]
         _refuse_mixed_resolution(strike_sizes, weights, axis="strike")
@@ -1026,6 +1109,7 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
                 axis=1,
             )
             plane_of_column = np.concatenate([part.planes() for part in parts])
+            masks = [part.occupied() for part in parts]
             merged = RuptureMesh.from_nodes(
                 nodes[..., 0],
                 nodes[..., 1],
@@ -1034,6 +1118,13 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
                 origin_north_km=parts[0].origin_km[1],
                 surface=parts[0].surface,
                 plane_of_column=plane_of_column,
+                # Omitted when every part fills its own rectangle, so a fault built
+                # from a config stores no mask at all.
+                occupied=(
+                    None
+                    if all(mask.all() for mask in masks)
+                    else np.concatenate(masks, axis=1)
+                ),
             )
             fused.append(merged)
         # Eager, so a spacing spread past the bound refuses here rather than later.
@@ -1049,8 +1140,15 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
 def validate_chart(mesh: RuptureMesh) -> None:
     """Assert a chart satisfies the spectral sampler's assumptions.
 
-    The only code that knows the sampler needs flatness. Three checks, each with its
-    own tolerance because each is a different claim: every line is evenly divided (to
+    The only code that knows what the sampler needs, which is **one regular grid** --
+    not a flat surface. A chart cut on a reference plane already is one, by
+    construction, and returns here immediately; its nodes are curved and its lifted
+    steps vary with that curvature, which is the surface's own stretch rather than an
+    uneven discretisation. What the sweep pays for that is measured in
+    :func:`~rupture_generator.timing.travel_times`.
+
+    A chart built from a config carries no such guarantee, so it is checked for one:
+    three claims, each with its own tolerance. Every line is evenly divided (to
     :data:`UNIFORM_SPACING_TOLERANCE`, against a measured round-off floor of ~1e-14);
     lines agree with each other to within the bend stretch, which reaches 2.4% on the
     shipped ``hope`` example; and each *block* is planar -- per constant-plane block,
@@ -1058,10 +1156,13 @@ def validate_chart(mesh: RuptureMesh) -> None:
 
     Raises
     ------
-    ValueError
+    GeometryError
         Naming what failed and which plane. Non-finite nodes are refused at
         construction.
     """
+    if mesh.parameter_spacing_km() is not None:
+        return
+
     strike_steps, dip_steps = mesh.line_steps()
     nodes = mesh.nodes()
 

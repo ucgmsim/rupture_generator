@@ -220,12 +220,18 @@ def _mesh_tree(
                     ),
                 )
             )
+            mask = chart.occupied()
+            if not mask.all():
+                dataset = dataset.assign_coords(occupied=(("i", "j"), mask))
             dataset.attrs = {
                 "surface": name,
                 "plane": index,
                 "strike_count": strike_cells,
                 "dip_count": dip_cells,
             }
+            spacing = chart.parameter_spacing_km()
+            if spacing is not None:
+                dataset.attrs["parameter_spacing_km"] = np.array(spacing)
             groups[f"{name}/plane_{index}"] = dataset
 
     tree = xr.DataTree.from_dict(groups)
@@ -262,7 +268,7 @@ def _meshes_from_tree(
     # Keyed by the *stored* plane index rather than by iteration order, because Zarr
     # does not preserve order and HDF5 does: trusting it permutes the fault in one
     # container and not the other.
-    by_surface: dict[str, dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
+    by_surface: dict[str, dict[int, tuple[Any, ...]]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "east_km" not in node.dataset:
             continue
@@ -277,6 +283,12 @@ def _meshes_from_tree(
             dataset["east_km"].to_numpy(),
             dataset["north_km"].to_numpy(),
             dataset["depth_km"].to_numpy(),
+            (
+                np.asarray(dataset["occupied"].to_numpy(), dtype=bool)
+                if "occupied" in dataset.coords
+                else None
+            ),
+            node.attrs.get("parameter_spacing_km"),
         )
 
     meshes: dict[str, list[RuptureMesh]] = {}
@@ -292,12 +304,18 @@ def _meshes_from_tree(
         easting_km, northing_km = origins[surface]
         meshes[surface] = [
             RuptureMesh.from_nodes(
-                *planes[index],
+                *planes[index][:3],
                 origin_east_km=easting_km,
                 origin_north_km=northing_km,
                 surface=surface,
                 plane_of_column=np.full(
                     planes[index][0].shape[1] - 1, index, dtype=np.int64
+                ),
+                occupied=planes[index][3],
+                parameter_spacing_km=(
+                    None
+                    if planes[index][4] is None
+                    else tuple(np.asarray(planes[index][4]).reshape(2))
                 ),
             )
             for index in sorted(planes)
@@ -471,6 +489,17 @@ def segment_dataset(
                 "j",
                 mesh.planes(),
                 {"long_name": "Which config plane this cell column came from"},
+            ),
+            **(
+                {}
+                if mesh.occupied().all()
+                else {
+                    "occupied": (
+                        ("i", "j"),
+                        mesh.occupied(),
+                        {"long_name": "Which cells are really fault"},
+                    )
+                }
             ),
         },
         attrs={
