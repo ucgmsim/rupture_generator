@@ -65,6 +65,11 @@ pub fn von_karman_draw<'py>(
 
     // numpy's `ifft2` divides by n; rustfft does not scale at all. The field wants
     // `sqrt(n) * ifft2`, which is `1/sqrt(n)` times an unscaled inverse.
+    //
+    // The cast is exact for any embedding that fits in memory: f64 carries integers to
+    // 2^53, and `MAXIMUM_EMBEDDING_CELLS` on the Python side caps this product some
+    // twenty-six orders of magnitude below that.
+    #[allow(clippy::cast_precision_loss, reason = "cell count is far under 2^53")]
     let scale = ((padded_i * padded_j) as f64).sqrt().recip();
 
     let mut field = Array2::<f64>::zeros((cells_i, cells_j));
