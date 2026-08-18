@@ -11,8 +11,7 @@ import numpy as np
 import typer
 import xarray as xr
 
-from rupture_generator.formats import Format, from_path
-from rupture_generator.formats.rupture import read_rupture, segments_in
+from rupture_generator.formats import Format, from_path, read_rupture, segments_in
 from rupture_generator.moment import cumulative_moment, moment_rate, rigidity_pa
 from rupture_generator.scripts.errors import console
 

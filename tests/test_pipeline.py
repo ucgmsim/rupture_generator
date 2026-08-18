@@ -31,12 +31,13 @@ from rupture_generator.config.rupture import (
     PredeterminedPropagation,
     RuptureConfig,
 )
-from rupture_generator.formats.mesh import read_mesh, write_mesh
-from rupture_generator.formats.rupture import (
+from rupture_generator.formats import (
+    read_mesh,
     read_rupture,
+    rupture_tree,
+    segment_dataset,
     segments_in,
-    to_dataset,
-    to_datatree,
+    write_mesh,
     write_rupture,
 )
 from rupture_generator.mesh import build_surface, fuse, project_cells, validate_chart
@@ -69,7 +70,7 @@ def datasets(realisation: Realisation) -> dict[str, xr.Dataset]:
     intermediate the pipeline no longer produces.
     """
     return {
-        name: to_dataset(
+        name: segment_dataset(
             mesh,
             realisation.crs,
             segment_name=name,
@@ -537,7 +538,7 @@ def test_a_rupture_file_round_trips(
     `segments_in` sorts around.
     """
     realisation, _, _ = bent
-    tree = to_datatree(realisation, attrs={"seed": 1234})
+    tree = rupture_tree(realisation, attrs={"seed": 1234})
     path = tmp_path / f"rupture{suffix}"
     write_rupture(tree, path)
 

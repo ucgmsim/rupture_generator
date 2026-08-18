@@ -20,9 +20,13 @@ from rich.table import Table
 from rupture_generator import assemble, pipeline
 from rupture_generator.config import read_config
 from rupture_generator.config.rupture import RuptureConfig
-from rupture_generator.formats import Format, resolve
-from rupture_generator.formats.mesh import read_mesh
-from rupture_generator.formats.rupture import to_datatree, write_rupture
+from rupture_generator.formats import (
+    Format,
+    read_mesh,
+    resolve,
+    rupture_tree,
+    write_rupture,
+)
 from rupture_generator.mesh import RuptureMesh, fuse, validate_chart
 from rupture_generator.realisation import Realisation
 from rupture_generator.scripts.errors import console, load_config
@@ -197,7 +201,7 @@ def generate(
         # Only the provenance is the caller's: the frame, the causality tree, the
         # jumps and the moment the writer reads off the realisation.
         write_rupture(
-            to_datatree(
+            rupture_tree(
                 result,
                 attrs={
                     "title": rupture_config.title or config.stem,

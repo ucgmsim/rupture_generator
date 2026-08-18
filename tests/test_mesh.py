@@ -28,7 +28,7 @@ from rupture_generator.config.geometry import (
     PlaneConfig,
     PointConfig,
 )
-from rupture_generator.formats.mesh import read_mesh, write_mesh
+from rupture_generator.formats import read_mesh, write_mesh
 from rupture_generator.mesh import (
     PLANARITY_TOLERANCE_KM,
     RuptureMesh,
