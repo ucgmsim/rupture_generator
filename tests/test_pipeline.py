@@ -21,6 +21,7 @@ import numpy as np
 import pyproj
 import pytest
 import xarray as xr
+from mashumaro.exceptions import InvalidFieldValue
 
 from rupture_generator import assemble, moment
 from rupture_generator.config import read_config, read_geometry
@@ -31,6 +32,7 @@ from rupture_generator.config.rupture import (
     PredeterminedPropagation,
     RuptureConfig,
 )
+from rupture_generator.errors import ConfigError, PropagationError
 from rupture_generator.formats import (
     read_mesh,
     read_rupture,
@@ -461,7 +463,7 @@ def test_mai_does_not_take_coefficients_of_its_own() -> None:
     """A published fit with one number overridden is a file naming a relation it is
     not using -- exactly the mismatch between a name and what runs that `DEFECTS.md`
     11 is about. The refusal points at the spelling that can express it."""
-    with pytest.raises(ValueError, match="model = 'custom'"):
+    with pytest.raises(InvalidFieldValue, match="model = 'custom'"):
         FiniteSourceConfig(
             magnitude=6.2,
             average_dip_deg=70.0,
@@ -473,7 +475,7 @@ def test_mai_does_not_take_coefficients_of_its_own() -> None:
 def test_a_custom_relation_states_all_four_coefficients() -> None:
     """Three of four is a relation half this package chose, and the file would not
     say which half. Refused, naming what is missing."""
-    with pytest.raises(ValueError, match="dip_exponent"):
+    with pytest.raises(InvalidFieldValue, match="dip_exponent"):
         FiniteSourceConfig(
             magnitude=6.2,
             average_dip_deg=70.0,
@@ -487,7 +489,7 @@ def test_a_custom_relation_states_all_four_coefficients() -> None:
 
 def test_a_removed_relation_is_refused_by_name_and_points_at_custom() -> None:
     """The removal message names the way back: coefficients, not the name."""
-    with pytest.raises(ValueError, match="custom"):
+    with pytest.raises(InvalidFieldValue, match="custom"):
         FiniteSourceConfig(
             magnitude=6.2,
             average_dip_deg=70.0,
@@ -507,7 +509,7 @@ def test_a_negative_exponent_is_refused() -> None:
         "strike_exponent": 0.5,
         "dip_exponent": 1.0 / 3.0,
     }
-    with pytest.raises(ValueError, match="0 or more"):
+    with pytest.raises(InvalidFieldValue, match="0 or more"):
         FiniteSourceConfig(
             magnitude=6.2,
             average_dip_deg=70.0,
@@ -853,7 +855,7 @@ def test_a_stated_root_that_is_not_the_hypocentres_fault_is_refused() -> None:
     config.hypocentre.fault = "kaikoura:1"
     segments = segments_of(geometry)
 
-    with pytest.raises(ValueError, match="rooted at"):
+    with pytest.raises(PropagationError, match="rooted at"):
         generate(config, segments)
 
 
@@ -863,7 +865,7 @@ def test_a_rupture_over_several_segments_needs_to_say_where_it_starts() -> None:
     config.hypocentre.fault = None
     segments = segments_of(geometry)
 
-    with pytest.raises(ValueError, match="which one it is on"):
+    with pytest.raises(ConfigError, match="which one it is on"):
         generate(config, segments)
 
 

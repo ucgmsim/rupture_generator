@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from rupture_generator.errors import ConfigError
 from rupture_generator.units import M2_PER_KM2
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
@@ -100,7 +101,7 @@ def scale_to_moment(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If every field is zero everywhere, which carries no moment.
     """
     total = 0.0
@@ -108,7 +109,7 @@ def scale_to_moment(
         total += float(np.sum(rigidity * area * M2_PER_KM2 * field))
 
     if not (total > 0.0):
-        raise ValueError(
+        raise ConfigError(
             "the slip pattern carries no moment anywhere, so there is no factor that "
             "makes it carry the target -- every subfault was truncated to zero"
         )
@@ -130,7 +131,7 @@ def scale_each_to_moment(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If a segment's pattern carries no moment anywhere, naming its position.
     """
     scaled = []
@@ -139,7 +140,7 @@ def scale_each_to_moment(
     ):
         total = float(np.sum(rigidity * area * M2_PER_KM2 * field))
         if not (total > 0.0):
-            raise ValueError(
+            raise ConfigError(
                 f"segment {index}'s slip pattern carries no moment anywhere, so no "
                 "factor makes it carry its target -- every subfault was truncated"
             )

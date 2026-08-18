@@ -28,6 +28,7 @@ from rupture_generator.config.geometry import (
     PlaneConfig,
     PointConfig,
 )
+from rupture_generator.errors import GeometryError
 from rupture_generator.formats import read_mesh, write_mesh
 from rupture_generator.mesh import (
     PLANARITY_TOLERANCE_KM,
@@ -373,9 +374,9 @@ def test_a_position_off_the_fault_is_refused_naming_the_axis(
     (chart,) = build_fault(fault, NZTM)
     extent_km = float(chart.strike_arc_km()[-1])
 
-    with pytest.raises(ValueError, match="strike_km"):
+    with pytest.raises(GeometryError, match="strike_km"):
         chart.cell_index(extent_km + 1.0, 0.0)
-    with pytest.raises(ValueError, match="dip_km"):
+    with pytest.raises(GeometryError, match="dip_km"):
         chart.cell_index(0.0, float(chart.dip_arc_km()[-1]) + 1.0)
 
 
@@ -462,7 +463,7 @@ def test_one_conforming_surface_cut_two_ways_is_refused() -> None:
             ),
         ],
     )
-    with pytest.raises(ValueError, match="rows down dip"):
+    with pytest.raises(GeometryError, match="rows down dip"):
         fuse(build_fault(fault, NZTM))
 
 
@@ -477,7 +478,7 @@ def test_a_trace_that_doubles_back_is_refused() -> None:
             _plane(LonLat(longitude_deg=173.05, latitude_deg=-43.05)),
         ],
     )
-    with pytest.raises(ValueError, match="doubles back"):
+    with pytest.raises(GeometryError, match="doubles back"):
         build_fault(fault, NZTM)
 
 
@@ -546,7 +547,7 @@ def test_a_warped_chart_is_refused_as_not_planar() -> None:
 
     warped = depth.copy()
     warped[2, 3] += 10.0 * PLANARITY_TOLERANCE_KM
-    with pytest.raises(ValueError, match="deviates"):
+    with pytest.raises(GeometryError, match="deviates"):
         validate_chart(
             RuptureMesh.from_nodes(
                 east,
@@ -586,7 +587,7 @@ def test_a_shallow_fault_that_turns_sharply_has_no_single_spacing() -> None:
         ],
     )
     (segment,) = fuse(build_fault(fault, NZTM))
-    with pytest.raises(ValueError, match="varies by"):
+    with pytest.raises(GeometryError, match="varies by"):
         validate_chart(segment)
 
 
@@ -611,7 +612,7 @@ def test_validation_says_nothing_about_padding_or_even_extents() -> None:
 
 def test_a_chart_needs_two_nodes_on_each_axis() -> None:
     """One node on an axis is no cells, which is not a surface."""
-    with pytest.raises(ValueError, match="at least 2 nodes"):
+    with pytest.raises(GeometryError, match="at least 2 nodes"):
         RuptureMesh.from_nodes(
             np.zeros((1, 4)),
             np.zeros((1, 4)),
@@ -627,7 +628,7 @@ def test_a_non_finite_node_is_refused_at_construction() -> None:
     east, north = np.meshgrid(np.arange(4.0), np.arange(3.0))
     depth = np.zeros_like(east)
     depth[1, 1] = np.nan
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(GeometryError, match="non-finite"):
         RuptureMesh.from_nodes(
             east,
             north,
@@ -673,7 +674,7 @@ def test_a_point_source_whose_top_edge_is_in_the_air_is_refused() -> None:
     above a centre at 0.2 km, which is in the air.
     """
 
-    with pytest.raises(ValueError, match="above the surface"):
+    with pytest.raises(GeometryError, match="above the surface"):
         build_point(
             PointConfig(
                 name="shallow",
@@ -769,7 +770,7 @@ def test_a_transposed_field_is_refused() -> None:
     cells_i, cells_j = chart.cell_counts
     assert cells_i != cells_j, "this test needs a chart that is not square"
 
-    with pytest.raises(ValueError, match="shaped"):
+    with pytest.raises(GeometryError, match="shaped"):
         chart.with_fields(slip_m=np.ones((cells_j, cells_i)))
 
 
@@ -779,7 +780,7 @@ def test_a_non_finite_field_is_refused() -> None:
     slip = np.ones(chart.cell_counts)
     slip[0, 0] = np.nan
 
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(GeometryError, match="non-finite"):
         chart.with_fields(slip_m=slip)
 
 
@@ -793,7 +794,7 @@ def test_a_field_may_not_be_given_the_geometrys_own_name(name: str) -> None:
     """
     chart = _chart()
 
-    with pytest.raises(ValueError, match="the chart's own"):
+    with pytest.raises(GeometryError, match="the chart's own"):
         chart.with_fields(**{name: np.ones(chart.cell_counts)})
 
 
@@ -829,7 +830,7 @@ def test_attrs_are_read_only_and_the_chart_keeps_its_own() -> None:
 @pytest.mark.parametrize("name", ["surface", "origin_east_km", "origin_north_km"])
 def test_an_attr_that_says_what_the_chart_is_may_not_be_rewritten(name: str) -> None:
     """Rewriting one would move the fault, and every derived quantity with it."""
-    with pytest.raises(ValueError, match="says what this chart is"):
+    with pytest.raises(GeometryError, match="says what this chart is"):
         _chart().with_attrs(**{name: "elsewhere"})
 
 
@@ -859,11 +860,11 @@ def test_pulses_have_to_be_one_per_subfault() -> None:
     good = np.arange(cells + 1) * 3
     assert chart.with_pulses(good, samples).pulses is not None
 
-    with pytest.raises(ValueError, match="wants"):
+    with pytest.raises(GeometryError, match="wants"):
         chart.with_pulses(good[:-1], samples)
-    with pytest.raises(ValueError, match="decrease"):
+    with pytest.raises(GeometryError, match="decrease"):
         chart.with_pulses(good[::-1], samples)
-    with pytest.raises(ValueError, match="samples"):
+    with pytest.raises(GeometryError, match="samples"):
         chart.with_pulses(good, samples[:-1])
 
 

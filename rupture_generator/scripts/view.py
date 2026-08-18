@@ -11,9 +11,10 @@ import numpy as np
 import typer
 import xarray as xr
 
+from rupture_generator.errors import FormatError
 from rupture_generator.formats import Format, from_path, read_rupture, segments_in
 from rupture_generator.moment import cumulative_moment, moment_rate, rigidity_pa
-from rupture_generator.scripts.errors import console
+from rupture_generator.scripts.render import console
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -60,7 +61,7 @@ class Segment:
 
     Attributes
     ----------
-    cells : tuple of int, or None
+    cells : tuple of int
         The lattice shape the file was stored on, which is what :func:`strided` skips
         through.
     corners_m : np.ndarray
@@ -74,7 +75,7 @@ class Segment:
     """
 
     name: str
-    cells: tuple[int, int] | None
+    cells: tuple[int, int]
     corners_m: np.ndarray
     centres_m: np.ndarray
     slip_m: np.ndarray
@@ -181,7 +182,7 @@ def load(path: Path) -> tuple[list[Segment], str]:
 
     Raises
     ------
-    ValueError
+    FormatError
         For a format this cannot read, or a native file that holds no rupture.
     """
     chosen = from_path(path)
@@ -190,7 +191,7 @@ def load(path: Path) -> tuple[list[Segment], str]:
             return _from_rupture_file(tree), "native rupture file"
     if chosen is Format.SRF:
         return _from_srf(path), "SRF, mesh reconstructed from subfault centres"
-    raise ValueError(
+    raise FormatError(
         f"a rupture cannot be read from {chosen.value}: this reads the native format "
         "and text SRF"
     )
@@ -201,7 +202,7 @@ def _from_rupture_file(tree: xr.DataTree) -> list[Segment]:
     segments: list[Segment] = []
     found = segments_in(tree)
     if not found:
-        raise ValueError("this file holds no rupture")
+        raise FormatError("this file holds no rupture")
 
     origin = None
     for name, dataset in found:
@@ -559,26 +560,9 @@ def drawn(segment: Segment, stride: int) -> tuple[np.ndarray, np.ndarray]:
     return strided(segment, stride), strided_corners(segment, stride)
 
 
-def _lattice(segment: Segment) -> tuple[int, int]:
-    """The segment's lattice shape, or a refusal naming what to use instead.
-
-    Raises
-    ------
-    ValueError
-        For a triangulation, which has no lattice to skip through: a stride would leave
-        holes rather than a coarser surface -- see :func:`decimate`.
-    """
-    if segment.cells is None:
-        raise ValueError(
-            f"{segment.name!r} is a triangulation, so it has no lattice to stride "
-            "through. Draw it with `drawn`, which decimates it instead"
-        )
-    return segment.cells
-
-
 def strided(segment: Segment, stride: int) -> np.ndarray:
     """The flat indices of the cells to draw."""
-    cells_i, cells_j = _lattice(segment)
+    cells_i, cells_j = segment.cells
     rows = np.arange(0, cells_i, stride)
     columns = np.arange(0, cells_j, stride)
     return (rows[:, None] * cells_j + columns[None, :]).ravel()
@@ -591,7 +575,7 @@ def strided_corners(segment: Segment, stride: int) -> np.ndarray:
     closes rather than reading as a point cloud. Neighbouring blocks take their shared
     edge from the same cell corners, and nothing here averages.
     """
-    cells_i, cells_j = _lattice(segment)
+    cells_i, cells_j = segment.cells
     rows = np.arange(0, cells_i, stride)
     columns = np.arange(0, cells_j, stride)
     # The last cell each block reaches; the final block is short where the stride does

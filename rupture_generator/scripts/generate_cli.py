@@ -20,6 +20,7 @@ from rich.table import Table
 from rupture_generator import assemble, pipeline
 from rupture_generator.config import read_config
 from rupture_generator.config.rupture import RuptureConfig
+from rupture_generator.errors import ConfigError
 from rupture_generator.formats import (
     Format,
     read_mesh,
@@ -29,7 +30,7 @@ from rupture_generator.formats import (
 )
 from rupture_generator.mesh import RuptureMesh, fuse, validate_chart
 from rupture_generator.realisation import Realisation
-from rupture_generator.scripts.errors import console, load_config
+from rupture_generator.scripts.render import console, load_config
 from rupture_generator.srf import write_srf
 
 
@@ -53,12 +54,12 @@ def named_segments(
         a surface to apply it to.
     """
     if surface is not None and surface not in meshes:
-        raise ValueError(
+        raise ConfigError(
             f"the mesh holds no surface called {surface!r}; it has "
             f"{', '.join(sorted(meshes))}"
         )
     if plane is not None and surface is None and len(meshes) != 1:
-        raise ValueError(
+        raise ConfigError(
             "--plane says which plane of one surface to generate on, so it needs "
             f"--surface to say which of {', '.join(sorted(meshes))}"
         )
@@ -69,7 +70,7 @@ def named_segments(
     for name, charts in chosen.items():
         if plane is not None:
             if not 0 <= plane < len(charts):
-                raise ValueError(
+                raise ConfigError(
                     f"{name!r} has {len(charts)} planes, numbered 0 to "
                     f"{len(charts) - 1}, so there is no plane {plane}"
                 )

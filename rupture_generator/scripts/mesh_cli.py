@@ -22,7 +22,7 @@ from rupture_generator.config import read_geometry
 from rupture_generator.config.geometry import GeometryConfig
 from rupture_generator.formats import Format, write_mesh
 from rupture_generator.mesh import RuptureMesh, build_surface, project_cells
-from rupture_generator.scripts.errors import console, load_config
+from rupture_generator.scripts.render import console, load_config
 
 
 def summarise(meshes: dict[str, list[RuptureMesh]], crs: pyproj.CRS) -> Table:

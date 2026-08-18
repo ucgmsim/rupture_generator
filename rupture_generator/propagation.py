@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 from rupture_generator import moment
+from rupture_generator.errors import PropagationError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -121,9 +122,11 @@ class JumpGraph:
         """Check the weights describe a symmetric graph over these faults."""
         count = len(self.faults)
         if self.weights.shape != (count, count):
-            raise ValueError(f"the weights are {self.weights.shape} for {count} faults")
+            raise PropagationError(
+                f"the weights are {self.weights.shape} for {count} faults"
+            )
         if not np.allclose(self.weights, self.weights.T):
-            raise ValueError("a jump is as likely in one direction as the other")
+            raise PropagationError("a jump is as likely in one direction as the other")
 
     @property
     def edges(self) -> list[tuple[int, int, float]]:
@@ -214,12 +217,12 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
 
     Raises
     ------
-    ValueError
+    PropagationError
         If the graph is disconnected: returning a forest would be a rupture that
         started twice.
     """
     if not graph.is_connected():
-        raise ValueError(
+        raise PropagationError(
             "these faults do not form a connected system: at least one is beyond "
             f"{MAX_JUMP_KM} km of every other, so no rupture reaches it. Remove it, "
             "or generate it as its own earthquake"
@@ -270,11 +273,11 @@ def maximum_likelihood_tree(graph: JumpGraph) -> list[tuple[int, int]]:
 
     Raises
     ------
-    ValueError
+    PropagationError
         If the graph is disconnected.
     """
     if not graph.is_connected():
-        raise ValueError(
+        raise PropagationError(
             "these faults do not form a connected system, so there is no spanning "
             "tree to maximise over"
         )
@@ -311,11 +314,11 @@ def root_tree(
 
     Raises
     ------
-    ValueError
+    PropagationError
         If the root is not one of the faults, or some fault is unreachable from it.
     """
     if root not in faults:
-        raise ValueError(
+        raise PropagationError(
             f"the rupture starts on {root!r}, which is not one of {', '.join(faults)}"
         )
 
@@ -338,7 +341,7 @@ def root_tree(
 
     if len(seen) != len(faults):
         missing = sorted(set(faults) - set(tree))
-        raise ValueError(
+        raise PropagationError(
             f"{', '.join(missing)} cannot be reached from {root!r}, so the tree does "
             "not describe one rupture"
         )
@@ -350,31 +353,31 @@ def check_tree(tree: Tree[str | None], faults: list[str], root: str) -> None:
 
     Raises
     ------
-    ValueError
+    PropagationError
         If a parent is not a fault, a fault is missing, the root disagrees with where
         the rupture starts, or the parent map contains a cycle.
     """
     known = set(faults)
     for child, parent in tree.items():
         if child not in known:
-            raise ValueError(
+            raise PropagationError(
                 f"the propagation names {child!r}, which is not a surface in this "
                 f"geometry ({', '.join(sorted(known))})"
             )
         if parent is not None and parent not in known:
-            raise ValueError(
+            raise PropagationError(
                 f"{child!r} is triggered by {parent!r}, which is not a surface in "
                 "this geometry"
             )
 
     roots = [child for child, parent in tree.items() if parent is None]
     if len(roots) != 1:
-        raise ValueError(
+        raise PropagationError(
             f"the propagation has {len(roots)} faults with no parent "
             f"({', '.join(sorted(roots))}); a rupture starts in one place"
         )
     if roots[0] != root:
-        raise ValueError(
+        raise PropagationError(
             f"the propagation is rooted at {roots[0]!r} but the hypocentre is on "
             f"{root!r}. One of the two is wrong, and this refuses rather than "
             "choosing"
@@ -382,7 +385,7 @@ def check_tree(tree: Tree[str | None], faults: list[str], root: str) -> None:
 
     missing = known - set(tree)
     if missing:
-        raise ValueError(
+        raise PropagationError(
             f"{', '.join(sorted(missing))} has no entry in the propagation, so "
             "nothing says whether it ruptures"
         )
@@ -393,7 +396,7 @@ def check_tree(tree: Tree[str | None], faults: list[str], root: str) -> None:
         node: str | None = fault
         while node is not None:
             if node in seen:
-                raise ValueError(
+                raise PropagationError(
                     f"the propagation loops: {fault!r} is its own ancestor, so no "
                     "fault in that loop is ever triggered"
                 )
@@ -455,16 +458,16 @@ class DistanceOverVelocity:
         """Refuse a model the front cannot cross a gap at."""
         speeds = np.asarray(self.shear_speed_km_s, dtype=np.float64)
         if speeds.shape != np.asarray(self.bottom_depth_km, dtype=np.float64).shape:
-            raise ValueError(
+            raise PropagationError(
                 f"the velocity model has {speeds.size} shear speeds for "
                 f"{np.size(self.bottom_depth_km)} layer bottoms"
             )
         if not speeds.size:
-            raise ValueError(
+            raise PropagationError(
                 "a jump crosses rock, and this velocity model has no layers"
             )
         if not (speeds > 0.0).all():
-            raise ValueError(
+            raise PropagationError(
                 f"a jump crosses the gap at {float(speeds.min())} km/s, which never "
                 "arrives"
             )
@@ -539,7 +542,7 @@ def causal_jump(
 
     Raises
     ------
-    ValueError
+    PropagationError
         If no pair is within the limit, so the two faults are not close enough to be
         part of one rupture at all.
     """
@@ -575,7 +578,7 @@ def causal_jump(
 
     reachable = nearest_km <= max_distance_km
     if not reachable.any():
-        raise ValueError(
+        raise PropagationError(
             f"{parent.surface!r} and {child.surface!r} come no closer than "
             f"{float(nearest_km.min()):.2f} km, past the {max_distance_km:.1f} km a "
             "rupture jumps, so the front never crosses between them"

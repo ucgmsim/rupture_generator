@@ -26,6 +26,7 @@ from rupture_generator.config.rupture import (
     ComputedPropagation,
     PredeterminedPropagation,
 )
+from rupture_generator.errors import PropagationError
 from rupture_generator.mesh import RuptureMesh
 from rupture_generator.pipeline import causality_tree
 from rupture_generator.propagation import (
@@ -197,7 +198,7 @@ def test_faults_beyond_the_limit_get_no_edge_at_all() -> None:
     assert graph.weights[0, 2] == 0.0
     assert not graph.is_connected()
 
-    with pytest.raises(ValueError, match="connected"):
+    with pytest.raises(PropagationError, match="connected"):
         sample_tree(graph, np.random.default_rng(0))
 
 
@@ -334,19 +335,19 @@ def test_a_stated_tree_that_is_not_one_is_refused() -> None:
     # A cycle that leaves a root elsewhere: `a` roots the tree, and `b` and `c`
     # trigger each other. A cycle with no root at all is caught one check earlier,
     # as a rupture that starts nowhere.
-    with pytest.raises(ValueError, match="is its own ancestor"):
+    with pytest.raises(PropagationError, match="is its own ancestor"):
         check_tree({"a": None, "b": "c", "c": "b", "d": "a"}, [*faults, "d"], "a")
 
-    with pytest.raises(ValueError, match="starts in one place"):
+    with pytest.raises(PropagationError, match="starts in one place"):
         check_tree({"a": "c", "b": "a", "c": "b"}, faults, "a")
 
-    with pytest.raises(ValueError, match="not a surface"):
+    with pytest.raises(PropagationError, match="not a surface"):
         check_tree({"a": None, "b": "a", "c": "elsewhere"}, faults, "a")
 
-    with pytest.raises(ValueError, match="no entry in the propagation"):
+    with pytest.raises(PropagationError, match="no entry in the propagation"):
         check_tree({"a": None, "b": "a"}, faults, "a")
 
-    with pytest.raises(ValueError, match="faults with no parent"):
+    with pytest.raises(PropagationError, match="faults with no parent"):
         check_tree({"a": None, "b": None, "c": "a"}, faults, "a")
 
 
@@ -357,7 +358,9 @@ def test_a_stated_root_must_be_where_the_hypocentre_is() -> None:
     rather than choosing. Silently preferring either would move the nucleation point
     to a fault the config did not name.
     """
-    with pytest.raises(ValueError, match="rooted at 'a' but the hypocentre is on 'b'"):
+    with pytest.raises(
+        PropagationError, match="rooted at 'a' but the hypocentre is on 'b'"
+    ):
         check_tree({"a": None, "b": "a"}, ["a", "b"], "b")
 
 
@@ -431,7 +434,7 @@ def test_the_jump_is_within_the_distance_a_rupture_jumps() -> None:
     child = _chart(east_km=30.0, cells=6, name="child")
     onset_s = np.zeros((6, 6))
 
-    with pytest.raises(ValueError, match="past the"):
+    with pytest.raises(PropagationError, match="past the"):
         causal_jump(parent, onset_s, child, Instantaneous(), max_distance_km=15.0)
 
     near = _chart(east_km=10.0, cells=6, name="near")
@@ -552,13 +555,13 @@ def test_a_deeper_edge_wins_without_a_depth_rule() -> None:
 
 def test_a_delay_needs_a_speed_the_front_can_travel_at() -> None:
     """A zero or negative crossing speed never arrives."""
-    with pytest.raises(ValueError, match="never arrives"):
+    with pytest.raises(PropagationError, match="never arrives"):
         DistanceOverVelocity(np.array([100.0]), np.array([0.0]))
 
 
 def test_a_delay_needs_a_speed_for_every_layer() -> None:
     """A velocity model that runs out of speeds would silently reuse the wrong one."""
-    with pytest.raises(ValueError, match="shear speeds"):
+    with pytest.raises(PropagationError, match="shear speeds"):
         DistanceOverVelocity(np.array([5.0, 100.0]), np.array([3.0]))
 
 
@@ -627,7 +630,7 @@ def test_faults_out_of_reach_of_each_other_are_refused() -> None:
         "a": _chart(name="a"),
         "far": _chart(east_km=200.0, name="far"),
     }
-    with pytest.raises(ValueError, match="connected"):
+    with pytest.raises(PropagationError, match="connected"):
         causality_tree(segments, ComputedPropagation(), "a", np.random.default_rng(0))
 
 

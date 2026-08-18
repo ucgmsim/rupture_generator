@@ -28,6 +28,7 @@ import numpy as np
 import scipy as sp
 
 from rupture_generator import srf_parser  # ty: ignore[unresolved-import]
+from rupture_generator.errors import FormatError
 
 FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
 
@@ -101,7 +102,7 @@ class Points:
 
         Raises
         ------
-        ValueError
+        FormatError
             If the arrays are not all the same length, or only one of the two
             material properties is present.
         """
@@ -112,11 +113,11 @@ class Points:
         }
         lengths = {name: len(values) for name, values in present.items()}
         if len(set(lengths.values())) != 1:
-            raise ValueError(f"point arrays disagree on length: {lengths}")
+            raise FormatError(f"point arrays disagree on length: {lengths}")
 
         material = ("shear_speed_cm_s", "density_g_cm3")
         if len(present.keys() & material) == 1:
-            raise ValueError(
+            raise FormatError(
                 "shear_speed_cm_s and density_g_cm3 are the version 2.0 material "
                 "properties and go together; this has only "
                 f"{next(iter(present.keys() & material))}"
@@ -284,22 +285,22 @@ class SrfFile:
 
         Raises
         ------
-        ValueError
+        FormatError
             If the version is not supported, or the material properties are present
             when it is 1.0 or absent when it is 2.0.
         """
         if self.version not in SUPPORTED_VERSIONS:
-            raise ValueError(
+            raise FormatError(
                 f"unsupported SRF version {self.version!r}; "
                 f"supported versions are {', '.join(sorted(SUPPORTED_VERSIONS))}"
             )
         if self.version == "2.0" and not self.points.has_material_properties:
-            raise ValueError(
+            raise FormatError(
                 "SRF version 2.0 carries vs and den per point, and these points have "
                 "neither. Add them, or set version to '1.0'."
             )
         if self.version == "1.0" and self.points.has_material_properties:
-            raise ValueError(
+            raise FormatError(
                 "SRF version 1.0 has nowhere to put vs and den. Drop them, or set "
                 "version to '2.0'."
             )
@@ -587,7 +588,7 @@ class Sw4Hdf5Stream:
         ------
         RuntimeError
             If called outside the context manager, where there is no open file.
-        ValueError
+        FormatError
             If the samples handed over are not as many as the lengths claim, which
             would shift every later subfault's pulse.
         """
@@ -598,7 +599,7 @@ class Sw4Hdf5Stream:
             )
         expected = int(np.sum(pulse_lengths))
         if samples_cm_s.size != expected:
-            raise ValueError(
+            raise FormatError(
                 f"this block claims {expected} slip-rate samples across "
                 f"{len(pulse_lengths)} subfaults and carries {samples_cm_s.size}. "
                 "SR1 is every pulse concatenated in subfault order, so a block that "

@@ -36,6 +36,7 @@ from scipy.fft import next_fast_len
 from scipy.special import gamma, kv
 
 from rupture_generator import _kernels
+from rupture_generator.errors import CapacityError, ConfigError
 
 if TYPE_CHECKING:
     from rupture_generator.mesh import RuptureMesh
@@ -124,9 +125,9 @@ class VonKarmanFilterParameters:
         ):
             value = getattr(self, name)
             if not (value > 0.0) or not np.isfinite(value):
-                raise ValueError(f"{name} must be a positive length, got {value}")
+                raise ConfigError(f"{name} must be a positive length, got {value}")
         if not (0.0 < self.hurst < 1.0):
-            raise ValueError(f"hurst must be in (0, 1), got {self.hurst}")
+            raise ConfigError(f"hurst must be in (0, 1), got {self.hurst}")
 
 
 def correlation_lengths(
@@ -358,7 +359,7 @@ def _candidate_extents(
 
     Raises
     ------
-    ValueError
+    CapacityError
         If even the minimum embedding is past :data:`MAXIMUM_EMBEDDING_CELLS`.
     """
     smallest = (
@@ -366,7 +367,7 @@ def _candidate_extents(
         int(next_fast_len(MINIMUM_EMBEDDING * cell_counts[1])),
     )
     if smallest[0] * smallest[1] > MAXIMUM_EMBEDDING_CELLS:
-        raise ValueError(
+        raise CapacityError(
             f"a {cell_counts[0]} x {cell_counts[1]} grid embeds in no less than "
             f"{smallest[0]} x {smallest[1]} = {smallest[0] * smallest[1]:,} cells, past "
             f"the {MAXIMUM_EMBEDDING_CELLS:,} this machine can transform -- a circulant "
@@ -521,7 +522,7 @@ def von_karman_grid(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If the embedding this grid needs is past :data:`MAXIMUM_EMBEDDING_CELLS`.
 
     Warns
@@ -554,7 +555,7 @@ def correlate_fields(
     sample spread, perturbing the relation by the estimator's error.
     """
     if not (-1.0 <= rho <= 1.0):
-        raise ValueError(f"a correlation must be in [-1, 1], got {rho}")
+        raise ConfigError(f"a correlation must be in [-1, 1], got {rho}")
 
     return rho * field_a + np.sqrt(1.0 - rho * rho) * field_b
 

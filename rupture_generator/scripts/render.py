@@ -30,6 +30,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 
 from rupture_generator.config import field_path
+from rupture_generator.errors import RuptureGeneratorError
 
 console = Console(stderr=True)
 """One console, on stderr. A CLI whose diagnostics go to stdout cannot be piped."""
@@ -202,7 +203,9 @@ def load_config[T](path: Path, read: Callable[[Path], T]) -> T:
     except yaml.YAMLError as error:
         console.print(f"[red]{path}: {error}[/red]")
         raise typer.Exit(1) from error
-    except Exception as error:
+    except RuptureGeneratorError as error:
+        # Only what this package refuses on purpose. Anything else is a bug in the
+        # generator, and a traceback says so instead of a card blaming the file.
         print_config_error(error)
         raise typer.Exit(1) from error
 

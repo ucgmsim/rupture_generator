@@ -13,6 +13,7 @@ from collections.abc import Iterator, MutableMapping
 import pyproj
 
 from rupture_generator import moment, propagation
+from rupture_generator.errors import PropagationError
 from rupture_generator.mesh import RuptureMesh
 
 TRUNCATED_FRACTION = "truncated_fraction"
@@ -76,7 +77,7 @@ class Realisation(MutableMapping[str, RuptureMesh]):
 
         Raises
         ------
-        ValueError
+        PropagationError
             If nothing has propagated yet, or if the tree has several roots.
         """
         roots = [name for name, parent in self.tree.items() if parent is None]
@@ -84,9 +85,11 @@ class Realisation(MutableMapping[str, RuptureMesh]):
             case [root]:
                 return root
             case []:
-                raise ValueError("This rupture has no root; nothing has propagated yet")
+                raise PropagationError(
+                    "This rupture has no root; nothing has propagated yet"
+                )
             case _:
-                raise ValueError("This rupture has multiple roots")
+                raise PropagationError("This rupture has multiple roots")
 
     @property
     def hypocentre(self) -> tuple[int, int] | int:

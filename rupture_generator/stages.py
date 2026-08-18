@@ -13,6 +13,7 @@ from typing import Protocol
 
 import numpy as np
 
+from rupture_generator.errors import ConfigError
 from rupture_generator.sampling import (
     VonKarmanFilterParameters,
     correlate_fields,
@@ -99,14 +100,14 @@ def _taper_widths(
     top = width(params.top_taper, cells_i)
     bottom = width(params.bottom_taper, cells_i)
     if 2 * side > cells_j:
-        raise ValueError(
+        raise ConfigError(
             f"a side taper of {params.side_taper} reaches {side} cells from each end "
             f"of a fault {cells_j} cells long, so the two ramps overlap. A taper is a "
             "statement about the edges; past a half of the fault it is a statement "
             "about the middle"
         )
     if top + bottom > cells_i:
-        raise ValueError(
+        raise ConfigError(
             f"the up-dip and down-dip tapers reach {top} and {bottom} cells of a "
             f"fault {cells_i} cells wide, so they overlap"
         )
@@ -284,7 +285,7 @@ def rise_time_field(
     pattern = np.maximum(pattern, 0.0)
 
     if params.slip_exponent <= 0.1:
-        raise ValueError(
+        raise ConfigError(
             f"a slip exponent of {params.slip_exponent} abandons the correlated "
             "field for independent lognormal noise, which is a different model and "
             "is not implemented -- use an exponent above 0.1"
@@ -293,7 +294,7 @@ def rise_time_field(
 
     mean = float(pattern.mean())
     if mean == 0.0:
-        raise ValueError("every subfault's rise-time pattern is zero")
+        raise ConfigError("every subfault's rise-time pattern is zero")
     pattern = pattern / mean
 
     stretched = params.stretch_at(depth_km) * pattern

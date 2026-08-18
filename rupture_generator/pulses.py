@@ -16,6 +16,7 @@ import dataclasses
 import numpy as np
 
 from rupture_generator import _kernels
+from rupture_generator.errors import ConfigError
 from rupture_generator.stages import DepthRamp
 
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
@@ -60,14 +61,14 @@ def from_stype(stype: str) -> ResolvedShape:
 
     Raises
     ------
-    ValueError
+    ConfigError
         For a removed shape, saying it was removed; for anything else, saying the name
         is unknown. A removed shape is a decision to revisit, an unknown one a typo.
     """
     lowered = stype.lower()
 
     if lowered in REMOVED_SHAPES:
-        raise ValueError(
+        raise ConfigError(
             f"the slip-rate shape {stype!r} was removed in the pipeline rewrite: "
             "production selects the OliuP2 family, and the others go until someone "
             "asks for one with a reason. Use 'OliuP2' or 'delta'"
@@ -85,14 +86,14 @@ def from_stype(stype: str) -> ResolvedShape:
         try:
             scale = float(suffix)
         except ValueError:
-            raise ValueError(
+            raise ConfigError(
                 f"the text after 'ucsb-T' must be a number, got {suffix!r}"
             ) from None
         if scale <= 0.0:
-            raise ValueError(f"'ucsb-T' needs a positive scale, got {scale}")
+            raise ConfigError(f"'ucsb-T' needs a positive scale, got {scale}")
         return ResolvedShape("oliu_p", scale, 0.13 / scale)
 
-    raise ValueError(
+    raise ConfigError(
         f"no slip-rate shape is spelled {stype!r}. The vocabulary is 'OliuP2', "
         "'delta', and the ucsb aliases ('ucsb', 'ucsb2', 'ucsb-varT1', 'ucsb-T<b>')"
     )

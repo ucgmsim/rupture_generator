@@ -240,12 +240,12 @@ class RuptureMesh:
         north_km = np.asarray(north_km, dtype=np.float64)
         depth_km = np.asarray(depth_km, dtype=np.float64)
         if not (east_km.shape == north_km.shape == depth_km.shape):
-            raise ValueError(
+            raise GeometryError(
                 f"the node arrays disagree in shape: east {east_km.shape}, "
                 f"north {north_km.shape}, depth {depth_km.shape}"
             )
         if east_km.ndim != 2 or min(east_km.shape) < 2:
-            raise ValueError(
+            raise GeometryError(
                 f"a chart needs at least 2 nodes on each axis, got {east_km.shape}"
             )
         for name, values in (
@@ -254,14 +254,14 @@ class RuptureMesh:
             ("depth_km", depth_km),
         ):
             if not np.isfinite(values).all():
-                raise ValueError(f"{name} carries a non-finite node position")
+                raise GeometryError(f"{name} carries a non-finite node position")
 
         cells_j = east_km.shape[1] - 1
         if plane_of_column is None:
             plane_of_column = np.zeros(cells_j, dtype=np.int64)
         plane_of_column = np.asarray(plane_of_column, dtype=np.int64)
         if plane_of_column.shape != (cells_j,):
-            raise ValueError(
+            raise GeometryError(
                 f"plane_of_column has {plane_of_column.shape[0]} entries for "
                 f"{cells_j} cell columns"
             )
@@ -460,7 +460,7 @@ class RuptureMesh:
 
         Raises
         ------
-        ValueError
+        GeometryError
             For an array that is not the chart's shape, one carrying a non-finite
             value, or a name in :data:`RESERVED_FIELDS`. xarray objects only when
             dimension *sizes* disagree, so a transposed field on a square patch would
@@ -470,18 +470,18 @@ class RuptureMesh:
         prepared = {}
         for name, values in arrays.items():
             if name in RESERVED_FIELDS:
-                raise ValueError(
+                raise GeometryError(
                     f"{name!r} is the chart's own, not a field to attach; "
                     f"reserved names are {', '.join(sorted(RESERVED_FIELDS))}"
                 )
             array = np.asarray(values, dtype=np.float64)
             if array.shape != cell_counts:
-                raise ValueError(
+                raise GeometryError(
                     f"{name} is shaped {array.shape}, and this chart has "
                     f"{cell_counts} cells (i down dip, j along strike)"
                 )
             if not np.isfinite(array).all():
-                raise ValueError(f"{name} carries a non-finite value")
+                raise GeometryError(f"{name} carries a non-finite value")
             prepared[name] = (CELL_DIMS, array)
 
         return self._with(self._dataset.assign(prepared))
@@ -507,12 +507,12 @@ class RuptureMesh:
 
         Raises
         ------
-        ValueError
+        GeometryError
             For a name in :data:`RESERVED_ATTRS`.
         """
         reserved = RESERVED_ATTRS & set(values)
         if reserved:
-            raise ValueError(
+            raise GeometryError(
                 f"{', '.join(sorted(reserved))} says what this chart is, and is not "
                 "a stage's to rewrite"
             )
@@ -526,7 +526,7 @@ class RuptureMesh:
 
         Raises
         ------
-        ValueError
+        GeometryError
             For an indptr that is not one: wrong length, decreasing, or not ending at
             ``samples.size``.
         """
@@ -535,15 +535,15 @@ class RuptureMesh:
         samples = np.asarray(samples, dtype=np.float64)
 
         if offsets.shape != (cells_i * cells_j + 1,):
-            raise ValueError(
+            raise GeometryError(
                 f"the pulse offsets are shaped {offsets.shape}, and this chart has "
                 f"{cells_i * cells_j} subfaults, so it wants "
                 f"{cells_i * cells_j + 1} (one per subfault, plus the end)"
             )
         if np.any(np.diff(offsets) < 0):
-            raise ValueError("the pulse offsets decrease, so some subfault has none")
+            raise GeometryError("the pulse offsets decrease, so some subfault has none")
         if offsets[0] != 0 or offsets[-1] != samples.size:
-            raise ValueError(
+            raise GeometryError(
                 f"the pulse offsets run {offsets[0]} to {offsets[-1]}, and there are "
                 f"{samples.size} samples"
             )
@@ -701,7 +701,7 @@ class RuptureMesh:
 
         Raises
         ------
-        ValueError
+        GeometryError
             If the blocks were cut at resolutions too far apart to average, judged on
             their unstretched sizes so a bend is never read as a mismatch.
         """
@@ -737,7 +737,7 @@ class RuptureMesh:
 
         Raises
         ------
-        ValueError
+        GeometryError
             For a position off the fault, naming the axis and the fault's extent.
         """
         return (
@@ -783,7 +783,7 @@ def _refuse_mixed_resolution(
 
     spread = (max(sizes) - min(sizes)) / min(sizes)
     if spread > permitted:
-        raise ValueError(
+        raise GeometryError(
             f"the planes were cut into {axis} subfaults of "
             f"{[f'{size:.3g}' for size in sizes]} km, a {spread:.0%} spread against "
             f"the {permitted:.0%} that rounding onto their cell counts could produce. "
@@ -799,7 +799,7 @@ def _locate(position_km: float, arc_km: FloatArray, *, axis: str) -> int:
     """
     extent_km = float(arc_km[-1])
     if position_km < 0.0 or position_km > extent_km:
-        raise ValueError(
+        raise GeometryError(
             f"hypocentre: {axis}_km {position_km} is off the fault, whose {axis} "
             f"extent is {extent_km:.2f} km"
         )
@@ -867,7 +867,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 
     Raises
     ------
-    ValueError
+    GeometryError
         For a repeated trace point or a bend of 120 degrees or more.
     """
     origin_e, origin_n = to_projected(
@@ -885,7 +885,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     lengths = [float(np.hypot(*(trace[k + 1] - trace[k]))) for k in range(count)]
     for k, length in enumerate(lengths):
         if not (length > 0.0):
-            raise ValueError(
+            raise GeometryError(
                 f"{fault.name}: trace points {k} and {k + 1} coincide -- a trace "
                 "segment needs a positive length"
             )
@@ -897,7 +897,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     ]
     for v, deflection in enumerate(deflections, start=1):
         if abs(deflection) >= SHARPEST_BEND_DEG:
-            raise ValueError(
+            raise GeometryError(
                 f"{fault.name}: the trace turns {abs(deflection):.1f} degrees at "
                 f"point {v}, which doubles back -- the bend stretch would exceed 2"
             )
@@ -981,7 +981,7 @@ def build_point(point: PointConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 
     Raises
     ------
-    ValueError
+    GeometryError
         If the cell's top edge would be above the ground -- a 1 km cell dipping 60
         degrees reaches 0.43 km above a centre at 0.2 km.
     """
@@ -993,7 +993,7 @@ def build_point(point: PointConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     dip_radians = np.radians(point.dip_deg)
     top_depth_km = point.depth_km - half * np.sin(dip_radians)
     if top_depth_km < 0.0:
-        raise ValueError(
+        raise GeometryError(
             f"{point.name}: a {point.size_km} km cell dipping {point.dip_deg} "
             f"degrees centred at {point.depth_km} km reaches {-top_depth_km:.2f} km "
             "above the surface -- deepen the centre or shrink the cell"
@@ -1066,7 +1066,7 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
 
     Raises
     ------
-    ValueError
+    GeometryError
         When two charts of one surface coincide at the seam but are cut into different
         dip rows, or when a fused segment's spacings are too far apart to average.
     """
@@ -1092,7 +1092,7 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
             <= SEAM_TOLERANCE_KM
         )
         if corners_agree:
-            raise ValueError(
+            raise GeometryError(
                 f"{chart.surface}: two conforming planes are cut into "
                 f"{near.cell_counts[0]} and {chart.cell_counts[0]} rows down dip, "
                 "so they are not one grid. Give them the same dip discretisation"
@@ -1183,7 +1183,7 @@ def validate_chart(mesh: RuptureMesh) -> None:
             )
             mean = float(steps.mean())
             if per_line > UNIFORM_SPACING_TOLERANCE * mean:
-                raise ValueError(
+                raise GeometryError(
                     f"{mesh.surface}: plane {plane} has a line whose {axis} steps "
                     f"are not one spacing -- they spread {per_line:.3g} km within a "
                     "single line. A chart this package builds divides every line "
@@ -1192,7 +1192,7 @@ def validate_chart(mesh: RuptureMesh) -> None:
                 )
             spread = (lines.max() - lines.min()) / mean
             if spread > _MAX_BEND_SPREAD:
-                raise ValueError(
+                raise GeometryError(
                     f"{mesh.surface}: plane {plane}'s {axis} spacing varies by "
                     f"{spread:.1%} across the plane, which is too far from one grid "
                     "to sample on one. A bend stretches the surface by the horizontal "
@@ -1209,7 +1209,7 @@ def validate_chart(mesh: RuptureMesh) -> None:
         _, _, rotation = np.linalg.svd(centred, full_matrices=False)
         residual = float(np.abs(centred @ rotation[2]).max())
         if residual > PLANARITY_TOLERANCE_KM:
-            raise ValueError(
+            raise GeometryError(
                 f"{mesh.surface}: plane {plane} deviates {residual:.3g} km from "
                 "flat, and the spectral sampler assumes a planar chart. A curved "
                 "surface needs the kernel sampler, which is not written"

@@ -39,6 +39,7 @@ from rupture_generator.config.rupture import (
     SourceConfig,
     VelocityModelConfig,
 )
+from rupture_generator.errors import ConfigError
 from rupture_generator.mesh import RuptureMesh, build_surface, fuse, validate_chart
 from rupture_generator.realisation import Realisation
 
@@ -71,19 +72,19 @@ def charts_for(geometry: GeometryConfig, surface_name: str | None) -> Realisatio
 
     Raises
     ------
-    ValueError
+    ConfigError
         If the geometry holds several surfaces and none was named.
     """
     names = [surface.name for surface in geometry.surfaces]
     if surface_name is None:
         if len(names) != 1:
-            raise ValueError(
+            raise ConfigError(
                 f"the geometry holds {len(names)} surfaces ({', '.join(names)}), so "
                 "one has to be named"
             )
         surface_name = names[0]
     elif surface_name not in names:
-        raise ValueError(
+        raise ConfigError(
             f"no surface is called {surface_name!r}; the geometry holds "
             f"{', '.join(names)}"
         )
@@ -108,7 +109,7 @@ def causality_tree(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If the stated tree is not one, or the faults are too far apart to form a
         connected system.
     """
@@ -156,7 +157,7 @@ def generate(
 
     Raises
     ------
-    ValueError
+    ConfigError
         For a hypocentre off the fault, a propagation that is not a tree, an
         unrepresentable rise time (naming the subfault), or a rupture speed the front
         cannot travel at.
@@ -197,7 +198,7 @@ def propagate(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If the hypocentre names no segment when several rupture, or one that is not
         here; if a stated tree is not a tree; or if the faults are too far apart to
         form a connected system.
@@ -215,20 +216,20 @@ def _root_of(realisation: Realisation, hypocentre: HypocentreConfig) -> str:
 
     Raises
     ------
-    ValueError
+    ConfigError
         If several segments rupture and the hypocentre names none of them, or names
         one that is not here.
     """
     names = list(realisation)
     if hypocentre.fault is None:
         if len(names) != 1:
-            raise ValueError(
+            raise ConfigError(
                 f"this rupture spans {len(names)} segments ({', '.join(names)}), so "
                 "the hypocentre has to say which one it is on"
             )
         return names[0]
     if hypocentre.fault not in realisation:
-        raise ValueError(
+        raise ConfigError(
             f"the hypocentre is on {hypocentre.fault!r}, which is not one of "
             f"{', '.join(names)}"
         )
@@ -557,7 +558,7 @@ def pulse_model(config: RuptureConfig) -> pulses.PulseParams:
 
     Raises
     ------
-    ValueError
+    ConfigError
         For a slip-rate shape this package does not implement, named.
     """
     return pulses.PulseParams(

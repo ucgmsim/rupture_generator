@@ -31,6 +31,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from rupture_generator.errors import ConfigError
 from rupture_generator.mesh import RuptureMesh
 from rupture_generator.moment import (
     moment_of,
@@ -524,7 +525,7 @@ def test_a_pattern_that_carries_no_moment_is_refused() -> None:
     every subfault slips an infinite amount.
     """
     mesh = _flat_chart(4, 4)
-    with pytest.raises(ValueError, match="carries no moment"):
+    with pytest.raises(ConfigError, match="carries no moment"):
         scale_to_moment(
             [np.zeros(mesh.cell_counts)],
             [np.full(mesh.cell_counts, 3.0e10)],
@@ -664,7 +665,7 @@ def test_overlapping_tapers_are_refused() -> None:
     which is preferable to picking one of them silently.
     """
     params = SlipParams(covariance=VonKarmanFilterParameters(1.5, 1.5), side_taper=0.8)
-    with pytest.raises(ValueError, match="overlap"):
+    with pytest.raises(ConfigError, match="overlap"):
         taper_edges(np.ones((6, 10)), params)
 
 
@@ -756,7 +757,7 @@ def test_a_slip_exponent_below_the_floor_is_refused() -> None:
         mesh, SlipParams(covariance=VonKarmanFilterParameters(1.8, 1.8)), rng
     )
 
-    with pytest.raises(ValueError, match="slip exponent"):
+    with pytest.raises(ConfigError, match="slip exponent"):
         rise_time_field(
             mesh,
             gaussian,
@@ -841,9 +842,9 @@ def test_a_dip_outside_the_plane_is_refused() -> None:
     indistinguishable in the output from a vertical fault. Refusing names the mistake
     where it was made.
     """
-    with pytest.raises(ValueError, match="not a fault plane"):
+    with pytest.raises(ConfigError, match="not a fault plane"):
         alpha_t(120.0, 90.0)
-    with pytest.raises(ValueError, match="not a fault plane"):
+    with pytest.raises(ConfigError, match="not a fault plane"):
         alpha_t(-5.0, 90.0)
 
 
@@ -979,7 +980,7 @@ def test_a_speed_the_front_cannot_travel_at_is_refused_by_name() -> None:
     params = SpeedParams(
         velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0
     )
-    with pytest.raises(ValueError, match=r"subfault \(2, 2\)"):
+    with pytest.raises(ConfigError, match=r"subfault \(2, 2\)"):
         speed_field(mesh.centres()[..., 2], shear_speed, params)
 
 

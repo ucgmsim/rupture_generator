@@ -18,6 +18,7 @@ import dataclasses
 import numpy as np
 
 from rupture_generator import _kernels
+from rupture_generator.errors import ConfigError
 from rupture_generator.mesh import RuptureMesh
 from rupture_generator.stages import DepthRamp
 
@@ -61,12 +62,12 @@ def alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
 
     Raises
     ------
-    ValueError
+    ConfigError
         For a dip outside ``[0, 90]``, rather than the factor of *zero* that reads as
         a rupture with the correction silently switched off.
     """
     if not (0.0 <= average_dip_deg <= 90.0):
-        raise ValueError(
+        raise ConfigError(
             f"a dip of {average_dip_deg} degrees is not a fault plane, and the "
             "geometric correction has no meaning outside [0, 90]"
         )
@@ -135,7 +136,7 @@ def speed_field(
 
     Raises
     ------
-    ValueError
+    ConfigError
         If any speed is not strictly positive. The solver inverts it, so a
         non-positive speed is a subfault the front can never reach.
     """
@@ -149,7 +150,7 @@ def speed_field(
         # Plain ints: numpy's own scalars repr as `np.int64(2)`, which turns a
         # subfault's coordinates into something nobody wants to read in an error.
         located = tuple(int(index) for index in worst)
-        raise ValueError(
+        raise ConfigError(
             f"the rupture speed at subfault {located} is {float(speed[worst]):.4g} "
             "km/s, which the front can never travel at. Check the velocity model's "
             "shear speeds and the depth ramps"
