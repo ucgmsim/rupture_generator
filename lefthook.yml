@@ -1,0 +1,19 @@
+pre-push:
+  parallel: true
+  commands:
+    ty:
+      run: uv run ty check rupture_generator
+    ruff:
+      run: uv run ruff check rupture_generator tests
+    format:
+      run: uv run ruff format --check rupture_generator tests
+    clippy:
+      run: cargo clippy --manifest-path crates/kernels/Cargo.toml -- -D warnings
+
+pre-commit:
+  parallel: true
+  commands:
+    ruff:
+      glob: "*.py"
+      run: uv run ruff format {staged_files} && uv run ruff check --fix {staged_files}
+      stage_fixed: true
