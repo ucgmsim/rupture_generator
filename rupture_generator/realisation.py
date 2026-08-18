@@ -1,7 +1,7 @@
 """One rupture: the charts it happens on, and how it crossed between them.
 
 A :class:`Realisation` maps segment name to chart, plus the frame those charts are in
-and the tree saying which segment triggered which. The **same type** describes a fault
+and the tree saying which segment triggered which. The same type describes a fault
 system before anything has been drawn on it and after the whole pipeline has run.
 """
 
@@ -93,10 +93,7 @@ class Realisation(MutableMapping[str, RuptureMesh]):
 
     @property
     def hypocentre(self) -> tuple[int, int] | int:
-        """The subfault the rupture nucleated at, on the root segment.
-
-        Labelled the way that segment's own chart labels a subfault: an ``(i, j)``
-        cell on a lattice, a flat face index on a triangulation.
+        """The subfault the rupture nucleated at, on the root segment, as ``(i, j)``.
 
         Raises
         ------

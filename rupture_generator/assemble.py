@@ -2,17 +2,15 @@
 
 The pipeline produces physics on charts, in SI. An SRF wants flat arrays in CGS, one
 PLANE record per segment, points ordered along strike fastest within each segment in
-turn -- so a bent or multi-segment fault becomes several planes whose points follow in
-the same order. This is the translation, and the **only** place in the package where
-metres become centimetres.
+turn. This is the translation, and the **only** place in the package where metres
+become centimetres.
 
 The plane header is read off the mesh rather than reconstructed: recomputing a plane
 centre from a fault width and a dip needs a tangent-plane approximation that is off by
 43 m on a crustal fault and 1.9 km at subduction scale.
 
 The one convention conversion: an SRF's ``shyp`` is measured from the along-strike
-**centre** of the plane, where the config and the mesh both measure from its ``j = 0``
-end.
+**centre** of the plane, where the config and the mesh both measure from ``j = 0``.
 """
 
 from __future__ import annotations
@@ -45,8 +43,8 @@ def plane_header(
     ``located`` is `project_cells`' output, passed in because :func:`to_srf_file` wants
     it for the point columns too and the projection is the expensive part.
     ``hypocentre_km`` is in this segment's own arc lengths, or ``None`` for a segment
-    that does not hold it: the format has no way to say "not here", so such a segment
-    records zeros.
+    that does not hold it; the format has no way to say "not here", so that records
+    zeros.
     """
     length_km = float(mesh.strike_arc_km()[-1])
     width_km = float(mesh.dip_arc_km()[-1])
@@ -88,8 +86,7 @@ POINT_COLUMNS = (
 )
 """Every column a version 2.0 point block carries, in the order `Points` declares them.
 
-Named once because two writers fill them, from a lattice and from a triangulation, and
-a column one of them forgot would be a file of zeros that still parses.
+Named once: a forgotten column would be a file of zeros that still parses.
 """
 
 
@@ -101,10 +98,9 @@ def srf_file(
 ) -> SrfFile:
     """One SRF file from per-segment columns already in the format's own units.
 
-    The half of the writing that is not about the shape of a chart: concatenating each
-    segment's columns into one run of points, rebuilding the CSR offsets across
-    segments, and narrowing the samples into their final buffer. Mostly memory
-    discipline rather than arithmetic -- see the comments.
+    Concatenates each segment's columns into one run of points, rebuilds the CSR
+    offsets across segments, and narrows the samples into their final buffer. Mostly
+    memory discipline rather than arithmetic -- see the comments.
 
     Parameters
     ----------
@@ -147,12 +143,12 @@ def srf_file(
         at += source.size
 
     # A sample's column is its position within its own pulse, built as a cumulative sum
-    # in a single buffer: every column is one more than its predecessor's except at the
-    # start of a row, where it drops to zero. So write those increments -- ones, and
+    # in one buffer: every column is one more than its predecessor's except at a row
+    # start, where it drops to zero. So write those increments -- ones, and
     # `1 - previous length` at each row start -- and integrate in place. Only non-empty
     # rows get a reset, since an empty row shares its start with the next and duplicate
-    # fancy-index writes keep the last. int32 carries a column index as long as there
-    # are fewer than 2^31 samples, and scipy wants `indices` and `indptr` in one dtype.
+    # fancy-index writes keep the last. int32 carries a column index below 2^31 samples,
+    # and scipy wants `indices` and `indptr` in one dtype.
     index_dtype = np.int32 if samples.size < np.iinfo(np.int32).max else np.int64
     within = np.ones(samples.size, dtype=index_dtype)
     if within.size:
@@ -185,8 +181,8 @@ def to_srf_file(
     Raises
     ------
     KeyError
-        If a segment is missing a field the format needs, which is a realisation that
-        has not been all the way through the pipeline.
+        If a segment is missing a field the format needs, so the realisation has not
+        been all the way through the pipeline.
     """
     headers: list[PlaneHeader] = []
     columns: dict[str, list[np.ndarray]] = {name: [] for name in POINT_COLUMNS}

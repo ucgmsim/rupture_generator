@@ -1,12 +1,8 @@
 """Reading and writing SRF (Standard Rupture Format) files.
 
-The in-memory model is arrays, one per field, named for what they hold and in what
-unit: `points.onset_s` is a float32 array of one onset per subfault, and delaying a
-rupture is `points.onset_s += 1`. `assemble.py` fills these from a generated segment,
-converting SI into the centimetres and dyne-centimetres the format stores.
-
-This module reads the whole file into memory; use `qcore.srf` instead to stream one.
-`SrfFile` cites the format.
+One float32 array per field, each named for its unit. `assemble.py` fills them from a
+generated segment, converting SI into the centimetres and dyne-centimetres the format
+stores. The whole file is read into memory; use `qcore.srf` to stream one instead.
 
 Examples
 --------
@@ -35,8 +31,7 @@ FloatArray = np.ndarray[tuple[int], np.dtype[np.float32]]
 SUPPORTED_VERSIONS = frozenset({"1.0", "2.0"})
 """SRF versions this module reads and writes.
 
-Version 3.0 adds Vp and a full moment tensor per point, which the parser does not
-implement.
+Version 3.0 adds Vp and a full moment tensor per point, which the parser lacks.
 """
 
 
@@ -74,13 +69,12 @@ class PlaneHeader:
 class Points:
     """The subfaults of an SRF, one array per field.
 
-    Every array holds one value per subfault, in the file's order: along strike
-    fastest, within each segment in turn. `shear_speed_cm_s` and `density_g_cm3` are
-    the version 2.0 material properties, present together or not at all. Each field's
-    name says what it holds and in what unit, with three exceptions: ``onset_s`` is the
-    SRF's ``tinit`` and ``sample_interval_s`` its ``dt``; ``rise_time_s`` is *derived*
-    on read as ``nt1 * dt``; and ``shear_speed_cm_s`` is centimetres per second, 1e5
-    from the kilometres per second a velocity model is written in.
+    One value per subfault in file order: along strike fastest, segment by segment.
+    `shear_speed_cm_s` and `density_g_cm3` are the version 2.0 material properties,
+    present together or not at all. Three names need glossing: ``onset_s`` is the SRF's
+    ``tinit`` and ``sample_interval_s`` its ``dt``; ``rise_time_s`` is *derived* on read
+    as ``nt1 * dt``; ``shear_speed_cm_s`` is centimetres per second, 1e5 from the
+    kilometres per second a velocity model is written in.
     """
 
     longitude_deg: FloatArray
@@ -103,8 +97,7 @@ class Points:
         Raises
         ------
         FormatError
-            If the arrays are not all the same length, or only one of the two
-            material properties is present.
+            If the arrays differ in length, or only one material property is present.
         """
         present = {
             field.name: values
@@ -256,7 +249,7 @@ _SW4_POINT_FIELDS = {
 """Which array of a `Points` fills each SW4 point field.
 
 `VS` and `DEN` are version 2.0 only, `NT1` comes from the slip-rate matrix, and
-`SLIP2`/`NT2`/`SLIP3`/`NT3` are rake components this format does not carry.
+`SLIP2`/`NT2`/`SLIP3`/`NT3` are rake components this format omits.
 """
 
 
@@ -264,10 +257,10 @@ _SW4_POINT_FIELDS = {
 class SrfFile:
     """Representation of an SRF file.
 
-    `version` is declared rather than inferred from what the points happen to carry,
-    and the constructor refuses a declaration the points contradict. `slip_rate[i, j]`
-    is the slip rate of the ith subfault `j` samples after its **own** onset, so row
-    `i` is as long as that subfault's pulse and the matrix as wide as the longest.
+    `version` is declared, not inferred, and the constructor refuses a declaration the
+    points contradict. `slip_rate[i, j]` is the slip rate of the ith subfault `j`
+    samples after its **own** onset, so row `i` is as long as that subfault's pulse and
+    the matrix as wide as the longest.
 
     References
     ----------
@@ -286,8 +279,8 @@ class SrfFile:
         Raises
         ------
         FormatError
-            If the version is not supported, or the material properties are present
-            when it is 1.0 or absent when it is 2.0.
+            If the version is unsupported, or the material properties are present at
+            1.0 or absent at 2.0.
         """
         if self.version not in SUPPORTED_VERSIONS:
             raise FormatError(
@@ -436,9 +429,8 @@ class SrfFile:
     ) -> None:
         """Write the SRF file in SW4's SRF-HDF5 format.
 
-        The whole file in one block, because an `SrfFile` is the whole file already.
-        A rupture too large to be one goes through `Sw4Hdf5Stream`, which this
-        delegates to, so there is one statement of the layout rather than two.
+        The whole file in one block, delegated to `Sw4Hdf5Stream` so the layout is
+        stated once.
 
         References
         ----------
@@ -466,8 +458,7 @@ class SrfFile:
         """int: Samples in the longest slip-rate pulse.
 
         **Not** the rupture's duration in samples: every row of `slip_rate` starts at
-        column zero and the onset is a float in `points.onset_s`. For the duration, use
-        `(points.onset_s.max() / dt) + nt`.
+        column zero. For the duration use `(points.onset_s.max() / dt) + nt`.
         """
         return self.slip_rate.shape[1]
 
@@ -494,8 +485,7 @@ SW4_SAMPLES_PER_CHUNK = 1 << 20
 """How many slip-rate samples one HDF5 chunk of ``SR1`` holds.
 
 Four megabytes of float32, trading B-tree entries against the granularity of a partial
-read. Independent of any memory budget a streaming writer works to: that bounds what is
-held at once, this is the layout on disk.
+read.
 """
 
 
@@ -503,14 +493,14 @@ class Sw4Hdf5Stream:
     """SW4's SRF-HDF5 format, written a block of points at a time.
 
     The format is append-only in subfault order: ``POINTS`` is one record per subfault
-    and ``SR1`` is every pulse concatenated in the same order, with each subfault's
-    length in its own ``NT1`` field. There is no index array to rebuild across blocks,
-    so a block can be written and forgotten; the only invariant across blocks is that
-    ``NT1`` and the samples appended agree.
+    and ``SR1`` every pulse concatenated in the same order, each subfault's length in
+    its own ``NT1`` field. There is no index array to rebuild, so a block can be
+    written and forgotten; the only cross-block invariant is that ``NT1`` and the
+    samples appended agree.
 
-    ``PLANE`` is an attribute rather than a dataset and attributes cannot grow, so the
-    headers are collected and written on close -- which is why this is a context
-    manager. ``version`` is stored as the file's ``VERSION`` attribute in float32.
+    ``PLANE`` is an attribute, and attributes cannot grow, so the headers are collected
+    and written on close -- hence the context manager. ``version`` is stored as the
+    file's ``VERSION`` attribute in float32.
 
     Examples
     --------
@@ -577,7 +567,7 @@ class Sw4Hdf5Stream:
         ----------
         points : Points
             The block's columns, already in the format's own units. Material
-            properties are written when there, which is what makes the file 2.0.
+            properties, when present, are what makes the file 2.0.
         pulse_lengths : np.ndarray
             ``(n,)`` samples in each of this block's pulses -- the ``NT1`` column.
         samples_cm_s : np.ndarray
@@ -589,8 +579,8 @@ class Sw4Hdf5Stream:
         RuntimeError
             If called outside the context manager, where there is no open file.
         FormatError
-            If the samples handed over are not as many as the lengths claim, which
-            would shift every later subfault's pulse.
+            If the samples do not number what the lengths claim, which would shift
+            every later subfault's pulse.
         """
         if self._points is None or self._samples is None:
             raise RuntimeError(

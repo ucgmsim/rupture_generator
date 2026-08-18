@@ -90,7 +90,7 @@ class PlaneConfig(ConfigObject):
     """One plane of a fault: where its top edge ends, and how it hangs from it.
 
     Where the top edge *begins* is the previous plane's ``end``, or the fault's
-    ``origin``. Dip, depth and discretisation are per plane.
+    ``origin``.
     """
 
     end: LonLat

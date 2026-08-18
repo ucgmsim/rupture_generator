@@ -1,7 +1,5 @@
-"""The pipeline: the one place the stage order is written down.
-
-It is written down as :func:`generate`'s own body -- a realisation in, a realisation
-out, and each line between a function of the same shape.
+"""The pipeline: the one place the stage order is written down, as :func:`generate`'s
+own body.
 
 Each stage has one of three shapes: a **map over the segments**, whose per-segment
 closure never sees another segment, which is what licenses a substream each;
@@ -59,8 +57,7 @@ def named(surface: str, charts: list[RuptureMesh]) -> dict[str, RuptureMesh]:
     """One surface's charts, under the names the causality tree uses.
 
     A surface that fuses to one segment keeps its own name; one whose planes do not all
-    share a seam becomes ``surface:0``, ``surface:1`` -- those parts are what actually
-    rupture.
+    share a seam becomes ``surface:0``, ``surface:1``.
     """
     if len(charts) == 1:
         return {surface: charts[0]}
@@ -102,10 +99,10 @@ def causality_tree(
     root: str,
     rng: np.random.Generator,
 ) -> propagation.Tree[str | None]:
-    """Which segment triggers which, either sampled or as stated.
+    """Which segment triggers which: sampled from fault separations, or as stated.
 
-    Sampled from fault separations in the computed form, or taken verbatim in the
-    predetermined one, where the stated root has to be the segment the hypocentre is on.
+    In the predetermined form the stated root has to be the segment the hypocentre is
+    on.
 
     Raises
     ------
@@ -211,9 +208,6 @@ def propagate(
 def _root_of(realisation: Realisation, hypocentre: HypocentreConfig) -> str:
     """Which segment the rupture starts on, named or inferred.
 
-    Inferred only when there is nothing to infer: with one segment the hypocentre can
-    only be on it.
-
     Raises
     ------
     ConfigError
@@ -243,8 +237,8 @@ def attach_materials(
 
     Sampled per subfault from the 1-D model at its own centre depth. Every later stage
     reads these off the chart rather than the model, so the moment fold, the wavefront
-    and the SRF all describe the same rock. ``density_g_cm3`` is a working field: only
-    the SRF, whose points state it, ever asks.
+    and the SRF all describe the same rock. ``density_g_cm3`` is there only because the
+    SRF's points state it.
     """
     bottoms = np.asarray(velocity_model.bottom_depth_km)
     speeds = np.asarray(velocity_model.shear_speed_km_s)
@@ -305,8 +299,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
         )
 
         # Takes neither the Gaussian nor the reference, which is the statement that
-        # rake is independent of slip: a patch that slips more has no reason to slip
-        # in a different direction.
+        # rake is independent of slip.
         rake_deg = stages.rake_field(
             mesh,
             stages.RakeParams(
@@ -402,10 +395,9 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
     """S7 and S8: the wavefront, in causal order, and where the front crossed.
 
     **Draws nothing**: it spends the perturbation already on the chart, so the one
-    order-dependent traversal is a pure function of its inputs.
-
-    Parents first. The root is seeded at the hypocentre; every other segment where and
-    when its parent's front crossed onto it.
+    order-dependent traversal is a pure function of its inputs. The root is seeded at
+    the hypocentre; every other segment where and when its parent's front crossed onto
+    it.
     """
     onset_params = perturbation_model(config)
     jump_delay = jump_model(config)
@@ -432,9 +424,6 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
             pinned: tuple[int, int] | None = hypocentre
             delay_s = config.timing.rupture_delay_s
         else:
-            # Timed on the parent's unperturbed wavefront: an argmin over a hundred
-            # thousand perturbed values finds the perturbation's negative tail rather
-            # than the shape of the front.
             jump = propagation.causal_jump(
                 solved[parent],
                 solved[parent]["wavefront_s"],
@@ -467,8 +456,8 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
             ),
         )
 
-    # The hypocentre, in the root's own arc lengths and under the names a file uses.
-    # Clamped to the fault's extent: a hypocentre at the far edge is on the last cell.
+    # The hypocentre, in the root's own arc lengths. Clamped to the fault's extent: a
+    # hypocentre at the far edge is on the last cell.
     root_mesh = solved[root]
     solved[root] = root_mesh.with_attrs(
         hypocentre_strike_km=min(
@@ -505,9 +494,7 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
     return realisation
 
 
-# ============================================================================
-# The config boundary: what the file says, as the parameter objects a stage takes.
-# ============================================================================
+# --- The config boundary: what the file says, as the parameter objects a stage takes.
 
 
 def perturbation_model(config: RuptureConfig) -> stages.OnsetParams:
@@ -538,9 +525,7 @@ def speed_model(config: RuptureConfig, name: str, mesh: Any) -> timing.SpeedPara
 def jump_model(config: RuptureConfig) -> propagation.JumpDelay:
     """How long the front takes to cross from one segment to the next.
 
-    The gap is on neither fault, so neither segment's own *sampled* materials describe
-    the rock in it -- the shared velocity model does, read at the depth the front
-    leaves from. One delay serves every edge of the tree.
+    One delay serves every edge of the tree.
     """
     return propagation.DistanceOverVelocity(
         np.asarray(config.velocity_model.bottom_depth_km),

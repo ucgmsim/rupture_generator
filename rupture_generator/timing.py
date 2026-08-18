@@ -1,14 +1,12 @@
 """S7: how fast the rupture front travels, and when it reaches each subfault.
 
 A rupture speed field, and the eikonal solve over it. The speed is a fraction of the
-local shear speed, reduced near the surface and at depth; the arrival times are the
-solution of :math:`|\\nabla T| = 1/v` from the seed points, computed by the factored
-fast sweeping kernel.
+local shear speed, reduced near the surface and at depth; the arrival times solve
+:math:`|\\nabla T| = 1/v` from the seed points, by the factored fast sweeping kernel.
 
 :func:`alpha_t` is Graves & Pitarka's dip-and-rake correction. It shortens the rise
-time and raises the rupture speed **by the same factor**, so one function has to serve
-both stages; applied at the config boundary instead, a dip-45 reverse fault ruptured
-up to 10% slow.
+time and raises the rupture speed **by the same factor**, so one function serves both
+stages.
 """
 
 from __future__ import annotations
@@ -25,10 +23,8 @@ from rupture_generator.stages import DepthRamp
 FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
 
 ALPHA_COEFFICIENT = 0.1
-"""How much the geometry correction can move things: at most a tenth. A literal, and
-it stays one -- the last attempt to make it configurable used ``-99.0`` as its "use
-the default" sentinel and gave every non-strike-slip fault a negative corner
-frequency."""
+"""How much the geometry correction can move things: at most a tenth. Not
+configurable."""
 
 DIP_PLATEAU_DEG = 45.0
 """Below this dip the correction is at full strength, falling to nothing at
@@ -45,9 +41,8 @@ not, so the sweep would otherwise run the front through cells that are not fault
 arrive around the outline's concavities early.
 
 Swept over x10 to x10\\ :sup:`5` on both CFM subduction interfaces: the arrival field is
-bit-identical from x10 upward, so there is nothing above it left to buy. The wall is
-finite because the kernel refuses non-finite slowness. It stops the front rather than
-slowing it, and does not disturb Fomel et al.'s multiplicative factorisation -- on a
+bit-identical from x10 upward. The wall is finite because the kernel refuses non-finite
+slowness, and does not disturb Fomel et al.'s multiplicative factorisation -- on a
 uniform medium inside a rectangular fault the maximum error is 1.3e-13 s with the wall
 and without it, so ``tau = 1`` survives it exactly.
 """
@@ -63,8 +58,8 @@ def alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
     Raises
     ------
     ConfigError
-        For a dip outside ``[0, 90]``, rather than the factor of *zero* that reads as
-        a rupture with the correction silently switched off.
+        For a dip outside ``[0, 90]``, rather than a factor of *zero* that reads as the
+        correction silently switched off.
     """
     if not (0.0 <= average_dip_deg <= 90.0):
         raise ConfigError(
@@ -94,8 +89,8 @@ class SpeedParams:
     """How fast the front travels.
 
     ``velocity_fraction`` is the **raw** configured fraction of the shear speed: the
-    correction is applied to it inside :func:`speed_field`, never by the caller. The
-    factors are the speed multiplier outside each ramp, exactly 1 in between.
+    correction is applied inside :func:`speed_field`, never by the caller. The factors
+    are the speed multiplier outside each ramp, exactly 1 in between.
     """
 
     velocity_fraction: float
@@ -112,10 +107,8 @@ class SpeedParams:
         """The speed multiplier at each depth: reduced at both ends, 1 between.
 
         Each branch measures from its ramp's *far* end -- ``1 - shallow.weight`` and
-        ``deep.weight`` -- which is what makes the value exactly one at both inner
-        edges rather than nearly one, and ``factor`` at each outer edge. The same
-        algebra runs in :meth:`~rupture_generator.stages.RiseTimeParams.stretch_at`
-        and :meth:`~rupture_generator.pulses.PulseParams.beta_at`.
+        ``deep.weight`` -- which makes the value exactly one at both inner edges rather
+        than nearly one, and ``factor`` at each outer edge.
         """
         return (
             1.0
@@ -131,8 +124,7 @@ def speed_field(
 
     .. math:: v_{ij} = \\frac{f}{\\alpha_T} \\, \\beta(z_{ij}) \\, r(z_{ij})
 
-    The division by the geometric correction happens **here**, inside the stage, and
-    nowhere else.
+    The division by the geometric correction happens **here** and nowhere else.
 
     Raises
     ------
@@ -166,15 +158,14 @@ def travel_times(
 ) -> FloatArray:
     """S7: first-arrival times on ``(i, j)``, in seconds.
 
-    ``shear_speed_km_s`` is per subfault. ``seeds`` are ``(i, j, t0_seconds)``
-    triples -- points the front leaves at known times, one for a hypocentre and
-    several for a fault triggered along an edge, which leaves no "the hypocentre"
-    special case to get off by one.
+    ``shear_speed_km_s`` is per subfault. ``seeds`` are ``(i, j, t0_seconds)`` triples:
+    points the front leaves at known times, one for a hypocentre and several for a
+    fault triggered along an edge, so there is no "the hypocentre" special case.
 
     Cells the chart marks unoccupied are walled off by
     :data:`OFF_FAULT_SLOWNESS_FACTOR` rather than removed, since the sweep wants a
-    rectangle. They need no invented medium first: an unoccupied cell has real corners
-    and so a real depth, and the velocity model answers there like anywhere else.
+    rectangle. They need no invented medium: an unoccupied cell has real corners and so
+    a real depth, and the velocity model answers there like anywhere else.
 
     The metric error is what no wall removes: the sweep measures ``|d(u, v)|`` where
     the front travels ``|dX|``, so on a curved surface paths are short by its own

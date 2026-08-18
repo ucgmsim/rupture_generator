@@ -32,8 +32,7 @@ The literature writes 10.699967 for the dyne-centimetre form; newton-metres are 
 larger and the slope is 1.5, so the SI constant is exactly that much smaller -- about
 6.0333003, the 6.03 the paper rounds to. Written as the derivation rather than its
 decimal expansion because rounding at the seventh figure moves the moment by 1.2e-7
-relative, and two forms of one constant that disagree make a later comparison
-ambiguous.
+relative.
 """
 
 
@@ -45,9 +44,9 @@ def seismic_moment_nm(magnitude: float) -> float:
 def rigidity_pa(shear_speed_km_s: FloatArray, density_g_cm3: FloatArray) -> FloatArray:
     """Rigidity in pascals, from shear speed and density.
 
-    :math:`\\mu = \\rho v_s^2`, with the velocity model's own units -- kilometres per
-    second and grams per cubic centimetre -- carried into SI by a single factor of
-    ``1e9``: ``(1e3 m/s)^2 x (1e3 kg/m^3)``. Crustal rock is about 3e10 Pa.
+    :math:`\\mu = \\rho v_s^2`, with the velocity model's own units -- km/s and g/cm^3
+    -- carried into SI by a single ``1e9``: ``(1e3 m/s)^2 x (1e3 kg/m^3)``. Crustal
+    rock is about 3e10 Pa.
     """
     return np.asarray(density_g_cm3) * np.asarray(shear_speed_km_s) ** 2 * 1.0e9
 
@@ -55,9 +54,8 @@ def rigidity_pa(shear_speed_km_s: FloatArray, density_g_cm3: FloatArray) -> Floa
 def layer_of(depth_km: FloatArray, bottom_depth_km: FloatArray) -> IntArray:
     """Which layer of a 1-D velocity model each depth falls in.
 
-    A depth exactly on a layer boundary belongs to the layer **above** it, which is
-    what ``side="left"`` gives; a depth below the deepest layer clamps to it rather
-    than extrapolating. Returns layer indices shaped like ``depth_km``.
+    A depth exactly on a layer boundary belongs to the layer **above** it; a depth
+    below the deepest layer clamps to it. Returns indices shaped like ``depth_km``.
     """
     bottoms = np.asarray(bottom_depth_km, dtype=np.float64)
     return np.minimum(
@@ -95,9 +93,9 @@ def scale_to_moment(
         \\gamma = \\frac{M_0}{\\sum_k \\sum_{ij} \\mu_{ij} A_{ij} f_{ij}},
         \\qquad s_{ij} = \\gamma f_{ij}
 
-    One factor, shared across every segment: only the total is a target. The
-    accumulation is in float64 -- single precision on a hundred thousand subfaults
-    costs about 6e-5 relative. Returns slip in **metres**, one array per segment.
+    One factor shared across every segment: only the total is a target. Accumulated in
+    float64 -- single precision on a hundred thousand subfaults costs about 6e-5
+    relative. Returns slip in **metres**, one array per segment.
 
     Raises
     ------
@@ -169,11 +167,10 @@ def moment_rate(
 
     .. math:: \\dot{M}(t) = \\sum_i \\mu_i A_i \\dot{s}_i(t - t_i)
 
-    Each subfault's pulse starts at its own onset, so this places each at its own
-    offset into a shared timeline rather than summing aligned arrays. Onsets are
-    quantised to the sample interval, an error under half a sample -- 0.0025 s at the
-    default; interpolating would smear each pulse across two samples and change the
-    peak, which is the number people read off this.
+    Each pulse is placed at its own offset into a shared timeline. Onsets are quantised
+    to the sample interval, an error under half a sample -- 0.0025 s at the default;
+    interpolating would smear each pulse across two samples and change the peak, which
+    is the number people read off this.
 
     ``pulse_offsets`` and ``pulse_samples`` are the CSR pulses in m/s; ``onset_s``,
     ``area_m2`` and ``rigidity_pa`` are one value per subfault, flattened along strike
@@ -202,9 +199,8 @@ def moment_rate(
     for subfault in range(subfaults):
         length = int(lengths[subfault])
         if length == 0:
-            # A subfault that did not slip has no pulse at all -- no samples, which
-            # is not the same as a pulse of zeros. On a tapered fault that is every
-            # edge subfault.
+            # A subfault that did not slip has no samples at all, which is not the
+            # same as a pulse of zeros. On a tapered fault that is every edge subfault.
             continue
         start = int(starts[subfault])
         stop = min(start + length, finish)

@@ -118,9 +118,8 @@ def _reach(mask: BoolArray, axis: int, *, reverse: bool) -> IntArray:
     """How many occupied cells run up to each cell along one direction, inclusive.
 
     One for a cell whose neighbour on that side is off the fault or off the grid, and
-    counting up from there. This is what makes a taper follow a ragged outline: on a
-    chart that is fault everywhere it is just the index, so the ramps below are the
-    index ramps they always were.
+    counting up from there. This is what makes a taper follow a ragged outline; on a
+    chart that is fault everywhere it is just the index.
     """
     ordered = np.flip(mask, axis=axis) if reverse else mask
     ordered = np.moveaxis(ordered, axis, 0)
@@ -142,12 +141,9 @@ def taper_edges(
     four independent ramps, one per edge, so a cell two of them reach is damped by
     both. Widths are in whole cells.
 
-    The edge is the **fault's**, not the chart's. On a chart that fills its rectangle
-    those are the same thing and the ramps run from the index bounds. On one resampled
-    from a modeller's outline they are not: the ramp starts wherever the fault does
-    along that axis, so an interface tapers into its own trench and down-dip limit
+    The edge is the **fault's**, not the chart's: the ramp starts wherever the fault
+    does along that axis, so an interface tapers into its own trench and down-dip limit
     rather than into the corner of a bounding box, and unoccupied cells come back zero.
-
     Which edge is which still comes off the axes rather than off the outline: up-dip is
     ``i`` decreasing whatever shape the boundary is there. That is exact for an
     interface whose outline runs along strike and down dip, which is what a subduction
@@ -190,8 +186,6 @@ def slip_pattern(
     gaussian = standardise(drawn)
     pattern = 1.0 + params.coefficient_of_variation * gaussian
     pattern = np.maximum(pattern, 0.0)
-    # A chart that fills its rectangle reports an all-true mask, so this is the
-    # rectangular taper there and the outline-following one only where it differs.
     return taper(pattern, params, mesh.occupied()), gaussian, drawn
 
 
@@ -381,10 +375,9 @@ def apply_perturbation(
     .. math:: t_{ij} = T_{ij} + c\\,\\sigma\\,Z_{p,ij} + \\mathrm{delay}
 
     **The hypocentre's perturbation is pinned to zero**, so its onset is exactly its
-    travel time plus the delay. ``hypocentre`` is the ``(i, j)`` cell of a lattice or
-    the flat face index of a triangulation, or ``None`` for a segment triggered from
-    elsewhere, whose onsets stay absolute; ``delay_s`` is the configured delay at the
-    root and zero for a triggered segment.
+    travel time plus the delay. ``hypocentre`` is the cell the rupture starts at, or
+    ``None`` for a segment triggered from elsewhere, whose onsets stay absolute;
+    ``delay_s`` is the configured delay at the root and zero for a triggered segment.
     """
     spread = float(perturbation.std())
     scaled = (

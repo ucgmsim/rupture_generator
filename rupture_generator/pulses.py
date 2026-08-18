@@ -1,12 +1,11 @@
 """S9: slip-rate pulses, and the vocabulary that names their shapes.
 
 :func:`from_stype` turns the ``stype`` spelling a config file uses into a resolved
-shape; :func:`synthesise` hands slip, rise time and shape to the kernel.
-
-One family is available: `OliuP2`, the Liu-Archuleta pulse whose rising fraction comes
-from a depth profile, plus `delta` for the degenerate spike; the ``ucsb`` aliases are
+shape; :func:`synthesise` hands slip, rise time and shape to the kernel. One family is
+available: `OliuP2`, the Liu-Archuleta pulse whose rising fraction comes from a depth
+profile, plus `delta` for the degenerate spike; the ``ucsb`` aliases are
 parametrisations of the same kernel. :data:`REMOVED_SHAPES` are refused **by name**
-rather than falling through to a default and silently generating a different rupture.
+rather than falling through to a default.
 """
 
 from __future__ import annotations
@@ -30,10 +29,10 @@ production workflow's defaults file advertises them as valid spellings."""
 class ResolvedShape:
     """A slip-rate shape the kernel can synthesise, fully parametrised.
 
-    ``kernel`` is ``"oliu_p"`` or ``"delta"``, the two the kernel knows.
-    ``duration_scale`` multiplies the rise time before synthesis. ``beta`` is the
-    rising fraction, in ``(0, 0.5]``, or ``None`` for "from the depth profile", which
-    is what distinguishes `OliuP2` from its fixed-beta aliases.
+    ``kernel`` is ``"oliu_p"`` or ``"delta"``. ``duration_scale`` multiplies the rise
+    time before synthesis. ``beta`` is the rising fraction, in ``(0, 0.5]``, or ``None``
+    for "from the depth profile", which distinguishes `OliuP2` from its fixed-beta
+    aliases.
     """
 
     kernel: str
@@ -63,7 +62,7 @@ def from_stype(stype: str) -> ResolvedShape:
     ------
     ConfigError
         For a removed shape, saying it was removed; for anything else, saying the name
-        is unknown. A removed shape is a decision to revisit, an unknown one a typo.
+        is unknown.
     """
     lowered = stype.lower()
 
@@ -77,8 +76,7 @@ def from_stype(stype: str) -> ResolvedShape:
     if lowered in _ALIASES:
         return _ALIASES[lowered]
 
-    # `ucsb-T<b>` scales the duration by b and the rising fraction down to match --
-    # the one spelling that carries a number.
+    # `ucsb-T<b>` scales the duration by b and the rising fraction down to match.
     if lowered.startswith("ucsb-t"):
         suffix = stype[len("ucsb-T") :]
         if suffix == "":
@@ -103,11 +101,10 @@ def from_stype(stype: str) -> ResolvedShape:
 class PulseParams:
     """How each subfault's slip-rate pulse is shaped and sampled.
 
-    ``shape`` is already resolved by :func:`from_stype`, so the kernel never sees a
-    name it has to interpret. The betas are the rising fraction by depth -- shallow
-    subfaults get the largest, a longer rising limb and so a less impulsive pulse near
-    the free surface -- and are ignored when the shape carries its own fixed beta.
-    ``sample_interval_s`` is the pulse's own sample rate, and the SRF's ``dt``.
+    ``shape`` is already resolved by :func:`from_stype`. The betas are the rising
+    fraction by depth -- shallow subfaults get the largest, so a less impulsive pulse
+    near the free surface -- and are ignored when the shape carries a fixed beta.
+    ``sample_interval_s`` is the pulse's sample rate, and the SRF's ``dt``.
     """
 
     shape: ResolvedShape
@@ -139,12 +136,12 @@ def synthesise(
 
     The kernel guarantees ``dt * sum(pulse) == slip`` exactly, whatever the shape, and
     refuses -- naming the subfault -- one that slips at a rise time its shape cannot
-    sample at this interval. Emitting nothing there instead dropped 0.63% of the
-    moment on the seed-1234 fixture.
+    sample at this interval. Emitting nothing there instead dropped 0.63% of the moment
+    on the seed-1234 fixture.
 
-    Takes **depth rather than a chart**, and reads it only when the shape's rising
-    fraction is depth-dependent. Returns offsets (length subfaults + 1) and
-    concatenated samples in metres per second, flattened along strike fastest.
+    Depth is read only when the shape's rising fraction is depth-dependent. Returns
+    offsets (length subfaults + 1) and concatenated samples in metres per second,
+    flattened along strike fastest.
     """
     flat_slip = np.ascontiguousarray(slip_m, dtype=np.float64).ravel()
     flat_rise = np.ascontiguousarray(rise_time_s, dtype=np.float64).ravel()

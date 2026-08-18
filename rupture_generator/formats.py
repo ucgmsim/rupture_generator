@@ -1,33 +1,27 @@
 """This package's own files: which format a path means, and the two layouts inside.
 
-One ``xr.DataTree`` per file, written to HDF5 or Zarr, in one of two layouts:
-
-**A mesh** is a fault surface with nothing drawn on it -- ``/<surface>/plane_<n>``, one
-group per chart in trace order. The ``(dip_node, strike_node)`` arrays are its vertices
-and there is no face list, because a structured grid's connectivity *is* its shape.
-
-**A rupture** is a generated model and the mesh it was generated on -- one group per
-segment, a segment being the pipeline's unit of one chart, one field of each kind and
-one wavefront. Each group carries its node positions too, so a rupture file is
-everything a viewer or a consumer needs.
+One ``xr.DataTree`` per file, written to HDF5 or Zarr. **A mesh** is a fault surface
+with nothing drawn on it -- ``/<surface>/plane_<n>``, one group per chart in trace
+order, the ``(dip_node, strike_node)`` arrays its vertices; there is no face list
+because a structured grid's connectivity *is* its shape. **A rupture** is a generated
+model and the mesh it was generated on, one group per segment, each carrying its node
+positions too.
 
 Positions are offsets from an origin stored once in the root, in kilometres, in the CRS
-the root names. Only geometry is stored: centres, areas, strike and dip are functions
-of the nodes, computed on read and never written. The node dims are renamed at this
-seam and nowhere else -- in memory ``(i_node, j_node)``, ``i`` down dip and ``j`` along
-strike; in the file the original ``(dip_node, strike_node)``, so outside readers keep
-working.
+the root names. Only geometry is stored; centres, areas, strike and dip are computed on
+read. The node dims are renamed at this seam and nowhere else -- in memory ``(i_node,
+j_node)``, ``i`` down dip and ``j`` along strike; in the file the original
+``(dip_node, strike_node)``, so outside readers keep working.
 
 Units are SI: slip in metres, slip rate in metres per second, moment in newton-metres,
 area in square metres. The centimetres the SRF format wants appear in `srf.py` and
-nowhere else, and every variable carries its unit.
+nowhere else.
 
-The pulses are ragged, so they are stored as CSR ``data``/``indptr`` -- the layout the
-kernel already produces and `scipy.sparse.csr_array` already wants. **The ``indices`` of
-that triple are not stored**: every pulse starts at column zero and runs contiguously,
-so a sample's column is a function of ``indptr`` alone, and writing them down would add
-7.6 GB of int64 to the shipped twenty-fault scenario. `assemble.to_srf_file` rebuilds
-them where `scipy.sparse` insists.
+Ragged pulses are stored as CSR ``data``/``indptr``. **The ``indices`` are not stored**:
+every pulse starts at column zero and runs contiguously, so a sample's column follows
+from ``indptr`` alone, and writing them down would add 7.6 GB of int64 to the shipped
+twenty-fault scenario. `assemble.to_srf_file` rebuilds them where `scipy.sparse`
+insists.
 """
 
 from __future__ import annotations
@@ -55,9 +49,7 @@ if TYPE_CHECKING:
 SCHEMA_VERSION = 2
 """Bumped when a reader of an older file would get a wrong answer rather than an error.
 
-Version 2 made the units SI, made a rupture group a segment, and stopped storing
-``propagation`` on a mesh, which is a property of the earthquake rather than of the
-surfaces. A version 1 reader would take metres for centimetres.
+Version 2 made the units SI, so a version 1 reader would take metres for centimetres.
 """
 
 
@@ -91,8 +83,8 @@ def from_path(path: Path | str) -> Format:
     """Infer a format from a path's extension.
 
     ``.srf.h5`` is SW4's SRF-in-HDF5 and ``.h5`` is this package's own, so inference
-    looks at the last *two* suffixes first. Both are HDF5, so getting it backwards is
-    not noticed downstream until something reads a dataset that is not there.
+    looks at the last *two* suffixes first. Both are HDF5, so getting it backwards goes
+    unnoticed until something reads a dataset that is not there.
 
     Returns
     -------
@@ -265,9 +257,8 @@ def _meshes_from_tree(
         )
     origins = json.loads(tree.attrs.get("origins", "{}"))
 
-    # Keyed by the *stored* plane index rather than by iteration order, because Zarr
-    # does not preserve order and HDF5 does: trusting it permutes the fault in one
-    # container and not the other.
+    # Keyed by the *stored* plane index, not iteration order: Zarr does not preserve
+    # order and HDF5 does, so trusting it permutes the fault in one container only.
     by_surface: dict[str, dict[int, tuple[Any, ...]]] = {}
     for path, node in tree.subtree_with_keys:
         if not node.has_data or "east_km" not in node.dataset:
@@ -400,16 +391,15 @@ def segment_dataset(
 ) -> xr.Dataset:
     """One segment's rupture and geometry, as a dataset.
 
-    The fields and the hypocentre are **on the chart**, so this reads them off rather
-    than being told them. Only the segment the rupture nucleated on carries a
-    hypocentre; ``segment_name`` is stored because one surface can yield several
-    segments, which the group name alone records only by convention.
+    Fields and hypocentre are read off the chart. Only the segment the rupture
+    nucleated on carries a hypocentre. ``segment_name`` is stored because one surface
+    can yield several segments, which the group name records only by convention.
 
     Raises
     ------
     KeyError
-        If a field the file stores is not on the chart, so the realisation has not been
-        all the way through the pipeline.
+        If a field the file stores is missing from the chart, so the realisation has
+        not been all the way through the pipeline.
     FormatError
         If the chart carries no pulses.
     """
@@ -511,9 +501,8 @@ def segment_dataset(
             "moment_newton_m": moment_newton_m,
             "origin_east_km": mesh.origin_km[0],
             "origin_north_km": mesh.origin_km[1],
-            # Whatever the chart recorded about itself: the truncation diagnostic, and
-            # -- on the one segment that nucleated -- the hypocentre, already under the
-            # names the file uses. `RESERVED_ATTRS` is what makes this splat safe.
+            # Whatever the chart recorded about itself, already under the names the
+            # file uses. `RESERVED_ATTRS` is what makes this splat safe.
             **{
                 name: value
                 for name, value in mesh.attrs.items()
@@ -530,15 +519,12 @@ def rupture_tree(
 ) -> xr.DataTree:
     """A generated rupture as an event tree: one group per segment.
 
-    **The seam the pipeline does not cross.** Which fields the file stores, what the
-    groups are called, and which working fields are dropped are decided here.
-
     ``attrs`` is the **caller's** provenance: a title, the config verbatim, the seed and
     the realisation index. What the rupture *is* -- the frame, the causality tree, the
     jumps, the event moment -- comes off the realisation and is written either way.
     """
     # Once, not once per segment: the property sums over every chart, so reading it
-    # inside the comprehension would make the writer quadratic in the segment count.
+    # in the comprehension would make the writer quadratic in the segment count.
     moment_newton_m = realisation.moment_newton_m
     tree = xr.DataTree.from_dict(
         {

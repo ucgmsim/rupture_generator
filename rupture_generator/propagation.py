@@ -6,8 +6,7 @@ fixed before any field is drawn; the jump points come from the solved wavefront 
 parent, so a rupture that reaches the far end of a fault early jumps from there rather
 than from wherever the two faults happen to be closest.
 
-Distances are measured in the projected frame, where a distance is an exact identity
-rather than an approximation carrying a curvature error. There is no geodesy here.
+Distances are measured in the projected frame, where they are exact identities.
 
 References
 ----------
@@ -76,19 +75,15 @@ type Tree[T] = dict[str, T]
 the root mapped to ``None``."""
 
 MAX_JUMP_KM = 15.0
-"""How far a rupture front can jump between faults at all.
+"""How far a rupture front can jump between faults, in kilometres.
 
 Beyond this the Shaw & Dieterich (2007) probability only adds noise to the sampler, so
-longer edges are removed rather than given a tiny weight and a fault beyond reach of
-every other is *disconnected*.
+longer edges are dropped and a fault beyond reach of every other is *disconnected*.
 """
 
 PROBABILITY_CAP = 0.99
-"""The largest jump probability an edge may carry.
-
-The sampler reweights each edge to ``w / (1 - w)``, which diverges as ``w`` approaches
-one; the cap keeps a pair of faults a metre apart finite.
-"""
+"""The largest jump probability an edge may carry: the sampler's ``w / (1 - w)``
+reweighting diverges as ``w`` approaches one."""
 
 
 def shaw_dieterich(
@@ -163,9 +158,9 @@ def jump_graph(
 ) -> JumpGraph:
     """Turn fault separations into jump probabilities.
 
-    ``distances_km`` gives closest approach in kilometres, keyed by fault pairs in
-    either ordering; ``faults`` fixes the order the graph indexes them in. Every other
-    argument is a length in kilometres.
+    ``distances_km`` gives closest approach keyed by fault pairs in either ordering;
+    ``faults`` fixes the order the graph indexes them in. Every other argument is a
+    length in kilometres.
     """
     count = len(faults)
     index = {name: position for position, name in enumerate(faults)}
@@ -191,13 +186,9 @@ def _sampling_weights(graph: JumpGraph) -> FloatArray:
 
     .. math:: P(T) \\propto \\prod_{e \\in T} w(e) \\prod_{e \\notin T} (1 - w(e))
 
-    and its constant factor comes out, leaving a weighted uniform spanning tree over
-    ``w / (1 - w)`` -- which is what :func:`sample_tree` draws.
-
-    .. math::
-        \\prod_{e \\in T} w \\prod_{e \\notin T} (1 - w)
-        = \\left[\\prod_{\\text{all } e} (1 - w)\\right]
-          \\prod_{e \\in T} \\frac{w}{1 - w}
+    whose constant factor ``\\prod_{\\text{all } e} (1 - w)`` comes out, leaving a
+    weighted uniform spanning tree over ``w / (1 - w)`` -- what :func:`sample_tree`
+    draws.
     """
     weights = np.zeros_like(graph.weights)
     present = graph.weights > 0.0
@@ -233,7 +224,6 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
     if count == 1:
         return []
 
-    # The walk's step distribution, per vertex.
     totals = weights.sum(axis=1)
 
     in_tree = np.zeros(count, dtype=bool)
@@ -243,9 +233,8 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
     for start in range(1, count):
         if in_tree[start]:
             continue
-        # Walk until the tree is reached, overwriting the onward step at each vertex.
-        # Overwriting *is* the loop erasure: a revisited vertex forgets the excursion
-        # it made last time.
+        # Overwriting the onward step *is* the loop erasure: a revisited vertex forgets
+        # the excursion it made last time.
         walker = start
         while not in_tree[walker]:
             step = rng.random() * totals[walker]
@@ -416,9 +405,7 @@ def in_topological_order(tree: Tree[str | None]) -> Iterator[str]:
     yield from sorter.static_order()
 
 
-# ============================================================================
-# Jump delay -- a model, not a formula
-# ============================================================================
+# --- Jump delay ---
 
 
 class JumpDelay(Protocol):
@@ -479,19 +466,17 @@ class DistanceOverVelocity:
         return np.asarray(distance_km) / speed
 
 
-# ============================================================================
-# The causal jump
-# ============================================================================
+# --- The causal jump ---
 
 
 @dataclasses.dataclass(frozen=True)
 class Jump:
     """Where and when a rupture front crossed from one fault to the next.
 
-    The cells are labelled as their own chart labels one: ``(i, j)`` on a lattice, a
-    flat face index on a triangulation. ``arrival_s`` is the departure plus the delay,
-    and the seed time the child's wavefront is solved from. ``from_edge`` is ``False``
-    when no edge cell was within reach and the search fell back to the whole chart.
+    Cells are labelled as their own chart labels them. ``arrival_s`` is the departure
+    plus the delay, and the seed time the child's wavefront is solved from.
+    ``from_edge`` is ``False`` when no edge cell was within reach and the search fell
+    back to the whole chart.
     """
 
     parent_cell: tuple[int, int] | int

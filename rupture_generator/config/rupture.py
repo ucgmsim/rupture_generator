@@ -135,8 +135,8 @@ class FiniteSourceConfig(SourceConfig):
     """A finite fault.
 
     ``model`` is the corner relation only, not the spectral shape a `[slip]` section
-    chooses as ``shape``. ``mai`` is Mai & Beroza (2002) and carries no coefficients
-    -- they live in `sampling.correlation_lengths`; ``custom`` states all four here.
+    chooses as ``shape``. ``mai`` is Mai & Beroza (2002) and carries no coefficients;
+    ``custom`` states all four here.
     """
 
     magnitude: Magnitude

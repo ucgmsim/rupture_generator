@@ -62,9 +62,8 @@ cannot hold the covariance.
 MAXIMUM_DOUBLINGS = 3
 """How many times the margin may be doubled before the embedding is refused.
 
-Dietrich & Newsam (1993) enlarge until the embedding is good enough; three doublings
-from :data:`DECAY_LENGTHS` reaches a margin of 24 correlation lengths, past which the
-covariance is not one this fault can carry.
+Three doublings from :data:`DECAY_LENGTHS` reaches a margin of 24 correlation lengths,
+past which the covariance is not one this fault can carry.
 """
 
 DECAY_LENGTHS = 3.0
@@ -72,16 +71,15 @@ DECAY_LENGTHS = 3.0
 attempt usually embeds and no doubling is allocated."""
 
 CORRELATION_LENGTH_TOLERANCE = 0.02
-"""How far the delivered correlation length may sit from the one asked for: a
-fraction, per axis, so 0.02 is within two percent on each axis."""
+"""How far the delivered correlation length may sit from the one asked for, as a
+fraction per axis: 0.02 is within two percent on each axis."""
 
 MAI_MAXIMUM_RATIO = 0.6
 """The largest correlation length, as a fraction of the source dimension, that the
 model was fitted on.
 
 Mai & Beroza (2002) figure 13: across all 44 finite-source models the ratio sits
-between 0.25 and 0.6 on each axis. Past the upper end a segment is being asked to
-carry structure longer than itself.
+between 0.25 and 0.6 on each axis.
 """
 
 MAXIMUM_EMBEDDING_CELLS = 1 << 26
@@ -99,10 +97,8 @@ the cap; the same interface cut at 100 m embeds to 111.8 M, 1.67 times it.
 """
 
 EIGENVALUE_TOLERANCE = 1.0e-10
-"""How negative an eigenvalue may be, relative to the largest, and still be round-off.
-
-Anything more negative rejects the embedding.
-"""
+"""How negative an eigenvalue may be, relative to the largest, and still be round-off;
+anything more negative rejects the embedding."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -281,8 +277,7 @@ _WARN_STACKLEVEL = 5
 """How far up to point a :class:`DegradedCorrelation`, counted rather than guessed.
 
 ``_warn_if_degraded`` -> ``_embed`` -> :func:`von_karman_grid` ->
-:func:`von_karman_field` -> the stage, which is five frames. A caller reaching
-:func:`von_karman_grid` directly is reported one frame further out than its own call.
+:func:`von_karman_field` -> the stage, which is five frames.
 """
 
 
@@ -499,9 +494,8 @@ def standardise(field: FloatArray) -> FloatArray:
     ``1 + cov * Z`` exact on each realisation rather than on average.
     """
     spread = float(field.std())
-    # A one-cell chart has a single sample and hence no variance. The mesh CLI produces
-    # one for any plane shorter than half the requested subfault size; dividing there
-    # gave infinity, then infinity times zero, and an SRF of NaN that nothing refused.
+    # A one-cell chart has a single sample and hence no variance; the mesh CLI produces
+    # one for any plane shorter than half the requested subfault size.
     if spread == 0.0:
         return np.zeros_like(field)
     return (field - field.mean()) / spread

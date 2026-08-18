@@ -1,23 +1,18 @@
 """The one mesh type: a fault surface as nodes, and everything else derived.
 
-A segment is a chart ``X: (i, j) -> R^3`` -- a structured grid of node positions in a
-projected Cartesian CRS the modeller named, ``i`` down-dip, ``j`` along-strike, depth
-positive down. :class:`RuptureMesh` wraps that chart as an `xarray.Dataset` and carries
-**methods, not stored copies**, for every derived quantity.
+A segment is a chart ``X: (i, j) -> R^3``: node positions in a projected Cartesian CRS,
+``i`` down-dip, ``j`` along-strike, depth positive down, kilometres. Arithmetic is in
+the projection, not on the ellipsoid, where a 60 km subduction interface came out with
+cell areas 1.4e-2 low; strike here is therefore **grid north**, and dip and rake cross
+unchanged.
 
-Everything is plain vector arithmetic in the projected CRS, in kilometres: on the WGS84
-ellipsoid a 60 km subduction interface came out with cell areas 1.4e-2 low -- larger
-than the slip bound -- where in the projection the same quantities are exact
-identities. So strike computed here is **grid north**; dip and rake cross unchanged.
-
-Positions are **offsets from a per-surface origin**, taken before any other arithmetic:
-an NZTM northing reaches ~5,180 km against a ~1 km subfault, so an absolute vertex is
-rounded at 1.2e-12 relative against 3e-15 for an offset. The origin is added back at
-exactly one place, the projection seam.
+Positions are offsets from a per-surface origin, taken first: an NZTM northing reaches
+~5,180 km against a ~1 km subfault, so an absolute vertex is rounded at 1.2e-12 relative
+against 3e-15 for an offset. The origin is added back only at the projection seam.
 
 Planes that hang the same way -- equal dip, dip direction and bottom depth -- share
-their seam column exactly and fuse into one chart. Planes that do not are **two
-segments**, not an error.
+their seam column exactly and fuse into one chart; planes that do not are two segments,
+not an error.
 """
 
 from __future__ import annotations
@@ -51,8 +46,7 @@ WGS84 = pyproj.CRS("EPSG:4326")
 SHARPEST_BEND_DEG = 120.0
 """The steepest trace bend a fused surface accepts.
 
-The bend column is stretched by ``1 / cos(deflection / 2)`` to lie in both planes at
-once; at 120 degrees that stretch is exactly 2.
+A bend column is stretched by ``1 / cos(deflection / 2)``; at 120 degrees that is 2.
 """
 
 SEAM_TOLERANCE_KM = 1.0e-6
@@ -75,34 +69,30 @@ UNIFORM_SPACING_TOLERANCE = 1.0e-9
 """Relative spread above which an edge's steps are not one spacing.
 
 Six orders from f64 round-off (~1e-15 relative, since bilinear refinement of a
-parallelogram gives exactly equal steps) and six from a factor of two, the smallest
-mistake a hand-edited file is worth catching for.
+parallelogram gives exactly equal steps) and six from a factor of two.
 """
 
 PLANARITY_TOLERANCE_KM = 1.0e-6
 """The worst out-of-plane node distance a planar chart may have.
 
-Same construction as the seam tolerance: a chart this module builds is planar to
-round-off (~1e-13 km at fault scale), and any real non-planarity is kilometres.
+A chart this module builds is planar to round-off (~1e-13 km at fault scale); any real
+non-planarity is kilometres.
 """
 
 _MAX_BEND_SPREAD = 1.0 / np.cos(np.radians(SHARPEST_BEND_DEG / 2.0)) - 1.0
 """How far a block's line spacings may spread around their mean.
 
 What the sharpest accepted bend contributes through the stretch alone, derived from
-:data:`SHARPEST_BEND_DEG` so the two cannot drift. Rotating the down-dip direction by
-half the deflection also swings the block's *bottom* edge by ``depth_span / tan(dip)``
--- 46 km on a 4 km-deep fault dipping 5 degrees against a 27 km plane -- which is why
-the check is on the measured spread rather than on the deflection.
+:data:`SHARPEST_BEND_DEG` so the two cannot drift. A bend also swings the block's bottom
+edge by ``depth_span / tan(dip)`` -- 46 km on a 4 km-deep fault dipping 5 degrees
+against a 27 km plane -- so the check is on measured spread, not on the deflection.
 """
 
 _DOWN = np.array([0.0, 0.0, 1.0])
 
 
-# ============================================================================
-# Primitives. Bearings are degrees clockwise from grid north, which is why the
-# arguments to atan2 are (east, north) rather than the mathematical (y, x).
-# ============================================================================
+# Primitives. Bearings are degrees clockwise from grid north, hence atan2(east, north)
+# rather than the mathematical atan2(y, x).
 
 
 def _normalise_bearing(degrees: float) -> float:
@@ -148,18 +138,15 @@ def grid_convergence_deg(
 ) -> FloatArray:
     """The angle from true north to grid north, in degrees, at each point.
 
-    Add it to a grid azimuth to get a true one. In NZTM2000 it runs from about -3.4
-    degrees at East Cape to +5.0 in Fiordland, five times the one-degree rake bound,
-    and it varies across a fault -- hence per subfault rather than once for the mesh.
+    Add it to a grid azimuth to get a true one. In NZTM2000 it runs from -3.4 degrees at
+    East Cape to +5.0 in Fiordland, five times the one-degree rake bound, and it varies
+    across a fault -- hence per subfault.
     """
     factors = pyproj.Proj(crs).get_factors(longitude_deg, latitude_deg)
     return np.asarray(factors.meridian_convergence, dtype=np.float64)
 
 
-# ============================================================================
 # The mesh type
-# ============================================================================
-
 
 NODE_VARIABLES = ("east_km", "north_km", "depth_km")
 """The chart's own geometry, on ``(i_node, j_node)``. What a mesh file stores."""
@@ -218,16 +205,12 @@ class RuptureMesh:
         surface : str
             The surface's name, which becomes the group name in files.
         plane_of_column : FloatArray, optional
-            Which config plane each *cell* column came from, length ``n_j``. Defaults
-            to all zeros -- a single-plane chart.
+            Which config plane each *cell* column came from, length ``n_j``. Default
+            all zeros, a single-plane chart.
         occupied : BoolArray, optional
-            Which cells are really fault, ``(n_i, n_j)``. Omit for a chart that fills
-            its own rectangle, which is every fault built from a config; a surface
-            resampled from a modeller's outline does not. See :attr:`occupied`.
+            Which cells are really fault, ``(n_i, n_j)``. See :attr:`occupied`.
         parameter_spacing_km : tuple of float, optional
-            ``(strike, dip)`` cell size in the chart's own parameters, for a chart cut
-            on a regular grid over a reference plane. Omit for a chart built from a
-            config, whose spacing is measured from its nodes. See
+            ``(strike, dip)`` cell size in the chart's own parameters, km. See
             :meth:`parameter_spacing_km`.
 
         Raises
@@ -370,14 +353,10 @@ class RuptureMesh:
     def parameter_spacing_km(self) -> tuple[float, float] | None:
         """``(strike, dip)`` cell size in the chart's own parameters, or ``None``.
 
-        Set when the chart was cut on a regular grid over a reference plane -- a
-        resampled curved surface. Such a chart is uniform *in its parameters* by
-        construction while its lifted node spacing varies with the curvature, so this
-        is the spacing the sampler and the sweep want, and measuring one from the nodes
-        instead would read the surface's own stretch as a discretisation.
-
-        ``None`` for a chart built from a config, whose grid is flat and whose spacing
-        is therefore measured from the nodes themselves.
+        Set for a resampled curved surface, which is uniform *in its parameters* while
+        its lifted node spacing varies with the curvature -- measuring a spacing from
+        those nodes would read the surface's own stretch as a discretisation. ``None``
+        for a chart built from a config, whose spacing is measured from nodes.
         """
         stored = self._dataset.attrs.get("parameter_spacing_km")
         if stored is None:
@@ -388,16 +367,11 @@ class RuptureMesh:
     def occupied(self) -> BoolArray:
         """Which cells are really fault, shaped :attr:`cell_counts`.
 
-        A chart is a rectangle in its own parameters, and a fault built from a config
-        fills that rectangle exactly -- for those this is all true, and every caller
-        that ignores it stays correct.
-
-        A surface resampled from a modeller's triangulation does not: the CFM
-        Hikurangi interface fills about two thirds of the rectangle its outline spans,
-        and the rest is cells that exist only because the grid is rectangular. They
-        carry positions, because the grid needs corners, and they carry no fault. What
-        reads this: the wavefront walls them off, the moment does not count them, and
-        the SRF does not write them.
+        All true for a fault built from a config, which fills its parameter rectangle
+        exactly. A resampled surface does not: the CFM Hikurangi interface fills about
+        two thirds of the rectangle its outline spans. Unoccupied cells carry positions,
+        because the grid needs corners, but no fault -- the wavefront walls them off,
+        the moment does not count them, and the SRF does not write them.
         """
         if "occupied" not in self._dataset.coords:
             return np.ones(self.cell_counts, dtype=bool)
@@ -406,7 +380,7 @@ class RuptureMesh:
     def blocks(self) -> list[tuple[int, int, int]]:
         """Contiguous constant-plane runs, as ``(plane, start, stop)`` cell columns.
 
-        The unit of planarity and spacing: a bent fault is *piecewise* planar.
+        The unit of planarity and spacing: a bent fault is only piecewise planar.
         """
         plane = self.planes()
         boundaries = np.flatnonzero(np.diff(plane)) + 1
@@ -420,7 +394,7 @@ class RuptureMesh:
     # -------------------------------------------------------------- the fields
 
     def fields(self) -> frozenset[str]:
-        """Every attached field's name -- the variables whose dims are the cell dims.
+        """Attached fields' names: the variables whose dims are the cell dims.
 
         Geometry is not in here; geometry is computed.
         """
@@ -461,10 +435,10 @@ class RuptureMesh:
         Raises
         ------
         GeometryError
-            For an array that is not the chart's shape, one carrying a non-finite
-            value, or a name in :data:`RESERVED_FIELDS`. xarray objects only when
-            dimension *sizes* disagree, so a transposed field on a square patch would
-            otherwise go in unremarked.
+            For an array that is not the chart's shape, one carrying a non-finite value,
+            or a name in :data:`RESERVED_FIELDS`. The shape check is this module's own:
+            xarray objects only when dimension *sizes* disagree, so a transposed field
+            on a square patch would go in unremarked.
         """
         cell_counts = self.cell_counts
         prepared = {}
@@ -495,8 +469,7 @@ class RuptureMesh:
         """What this chart records about itself, read-only.
 
         What a stage learns that is not one value per subfault: the truncation
-        diagnostic, and -- on the one segment that holds it -- where the rupture
-        nucleated.
+        diagnostic, and where the rupture nucleated.
         """
         return types.MappingProxyType(dict(self._dataset.attrs))
 
@@ -521,8 +494,8 @@ class RuptureMesh:
     def with_pulses(self, offsets: np.ndarray, samples: FloatArray) -> RuptureMesh:
         """This chart with its slip-rate pulses attached, as CSR.
 
-        ``offsets`` is where each subfault's pulse starts, length ``n_i * n_j + 1`` and
-        strike-fastest; ``samples`` is every pulse, concatenated.
+        ``offsets`` is where each subfault's pulse starts, length ``n_i * n_j + 1``,
+        strike-fastest; ``samples`` is every pulse concatenated.
 
         Raises
         ------
@@ -592,7 +565,7 @@ class RuptureMesh:
     def areas_km2(self) -> FloatArray:
         """Cell areas, ``(n_i, n_j)``, as two triangles split on the (0, 2) diagonal.
 
-        Costs nothing extra and copes with corners that are not coplanar.
+        The split costs nothing and copes with non-coplanar corners.
         """
         c0, c1, c2, c3 = self._corners()
 
@@ -610,11 +583,10 @@ class RuptureMesh:
     def strike_dip_deg(self) -> tuple[FloatArray, FloatArray]:
         """Per-cell strike (grid north, [0, 360)) and dip ([0, 90]), from the normal.
 
-        From the normal rather than the edges, which is what keeps them right on a
-        surface that is not planar. The absolute value on the normal's vertical
-        component makes dip independent of the normal's sign; strike's sign comes from
-        the cell's along-strike edges, tying it to the trace direction. A degenerate
-        cell reports dip 0 and the strike of its along-strike edge, never NaN.
+        From the normal rather than the edges, which keeps them right on a surface that
+        is not planar. Dip is independent of the normal's sign; strike's sign comes from
+        the cell's along-strike edges, tying it to the trace direction. A degenerate cell
+        reports dip 0 and the strike of its along-strike edge, never NaN.
         """
         along_strike, down_dip = self._direction_vectors()
         normal = np.cross(along_strike, down_dip)
@@ -660,8 +632,8 @@ class RuptureMesh:
     def line_steps(self) -> tuple[FloatArray, FloatArray]:
         """Every along-strike and every down-dip step, as ``(strike, dip)`` arrays.
 
-        Shapes ``(n_i+1, n_j)`` and ``(n_i, n_j+1)``. Every line, not one edge: a
-        uniform edge says nothing about the interior of a non-parallelogram.
+        Shapes ``(n_i+1, n_j)`` and ``(n_i, n_j+1)``. Every line, not one edge: a uniform
+        edge says nothing about the interior of a non-parallelogram.
         """
         nodes = self.nodes()
         return (
@@ -672,9 +644,9 @@ class RuptureMesh:
     def _block_cut_sizes(self) -> tuple[list[float], list[float], list[int]]:
         """Each block's realised subfault size, unstretched, and its cell count.
 
-        The **unstretched reference**, so comparing two blocks asks about their
-        discretisation rather than their bends: on a trapezoidal fused bend the two
-        lines carrying no stretch are the *trace* and the *shortest column*.
+        Unstretched, so comparing blocks asks about discretisation rather than bends: on
+        a trapezoidal fused bend the two unstretched lines are the trace and the
+        shortest column.
         """
         nodes = self.nodes()
         cells_i = nodes.shape[0] - 1
@@ -693,11 +665,11 @@ class RuptureMesh:
     def spacing_km(self) -> tuple[float, float]:
         """One ``(strike, dip)`` spacing for the chart -- what the sampler gets.
 
-        A chart cut on a reference plane states its own spacing and this returns it;
-        see :meth:`parameter_spacing_km`. Otherwise each line is evenly divided
-        (`validate_chart` asserts it), so a block's spacing is the mean of its steps
-        and the chart's the cell-count-weighted mean of its blocks'. A mean rather than one line's step, because a fused bend is a
-        *trapezoid*: rows differ by up to 2.4% on the shipped ``hope`` example.
+        A chart with a stated :meth:`parameter_spacing_km` returns it. Otherwise a
+        block's spacing is the mean of its steps and the chart's is the
+        cell-count-weighted mean of its blocks', a mean rather than one line's step
+        because a fused bend is a trapezoid: rows differ by up to 2.4% on the shipped
+        ``hope`` example.
 
         Raises
         ------
@@ -731,9 +703,9 @@ class RuptureMesh:
     def cell_index(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """The cell containing an in-fault position, as 0-based ``(i, j)``.
 
-        Not the SRF's ``shyp``, which is measured from the along-strike centre, and not
-        a node index. A position on an interior boundary belongs to the upper cell; one
-        exactly on the far edge belongs to the last cell.
+        Not the SRF's ``shyp``, which is measured from the along-strike centre, and not a
+        node index. A position on an interior boundary belongs to the upper cell; one on
+        the far edge belongs to the last cell.
 
         Raises
         ------
@@ -748,8 +720,8 @@ class RuptureMesh:
     def boundary_faces(self) -> IntArray:
         """Flat indices of the chart's perimeter cells, ascending, strike-fastest.
 
-        All four edges, including the surface trace: a front reaching the trace is a
-        real arrest, and excluding it would be a minimum jump depth under another name.
+        All four edges, including the surface trace: a front reaching the trace is a real
+        arrest, and excluding it would be a minimum jump depth under another name.
         """
         rows, columns = self.cell_counts
         on_edge = np.zeros((rows, columns), dtype=bool)
@@ -773,10 +745,10 @@ def _refuse_mixed_resolution(
 ) -> None:
     """Refuse blocks cut at resolutions too far apart to average into one grid.
 
-    The bound scales with how *short* the shortest block is: a plane cut into ``n``
-    cells has a realised size within ``1/(2n)`` of the size requested, so a five-cell
-    plane can be a legitimate 20% from its neighbour. The shipped Alpine-Hope traces at
-    100 m have planes of five cells that a flat 10% bound refused.
+    The bound scales with how short the shortest block is: a plane cut into ``n`` cells
+    has a realised size within ``1/(2n)`` of the size requested, so a five-cell plane can
+    be a legitimate 20% from its neighbour. The shipped Alpine-Hope traces at 100 m have
+    planes of five cells that a flat 10% bound refused.
     """
     from_rounding = 1.0 / min(counts)
     permitted = max(SPACING_SPREAD, from_rounding)
@@ -806,9 +778,7 @@ def _locate(position_km: float, arc_km: FloatArray, *, axis: str) -> int:
     return int(np.searchsorted(arc_km[1:-1], position_km, side="right"))
 
 
-# ============================================================================
 # S1 + S2: geometry config to charts
-# ============================================================================
 
 
 def cell_counts(
@@ -816,9 +786,9 @@ def cell_counts(
 ) -> tuple[int, int]:
     """How many cells a plane gets, from a size or from explicit counts.
 
-    Returns ``(strike_count, dip_count)``. A size is a *request*: the plane is cut into
-    whole cells, so the size actually used is the plane's own length over the count.
-    Rounded to nearest rather than down, and floored at one.
+    Returns ``(strike_count, dip_count)``. A size is a request: the plane is cut into
+    whole cells, rounded to nearest and floored at one, so the size actually used is the
+    plane's own length over the count.
     """
     if discretisation.subfault_size_km is not None:
         size = discretisation.subfault_size_km
@@ -863,7 +833,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     """S1 + S2 for a fault: trace to planar charts, one per config plane.
 
     One chart per plane, in trace order, all sharing the surface origin. Fusing
-    conforming neighbours into segments is :func:`fuse`'s job.
+    conforming neighbours is :func:`fuse`'s job.
 
     Raises
     ------
@@ -874,8 +844,8 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
         crs, fault.origin.longitude_deg, fault.origin.latitude_deg
     )
 
-    # The trace, as offsets from the origin -- before any other arithmetic, so every
-    # number stays at fault scale rather than CRS scale.
+    # The trace as offsets, before any other arithmetic, so every number stays at fault
+    # scale rather than CRS scale.
     trace = [np.array([0.0, 0.0])]
     for plane in fault.planes:
         east, north = to_projected(crs, plane.end.longitude_deg, plane.end.latitude_deg)
@@ -910,8 +880,8 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 
     # Bottom corners per trace vertex. At a conforming junction the shared corner is
     # placed once, along the bisector, stretched by 1/cos(deflection/2) so it lies in
-    # both planes at once -- without the stretch the planes diverge below the vertex by
-    # a measured 1.285 km on the hope example.
+    # both planes; without the stretch the planes diverge below the vertex by a measured
+    # 1.285 km on the hope example.
     bottom_near: list[FloatArray] = [None] * count  # plane k's corner at vertex k
     bottom_far: list[FloatArray] = [None] * count  # plane k's corner at vertex k+1
 
@@ -977,7 +947,7 @@ def build_fault(fault: FaultConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
 def build_point(point: PointConfig, crs: pyproj.CRS) -> list[RuptureMesh]:
     """S1 + S2 for a point source: an ordinary one-cell chart.
 
-    A point is given by its **centre**; a chart by its corners.
+    A point is given by its centre; a chart by its corners.
 
     Raises
     ------
@@ -1038,17 +1008,15 @@ def build_surface(
     return build_fault(surface, crs)
 
 
-# ============================================================================
 # Fusion: per-plane charts to segments
-# ============================================================================
 
 
 def seam_gap_km(near: RuptureMesh, far: RuptureMesh) -> float:
     """How far apart two charts' shared node columns are, in kilometres.
 
-    The maximum over the column, not the first node: planes sharing a trace vertex
-    agree there whatever their dips, so the disagreement grows with depth. Infinity
-    when the columns have different node counts, which is not one grid either way.
+    The maximum over the column, not the first node: planes sharing a trace vertex agree
+    there whatever their dips, so the disagreement grows with depth. Infinity when the
+    columns have different node counts, which is not one grid either way.
     """
     last = near.nodes()[:, -1]
     first = far.nodes()[:, 0]
@@ -1061,8 +1029,8 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
     """Concatenate per-plane charts into segments along strike.
 
     Adjacent charts whose seam columns coincide (within :data:`SEAM_TOLERANCE_KM`) are
-    one surface and fuse, the shared column stored once. Charts that do not are a
-    segment boundary -- **two segments, not an error**.
+    one surface and fuse, the shared column stored once. Charts that do not are a segment
+    boundary: two segments, not an error.
 
     Raises
     ------
@@ -1080,8 +1048,8 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
         if gap <= SEAM_TOLERANCE_KM:
             segments[-1].append(chart)
             continue
-        # "Different geometry" or "same geometry, different cuts": the seam column's
-        # corner nodes are shared vertices when the geometry conforms, whatever the cut.
+        # Different geometry, or same geometry differently cut: the seam column's corner
+        # nodes are shared vertices when the geometry conforms, whatever the cut.
         near_corner_top = near.nodes()[0, -1]
         near_corner_bottom = near.nodes()[-1, -1]
         far_corner_top = chart.nodes()[0, 0]
@@ -1132,27 +1100,21 @@ def fuse(charts: list[RuptureMesh]) -> list[RuptureMesh]:
     return fused
 
 
-# ============================================================================
-# S3: chart validation -- the temporary stage
-# ============================================================================
+# S3: chart validation
 
 
 def validate_chart(mesh: RuptureMesh) -> None:
     """Assert a chart satisfies the spectral sampler's assumptions.
 
-    The only code that knows what the sampler needs, which is **one regular grid** --
-    not a flat surface. A chart cut on a reference plane already is one, by
-    construction, and returns here immediately; its nodes are curved and its lifted
-    steps vary with that curvature, which is the surface's own stretch rather than an
-    uneven discretisation. What the sweep pays for that is measured in
-    :func:`~rupture_generator.timing.travel_times`.
+    The only code that knows what the sampler needs, which is one regular grid, not a
+    flat surface. A chart cut on a reference plane already is one and returns here
+    immediately.
 
-    A chart built from a config carries no such guarantee, so it is checked for one:
-    three claims, each with its own tolerance. Every line is evenly divided (to
-    :data:`UNIFORM_SPACING_TOLERANCE`, against a measured round-off floor of ~1e-14);
-    lines agree with each other to within the bend stretch, which reaches 2.4% on the
-    shipped ``hope`` example; and each *block* is planar -- per constant-plane block,
-    because a fused bent fault has a kink at every seam by construction.
+    A chart built from a config is checked for three claims, each with its own
+    tolerance. Every line is evenly divided (to :data:`UNIFORM_SPACING_TOLERANCE`,
+    against a measured round-off floor of ~1e-14); lines agree with each other to within
+    the bend stretch, which reaches 2.4% on the shipped ``hope`` example; and each
+    constant-plane block is planar, because a fused bent fault has a kink at every seam.
 
     Raises
     ------
@@ -1204,8 +1166,8 @@ def validate_chart(mesh: RuptureMesh) -> None:
 
         block = nodes[:, start : stop + 1].reshape(-1, 3)
         centred = block - block.mean(axis=0)
-        # The least-variance direction is the block's normal; the worst node's
-        # distance along it is the planarity residual, in kilometres.
+        # The least-variance direction is the block's normal; the worst node's distance
+        # along it is the planarity residual, in kilometres.
         _, _, rotation = np.linalg.svd(centred, full_matrices=False)
         residual = float(np.abs(centred @ rotation[2]).max())
         if residual > PLANARITY_TOLERANCE_KM:
@@ -1216,9 +1178,7 @@ def validate_chart(mesh: RuptureMesh) -> None:
             )
 
 
-# ============================================================================
-# The projection seam -- one function out, used by both output paths
-# ============================================================================
+# The projection seam, used by both output paths
 
 
 def project_cells(mesh: RuptureMesh, crs: pyproj.CRS) -> xr.Dataset:
