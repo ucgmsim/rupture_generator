@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 FIELDS = {
     "slip": ("slip_m", "metres", "hot"),
+    "onset": ("onset_s", "seconds", "viridis"),
     "rise-time": ("rise_time_s", "seconds", "viridis"),
     "rake": ("rake_deg", "degrees", "quiver"),
 }
@@ -72,6 +74,10 @@ class Segment:
         Present when the file carries the material properties the generator sampled.
         Otherwise the moment release is drawn at a nominal rigidity, with the panel
         saying so.
+    plane : np.ndarray or None
+        Which of the surface's planes each along-strike column came from, ``(cells_j,)``.
+        A native file records it; an SRF has no equivalent, because there a plane is a
+        segment and the question does not arise.
     """
 
     name: str
@@ -90,6 +96,7 @@ class Segment:
     sample_interval_s: float
     hypocentre_m: np.ndarray | None = None
     rigidity_pa: np.ndarray | None = None
+    plane: np.ndarray | None = None
 
     def values(self, variable: str) -> np.ndarray:
         """One field, flattened over subfaults."""
@@ -253,6 +260,7 @@ def _from_rupture_file(tree: xr.DataTree) -> list[Segment]:
                 rigidity_pa=dataset["rigidity_pa"].to_numpy(),
                 sample_interval_s=float(dataset.attrs["sample_interval_s"]),
                 hypocentre_m=hypocentre,
+                plane=dataset["plane"].to_numpy() if "plane" in dataset else None,
             )
         )
     return segments
@@ -697,7 +705,12 @@ def require_rerun():
 
 
 def layout(blueprint):  # noqa: ANN001 - Rerun's types
-    """The panels: the fault, and three ways of reading the same numbers."""
+    """The panels: the fault, and four ways of reading the same numbers.
+
+    Each 3D tab holds one field, its colourbar, and the hypocentre, and nothing else:
+    the four colourbars stand in the same place in the scene, so a tab that let two of
+    them through would draw one over the other.
+    """
     return blueprint.Blueprint(
         blueprint.Horizontal(
             blueprint.Vertical(
@@ -706,6 +719,9 @@ def layout(blueprint):  # noqa: ANN001 - Rerun's types
                     # Spatial rather than bar-chart views: these are coloured per bin
                     # to match the fault. See `_histogram`.
                     blueprint.Spatial2DView(origin="/histogram/slip", name="slip"),
+                    blueprint.Spatial2DView(
+                        origin="/histogram/onset", name="onset time"
+                    ),
                     blueprint.Spatial2DView(
                         origin="/histogram/rise_time", name="rise time"
                     ),
@@ -726,6 +742,16 @@ def layout(blueprint):  # noqa: ANN001 - Rerun's types
                     origin="/fault",
                     name="slip",
                     contents=["/fault/slip/**", "/fault/hypocentre/**"],
+                    # Where one plane of a fault meets the next: present, and off until
+                    # a reader asks, which is what the blueprint panel is expanded for.
+                    overrides={
+                        "/fault/slip/joints": blueprint.EntityBehavior(visible=False)
+                    },
+                ),
+                blueprint.Spatial3DView(
+                    origin="/fault",
+                    name="onset time",
+                    contents=["/fault/onset/**", "/fault/hypocentre/**"],
                 ),
                 blueprint.Spatial3DView(
                     origin="/fault",
@@ -740,7 +766,13 @@ def layout(blueprint):  # noqa: ANN001 - Rerun's types
             ),
             column_shares=[1, 3],
         ),
-        collapse_panels=True,
+        # The blueprint panel is the only way Rerun offers to switch an entity off, and
+        # the things worth switching off are all here: the hypocentre's label and
+        # leader, the isochrones, their labels, the colourbar. Collapsing it, which is
+        # what `collapse_panels` does, hides the switches rather than the panels.
+        blueprint.BlueprintPanel(state="expanded"),
+        blueprint.SelectionPanel(state="collapsed"),
+        blueprint.TimePanel(state="collapsed"),
     )
 
 
@@ -793,6 +825,26 @@ def view(
         console.print(f"[green]wrote[/green] {save}")
 
 
+@dataclasses.dataclass(frozen=True)
+class Drawing:
+    """What every panel needs to know about how this rupture is being drawn.
+
+    The cells that survived the display budget, the quads they are drawn on, the box
+    all of them fit in, and how many bins the distributions get. Passed around as one
+    thing because a panel needs most of it and none of it is a choice a panel makes.
+    """
+
+    kept: dict[str, np.ndarray]
+    quads: dict[str, np.ndarray]
+    bounds: tuple[np.ndarray, np.ndarray]
+    bins: int
+
+    @property
+    def lift(self) -> float:
+        """How far off the surface a label has to sit to stop z-fighting the mesh."""
+        return 0.01 * _reach(self.bounds)
+
+
 def log_rupture(
     rerun,  # noqa: ANN001 - Rerun's module
     segments: list[Segment],
@@ -806,6 +858,7 @@ def log_rupture(
     kept, quads = {}, {}
     for segment in segments:
         kept[segment.name], quads[segment.name] = drawn(segment, stride)
+    drawing = Drawing(kept, quads, _scene_bounds(quads), bins)
 
     # The provenance leads the panel: it says whether what is on screen is the file.
     summary = f"*{provenance}*\n\n{statistics(segments)}"
@@ -822,8 +875,8 @@ def log_rupture(
     ends = [float((segment.onset_s + segment.rise_time_s).max()) for segment in counted]
     times_s = np.arange(min(starts), max(ends) + time_step, time_step)
 
-    _log_static_fields(rerun, segments, kept, quads, bins)
-    _log_hypocentre(rerun, segments)
+    _log_static_fields(rerun, segments, drawing)
+    _log_hypocentre(rerun, segments, drawing)
 
     # `moment_release` reads the slip *rates*; building the clocks overwrites them with
     # their running sum. That order is a requirement, not a preference.
@@ -835,6 +888,15 @@ def log_rupture(
     peak = (
         max([float(clock.total().max()) for clock in slipped.values()] + [0.0]) or 1.0
     )
+    _log_colourbar(
+        rerun,
+        "/fault/slip",
+        (0.0, peak),
+        lambda values: hot(values, 0.0, peak),
+        "slip (m)",
+        drawing.bounds,
+    )
+    _log_joints(rerun, segments, drawing)
 
     for step, moment_s in enumerate(times_s):
         rerun.set_time("rupture", duration=float(moment_s))
@@ -846,11 +908,15 @@ def log_rupture(
 
         frame = []
         for segment in segments:
-            indices = kept[segment.name]
+            indices = drawing.kept[segment.name]
             current = slipped[segment.name].at(float(moment_s))
             rerun.log(
                 f"/fault/slip/{segment.name}",
-                _mesh(rerun, quads[segment.name], hot(current[indices], 0.0, peak)),
+                _mesh(
+                    rerun,
+                    drawing.quads[segment.name],
+                    hot(current[indices], 0.0, peak),
+                ),
             )
             frame.append(current)
         # The same map and limits the slip mesh is drawn with, over the *drawn* cells:
@@ -869,62 +935,58 @@ def log_rupture(
 def _log_static_fields(
     rerun,  # noqa: ANN001
     segments: list[Segment],
-    kept: dict[str, np.ndarray],
-    quads: dict[str, np.ndarray],
-    bins: int,
+    drawing: Drawing,
 ) -> None:
-    """Rise time and rake, which are properties of the finished rupture.
+    """Onset time, rise time and rake, which are properties of the finished rupture.
 
     The distributions are over the file's own subfaults; the meshes and arrows carry
     the drawn cells' values on the distributions' own limits.
     """
-    counted = list(segments)
-    rise = np.concatenate([segment.rise_time_s.ravel() for segment in counted])
-    rake = np.concatenate([segment.rake_deg.ravel() for segment in counted])
-    low, high = float(rise.min()), float(rise.max())
-
-    for segment in segments:
-        indices = kept[segment.name]
-        rerun.log(
-            f"/fault/rise_time/{segment.name}",
-            _mesh(
-                rerun,
-                quads[segment.name],
-                viridis(segment.rise_time_s.ravel()[indices], low, high),
-            ),
-            static=True,
-        )
+    onset = _log_scalar_field(
+        rerun,
+        segments,
+        drawing,
+        "onset_s",
+        "onset",
+        "onset time (s)",
+        zero_is_rest=False,
+    )
+    _log_isochrones(rerun, segments, drawing, contour_levels(*onset))
+    _log_scalar_field(
+        rerun, segments, drawing, "rise_time_s", "rise_time", "rise time (s)"
+    )
 
     # Rake, as arrows along the direction each subfault slipped, thinned further than
-    # the mesh: arrows overlap into a solid mass long before cells do.
+    # the mesh: arrows overlap into a solid mass long before cells do. Length and
+    # colour are normalised over every segment rather than each on its own peak, so
+    # that two segments' arrows mean the same thing and one colourbar covers both.
+    peak = max(float(segment.slip_m.max()) for segment in segments) or 1.0
     for segment in segments:
-        indices = kept[segment.name]
+        indices = drawing.kept[segment.name]
         budget = max(1, MAX_ARROWS // len(segments))
         if len(indices) > budget:
             indices = indices[:: math.ceil(len(indices) / budget)]
         slip = segment.slip_m.ravel()[indices]
         scale = float(np.linalg.norm(segment.corners_m[0, 1] - segment.corners_m[0, 0]))
-        lengths = scale * 6.0 * slip / (slip.max() or 1.0)
         rerun.log(
             f"/fault/rake/{segment.name}",
             rerun.Arrows3D(
                 origins=segment.centres_m[indices],
-                vectors=slip_direction(segment, indices) * lengths[:, None],
-                colors=hot(slip, 0.0, float(slip.max()) or 1.0),
+                vectors=slip_direction(segment, indices)
+                * (scale * 6.0 * slip / peak)[:, None],
+                colors=hot(slip, 0.0, peak),
             ),
             static=True,
         )
-
-    _histogram(
+    _log_colourbar(
         rerun,
-        "/histogram/rise_time",
-        rise,
-        (low, high),
-        bins,
-        lambda values: viridis(values, low, high),
-        "rise time (s)",
-        static=True,
+        "/fault/rake",
+        (0.0, peak),
+        lambda values: hot(values, 0.0, peak),
+        "slip (m), arrow colour",
+        drawing.bounds,
     )
+
     # The axis first, so the wedges draw over it rather than under it.
     guides, label_positions, labels = rose_axis()
     rerun.log(
@@ -943,6 +1005,7 @@ def _log_static_fields(
         ),
         static=True,
     )
+    rake = np.concatenate([segment.rake_deg.ravel() for segment in segments])
     rerun.log(
         "/histogram/rake",
         rerun.LineStrips2D(rose(rake), colors=[(216, 222, 26)]),
@@ -950,18 +1013,216 @@ def _log_static_fields(
     )
 
 
-def _log_hypocentre(rerun, segments: list[Segment]) -> None:  # noqa: ANN001
-    """Where the rupture nucleated, on whichever segment holds it."""
+def _log_scalar_field(
+    rerun,  # noqa: ANN001
+    segments: list[Segment],
+    drawing: Drawing,
+    variable: str,
+    path: str,
+    unit: str,
+    *,
+    zero_is_rest: bool = True,
+) -> tuple[float, float]:
+    """One scalar per subfault: the fault, its colourbar, and its distribution.
+
+    Onset time and rise time are the same drawing: a static field on `viridis`, over
+    limits taken from every subfault in the file rather than from the drawn ones, so
+    striding the display cannot move the colour scale.
+
+    Parameters
+    ----------
+    variable : str
+        The `Segment` field to read.
+    path : str
+        The entity name, under ``/fault`` and ``/histogram``.
+    zero_is_rest : bool
+        Whether a zero means a subfault that never moved. True of rise time, and false
+        of onset time, where zero is the arrival the rupture is timed from.
+
+    Returns
+    -------
+    tuple
+        The limits it was drawn on, for whatever else has to agree with them.
+    """
+    values = np.concatenate([segment.values(variable) for segment in segments])
+    low, high = float(values.min()), float(values.max())
+
+    def colouring(binned: np.ndarray) -> np.ndarray:
+        return viridis(binned, low, high)
+
+    for segment in segments:
+        rerun.log(
+            f"/fault/{path}/{segment.name}",
+            _mesh(
+                rerun,
+                drawing.quads[segment.name],
+                viridis(
+                    segment.values(variable)[drawing.kept[segment.name]], low, high
+                ),
+            ),
+            static=True,
+        )
+    _log_colourbar(
+        rerun, f"/fault/{path}", (low, high), colouring, unit, drawing.bounds
+    )
+    _histogram(
+        rerun,
+        f"/histogram/{path}",
+        values,
+        (low, high),
+        drawing.bins,
+        colouring,
+        unit,
+        static=True,
+        zero_is_rest=zero_is_rest,
+    )
+    return low, high
+
+
+def _log_isochrones(
+    rerun,  # noqa: ANN001
+    segments: list[Segment],
+    drawing: Drawing,
+    levels: np.ndarray,
+) -> None:
+    """Where the rupture front stood at each of a few round times.
+
+    Traced on the file's own lattice rather than on the drawn one: the colour mesh is
+    strided down to fit the display budget, and a front drawn on the strided lattice
+    would be a staircase of the stride rather than the front the file records.
+
+    Each line carries its own time, so nothing has to state the interval. The lines are
+    drawn on both faces of the fault, a little clear of it: on the surface they z-fight
+    the mesh, and on one face only they vanish behind it from half the viewpoints there
+    are. Their labels are not, being text that draws over the fault either way.
+    """
+    lifted = {segment.name: _outward(segment) * drawing.lift for segment in segments}
+    for segment in segments:
+        onset = segment.onset_s.reshape(segment.cells)
+        positions = segment.centres_m.reshape(*segment.cells, 3)
+
+        drawn_levels, anchors, labels = [], [], []
+        for level in levels:
+            crossings = isochrones(onset, positions, float(level))
+            if not len(crossings):
+                continue
+            drawn_levels.append(_both_sides(crossings, lifted[segment.name]))
+            # One label a line, at the middle crossing it drew rather than at an end,
+            # which puts it inside the fault instead of on its edge.
+            anchors.append(crossings[len(crossings) // 2, 0] + lifted[segment.name])
+            labels.append(f"{level:g} s")
+        if not drawn_levels:
+            continue
+
+        rerun.log(
+            f"/fault/onset/isochrones/{segment.name}",
+            rerun.LineStrips3D(
+                np.concatenate(drawn_levels), colors=[CONTOUR_LINE], radii=[UI_POINTS]
+            ),
+            static=True,
+        )
+        rerun.log(
+            f"/fault/onset/isochrones/{segment.name}/labels",
+            rerun.Points3D(
+                np.array(anchors),
+                colors=[CONTOUR_LINE],
+                labels=labels,
+                show_labels=True,
+                radii=[UI_POINTS],
+            ),
+            static=True,
+        )
+
+
+def _log_joints(
+    rerun,  # noqa: ANN001
+    segments: list[Segment],
+    drawing: Drawing,
+) -> None:
+    """Where one plane of a fault meets the next.
+
+    A fault is stored as a single chart across all of its planes and the mesh is drawn
+    continuously over them, so nothing on screen says where the trace was digitised.
+    For a run of planes that happen to be collinear -- which is what a workflow makes
+    when it cuts a straight trace into equal lengths -- that is indistinguishable from a
+    fault that has only one, and the file is the only place the difference shows.
+
+    Off by default, in the blueprint. This is a fact about how the input was written
+    down rather than about the earthquake, and it is on the slip view because that is
+    the one a reader looks at first.
+    """
+    for segment in segments:
+        if segment.plane is None:
+            continue
+        boundaries = np.nonzero(np.diff(segment.plane))[0]
+        if not boundaries.size:
+            continue
+
+        cells_i, cells_j = segment.cells
+        corners = segment.corners_m.reshape(cells_i, cells_j, 4, 3)
+        lift = _outward(segment) * drawing.lift
+        # Corner 1 is the down-dip run of nodes on the far side of a column, and the
+        # last row's corner 2 closes it at the bottom. Both faces, as for a contour.
+        rerun.log(
+            f"/fault/slip/joints/{segment.name}",
+            rerun.LineStrips3D(
+                [
+                    side
+                    for column in boundaries
+                    for side in _both_sides(
+                        np.concatenate(
+                            [corners[:, column, 1], corners[-1:, column, 2]]
+                        )[None],
+                        lift,
+                    )
+                ],
+                colors=[JOINT_LINE],
+                radii=[UI_POINTS],
+            ),
+            static=True,
+        )
+
+
+def _log_hypocentre(
+    rerun,  # noqa: ANN001
+    segments: list[Segment],
+    drawing: Drawing,
+) -> None:
+    """Where the rupture nucleated, on whichever segment holds it.
+
+    The marker stays where the rupture actually started; the label stands off the
+    surface on a leader line, because text logged at a position on the mesh z-fights
+    it. The label is its own entity, and hiding it takes the leader with it.
+    """
     for segment in segments:
         if segment.hypocentre_m is None:
             continue
+        radius = max(400.0, float(np.abs(segment.corners_m).max()) / 120.0)
+        anchor = segment.hypocentre_m + _outward(segment) * drawing.lift * 4.0
         rerun.log(
-            "/fault/hypocentre",
+            f"/fault/hypocentre/{segment.name}",
             rerun.Points3D(
-                positions=[segment.hypocentre_m],
-                radii=[max(400.0, float(np.abs(segment.corners_m).max()) / 120.0)],
-                colors=[(255, 64, 64)],
+                positions=[segment.hypocentre_m], radii=[radius], colors=[(255, 64, 64)]
+            ),
+            static=True,
+        )
+        rerun.log(
+            f"/fault/hypocentre/{segment.name}/label",
+            rerun.Points3D(
+                positions=[anchor],
+                radii=[UI_POINTS],
+                colors=[(255, 128, 128)],
                 labels=[f"hypocentre ({segment.name})"],
+                show_labels=True,
+            ),
+            static=True,
+        )
+        rerun.log(
+            f"/fault/hypocentre/{segment.name}/label/leader",
+            rerun.LineStrips3D(
+                [np.stack([segment.hypocentre_m, anchor])],
+                colors=[(255, 128, 128)],
+                radii=[UI_POINTS],
             ),
             static=True,
         )
@@ -1011,7 +1272,10 @@ def _ticks(low: float, high: float, count: int = 5) -> np.ndarray:
             step = multiple * magnitude
             break
     first = math.ceil(low / step) * step
-    return np.arange(first, high + step / 2.0, step)
+    ticks = np.arange(first, high + step / 2.0, step)
+    # The overshoot is there so a tick landing exactly on `high` survives the
+    # comparison; it must not leave a label past the end of the axis.
+    return ticks[ticks <= high + step * 1.0e-9]
 
 
 def _histogram(
@@ -1024,14 +1288,17 @@ def _histogram(
     unit: str,
     *,
     static: bool = False,
+    zero_is_rest: bool = True,
 ) -> None:
     """A histogram drawn as boxes, on the quantity's axis, in the fault's own colours.
 
     Rerun's `BarChart` takes one colour for the whole chart, so `Boxes2D` is used
-    instead and the axis is drawn here. Subfaults at rest are counted, not binned.
+    instead and the axis is drawn here. Subfaults at rest are counted, not binned --
+    which is a statement about slip and rise time and not about every quantity, so
+    `zero_is_rest` turns it off for one, like onset time, whose zero is a real value.
     """
     values = np.asarray(values, dtype=np.float64).reshape(-1)
-    moving = values > 0.0
+    moving = values > 0.0 if zero_is_rest else np.ones(values.shape, dtype=bool)
     resting = int(values.size - np.count_nonzero(moving))
     counts, edges = np.histogram(values[moving], bins=bins, range=limits)
 
@@ -1111,6 +1378,234 @@ def _histogram(
     )
 
 
+# Furniture: the scale a field is read against, and the times the front stood at
+
+
+COLOURBAR_CELLS = 64
+"""How many quads a colourbar is drawn as. Enough that the ramp reads as continuous."""
+
+CONTOUR_LINE = (236, 240, 246)
+"""Near-white, because an isochrone has to be followed across the whole of `viridis`."""
+
+JOINT_LINE = (120, 200, 255)
+"""Cool blue: `hot` runs black through red and yellow to white and has no blue in it,
+so a joint drawn in this cannot be read as slip."""
+
+CONTOUR_STEPS_S = (0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0, 120.0, 300.0)
+"""The isochrone spacings worth offering, coarsest wins.
+
+Round numbers a reader counts in: quarter-seconds for a single small fault, half a
+minute for a subduction rupture. Anything not on this ladder -- 3.7 s, say -- makes the
+reader do arithmetic to answer "how long between these two lines".
+"""
+
+TARGET_CONTOURS = 10
+"""How many isochrones a fault can carry before they stop being separable."""
+
+UI_POINTS = -1.0
+"""Rerun reads a negative radius as a width in screen points rather than in metres.
+
+Furniture wants that: a contour drawn 80 m wide is invisible on a scenario zoomed out
+to a fault system, and a solid band on one zoomed in to a single subfault.
+"""
+
+
+def _scene_bounds(quads: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """The box every drawn cell fits inside, as its low and high corners.
+
+    Furniture is placed and sized from this rather than from any one segment, so that
+    the colourbar of a five-fault scenario stands clear of all five.
+    """
+    corners = np.concatenate([quad.reshape(-1, 3) for quad in quads.values()])
+    return corners.min(axis=0), corners.max(axis=0)
+
+
+def _reach(bounds: tuple[np.ndarray, np.ndarray]) -> float:
+    """How far the scene runs horizontally, which is what everything is scaled to."""
+    low, high = bounds
+    return float(max(high[0] - low[0], high[1] - low[1])) or 1.0
+
+
+def _outward(segment: Segment) -> np.ndarray:
+    """A unit vector off the fault surface, for lifting text clear of the mesh.
+
+    A label logged at a position *on* the surface z-fights the mesh it is labelling.
+    Up is not the fix -- a vertical fault contains it, which is most of New Zealand's
+    crustal faults -- so this is the surface's own normal, taken from the corners of
+    its first cell: along strike crossed with down dip.
+    """
+    cell = segment.corners_m[0]
+    normal = np.cross(cell[1] - cell[0], cell[3] - cell[0])
+    length = float(np.linalg.norm(normal))
+    return normal / length if length else np.array([0.0, 0.0, 1.0])
+
+
+def _both_sides(points: np.ndarray, offset: np.ndarray) -> np.ndarray:
+    """The same points lifted clear of a surface in both directions.
+
+    One side is a coin flip. Every segment has its own normal, so lifting each by its
+    own puts some of a fault system behind the surface from any viewpoint -- and no
+    viewpoint fixes the rest, which is what makes it worse than a wrong guess: the
+    reader turns the camera and a different subset of the contours disappears.
+
+    Both copies are logged, and the mesh hides whichever one is behind it.
+
+    For geometry only. Rerun draws a label over whatever is in front of it, so text
+    mirrored this way is not hidden on the far side -- it is simply written twice.
+    """
+    return np.concatenate([points + offset, points - offset])
+
+
+def _log_colourbar(
+    rerun,  # noqa: ANN001
+    path: str,
+    limits: tuple[float, float],
+    colouring: Colouring,
+    unit: str,
+    bounds: tuple[np.ndarray, np.ndarray],
+) -> None:
+    """The scale a field is coloured on, standing beside the fault.
+
+    Rerun 0.35 has no screen-space overlay for a 3D view, so a colourbar has to be part
+    of the scene rather than pinned to the window. It stands off the low corner of the
+    scene's own bounding box, and is drawn as two strips crossed at right angles so
+    that no camera azimuth catches it edge-on and loses it.
+
+    The ticks come from :func:`_ticks`, the same helper the histogram axes use, so the
+    two panels label the same field at the same values.
+    """
+    low_value, high_value = limits
+    low, high = bounds
+    reach = _reach(bounds)
+    # As tall as the scene is deep, so it stands beside the fault rather than towering
+    # over it -- with a floor, for a scene that is almost flat.
+    length = max(0.6 * float(high[2] - low[2]), 0.12 * reach)
+    width = 0.05 * length
+    # Off the low corner in both horizontal directions, standing on the deepest cell.
+    foot = np.array([low[0] - 0.08 * reach, low[1] - 0.08 * reach, low[2]])
+
+    edges = foot[2] + np.linspace(0.0, length, COLOURBAR_CELLS + 1)
+    centres = np.linspace(low_value, high_value, COLOURBAR_CELLS)
+    quads = []
+    for axis in (0, 1):
+        span = np.zeros(3)
+        span[axis] = width / 2.0
+        for bottom, top in itertools.pairwise(edges):
+            base = np.array([foot[0], foot[1], bottom])
+            rise = np.array([0.0, 0.0, top - bottom])
+            quads.append(
+                np.stack(
+                    [base - span, base + span, base + span + rise, base - span + rise]
+                )
+            )
+    colours = np.tile(colouring(centres), (2, 1))
+    rerun.log(
+        f"{path}/colourbar",
+        _mesh(rerun, np.stack(quads), colours),
+        static=True,
+    )
+
+    positions, labels = [], []
+    for value in _ticks(low_value, high_value):
+        fraction = _fraction(np.array([value]), low_value, high_value)[0]
+        positions.append(
+            [foot[0] + width, foot[1] + width, foot[2] + fraction * length]
+        )
+        labels.append(f"{value:.3g}")
+    positions.append([foot[0], foot[1], foot[2] + length + 0.06 * length])
+    labels.append(unit)
+    rerun.log(
+        f"{path}/colourbar/labels",
+        rerun.Points3D(
+            np.array(positions),
+            colors=[AXIS_TEXT],
+            labels=labels,
+            show_labels=True,
+            radii=[UI_POINTS],
+        ),
+        static=True,
+    )
+
+
+def contour_levels(
+    low: float, high: float, target: int = TARGET_CONTOURS
+) -> np.ndarray:
+    """Round times to draw isochrones at, spaced so the fault does not fill with lines.
+
+    The coarsest spacing on :data:`CONTOUR_STEPS_S` that fits `target` lines across the
+    range wins, which is what makes a thirty-second rupture come out in fives and a
+    three-second one in halves without either being told which it is.
+
+    The lowest onset is skipped: the front's own start is one subfault, and a contour
+    through it is a point rather than a line.
+    """
+    span = high - low
+    if not math.isfinite(span) or span <= 0.0:
+        return np.array([])
+    step = next(
+        (step for step in CONTOUR_STEPS_S if span / step <= target), CONTOUR_STEPS_S[-1]
+    )
+    first = math.ceil(low / step) * step
+    return np.arange(first if first > low else first + step, high, step)
+
+
+def isochrones(values: np.ndarray, positions: np.ndarray, level: float) -> np.ndarray:
+    """Where a lattice of values crosses `level`, as line segments in space.
+
+    Marching squares, on the parameter lattice and then mapped onto the surface it is
+    laid over, so a contour follows a curved fault rather than a plane through it.
+
+    Written against the crossings rather than against the cells: the obvious version
+    builds a ``(cells, 4, 3)`` array of every cell's four possible crossing points,
+    which is 960 MB of float64 for a ten-million-cell fault and is all but empty --
+    an isochrone touches the square root of the cells, not all of them.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        ``(i, j)``. Non-finite entries take no part: a front that never arrived has no
+        crossing rather than a crossing at infinity.
+    positions : np.ndarray
+        ``(i, j, 3)``, where each lattice point sits.
+    level : float
+        The value to trace.
+
+    Returns
+    -------
+    np.ndarray
+        ``(segments, 2, 3)``, each a straight run between two cell edges. Empty when
+        the level lies outside the field.
+    """
+    finite = np.isfinite(values)
+    above = np.where(finite, values, -np.inf) >= level
+    # An edge is crossed when its ends straddle the level and both ends are real.
+    down = (above[:, :-1] != above[:, 1:]) & finite[:, :-1] & finite[:, 1:]
+    across = (above[:-1, :] != above[1:, :]) & finite[:-1, :] & finite[1:, :]
+
+    # A cell's four edges, anticlockwise from the one along its low i side. Boolean per
+    # cell rather than positions per cell: one byte each instead of ninety-six.
+    cell = np.stack(
+        [down[:-1, :], across[:, 1:], down[1:, :], across[:, :-1]], axis=-1
+    ).reshape(-1, 4)
+    rows, edges = np.nonzero(cell)
+    if not rows.size:
+        return np.empty((0, 2, 3))
+
+    # Every cell crosses an even number of its edges, so `nonzero` -- ascending within
+    # each row -- already pairs them. Two crossings is one segment either way round.
+    # Four is a saddle, and pairing (0, 1) with (2, 3) resolves it one of the two ways
+    # it can be resolved; nothing downstream can tell which.
+    columns = values.shape[1] - 1
+    i, j = rows // columns, rows % columns
+    starts = (i + np.array([0, 0, 1, 0])[edges], j + np.array([0, 1, 0, 0])[edges])
+    ends = (i + np.array([0, 1, 1, 1])[edges], j + np.array([1, 1, 1, 0])[edges])
+
+    first, second = values[starts], values[ends]
+    fraction = ((level - first) / (second - first))[:, None]
+    crossings = positions[starts] + fraction * (positions[ends] - positions[starts])
+    return crossings.reshape(-1, 2, 3)
+
+
 def _mesh(rerun, corners: np.ndarray, colours: np.ndarray):  # noqa: ANN001
     """A `Mesh3D` of flat-coloured cells, fanned into triangles.
 
@@ -1136,9 +1631,12 @@ def _mesh(rerun, corners: np.ndarray, colours: np.ndarray):  # noqa: ANN001
 __all__ = [
     "FIELDS",
     "CumulativeSlip",
+    "Drawing",
     "Segment",
+    "contour_levels",
     "drawn",
     "hot",
+    "isochrones",
     "load",
     "moment_release",
     "rose",

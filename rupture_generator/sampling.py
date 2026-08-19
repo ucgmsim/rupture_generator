@@ -129,8 +129,8 @@ class VonKarmanFilterParameters:
 def correlation_lengths(
     magnitude: float,
     *,
-    strike_offset: float = 2.50,
-    dip_offset: float = 1.50,
+    strike_offset: float = 2.50 + np.log10(2 * np.pi),
+    dip_offset: float = 1.50 + np.log10(2 * np.pi),
     strike_exponent: float = 0.5,
     dip_exponent: float = 1.0 / 3.0,
 ) -> VonKarmanFilterParameters:

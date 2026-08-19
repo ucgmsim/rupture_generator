@@ -524,38 +524,10 @@ class PredeterminedPropagation(PropagationConfig):
 class RuptureConfig(ConfigObject):
     """A whole generate config.
 
-    Examples
-    --------
-    TOML::
-
-        schema_version = 1
-        title = "Crustal M6.2"
-
-        [hypocentre]
-        strike_km = 5.0
-        dip_km = 4.0
-
-        [velocity_model]
-        bottom_depth_km  = [1.0, 5.0, 12.0, 1000.0]
-        shear_speed_km_s = [1.8, 3.2, 3.5, 4.6]
-        density_g_cm3    = [2.1, 2.5, 2.7, 3.2]
-
-        [source]
-        type = "finite"
-        magnitude = 6.2
-        average_dip_deg = 60.0
-        average_rake_deg = 175.0
-
-        [timing]
-        rupture_time_scale = -0.35
-        rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
-        shallow_ramp      = { centre_km = 6.5,  half_width_km = 1.5 }
-        deep_ramp         = { centre_km = 17.5, half_width_km = 2.5 }
-        beta_shallow_ramp = { centre_km = 2.0,  half_width_km = 1.0 }
-        beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
-
-        [random]
-        seed = 1234
+    See ``examples/crustal.toml`` for a worked file, ``examples/alpine_hope.toml`` for
+    a multi-fault one. The sections are :class:`HypocentreConfig`,
+    :class:`VelocityModelConfig`, :class:`SourceConfig`, :class:`SlipConfig`,
+    :class:`TimingConfig` and :class:`RandomConfig`, each documented on its own class.
     """
 
     hypocentre: HypocentreConfig
