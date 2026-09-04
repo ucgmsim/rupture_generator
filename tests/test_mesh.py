@@ -819,12 +819,12 @@ def test_dropping_a_field_that_is_not_there_is_not_an_error() -> None:
 
 def test_attrs_are_read_only_and_the_chart_keeps_its_own() -> None:
     """A mutable attrs view is a mutable chart."""
-    chart = _chart().with_attrs(truncated_fraction=0.09)
+    chart = _chart().with_attrs(slip_spread=0.09)
 
-    assert chart.attrs["truncated_fraction"] == 0.09
+    assert chart.attrs["slip_spread"] == 0.09
     assert chart.attrs["surface"] == "hope"
     with pytest.raises(TypeError):
-        chart.attrs["truncated_fraction"] = 0.5  # ty: ignore[invalid-assignment]
+        chart.attrs["slip_spread"] = 0.5  # ty: ignore[invalid-assignment]
 
 
 @pytest.mark.parametrize("name", ["surface", "origin_east_km", "origin_north_km"])

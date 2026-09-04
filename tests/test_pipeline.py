@@ -178,8 +178,8 @@ def test_the_rupture_starts_where_it_was_told(bent: Generated) -> None:
 def test_the_front_spreads_outward_from_the_hypocentre(bent: Generated) -> None:
     """Onset grows with distance from where the rupture started.
 
-    Not an exact statement -- the perturbation moves individual subfaults, by design,
-    so that high-slip patches rupture early -- but a strong correlation is what
+    Not an exact statement -- the onset displacement moves individual subfaults, by
+    design, so high-slip patches rupture early -- but a strong correlation is what
     separates a propagating front from a field of noise. A rupture whose onsets did
     not track distance would be one whose wavefront never ran.
     """

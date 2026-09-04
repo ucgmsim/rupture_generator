@@ -115,9 +115,9 @@ def report(
         ("magnitude", f"{config.source.magnitude:.2f}"),
         ("moment", f"{realisation.moment_newton_m:.4g} N m"),
         ("slip mean / max", f"{slip_m.mean():.3f} / {slip_m.max():.3f} m"),
+        ("slip spread", f"{slip_m.std() / slip_m.mean():.3f}"),
         ("rise time mean", f"{rise_s.mean():.3f} s"),
         ("onset range", f"{onset_s.min():.2f} to {onset_s.max():.2f} s"),
-        ("truncated", f"{realisation.truncated_fraction:.1%}"),
     ):
         table.add_row(name, value)
 

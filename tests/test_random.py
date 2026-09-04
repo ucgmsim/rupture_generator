@@ -20,7 +20,7 @@ import pytest
 
 from rupture_generator.config.rupture import RandomConfig, _key
 
-CALCULATIONS = ("propagation", "slip", "rise_time", "rake", "onset")
+CALCULATIONS = ("propagation", "slip", "rise_time", "rake", "velocity")
 
 
 def _draw(

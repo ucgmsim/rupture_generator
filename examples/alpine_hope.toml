@@ -71,7 +71,7 @@ rise_time_coefficient = 1.6
 "Te Rapa 2" = 135.000
 
 [slip]
-coefficient_of_variation = 0.75
+coefficient_of_variation = 0.90
 side_taper = 0.02
 top_taper = 0.0
 bottom_taper = 0.02
@@ -80,7 +80,13 @@ bottom_taper = 0.02
 velocity_fraction = 0.8
 
 [timing]
-rupture_time_scale = -0.35
+# The displacement added to the solved onsets follows the moment,
+# `offset + coefficient * 1e-9 * M0^(1/3)`, per fault. Graves & Pitarka's relation and
+# genslip's own numbers; the defaults are these, spelled out here because this is the
+# amplitude of every rupture's timing heterogeneity and it should not be invisible.
+rupture_time_offset_s = 0.1
+rupture_time_coefficient = 0.5
+rupture_time_blend_sigma = 4.0
 rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
 shallow_ramp      = { centre_km = 6.5, half_width_km = 1.5 }
 deep_ramp         = { centre_km = 17.5, half_width_km = 2.5 }

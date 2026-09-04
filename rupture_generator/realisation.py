@@ -16,8 +16,6 @@ from rupture_generator import moment, propagation
 from rupture_generator.errors import PropagationError
 from rupture_generator.mesh import RuptureMesh
 
-TRUNCATED_FRACTION = "truncated_fraction"
-
 HYPOCENTRE_STRIKE_KM = "hypocentre_strike_km"
 HYPOCENTRE_DIP_KM = "hypocentre_dip_km"
 
@@ -123,18 +121,6 @@ class Realisation(MutableMapping[str, RuptureMesh]):
             for mesh in self.values()
         )
 
-    @property
-    def truncated_fraction(self) -> float:
-        """The worst segment's slip truncation, as a diagnostic."""
-        return max(
-            (
-                float(mesh.attrs[TRUNCATED_FRACTION])
-                for mesh in self.values()
-                if TRUNCATED_FRACTION in mesh.attrs
-            ),
-            default=0.0,
-        )
-
     def in_causal_order(self) -> Iterator[str]:
         """Segment names in order of propagation causality."""
         return propagation.in_topological_order(self.tree)
@@ -143,6 +129,5 @@ class Realisation(MutableMapping[str, RuptureMesh]):
 __all__ = [
     "HYPOCENTRE_DIP_KM",
     "HYPOCENTRE_STRIKE_KM",
-    "TRUNCATED_FRACTION",
     "Realisation",
 ]

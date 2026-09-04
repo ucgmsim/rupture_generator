@@ -636,3 +636,95 @@ def test_the_joints_are_in_the_slip_view_and_start_switched_off() -> None:
     assert "/fault/slip/**" in slip.contents
     behaviour = slip.visualizer_overrides["/fault/slip/joints"]
     assert behaviour.visible.as_arrow_array().to_pylist() == [False]
+
+
+# The occupancy mask
+
+
+def _masked_segment(occupied: np.ndarray, onset_s: np.ndarray) -> view.Segment:
+    """A 2 x 3 lattice where some cells are fault and some are only rectangle."""
+    rows, columns = occupied.shape
+    corners = np.zeros((rows * columns, 4, 3))
+    corners[:, 1, 0] = corners[:, 2, 0] = 1.0
+    corners[:, 2, 1] = corners[:, 3, 1] = 1.0
+    corners += np.repeat(np.arange(rows * columns), 4).reshape(-1, 4)[..., None]
+    flat = np.ones(rows * columns)
+    return view.Segment(
+        name="interface",
+        cells=(rows, columns),
+        corners_m=corners,
+        centres_m=corners.mean(axis=1),
+        slip_m=flat,
+        rise_time_s=np.ones(rows * columns),
+        onset_s=onset_s,
+        rake_deg=flat,
+        area_m2=flat,
+        strike_deg=flat,
+        dip_deg=flat,
+        pulse_offsets=np.zeros(rows * columns + 1, dtype=np.int64),
+        pulse_samples=np.zeros(0),
+        sample_interval_s=0.1,
+        rigidity_pa=flat,
+        occupied=occupied,
+    )
+
+
+def test_a_fault_with_no_mask_is_all_fault() -> None:
+    """Everything built from a config fills its rectangle, and must keep doing so.
+
+    The mask is sized from the lattice rather than from any one field, because it has
+    to index them all.
+    """
+    segment = _segment(_lattice(1, 4).reshape(-1, 1, 3))
+    assert segment.on_fault.all()
+    assert segment.on_fault.size == math.prod(segment.cells)
+
+
+def test_the_cells_outside_the_outline_are_not_drawn() -> None:
+    """A chart is a rectangle and the fault inside it is not.
+
+    Drawing the whole rectangle puts cells on screen that carry positions for the
+    grid's sake and no fault -- on the CFM Hikurangi interface that is a third of them,
+    at depths reaching 25 km above sea level.
+    """
+    occupied = np.array([[True, True, False], [False, True, True]])
+    segment = _masked_segment(occupied, np.zeros(6))
+
+    indices, corners = view.drawn(segment, stride=1)
+
+    assert len(indices) == 4
+    assert len(corners) == 4
+    assert set(indices.tolist()) == {0, 1, 4, 5}
+
+
+def test_the_clock_runs_over_the_fault_rather_than_the_rectangle() -> None:
+    """An off-fault cell's onset is the wall, not the front.
+
+    `timing.py` walls the wavefront off from an unoccupied cell by multiplying its
+    slowness, so the front crawls in rather than arriving. On the Hikurangi interface
+    that reads as 1,767 s against a rupture that is over in 164.
+    """
+    occupied = np.array([[True, True, False], [False, True, True]])
+    onset = np.array([0.0, 2.0, 1767.0, 900.0, 4.0, 6.0])
+    segment = _masked_segment(occupied, onset)
+
+    start, end = segment.spanned()
+
+    # Rise time is 1 s everywhere, so the last cell on the fault stops at 6 + 1.
+    assert (start, end) == (0.0, 7.0)
+
+
+def test_the_statistics_count_the_fault_rather_than_the_rectangle() -> None:
+    """Area and moment are over the outline the modeller drew.
+
+    Counting the rectangle reports a fault half again as large as the file holds, and a
+    moment to match -- both quietly, since neither has anything to disagree with.
+    """
+    occupied = np.array([[True, True, False], [False, True, True]])
+    segment = _masked_segment(occupied, np.zeros(6))
+
+    summary = view.statistics([segment])
+
+    # Unit area and unit slip on each of the four cells that are fault.
+    assert "| fault area | 0 km² |" in summary
+    assert "| subfaults | 4 |" in summary

@@ -17,10 +17,14 @@ from mashumaro.types import Discriminator
 
 from rupture_generator.config.core import ConfigObject
 from rupture_generator.config.validation import (
+    MAXIMUM_VELOCITY_FRACTION,
+    MINIMUM_VELOCITY_FRACTION,
     DepthKm,
     DipDeg,
     Magnitude,
     NonEmptyStr,
+    NonNegativeFloat,
+    PerturbedVelocityFraction,
     PositiveFloat,
     RakeDeg,
     Seconds,
@@ -28,8 +32,17 @@ from rupture_generator.config.validation import (
     VelocityFraction,
     non_empty,
 )
+from rupture_generator.errors import ConfigError
 from rupture_generator.pulses import from_stype
-from rupture_generator.sampling import VonKarmanFilterParameters, correlation_lengths
+from rupture_generator.sampling import (
+    SUZUKI_COEFFICIENTS,
+    FilterParameters,
+    HybridFilterParameters,
+    Marginal,
+    VonKarmanFilterParameters,
+    correlation_lengths,
+)
+from rupture_generator.stages import SLIP_MARGINAL_FAMILY
 
 if TYPE_CHECKING:
     from rupture_generator.mesh import RuptureMesh
@@ -96,6 +109,134 @@ class VelocityModelConfig(ConfigObject):
                     )
 
 
+HYBRID_MODELS = ("suzuki", "custom")
+"""The corner relations the shallow branch may name.
+
+``suzuki`` is Suzuki et al. (2022), which is what genslip pairs with Mai & Beroza
+there; ``custom`` states the coefficients instead. Suzuki is refused as the *main*
+relation -- see `REMOVED_CORNER_MODELS` -- and offered here because the shallow branch
+is the one place production uses it.
+"""
+
+HYBRID_COEFFICIENTS = (*CORNER_COEFFICIENTS, "dip_saturation_magnitude")
+"""What a ``custom`` shallow relation states: the four, plus where the dip saturates."""
+
+
+@dataclasses.dataclass
+class HybridConfig(ConfigObject):
+    """Slip patches that are larger near the surface than at depth.
+
+    Mai & Beroza (2002)'s correlation lengths are inconsistent with observed surface
+    faulting, and on a surface-rupturing event they let the shallow fault radiate more
+    high-frequency energy than it should. genslip's answer, and this section's, is to
+    use a **different corner relation over the upper few kilometres**: Suzuki et al.
+    (2022) shallow, Mai & Beroza deep. It sits alongside the other depth-dependent
+    limits on shallow high-frequency energy in the Graves & Pitarka method, and follows
+    a picture in which the deeper, more compact asperities radiate the strongest
+    motions (Irikura & Miyake 2011; Frankel 2017).
+
+    The two are **not** a factor apart. At M7.07 Suzuki is 6.8 times Mai along strike
+    and 4.0 times down dip, and the down-dip ratio falls with magnitude because
+    Suzuki's dip length saturates at :math:`M_c` -- past about M8.6 the shallow branch
+    is the *shorter* one down dip, which is worth knowing before turning this on for
+    a subduction interface.
+
+    ``depth_km`` and ``half_width_km`` are the middle and half-width of the ramp, so
+    the defaults put the shallow relation alone above 5 km and Mai & Beroza alone
+    below 8 km. genslip's own parameters are the same two, spelled ``hc_dep`` and
+    ``hc_range``.
+
+    ``shallow_hurst`` defaults to the deep field's, and production leaves it there:
+    Suzuki and Mai share a von Karman falloff, so what changes across the transition
+    is the corner and not the shape of the spectrum beyond it.
+
+    References
+    ----------
+    Frankel, A. (2017). Modeling strong-motion recordings of the 2016 Mw 7.8 Kaikoura,
+    New Zealand, earthquake. *Bulletin of the Seismological Society of America*.
+
+    Irikura, K., & Miyake, H. (2011). Recipe for predicting strong ground motion from
+    crustal earthquake scenarios. *Pure and Applied Geophysics*, 168, 85-104.
+
+    Suzuki, W., Iwata, T., Asano, K., et al. (2022). Scaling relationships of source
+    parameters for inland crustal earthquakes.
+    """
+
+    depth_km: DepthKm = 6.5
+    half_width_km: PositiveFloat = 1.5
+    model: str = "suzuki"
+    strike_offset: float | None = None
+    dip_offset: float | None = None
+    strike_exponent: float | None = None
+    dip_exponent: float | None = None
+    dip_saturation_magnitude: float | None = None
+    shallow_hurst: float | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the fields, then the invariants between them."""
+        super().__post_init__()
+        if self.model not in HYBRID_MODELS:
+            self.refuse(
+                "model",
+                f"no shallow corner relation is spelled {self.model!r}; this section "
+                f"takes {' or '.join(repr(name) for name in HYBRID_MODELS)}",
+            )
+        stated = [
+            name for name in HYBRID_COEFFICIENTS if getattr(self, name) is not None
+        ]
+        if self.model != "custom" and stated:
+            self.refuse(
+                stated[0],
+                f"a {self.model!r} shallow relation is a published fit and carries no "
+                f"coefficients; {', '.join(stated)} would be ignored. Use "
+                "model = 'custom' to state them",
+            )
+        # `dip_saturation_magnitude` stays optional under `custom`: a relation without
+        # one is a relation that does not saturate, which is Mai & Beroza's shape.
+        missing = [name for name in CORNER_COEFFICIENTS if getattr(self, name) is None]
+        if self.model == "custom" and missing:
+            self.refuse(
+                missing[0],
+                "a custom shallow relation states all four of its coefficients, so "
+                "that which relation it is does not depend on this package's "
+                f"defaults; missing: {', '.join(missing)}",
+            )
+        if self.shallow_hurst is not None and not (0.0 < self.shallow_hurst < 1.0):
+            self.refuse("shallow_hurst", f"must be in (0, 1), got {self.shallow_hurst}")
+
+    def coefficients(self) -> dict[str, float]:
+        """The keyword arguments `sampling.correlation_lengths` takes for this branch."""
+        if self.model != "custom":
+            return dict(SUZUKI_COEFFICIENTS)
+        return {
+            name: getattr(self, name)
+            for name in HYBRID_COEFFICIENTS
+            if getattr(self, name) is not None
+        }
+
+    def profile(
+        self, magnitude: float, deep: VonKarmanFilterParameters
+    ) -> HybridFilterParameters:
+        """This section's depth profile, given the deep end and the magnitude.
+
+        The shallow branch is its **own corner relation evaluated at the same
+        magnitude**, not a rescaling of the deep one -- which is the whole of what
+        makes it a different model of the shallow fault rather than the same model
+        turned up.
+        """
+        shallow = correlation_lengths(magnitude, **self.coefficients())
+        return HybridFilterParameters(
+            shallow=VonKarmanFilterParameters(
+                correlation_length_strike_km=shallow.correlation_length_strike_km,
+                correlation_length_dip_km=shallow.correlation_length_dip_km,
+                hurst=deep.hurst if self.shallow_hurst is None else self.shallow_hurst,
+            ),
+            deep=deep,
+            transition_depth_km=self.depth_km,
+            transition_half_width_km=self.half_width_km,
+        )
+
+
 @dataclasses.dataclass
 class SourceConfig(ConfigObject):
     """What the earthquake is: a finite fault, a point source, or per-fault values."""
@@ -125,9 +266,21 @@ class SourceConfig(ConfigObject):
         """
         return default_deg
 
-    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
+    def covariance_of(self, segment: str) -> FilterParameters:
         """The patch structure this segment's magnitude implies."""
-        return correlation_lengths(self.magnitude_of(segment))
+        magnitude = self.magnitude_of(segment)
+        return self.with_hybrid(magnitude, correlation_lengths(magnitude))
+
+    def with_hybrid(
+        self, magnitude: float, deep: VonKarmanFilterParameters
+    ) -> FilterParameters:
+        """``deep`` as it stands, or the depth profile a ``[source.hybrid]`` asks for.
+
+        One place, so every kind of source gets the hybrid by carrying the section
+        rather than by overriding this.
+        """
+        hybrid: HybridConfig | None = getattr(self, "hybrid", None)
+        return deep if hybrid is None else hybrid.profile(magnitude, deep)
 
 
 @dataclasses.dataclass
@@ -148,6 +301,7 @@ class FiniteSourceConfig(SourceConfig):
     strike_exponent: float | None = None
     dip_exponent: float | None = None
     rise_time_coefficient: PositiveFloat = 1.6
+    hybrid: HybridConfig | None = None
     type: Literal["finite"] = "finite"
 
     def __post_init__(self) -> None:
@@ -201,9 +355,12 @@ class FiniteSourceConfig(SourceConfig):
             return {}
         return {name: getattr(self, name) for name in CORNER_COEFFICIENTS}
 
-    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
+    def covariance_of(self, segment: str) -> FilterParameters:
         """One structure for the whole event: one magnitude, one corner relation."""
-        return correlation_lengths(self.magnitude, **self.corner_coefficients())
+        return self.with_hybrid(
+            self.magnitude,
+            correlation_lengths(self.magnitude, **self.corner_coefficients()),
+        )
 
 
 @dataclasses.dataclass
@@ -219,7 +376,7 @@ class PointSourceConfig(SourceConfig):
     average_rake_deg: RakeDeg
     type: Literal["point"] = "point"
 
-    def covariance_of(self, segment: str) -> VonKarmanFilterParameters:
+    def covariance_of(self, segment: str) -> FilterParameters:
         """Any positive lengths will do: a point source draws no fields."""
         return VonKarmanFilterParameters(1.0, 1.0)
 
@@ -235,6 +392,7 @@ class PerFaultSourceConfig(SourceConfig):
     magnitudes: dict[str, float] = dataclasses.field(default_factory=dict)
     rakes: dict[str, float] = dataclasses.field(default_factory=dict)
     rise_time_coefficient: PositiveFloat = 1.6
+    hybrid: HybridConfig | None = None
     type: Literal["per_fault"] = "per_fault"
 
     def __post_init__(self) -> None:
@@ -326,10 +484,18 @@ class SlipConfig(ConfigObject):
     ``rake_sigma_deg`` is the rake field's and is in degrees; the tapers are fractions
     of an edge. The wavelength limits default to `None` because the right value
     depends on the grid -- see `default_wavelength_band`.
+
+    Slip is drawn from a **truncated exponential** (Thingbaijam & Mai 2016), for which
+    the spread and the largest slip on the fault are one number: 0.90 is a maximum of
+    4.30 mean slips, and their regression on 190 SRCMOD models puts that ratio at 3.9
+    to 4.4. The family runs from 0.5774 -- where the cut reaches the mean and the shape
+    flattens into a uniform -- up to 1, and attains neither end, so it is a narrower
+    window than the other marginals offer and a spread outside it is refused here
+    rather than deep in the sampler.
     """
 
     shape: str = "von_karman"
-    coefficient_of_variation: PositiveFloat = 0.75
+    coefficient_of_variation: PositiveFloat = 0.90
     rake_sigma_deg: PositiveFloat = 15.0
     min_wavelength_km: PositiveFloat | None = None
     max_wavelength_km: PositiveFloat | None = None
@@ -349,6 +515,13 @@ class SlipConfig(ConfigObject):
             )
         if self.shape != "von_karman":
             self.refuse("shape", f"no spectral shape is spelled {self.shape!r}")
+        # Asked of the family itself rather than restated here, so the window this
+        # refuses is the window the sampler will actually fit -- and refused now rather
+        # than at the draw, which is several stages after the file was read.
+        try:
+            Marginal(SLIP_MARGINAL_FAMILY, self.coefficient_of_variation)
+        except ConfigError as error:
+            self.refuse("coefficient_of_variation", str(error))
         # Only checkable when both are given: a `None` is filled in from the grid when
         # the field is sampled, too late for this constructor to see.
         if (
@@ -370,16 +543,59 @@ class TimingConfig(ConfigObject):
     ``shallow_ramp`` and ``deep_ramp`` stretch rise time; ``shallow_speed_ramp`` and
     ``deep_speed_ramp`` do the same for rupture speed and default to the rise-time
     pair. Ramp depths are in kilometres, times in seconds.
+
+    **One mechanism makes the rupture times heterogeneous, and it runs after the
+    solve.** The eikonal solve produces a coherent front over a speed field that is a
+    function of depth alone; a displacement field correlated with slip at
+    ``rupture_time_correlation`` is then added to the solved times. Seconds is the
+    currency because the spread of rupture-time heterogeneity is the one quantity in
+    this model fitted against recorded ground motion.
+
+    **That spread is not a constant.** It follows the moment,
+    ``rupture_time_offset_s + rupture_time_coefficient * 1e-9 * M0^(1/3)``, which is
+    Graves & Pitarka's relation and the production defaults' own numbers -- genslip's
+    ``tsfac_bzero`` and ``tsfac_slope``, whose magnitudes these are. So the spread is
+    read off **each segment's own magnitude**, the way the production workflow invokes
+    genslip once per fault, and a per-fault source gets a different spread on every
+    fault. It runs 0.14 s at Mw 5 to 0.45 s at Mw 7 and 3.6 s at Mw 9. The coefficient
+    is in the published units, per cube-root dyne-centimetre, exactly as
+    ``rise_time_coefficient`` is; see
+    :func:`~rupture_generator.stages.onset_scale_s`. Setting **both** to zero is a
+    coherent front, which draws nothing.
+
+    **The displacement is blended in with distance from the seed, over
+    ``rupture_time_blend_sigma`` sigmas of travel time.** So the front leaves the
+    hypocentre smooth and reaches full roughness ``4 * rupture_time_scale`` seconds
+    later by default -- heterogeneity is something the front accumulates, not something
+    it starts with, and the hypocentre stays exactly where it was declared. A per-cell
+    causal clamp catches the draws that dip deeper than the blend zone admits, so no
+    subfault ruptures before the front that seeded it whatever the blend width is set
+    to. See :func:`~rupture_generator.stages.taper_onset` for why the width is stated
+    in sigmas and what the clamp costs the cells it binds.
+
+    ``rupture_velocity_min_fraction`` and ``rupture_velocity_max_fraction`` bound the
+    realised speed the front is solved over. The band spans two branches -- sub-shear
+    to the Rayleigh speed, and supershear from the shear speed to ``sqrt(2) Vs`` -- with
+    the mode-II forbidden zone between them left empty; a ceiling *inside* that zone is
+    refused rather than clipped into. On the shipped depth profile nothing reaches
+    either bound: the speed field is the corrected ``velocity_fraction`` times a depth
+    factor at or below 1, and that is held sub-Rayleigh when the parameters are
+    validated.
     """
 
-    rupture_time_scale: float
     rise_time_blend: RampConfig
     shallow_ramp: RampConfig
     deep_ramp: RampConfig
     beta_shallow_ramp: RampConfig
     beta_mid_ramp: RampConfig
+    # Graves & Pitarka's amplitude relation, in genslip's own units: seconds, and
+    # seconds per 1e-9 cube-root dyne-centimetre. Both zero is a coherent front.
+    rupture_time_offset_s: NonNegativeFloat = 0.1
+    rupture_time_coefficient: NonNegativeFloat = 0.5
     rupture_time_correlation: float = 0.8
-    rupture_time_sigma: PositiveFloat = 1.0
+    rupture_time_blend_sigma: PositiveFloat = 4.0
+    rupture_velocity_min_fraction: PerturbedVelocityFraction = MINIMUM_VELOCITY_FRACTION
+    rupture_velocity_max_fraction: PerturbedVelocityFraction = MAXIMUM_VELOCITY_FRACTION
     rupture_delay_s: Seconds = 0.0
     rise_time_correlation: float = 0.9
     rise_time_sigma: PositiveFloat = 0.75

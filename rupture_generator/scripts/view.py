@@ -78,6 +78,11 @@ class Segment:
         Which of the surface's planes each along-strike column came from, ``(cells_j,)``.
         A native file records it; an SRF has no equivalent, because there a plane is a
         segment and the question does not arise.
+    occupied : np.ndarray or None
+        Which cells are really fault, shaped like the lattice. None when every cell is,
+        which is every fault built from a config and every SRF. A chart resampled from a
+        modeller's outline is a rectangle and the fault inside it is not: the CFM
+        Hikurangi interface fills about two thirds of the rectangle its outline spans.
     """
 
     name: str
@@ -97,10 +102,44 @@ class Segment:
     hypocentre_m: np.ndarray | None = None
     rigidity_pa: np.ndarray | None = None
     plane: np.ndarray | None = None
+    occupied: np.ndarray | None = None
 
     def values(self, variable: str) -> np.ndarray:
         """One field, flattened over subfaults."""
         return getattr(self, variable).ravel()
+
+    @property
+    def on_fault(self) -> np.ndarray:
+        """Which subfaults are really fault, flat.
+
+        The cells outside the outline are not a smaller kind of fault, they are not
+        fault: they carry positions because the grid needs corners, and the generator
+        walls the wavefront off from them, does not count them in the moment and does
+        not write them to an SRF. A panel that reads them reads a rectangle the
+        modeller never drew -- their onsets run to half an hour, because a walled-off
+        cell is one the front crawled into rather than one it reached.
+        """
+        if self.occupied is None:
+            # Sized from the lattice rather than from any one field, so that it indexes
+            # every field alike and a triangulation, which has no lattice, is sized
+            # from its cells.
+            count = (
+                math.prod(self.cells) if self.cells is not None else len(self.corners_m)
+            )
+            return np.ones(count, dtype=bool)
+        return np.asarray(self.occupied, dtype=bool).ravel()
+
+    def spanned(self) -> tuple[float, float]:
+        """When the first subfault starts and the last one stops, in seconds.
+
+        Over the fault rather than over the rectangle it was cut from.
+        """
+        mask = self.on_fault
+        onset = self.values("onset_s")[mask]
+        return (
+            float(onset.min()),
+            float((onset + self.values("rise_time_s")[mask]).max()),
+        )
 
 
 # Colour
@@ -261,6 +300,9 @@ def _from_rupture_file(tree: xr.DataTree) -> list[Segment]:
                 sample_interval_s=float(dataset.attrs["sample_interval_s"]),
                 hypocentre_m=hypocentre,
                 plane=dataset["plane"].to_numpy() if "plane" in dataset else None,
+                occupied=(
+                    dataset["occupied"].to_numpy() if "occupied" in dataset else None
+                ),
             )
         )
     return segments
@@ -414,19 +456,28 @@ def statistics(segments: list[Segment]) -> str:
             if segment.rigidity_pa is not None
             else np.full(segment.slip_m.size, NOMINAL_RIGIDITY_PA)
         )
+        # On the fault only. A resampled interface is stored on the rectangle its
+        # outline spans, and counting that rectangle's area would report a fault
+        # half again as large as the modeller drew.
+        mask = segment.on_fault
         moment_nm += float(
-            np.sum(rigidity.ravel() * segment.area_m2.ravel() * segment.slip_m.ravel())
+            np.sum(
+                rigidity.ravel()[mask]
+                * segment.area_m2.ravel()[mask]
+                * segment.slip_m.ravel()[mask]
+            )
         )
-        area_m2 += float(np.sum(segment.area_m2))
+        area_m2 += float(np.sum(segment.area_m2.ravel()[mask]))
 
     magnitude = (math.log10(moment_nm) - 9.0499505) / 1.5 if moment_nm > 0 else 0.0
 
-    starts = [float(segment.onset_s.min()) for segment in counted]
     # When the last subfault *stops* slipping, not when the last one starts.
-    ends = [float((segment.onset_s + segment.rise_time_s).max()) for segment in counted]
-    duration_s = max(ends) - min(starts)
+    spans = [segment.spanned() for segment in counted]
+    duration_s = max(end for _, end in spans) - min(start for start, _ in spans)
 
-    slip = np.concatenate([segment.slip_m.ravel() for segment in counted])
+    slip = np.concatenate(
+        [segment.slip_m.ravel()[segment.on_fault] for segment in counted]
+    )
     caveat = (
         ""
         if exact
@@ -565,7 +616,15 @@ def drawn(segment: Segment, stride: int) -> tuple[np.ndarray, np.ndarray]:
     """
     if segment.cells is None:
         return np.arange(len(segment.corners_m)), segment.corners_m
-    return strided(segment, stride), strided_corners(segment, stride)
+    indices, corners = strided(segment, stride), strided_corners(segment, stride)
+    # A block is drawn if the cell whose colour it carries is fault. At stride 1 that
+    # is the outline exactly; striding coarsens it, the way striding coarsens
+    # everything else here. Drawing the rest would put the rectangle on screen
+    # instead of the fault.
+    standing = segment.on_fault[indices]
+    if standing.all():
+        return indices, corners
+    return indices[standing], corners[standing]
 
 
 def strided(segment: Segment, stride: int) -> np.ndarray:
@@ -870,10 +929,12 @@ def log_rupture(
 
     # The whole rupture on one clock, from the file's own subfaults rather than the
     # drawn cells, so a decimated timeline still reaches the last subfault to stop.
-    counted = list(segments)
-    starts = [float(segment.onset_s.min()) for segment in counted]
-    ends = [float((segment.onset_s + segment.rise_time_s).max()) for segment in counted]
-    times_s = np.arange(min(starts), max(ends) + time_step, time_step)
+    spans = [segment.spanned() for segment in segments]
+    times_s = np.arange(
+        min(start for start, _ in spans),
+        max(end for _, end in spans) + time_step,
+        time_step,
+    )
 
     _log_static_fields(rerun, segments, drawing)
     _log_hypocentre(rerun, segments, drawing)
@@ -918,9 +979,10 @@ def log_rupture(
                     hot(current[indices], 0.0, peak),
                 ),
             )
-            frame.append(current)
-        # The same map and limits the slip mesh is drawn with, over the *drawn* cells:
-        # slip-so-far is a function of time and only they carry a pulse each.
+            frame.append(current[segment.on_fault])
+        # The same map and limits the slip mesh is drawn with, over the fault's own
+        # subfaults: slip-so-far is a function of time and only they carry a pulse
+        # each, and an off-fault cell reads as a subfault at rest that never was one.
         _histogram(
             rerun,
             "/histogram/slip",
@@ -1005,7 +1067,9 @@ def _log_static_fields(
         ),
         static=True,
     )
-    rake = np.concatenate([segment.rake_deg.ravel() for segment in segments])
+    rake = np.concatenate(
+        [segment.rake_deg.ravel()[segment.on_fault] for segment in segments]
+    )
     rerun.log(
         "/histogram/rake",
         rerun.LineStrips2D(rose(rake), colors=[(216, 222, 26)]),
@@ -1044,7 +1108,9 @@ def _log_scalar_field(
     tuple
         The limits it was drawn on, for whatever else has to agree with them.
     """
-    values = np.concatenate([segment.values(variable) for segment in segments])
+    values = np.concatenate(
+        [segment.values(variable)[segment.on_fault] for segment in segments]
+    )
     low, high = float(values.min()), float(values.max())
 
     def colouring(binned: np.ndarray) -> np.ndarray:
@@ -1098,7 +1164,11 @@ def _log_isochrones(
     """
     lifted = {segment.name: _outward(segment) * drawing.lift for segment in segments}
     for segment in segments:
-        onset = segment.onset_s.reshape(segment.cells)
+        onset = segment.onset_s.reshape(segment.cells).astype(np.float64)
+        # `isochrones` takes a non-finite value as a front that never arrived, which is
+        # what an off-fault cell is: the wavefront was walled off from it and crawled
+        # in, so contouring its arrival would draw the wall rather than the front.
+        onset = np.where(segment.on_fault.reshape(segment.cells), onset, np.nan)
         positions = segment.centres_m.reshape(*segment.cells, 3)
 
         drawn_levels, anchors, labels = [], [], []

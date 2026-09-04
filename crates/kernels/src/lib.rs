@@ -18,11 +18,13 @@
 mod counts;
 pub mod eikonal;
 pub mod field;
+pub mod nonstationary;
 pub mod pulse;
 
-use numpy::ndarray::Array2;
+use numpy::ndarray::{Array2, Array3};
 use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
+    PyReadonlyArray3, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -132,11 +134,76 @@ fn synthesise_pulses<'py>(
     Ok((offsets.into_pyarray(py), pulses.samples.into_pyarray(py)))
 }
 
+/// Factorise a nonstationary covariance into one square root per wavenumber.
+///
+/// `covariance` is `C[lag, i, j]` on the padded strike axis, even in `lag` and
+/// symmetric in `(i, j)`: the latent covariance of a field whose correlation lengths
+/// depend on depth. Returns the factors, the same shape, and the variance deficit —
+/// how much variance had to be dropped over how much was kept, zero when every
+/// wavenumber admitted a Cholesky and above it only when the NORTA pre-correction
+/// cost the covariance its positive definiteness. Pair it with `nonstationary_draw`,
+/// which is where the cost is worth paying: the factorisation is per chart and the
+/// draw is per field.
+#[pyfunction]
+fn factorise_covariance<'py>(
+    py: Python<'py>,
+    covariance: PyReadonlyArray3<'py, f64>,
+) -> PyResult<(Bound<'py, PyArray3<f64>>, f64)> {
+    let shape = covariance.shape();
+    let (wavenumbers, depths) = (shape[0], shape[1]);
+    if shape[1] != shape[2] {
+        return Err(PyValueError::new_err(format!(
+            "the covariance blocks are {}x{}, and a covariance across depths is square",
+            shape[1], shape[2]
+        )));
+    }
+    let Some(values) = covariance.as_slice().ok() else {
+        return Err(PyValueError::new_err(
+            "the covariance has to be C-contiguous",
+        ));
+    };
+
+    let result = py
+        .detach(|| nonstationary::factorise(values, wavenumbers, depths))
+        .or_else(value_error)?;
+    let factors = Array3::from_shape_vec((wavenumbers, depths, depths), result.factors)
+        .expect("the factorisation returns one value per input value");
+    Ok((factors.into_pyarray(py), result.variance_deficit))
+}
+
+/// One field on the fault, drawn from `factorise_covariance`'s square roots.
+///
+/// `strike_cells` is how much of the padded strike axis the fault occupies; the rest
+/// was the margin the circulant embedding needed and is dropped. Returns
+/// `depths x strike_cells`, `i` down dip and `j` along strike.
+#[pyfunction]
+fn nonstationary_draw<'py>(
+    py: Python<'py>,
+    factors: PyReadonlyArray3<'py, f64>,
+    strike_cells: usize,
+    seed: u64,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let shape = factors.shape();
+    let (wavenumbers, depths) = (shape[0], shape[1]);
+    let Some(values) = factors.as_slice().ok() else {
+        return Err(PyValueError::new_err("the factors have to be C-contiguous"));
+    };
+
+    let field = py
+        .detach(|| nonstationary::draw(values, wavenumbers, depths, strike_cells, seed))
+        .or_else(value_error)?;
+    let field = Array2::from_shape_vec((depths, strike_cells), field)
+        .expect("the draw returns one value per subfault");
+    Ok(field.into_pyarray(py))
+}
+
 #[pymodule]
 #[pyo3(name = "_kernels")]
 fn kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eikonal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(synthesise_pulses, m)?)?;
     m.add_function(wrap_pyfunction!(field::von_karman_draw, m)?)?;
+    m.add_function(wrap_pyfunction!(factorise_covariance, m)?)?;
+    m.add_function(wrap_pyfunction!(nonstationary_draw, m)?)?;
     Ok(())
 }

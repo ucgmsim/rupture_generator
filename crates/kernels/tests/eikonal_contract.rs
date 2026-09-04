@@ -392,6 +392,59 @@ fn the_sweep_count_does_not_grow_with_the_mesh() {
     }
 }
 
+/// A high-contrast medium settles, and settles on the round-off-free answer.
+///
+/// The regression this exists for: the sweep's stopping test had no tolerance, so a
+/// strict `<` on `f64` kept it iterating while sweeps shaved femtoseconds off, and the
+/// round limit tripped on round-off rather than on the medium. Measured on the shipped
+/// Wellington `Ohariu` segment, three of its seventeen rounds were spent on improvements
+/// below 1e-8 s, and the same three-round tail appeared at every contrast from 3.3x to
+/// 26x. Widening the rupture velocity band onto the supershear branch took that segment's
+/// contrast to 26x and pushed it past a limit of 16.
+///
+/// The contrast here is built from the band the generator actually permits --
+/// `0.25 Vs` to `sqrt(2) Vs` over a shear speed varying by a factor of four with depth,
+/// which is about 23x -- rather than from a number chosen to pass.
+#[test]
+fn a_high_contrast_medium_settles_well_inside_the_round_limit() {
+    let (ni, nj) = (120, 200);
+    let h = 0.1;
+    // Slowness from a deterministic but strongly varying pattern spanning the band.
+    let slowness: Vec<f64> = (0..ni * nj)
+        .map(|k| {
+            let (i, j) = (k / nj, k % nj);
+            let shear = 0.9 + 3.0 * exact(i) / exact(ni); // 0.9 to 3.9 km/s
+            let swing = ((exact(i) * 0.7).sin() * (exact(j) * 0.9).cos()).abs();
+            let fraction = 0.25 + (2.0f64.sqrt() - 0.25) * swing;
+            1.0 / (fraction * shear)
+        })
+        .collect();
+
+    let lo = slowness.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = slowness.iter().copied().fold(0.0f64, f64::max);
+    assert!(
+        hi / lo > 15.0,
+        "the fixture is meant to be a hard medium; contrast is only {}x",
+        hi / lo
+    );
+
+    let seed = eikonal::Seed {
+        i: ni / 2,
+        j: nj - 1, // on the boundary: the case that first failed
+        t0_s: 20.0,
+    };
+    let (times, rounds) = eikonal::solve_with_rounds(&slowness, (ni, nj), (h, h), &[seed])
+        .expect("a medium inside the permitted velocity band has to settle");
+
+    assert!(
+        rounds + 4 <= 64,
+        "settled in {rounds} rounds, leaving under four rounds of headroom"
+    );
+    // The seed keeps its own time exactly, and nothing precedes it.
+    assert!((times[seed.i * nj + seed.j] - 20.0).abs() < 1.0e-9);
+    assert!(times.iter().all(|t| t.is_finite() && *t >= 20.0 - 1.0e-9));
+}
+
 // ---------------------------------------------------------------------------------
 // Refusals: bad inputs are named, not solved around
 // ---------------------------------------------------------------------------------

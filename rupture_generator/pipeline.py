@@ -191,7 +191,7 @@ def propagate(
 
     Settled first because deciding it from drawn fields would make the propagation a
     function of the noise rather than of the geometry. The **jumps** are not found
-    here; `propagation.causal_jump` needs the parent's solved wavefront.
+    here; `propagation.causal_jump` needs the parent's solved onsets.
 
     Raises
     ------
@@ -236,7 +236,7 @@ def attach_materials(
     """The rock each subfault is in: shear speed, rigidity and density.
 
     Sampled per subfault from the 1-D model at its own centre depth. Every later stage
-    reads these off the chart rather than the model, so the moment fold, the wavefront
+    reads these off the chart rather than the model, so the moment fold, the front
     and the SRF all describe the same rock. ``density_g_cm3`` is there only because the
     SRF's points state it.
     """
@@ -261,11 +261,12 @@ def attach_materials(
 
 
 def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
-    """The four drawn fields: slip pattern, rise time, rake, onset perturbation.
+    """The four drawn fields: slip pattern, rise time, rake, onset displacement.
 
-    The only place anything is drawn. Rise time and the perturbation both correlate
-    against slip's own Gaussian, so the Gaussian and the sampler reference are locals
-    that never leave this function.
+    The only place anything is drawn. Rise time and the onset displacement both
+    correlate against slip's own Gaussian, so the Gaussian and the sampler reference are
+    locals that never leave this function -- nothing downstream needs the latent, only
+    the fields drawn from it.
     """
     source = config.source
     random = config.random
@@ -279,7 +280,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             top_taper=config.slip.top_taper,
             bottom_taper=config.slip.bottom_taper,
         )
-        pattern, gaussian, slip_draw = stages.slip_pattern(
+        pattern, slip_latent = stages.slip_pattern(
             mesh, slip_params, random.stream("slip", name)
         )
 
@@ -290,8 +291,8 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
         )
         rise_time_s = stages.rise_time_field(
             mesh,
-            gaussian,
-            slip_draw,
+            slip_latent,
+            slip_params.marginal,
             rise_time_model(config, average_s),
             random.stream("rise_time", name),
             covariance,
@@ -310,10 +311,11 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             random.stream("rake", name),
         )
 
-        perturbation = stages.onset_perturbation(
+        onset_displacement_s = stages.onset_perturbation(
             mesh,
-            slip_draw,
-            perturbation_model(config),
+            slip_latent,
+            slip_params.marginal,
+            onset_model(config, name),
             random.stream("onset", name),
             covariance,
         )
@@ -322,9 +324,7 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
             slip_pattern=pattern,
             rise_time_s=rise_time_s,
             rake_deg=rake_deg,
-            onset_perturbation=perturbation,
-        ).with_attrs(
-            truncated_fraction=stages.truncated_fraction(gaussian, slip_params)
+            onset_displacement_s=onset_displacement_s,
         )
 
     for name, mesh in list(realisation.items()):
@@ -335,14 +335,14 @@ def draw_fields(realisation: Realisation, config: RuptureConfig) -> Realisation:
 def constant_fields(
     realisation: Realisation, source: PointSourceConfig, field: FieldConfig
 ) -> Realisation:
-    """The same four fields for a point source, given rather than drawn.
+    """The same fields for a point source, given rather than drawn.
 
     Provides exactly the names :func:`draw_fields` does, so no later stage asks which
     kind of source it has. The rise time is **given**, and the geometric correction
     deliberately *not* applied -- a rise time the caller chose has already accounted
     for the geometry -- while the same source's rupture *speed* does get it, in
-    :func:`solve_onsets`. The perturbation is zeros rather than missing, which lets
-    `stages.apply_perturbation` run unconditionally.
+    :func:`solve_onsets`. The onset displacement is zeros rather than missing, so a
+    point source takes the same code path and its front stays exactly radial.
     """
 
     def constant(mesh: RuptureMesh) -> RuptureMesh:
@@ -350,8 +350,8 @@ def constant_fields(
             slip_pattern=np.ones(mesh.cell_counts),
             rise_time_s=np.full(mesh.cell_counts, source.rise_time_s),
             rake_deg=np.full(mesh.cell_counts, field.base_rake_deg),
-            onset_perturbation=np.zeros(mesh.cell_counts),
-        ).with_attrs(truncated_fraction=0.0)
+            onset_displacement_s=np.zeros(mesh.cell_counts),
+        )
 
     for name, mesh in list(realisation.items()):
         realisation[name] = constant(mesh)
@@ -394,12 +394,25 @@ def scale_moment(realisation: Realisation, source: SourceConfig) -> Realisation:
 def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation:
     """S7 and S8: the wavefront, in causal order, and where the front crossed.
 
-    **Draws nothing**: it spends the perturbation already on the chart, so the one
+    **Draws nothing**: it spends the displacement already on the chart, so the one
     order-dependent traversal is a pure function of its inputs. The root is seeded at
     the hypocentre; every other segment where and when its parent's front crossed onto
     it.
+
+    Two steps per segment, and they compose. :func:`~rupture_generator.timing.travel_times`
+    solves the coherent front over a smooth speed field, and
+    :func:`~rupture_generator.stages.taper_onset` blends the displacement in from zero
+    at the seed. Nothing needs pinning or shifting afterwards: the blend is zero at the
+    seed, so the seed's onset is exactly the time it was seeded at, and the per-cell
+    causal clamp keeps every other subfault strictly after it.
+
+    There is consequently **one** timing field, ``onset_s``. The generator used to
+    carry a second, ``wavefront_s``, holding the front before the displacement was
+    added to it -- `propagation.causal_jump` chose departures on that one to keep an
+    argmin off the displacement's negative tail. The clamp is what removes that tail,
+    so the two fields would now agree on which cell is earliest, and there is only the
+    one.
     """
-    onset_params = perturbation_model(config)
     jump_delay = jump_model(config)
     max_jump_km = (
         config.propagation.max_jump_km
@@ -421,40 +434,38 @@ def solve_onsets(realisation: Realisation, config: RuptureConfig) -> Realisation
 
         if parent is None:
             seeds = [(*hypocentre, 0.0)]
-            pinned: tuple[int, int] | None = hypocentre
+            seed_cell, seed_time_s = hypocentre, 0.0
             delay_s = config.timing.rupture_delay_s
         else:
             jump = propagation.causal_jump(
                 solved[parent],
-                solved[parent]["wavefront_s"],
+                solved[parent]["onset_s"],
                 mesh,
                 jump_delay,
-                parent_onset_s=solved[parent]["onset_s"],
                 max_distance_km=max_jump_km,
             )
             jumps[name] = jump
             seeds = [(*jump.child_cell, jump.arrival_s)]
-            # Triggered from elsewhere: no pin and no clamp, so these onsets stay
-            # absolute rather than restarting from zero on this fault.
-            pinned = None
+            # Triggered from elsewhere: the seed carries the absolute arrival time, so
+            # these onsets do not restart from zero on this fault. The taper is measured
+            # from that arrival, so a jump point is protected the same way a hypocentre
+            # is -- the segment still starts rupturing where the front reached it.
+            seed_cell, seed_time_s = jump.child_cell, jump.arrival_s
             delay_s = 0.0
 
-        travel_time_s = timing.travel_times(
-            mesh,
-            mesh["shear_speed_kms"],
-            speed_model(config, name, mesh),
-            seeds,
-        )
-        solved[name] = mesh.with_fields(
-            wavefront_s=travel_time_s + delay_s,
-            onset_s=stages.apply_perturbation(
-                travel_time_s,
-                mesh["onset_perturbation"],
-                onset_params,
-                hypocentre=pinned,
-                delay_s=delay_s,
+        travel_time_s = stages.taper_onset(
+            timing.travel_times(
+                mesh,
+                mesh["shear_speed_kms"],
+                speed_model(config, name, mesh),
+                seeds,
             ),
+            mesh["onset_displacement_s"],
+            onset_model(config, name),
+            seed_cell=seed_cell,
+            seed_time_s=seed_time_s,
         )
+        solved[name] = mesh.with_fields(onset_s=travel_time_s + delay_s)
 
     # The hypocentre, in the root's own arc lengths. Clamped to the fault's extent: a
     # hypocentre at the far edge is on the last cell.
@@ -483,7 +494,10 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
 
     def synthesise(mesh: RuptureMesh) -> RuptureMesh:
         offsets, samples = pulses.synthesise(
-            mesh.centres()[..., 2], mesh["slip_m"], mesh["rise_time_s"], params
+            mesh.centres()[..., 2],
+            mesh["slip_m"],
+            mesh["rise_time_s"],
+            params,
         )
         return mesh.with_pulses(offsets, samples).with_attrs(
             sample_interval_s=config.timing.sample_interval_s
@@ -497,12 +511,26 @@ def synthesise_pulses(realisation: Realisation, config: RuptureConfig) -> Realis
 # --- The config boundary: what the file says, as the parameter objects a stage takes.
 
 
-def perturbation_model(config: RuptureConfig) -> stages.OnsetParams:
-    """How far the onset is perturbed from the wavefront, and how it follows slip."""
+def onset_model(config: RuptureConfig, name: str) -> stages.OnsetParams:
+    """How far this segment's onsets are displaced, and over how long they blend in.
+
+    Per segment, because the spread follows the moment and a per-fault source gives
+    each fault a magnitude of its own -- which is how the production workflow runs
+    genslip, once per fault with that fault's ``mag=``.
+
+    Always a parameter object: an offset and coefficient of zero is a coherent front,
+    which draws nothing and leaves the solved times alone, and it takes the same path
+    as any other.
+    """
+    timing = config.timing
     return stages.OnsetParams(
-        scale_s=config.timing.rupture_time_scale,
-        correlation=config.timing.rupture_time_correlation,
-        sigma=config.timing.rupture_time_sigma,
+        scale_s=stages.onset_scale_s(
+            moment.seismic_moment_nm(config.source.magnitude_of(name)),
+            timing.rupture_time_offset_s,
+            timing.rupture_time_coefficient,
+        ),
+        correlation=timing.rupture_time_correlation,
+        blend_sigma=timing.rupture_time_blend_sigma,
     )
 
 
@@ -519,6 +547,8 @@ def speed_model(config: RuptureConfig, name: str, mesh: Any) -> timing.SpeedPara
         deep=depth_ramp(config.timing.deep_speed_ramp or config.timing.deep_ramp),
         shallow_factor=config.timing.shallow_speed_factor,
         deep_factor=config.timing.deep_speed_factor,
+        minimum_fraction=config.timing.rupture_velocity_min_fraction,
+        maximum_fraction=config.timing.rupture_velocity_max_fraction,
     )
 
 
@@ -584,7 +614,7 @@ __all__ = [
     "generate",
     "jump_model",
     "named",
-    "perturbation_model",
+    "onset_model",
     "propagate",
     "pulse_model",
     "rise_time_model",

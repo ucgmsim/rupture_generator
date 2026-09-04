@@ -29,7 +29,58 @@ use crate::counts::exact;
 /// Fomel et al. show only 3 sweeps worked generally, this is a pessimistic
 /// assumption and an upper bound on compute because termination occurs at grid
 /// convergence.
-const MAX_ROUNDS: usize = 16;
+/// How many alternating-ordering sweeps the solver will make before refusing.
+///
+/// Rounds grow with the medium's slowness contrast, not with the grid -- see
+/// `the_sweep_count_does_not_grow_with_the_mesh`. Measured on the shipped Wellington
+/// `Ohariu` segment: 9, 12, 13 and 14 rounds at contrasts of 3.3x, 6.8x, 12.9x and 26x,
+/// so roughly one more round per doubling.
+///
+/// The contrast a caller can present is bounded a priori, which is what makes this
+/// number checkable rather than a guess. It is
+///
+/// ```text
+/// (max_fraction * Vs_max) / (min_fraction * Vs_min) * off_fault_factor
+/// ```
+///
+/// which the velocity band caps whatever the depth profile does. For the shipped examples
+/// that bound is 41.9x on Wellington (fully
+/// occupied, Vs 0.50 to 3.70) and 144.6x on the Hikurangi interface, where 37% of the
+/// chart is off-fault and `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. The
+/// wall dominates the band by a wide margin on a resampled interface.
+///
+/// 64 is set against that 144.6x rather than against the case that first failed. A limit
+/// of 16 was calibrated when the band ceiling was the shear speed and three of every
+/// run's rounds went on round-off; both of those changed.
+const MAX_ROUNDS: usize = 64;
+
+/// How much a sweep must improve a cell's arrival for the sweep to count as unsettled,
+/// as a fraction of the fastest single-cell traversal on the grid.
+///
+/// Gauss-Seidel on the eikonal approaches its fixed point from above and never stops
+/// improving in exact terms: without a tolerance the `changed` flag stays set while
+/// sweeps shave femtoseconds off, and the round limit trips on round-off rather than on
+/// anything about the medium. Measured on the shipped Wellington `Ohariu` segment at a
+/// 26x slowness contrast: the field is physically settled by round 14, where the largest
+/// improvement is 9.7e-9 s, and rounds 15 to 17 move cells by 2e-10, 3.6e-12 and
+/// 2.7e-12 s. That three-round round-off tail was measured at every contrast from 3.3x
+/// to 26x, so it is the stopping rule and not the problem.
+///
+/// The tolerance is a fraction of `min(spacing) * min(slowness)` rather than an absolute
+/// time or a relative one. Absolute would not survive a change of grid spacing; relative
+/// to each cell's own arrival would degenerate near a seed at time zero and behave
+/// differently again for a segment seeded at an absolute jump time of twenty seconds,
+/// which is exactly the case that first hit this.
+///
+/// An improvement below the tolerance is still *taken* -- it is strictly better -- so the
+/// tolerance decides when to stop, never what the answer is. That is why the error is far
+/// smaller than the tolerance: against the exact fixed point on that same segment, where
+/// the tolerance works out to 1.9e-8 s, the arrival times come out at most 2.4e-10 s late
+/// and 1.7e-13 s late on average. Late and never early, since Gauss-Seidel approaches the
+/// fixed point from above. The loose bound is the tolerance times the path length in
+/// cells, around 1e-5 s over a three-hundred-cell path; the measurement is four orders
+/// inside it, and either way it is far below the 0.005 s sample interval.
+const CONVERGENCE_TOLERANCE: f64 = 1.0e-6;
 
 /// Location and initiation time of hypocentre.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,7 +114,7 @@ pub enum Error {
     /// A seed's initial time must be finite.
     NonFiniteSeedTime { seed: usize, t0_s: f64 },
     /// The sweep did not settle in [`MAX_ROUNDS`] rounds.
-    DidNotSettle { rounds: usize },
+    DidNotSettle { rounds: usize, contrast: f64 },
 }
 
 impl std::fmt::Display for Error {
@@ -93,10 +144,14 @@ impl std::fmt::Display for Error {
             Self::NonFiniteSeedTime { seed, t0_s } => {
                 write!(f, "seed {seed} starts at t = {t0_s}, which is not a time")
             }
-            Self::DidNotSettle { rounds } => write!(
+            Self::DidNotSettle { rounds, contrast } => write!(
                 f,
-                "the sweep did not settle in {rounds} rounds; the medium has \
-                 structure this scheme does not handle"
+                "the sweep did not settle in {rounds} rounds over a medium whose \
+                 slowness spans {contrast:.1}x. Rounds needed grow with that \
+                 contrast -- measured 9, 12, 13 and 14 at 3.3x, 6.8x, 12.9x and 26x \
+                 -- so the first thing to check is the rupture velocity band: \
+                 narrowing rupture_velocity_max_fraction or raising \
+                 rupture_velocity_min_fraction lowers the contrast directly"
             ),
         }
     }
@@ -264,6 +319,14 @@ fn single_seed(
     let down: Vec<usize> = (0..ni).collect();
     let up: Vec<usize> = (0..ni).rev().collect();
 
+    // A fraction of the fastest single-cell traversal: see `CONVERGENCE_TOLERANCE`.
+    let fastest_cell_s = spacing_km.0.min(spacing_km.1)
+        * slowness
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+    let tolerance = CONVERGENCE_TOLERANCE * fastest_cell_s;
+
     let mut rounds = 0;
     for round in 1..=MAX_ROUNDS {
         let mut changed = false;
@@ -277,8 +340,9 @@ fn single_seed(
                         let candidate =
                             update(&times, &known, i, j, extent, spacing_km, slowness[at(i, j)]);
                         if candidate < times[at(i, j)] {
+                            // Taken either way; the tolerance only decides when to stop.
+                            changed |= candidate < times[at(i, j)] - tolerance;
                             times[at(i, j)] = candidate;
-                            changed = true;
                         }
                     }
                 }
@@ -290,7 +354,14 @@ fn single_seed(
         rounds = round;
     }
     if rounds >= MAX_ROUNDS {
-        return Err(Error::DidNotSettle { rounds });
+        let (lo, hi) = slowness
+            .iter()
+            .copied()
+            .fold((f64::INFINITY, 0.0f64), |(lo, hi), s| (lo.min(s), hi.max(s)));
+        return Err(Error::DidNotSettle {
+            rounds,
+            contrast: if lo > 0.0 { hi / lo } else { f64::INFINITY },
+        });
     }
 
     for (index, arrival) in times.iter().enumerate() {

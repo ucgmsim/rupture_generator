@@ -26,6 +26,8 @@ No test here pins a number the C produced.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -43,29 +45,50 @@ from rupture_generator.moment import (
 from rupture_generator.sampling import (
     CORRELATION_LENGTH_TOLERANCE,
     MINIMUM_EMBEDDING,
+    NORMAL,
+    SUZUKI_COEFFICIENTS,
     DegradedCorrelation,
+    HybridFilterParameters,
+    Marginal,
     VonKarmanFilterParameters,
+    _crossing_km,
+    _delivered_lengths,
+    _distribution,
     _embed,
+    _nonstationary_covariance,
+    attainable_correlation,
     correlate_fields,
     correlation_lengths,
+    latent_correlation,
     standardise,
+    transformed_correlation,
     von_karman_correlation,
     von_karman_field,
 )
 from rupture_generator.stages import (
+    CAUSAL_MARGIN,
     DepthRamp,
     OnsetParams,
     RakeParams,
     RiseTimeParams,
     SlipParams,
-    apply_perturbation,
     onset_perturbation,
+    onset_scale_s,
     rake_field,
     rise_time_field,
     slip_pattern,
     taper_edges,
+    taper_onset,
 )
-from rupture_generator.timing import SpeedParams, alpha_t, speed_field, travel_times
+from rupture_generator.timing import (
+    MAXIMUM_VELOCITY_FRACTION,
+    OFF_FAULT_SLOWNESS_FACTOR,
+    RAYLEIGH_VELOCITY_FRACTION,
+    SpeedParams,
+    alpha_t,
+    speed_field,
+    travel_times,
+)
 from tests.strategies import (
     MAGNITUDES,
     SEEDS,
@@ -465,7 +488,7 @@ def test_the_scaled_slip_carries_the_target_moment(
     -- six missing subfaults' worth, where in float64 one missing subfault is visible.
     """
     mesh, covariance = drawn
-    pattern, _, _ = slip_pattern(mesh, SlipParams(covariance=covariance), _rng(seed))
+    pattern, _ = slip_pattern(mesh, SlipParams(covariance=covariance), _rng(seed))
     depth_km = mesh.centres()[..., 2]
     _, rigidity = sample_velocity_model(
         depth_km,
@@ -519,7 +542,7 @@ def test_two_segments_are_scaled_by_one_shared_factor() -> None:
 
 
 def test_a_pattern_that_carries_no_moment_is_refused() -> None:
-    """A field truncated to zero everywhere cannot be scaled to carry anything.
+    """A field that is zero everywhere cannot be scaled to carry anything.
 
     Dividing would give infinity, and the alternative to refusing is a rupture whose
     every subfault slips an infinite amount.
@@ -575,14 +598,15 @@ def test_a_slip_pattern_is_never_negative(
     magnitude: float,
     seed: int,
 ) -> None:
-    """Slip is truncated at zero, because this is a model of slip and not of deficit.
+    """Slip is non-negative, because this is a model of slip and not of deficit.
 
-    At the production spread of 0.75 about 9% of subfaults are clipped in expectation,
-    which the pipeline reports as a diagnostic: a large fraction says the requested
-    variation was not really achievable and the delivered spectrum is distorted.
+    Not by clipping: the pattern's marginal is a truncated normal, a distribution
+    whose support is the positive half-line and whose mean and coefficient of
+    variation are the ones asked for. genslip reaches non-negativity by truncating
+    ``1 + cov * Z``, which leaves a point mass at zero and neither of those two.
     """
     mesh, covariance = drawn
-    pattern, _, _ = slip_pattern(
+    pattern, _ = slip_pattern(
         mesh,
         SlipParams(covariance=covariance),
         _rng(seed),
@@ -691,14 +715,14 @@ def test_the_mean_rise_time_is_the_requested_average(
     """
     mesh, covariance = drawn
     rng = _rng(seed)
-    _, gaussian, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
+    _, slip_latent = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
 
     average_s = 1.5
     interval_s = 0.005
     rise = rise_time_field(
         mesh,
-        gaussian,
-        reference,
+        slip_latent,
+        SlipParams(covariance=covariance).marginal,
         RiseTimeParams(average_s=average_s),
         rng,
         covariance,
@@ -753,15 +777,15 @@ def test_a_slip_exponent_below_the_floor_is_refused() -> None:
     """
     mesh = _flat_chart(6, 6)
     rng = _rng()
-    _, gaussian, reference = slip_pattern(
+    _, slip_latent = slip_pattern(
         mesh, SlipParams(covariance=VonKarmanFilterParameters(1.8, 1.8)), rng
     )
 
     with pytest.raises(ConfigError, match="slip exponent"):
         rise_time_field(
             mesh,
-            gaussian,
-            reference,
+            slip_latent,
+            SlipParams(covariance=VonKarmanFilterParameters(1.8, 1.8)).marginal,
             RiseTimeParams(average_s=1.0, slip_exponent=0.05),
             rng,
             VonKarmanFilterParameters(1.8, 1.8),
@@ -946,6 +970,12 @@ def test_a_faster_rupture_never_arrives_later(fraction: float, increase: float) 
     the stage because that is where the speed field is assembled -- and an assembly
     that inverted the depth factor, or divided where it should multiply, would break
     the monotonicity while leaving every arrival finite and plausible.
+
+    Capped at the **Rayleigh** fraction rather than at 1. A background above ``cR`` is
+    not a configuration this model has: `speed_field` skips the mode-II forbidden zone
+    by shifting everything above ``cR`` onto the supershear branch, so a background
+    there would be silently converted to a supershear rupture. `SpeedParams` refuses it
+    instead, which is why this sweep stops where it does.
     """
     mesh = _flat_chart(8, 16, depth_km=10.0)
     shear_speed = np.full(mesh.cell_counts, 3.3)
@@ -962,7 +992,7 @@ def test_a_faster_rupture_never_arrives_later(fraction: float, increase: float) 
         )
 
     slower = solve(fraction)
-    faster = solve(min(fraction * increase, 1.0))
+    faster = solve(min(fraction * increase, RAYLEIGH_VELOCITY_FRACTION))
     assert (faster <= slower + CONSTRUCTION).all()
 
 
@@ -985,14 +1015,14 @@ def test_a_speed_the_front_cannot_travel_at_is_refused_by_name() -> None:
 
 
 # ============================================================================
-# Onset -- DEFECTS.md 17
+# The onset displacement, its blend, and the registration it keeps -- DEFECTS.md 17
 # ============================================================================
 
 
 def _onset_setup(
     mesh: RuptureMesh, seed: int
 ) -> tuple[np.ndarray, object, np.random.Generator, VonKarmanFilterParameters]:
-    """The slip draw an onset perturbation correlates against, on any chart.
+    """The slip draw the onset displacement correlates against, on any chart.
 
     The correlation lengths are a third of the chart's own extent rather than fixed
     kilometres -- Mai figure 13's median ratio -- so a generated chart of any size
@@ -1004,9 +1034,43 @@ def _onset_setup(
         cells_j * strike_km / 3.0, cells_i * dip_km / 3.0
     )
     rng = _rng(seed)
-    _, _, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
+    _, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
     shear_speed = np.full(mesh.cell_counts, 3.3)
     return shear_speed, reference, rng, covariance
+
+
+def _blended_onset(
+    mesh: RuptureMesh,
+    seed: int,
+    hypocentre: tuple[int, int],
+    *,
+    delay_s: float = 0.0,
+    scale_s: float = 0.45,
+    blend_sigma: float = 4.0,
+) -> tuple[np.ndarray, SpeedParams, np.ndarray]:
+    """The onset field this generator actually writes, and what shaped it.
+
+    Both steps, in the order the pipeline runs them: the coherent solve over a speed
+    field that is a function of depth alone, then the displacement blended in from the
+    seed. Returns the onsets, the speed parameters, and the speed field the solve ran
+    over.
+    """
+    shear_speed, reference, rng, covariance = _onset_setup(mesh, seed)
+    params = OnsetParams(scale_s=scale_s, blend_sigma=blend_sigma)
+    displacement = onset_perturbation(
+        mesh,
+        reference,
+        SlipParams(covariance=covariance).marginal,
+        params,
+        rng,
+        covariance,
+    )
+    speed = SpeedParams(
+        velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0
+    )
+    travel = travel_times(mesh, shear_speed, speed, [(*hypocentre, 0.0)])
+    onset = taper_onset(travel, displacement, params, seed_cell=hypocentre) + delay_s
+    return onset, speed, speed_field(mesh.centres()[..., 2], shear_speed, speed)
 
 
 @SETTINGS
@@ -1020,12 +1084,20 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
 ) -> None:
     """The registration property. `DEFECTS.md` 17.
 
-    Two claims, and both need saying. The hypocentre's onset is **exactly** the delay,
-    because its perturbation is pinned to zero rather than left to the field; and the
-    delay is the **minimum** of the whole onset field, because the perturbation is
-    clamped there. Without the pin the cell the rupture started from need not be the
-    earliest thing in the file; without the clamp a high-slip patch beside it gets
-    pulled earlier still, which is a subfault radiating before the event it belongs to.
+    Two claims: the hypocentre's onset is **exactly** the delay, and the delay is the
+    **minimum** of the whole onset field. Both hold with the displacement *on* and with
+    nothing pinned or shifted afterwards. The first is the blend -- its weight is the
+    travel time over the blend length, exactly zero at the seed, so the displacement
+    there is multiplied by zero whatever it drew. The second is the causal clamp, which
+    holds every other cell's weight at or under ``tau / (c * dip)`` and so its onset
+    strictly after the seed's.
+
+    That is what the construction buys. Adding the displacement to the solved times
+    unblended, as the port did, loses both: the cell the rupture started from was not
+    the earliest thing in the file unless its displacement was pinned to zero by hand,
+    and a high-slip patch beside it was pulled earlier still unless the field was
+    clamped -- a subfault radiating before the event it belongs to. Both fixes were
+    corrections to a field that had already been made wrong.
 
     The measured cost of getting registration wrong: a hypocentre one cell off in each
     direction gave onset fields correlating 0.92 to 0.997 with the truth while
@@ -1033,24 +1105,9 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
     started at zero, so every diagnostic that asked whether the shape was right said
     yes.
     """
-    shear_speed, reference, rng, covariance = _onset_setup(mesh, seed)
     cells_i, cells_j = mesh.cell_counts
     hypocentre = (cells_i // 3, cells_j // 2)
-
-    travel = travel_times(
-        mesh,
-        shear_speed,
-        SpeedParams(velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0),
-        [(*hypocentre, 0.0)],
-    )
-    params = OnsetParams(scale_s=-0.35)
-    onset = apply_perturbation(
-        travel,
-        onset_perturbation(mesh, reference, params, rng, covariance),
-        params,
-        hypocentre=hypocentre,
-        delay_s=delay_s,
-    )
+    onset, _, _ = _blended_onset(mesh, seed, hypocentre, delay_s=delay_s)
 
     assert float(onset[hypocentre]) == pytest.approx(delay_s, abs=CONSTRUCTION)
     assert float(onset.min()) == pytest.approx(delay_s, abs=CONSTRUCTION)
@@ -1058,49 +1115,400 @@ def test_the_hypocentre_onset_is_the_delay_and_the_earliest(
 
 @SETTINGS
 @given(mesh=planar_charts(min_cells=6, max_cells=14), seed=SEEDS)
-def test_onset_is_travel_time_plus_its_perturbation(
+def test_the_blended_onset_never_precedes_the_seed(
     mesh: RuptureMesh, seed: int
 ) -> None:
-    """The stage is an identity on top of the wavefront, not a second solve.
+    """No subfault ruptures before the front that seeded it, at any blend width.
 
-    Asserted where the clamp does not bind, which is what separates the two things
-    this stage does: it adds a perturbation, and it refuses to let anything precede
-    the earthquake. A segment with no hypocentre -- one triggered from elsewhere --
-    gets neither the pin nor the clamp, so its onsets stay absolute, which is what
-    lets a multi-segment rupture propagate rather than restart on every fault.
+    This is what the per-cell clamp is for, and it is asserted across blend widths
+    including ones far too narrow for the draw -- at ``blend_sigma = 0.25`` the blend
+    term reaches 1 almost immediately and the clamp is doing all the work, which is
+    precisely the case a fixed multiple of the scale cannot survive on its own.
+
+    The claim is one-sided by construction. A first-arrival field is Lipschitz in the
+    slowness, so the *coherent* front bounds its own neighbour differences; the
+    displacement added on top of it has no such bound -- its gradient is the gradient
+    of whatever field was drawn, divided by nothing -- and that is the deliberate trade
+    this mechanism makes. What is not traded away is the ordering against the seed.
     """
-    shear_speed, reference, _, covariance = _onset_setup(mesh, seed)
     cells_i, cells_j = mesh.cell_counts
+    hypocentre = (cells_i // 3, cells_j // 2)
+    for blend_sigma in (0.25, 4.0, 16.0):
+        onset, _, _ = _blended_onset(mesh, seed, hypocentre, blend_sigma=blend_sigma)
+        assert float(onset.min()) >= -CONSTRUCTION
+        assert np.unravel_index(int(np.argmin(onset)), onset.shape) == hypocentre
+
+
+@SETTINGS
+@given(mesh=planar_charts(min_cells=6, max_cells=14), seed=SEEDS)
+def test_the_coherent_front_is_lipschitz_in_the_slowness(
+    mesh: RuptureMesh, seed: int
+) -> None:
+    """The solve's own guarantee, on the field the blend starts from.
+
+    ``T(b) <= T(a) + d * s_ab`` for adjacent cells, because the front reaching ``a``
+    reaches ``b`` within ``d * s_ab``. So the difference between neighbours is bounded
+    by the spacing times the largest slowness the solve ran over -- and that largest
+    slowness is set by ``minimum_fraction``, which is the whole content of the causal
+    band.
+
+    Asserted globally and therefore exactly: any path's slowness is at most the chart's
+    largest, so no tolerance is needed. The sharper local statement -- against the
+    larger slowness of each *pair* -- holds to a measured 1.025 rather than exactly,
+    because the fast sweeping update is a diagonal-aware stencil and reaches past the
+    two cells being differenced; that 2.5% is the scheme's discretisation and not the
+    model's, so the bound asserted here is the one that owes nothing to either.
+    """
+    cells_i, cells_j = mesh.cell_counts
+    shear_speed, _, _, _ = _onset_setup(mesh, seed)
+    speed_params = SpeedParams(
+        velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0
+    )
+    travel = travel_times(
+        mesh, shear_speed, speed_params, [(cells_i // 3, cells_j // 2, 0.0)]
+    )
+    speed = speed_field(mesh.centres()[..., 2], shear_speed, speed_params)
+    strike_km, dip_km = mesh.spacing_km()
+
+    # The slowness the solve actually ran over, wall included: an unoccupied cell is
+    # slowed rather than removed, and a difference across one is still a difference.
+    slowness = 1.0 / speed
+    occupied = mesh.occupied()
+    if not occupied.all():
+        slowness = np.where(occupied, slowness, slowness * OFF_FAULT_SLOWNESS_FACTOR)
+    slowest = float(slowness.max())
+
+    for axis, spacing_km in ((0, dip_km), (1, strike_km)):
+        gap_s = np.abs(np.diff(travel, axis=axis))
+        assert np.all(gap_s <= spacing_km * slowest + CONSTRUCTION)
+
+
+@SETTINGS
+@given(mesh=planar_charts(min_cells=8, max_cells=14), seed=SEEDS)
+def test_the_speed_field_stays_on_one_of_the_two_causal_branches(
+    mesh: RuptureMesh, seed: int
+) -> None:
+    """The band is two branches with the forbidden zone between them, and stays so.
+
+    Three claims. The realised speed never passes ``sqrt(2) Vs``, the Burridge-Andrews
+    speed. It never lands in the mode-II forbidden zone, ``cR`` to ``Vs``, where
+    in-plane rupture has no steady speed to hold -- genslip's ``[rvfmin, rvfmax]`` is a
+    plain clip and allows every value between, the zone included. And it stays strictly
+    positive, since the solver inverts it.
+
+    Driven with depth factors above 1, which is the only way this model can reach
+    either wall: the corrected background is held sub-Rayleigh when the parameters are
+    validated, and the shipped depth profile only ever reduces it.
+    """
+    shear_speed, _, _, _ = _onset_setup(mesh, seed)
+    speed = speed_field(
+        mesh.centres()[..., 2],
+        shear_speed,
+        SpeedParams(
+            velocity_fraction=0.8,
+            average_dip_deg=90.0,
+            average_rake_deg=0.0,
+            shallow_factor=1.6,
+            deep_factor=1.9,
+        ),
+    )
+    fraction = speed / shear_speed
+
+    assert np.all(fraction <= MAXIMUM_VELOCITY_FRACTION + CONSTRUCTION)
+    assert np.all(speed > 0.0)
+
+    inside = (fraction > RAYLEIGH_VELOCITY_FRACTION + CONSTRUCTION) & (
+        fraction < 1.0 - CONSTRUCTION
+    )
+    assert not inside.any(), (
+        f"{int(inside.sum())} subfaults sit between the Rayleigh speed and the shear "
+        "speed, where an in-plane front has no steady speed; the gap is skipped by a "
+        "monotone shift, not clipped into"
+    )
+
+
+@SETTINGS
+@given(
+    mesh=planar_charts(min_cells=8, max_cells=16),
+    seed=SEEDS,
+    scale_s=st.floats(min_value=0.05, max_value=0.8, allow_nan=False),
+)
+def test_the_blended_onset_keeps_the_seed_the_earliest(
+    mesh: RuptureMesh, seed: int, scale_s: float
+) -> None:
+    """The whole point of the blend, over a range of displacement scales.
+
+    Asserted against the *untapered* field, which fails, so the test is about the blend
+    and not about the arithmetic.
+    """
+    shear_speed, reference, rng, covariance = _onset_setup(mesh, seed)
+    cells_i, cells_j = mesh.cell_counts
+    at = (cells_i // 3, cells_j // 2)
+    params = OnsetParams(scale_s=scale_s)
+    displacement = onset_perturbation(
+        mesh,
+        reference,
+        SlipParams(covariance=covariance).marginal,
+        params,
+        rng,
+        covariance,
+    )
     travel = travel_times(
         mesh,
         shear_speed,
         SpeedParams(velocity_fraction=0.8, average_dip_deg=90.0, average_rake_deg=0.0),
-        [(cells_i // 2, cells_j // 2, 0.0)],
+        [(*at, 0.0)],
+    )
+    tapered = taper_onset(travel, displacement, params, seed_cell=at)
+
+    assert float(tapered[at]) == pytest.approx(0.0, abs=CONSTRUCTION)
+    assert float(tapered.min()) == pytest.approx(0.0, abs=CONSTRUCTION)
+    assert np.unravel_index(int(np.argmin(tapered)), tapered.shape) == at
+
+
+def _blend_weight(
+    params: OnsetParams, *, seconds_per_cell: float = 0.5, seed: int = 3
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """A radial front and the weight :func:`taper_onset` realised on it.
+
+    Returns ``(travel, centred displacement, weight, defined)``. The seed cell's weight
+    is unrecoverable -- its displacement is zero there by construction, so the quotient
+    is 0/0 -- and ``defined`` is the mask that excludes it.
+
+    ``seconds_per_cell`` sets how long the rupture is against the blend zone, which is
+    the whole of what decides how much of the displacement survives. The default puts
+    the far corner at 18 s, a Mw 7.1 duration, where 4 sigma of a 0.35 s scale is 8% of
+    the way across.
+    """
+    cells = (40, 60)
+    at = (20, 30)
+    grid = np.hypot(
+        (np.arange(cells[0]) - at[0])[:, None], (np.arange(cells[1]) - at[1])[None, :]
+    )
+    travel = seconds_per_cell * grid
+    displacement = params.scale_s * _rng(seed).standard_normal(cells)
+
+    tapered = taper_onset(travel, displacement, params, seed_cell=at)
+    centred = displacement - displacement[at]
+    defined = centred != 0.0
+    weight = np.ones_like(centred)
+    weight[defined] = (tapered - travel)[defined] / centred[defined]
+    return travel, centred, weight, defined
+
+
+def _blend_and_clamp(
+    params: OnsetParams, travel: np.ndarray, centred: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """The two terms of the weight, computed independently of the implementation."""
+    ramp = np.minimum(1.0, travel / (params.blend_sigma * params.scale_s))
+    dip = np.maximum(-centred, 0.0)
+    with np.errstate(divide="ignore", over="ignore"):
+        clamp = travel / (CAUSAL_MARGIN * np.maximum(dip, 1e-300))
+    return ramp, clamp
+
+
+def test_the_blend_is_four_sigma_wide_and_delivers_the_rest_whole() -> None:
+    """What the shipped default does on a fault of the size it was chosen for.
+
+    Inside ``blend_sigma * scale_s`` of travel time the weight is the linear ramp;
+    outside it the displacement is delivered whole. On an 18 s rupture that zone is the
+    first 1.4 s, so the realised spread comes out within a fraction of a per cent of the
+    scale asked for -- which is the point of stating the width in sigmas rather than in
+    seconds, and the reason 4 is a usable default rather than a fault-specific number.
+
+    Both halves are asserted, because a blend that quietly delivered less than it
+    claimed would still pass a causality test.
+    """
+    params = OnsetParams(scale_s=0.35, blend_sigma=4.0)
+    travel, centred, weight, defined = _blend_weight(params)
+    ramp, clamp = _blend_and_clamp(params, travel, centred)
+
+    blend_s = params.blend_sigma * params.scale_s
+    assert blend_s == pytest.approx(1.4)
+
+    # Nothing on a fault this long is clamped: the clamp is for cells the front has
+    # barely left, and the blend has already suppressed those.
+    assert np.all(clamp[defined] >= ramp[defined])
+    assert np.allclose(weight[defined], ramp[defined], atol=IDENTITY)
+
+    # Out past the zone -- 99% of this fault -- the displacement is delivered whole.
+    outside = defined & (travel >= blend_s)
+    assert float(outside.mean()) > 0.95
+    assert np.allclose(weight[outside], 1.0, atol=IDENTITY)
+
+    realised = weight * centred
+    assert float(realised.std()) == pytest.approx(float(centred.std()), rel=0.01)
+
+
+def test_the_causal_clamp_binds_where_the_blend_alone_would_not() -> None:
+    """The second term, on a front short enough for it to matter.
+
+    A 1.3 s front against a 0.35 s scale is the regime a fixed blend width cannot
+    survive on its own -- the front leaves the blend zone while the draw still has dips
+    deeper than the travel time admits. There the clamp is the binding term, and it is
+    per cell: two neighbours at the same travel time are held back differently because
+    their own draws differ.
+
+    Asserted as the identity ``w = min(ramp, clamp, 1)``, plus the consequence that
+    makes it worth having.
+    """
+    params = OnsetParams(scale_s=0.35, blend_sigma=1.0)
+    travel, centred, weight, defined = _blend_weight(params, seconds_per_cell=0.036)
+    ramp, clamp = _blend_and_clamp(params, travel, centred)
+
+    clamped = defined & (clamp < ramp)
+    assert clamped.any(), "the fixture no longer exercises the clamp"
+    assert float(clamped.mean()) < 0.1
+
+    expected = np.minimum(ramp, clamp)
+    assert np.allclose(weight[defined], expected[defined], atol=IDENTITY)
+    # And the consequence: nothing precedes the seed, which sits at travel zero.
+    assert float((travel + weight * centred).min()) >= 0.0
+
+
+def test_the_blend_is_the_largest_admissible_ramp() -> None:
+    """Linear in the travel time, and that is not an arbitrary choice.
+
+    Keeping the onset after the seed is exactly ``w(tau) * (-delta) < tau``, so writing
+    ``s = tau / (c e)`` the admissible weights are those with ``sup w(s)/s <= 1``. The
+    linear ramp attains that bound, so nothing delivers more displacement at the same
+    safety, and any sub-linear ramp breaks it near zero however wide the blend is made.
+
+    Measured on the front where the clamp binds, so the bound comes out at
+    ``1 / CAUSAL_MARGIN`` -- the margin that keeps the seed the strict minimum rather
+    than a tie.
+    """
+    params = OnsetParams(scale_s=0.35, blend_sigma=1.0)
+    travel, centred, weight, defined = _blend_weight(params, seconds_per_cell=0.036)
+
+    away = defined & (travel > 0.0)
+    ratio = (weight[away] * np.maximum(-centred, 0.0)[away] / travel[away]).max()
+    assert ratio <= 1.0
+    assert ratio == pytest.approx(1.0 / CAUSAL_MARGIN, rel=0.05)
+
+
+def test_a_wider_blend_delivers_less_of_the_displacement() -> None:
+    """The knob does what it says, monotonically.
+
+    The blend is a suppression, so widening it can only remove displacement -- and once
+    the zone is comparable to the rupture's own duration it removes most of it. That is
+    the trade the parameter exposes: a smoother start, paid for in delivered spread.
+    """
+    spreads = []
+    for blend_sigma in (1.0, 4.0, 16.0, 64.0):
+        params = OnsetParams(scale_s=0.35, blend_sigma=blend_sigma)
+        _, centred, weight, _ = _blend_weight(params)
+        spreads.append(float((weight * centred).std()))
+
+    assert spreads == sorted(spreads, reverse=True)
+    # 64 sigma is 22.4 s against an 18 s rupture: the whole fault is inside the zone.
+    assert spreads[-1] < 0.5 * spreads[0]
+
+
+def test_the_onset_scale_follows_the_production_workflow_curve() -> None:
+    """The amplitude relation, pinned against the numbers genslip is actually given.
+
+    `workflow`'s `default_parameters/root/defaults.yaml` sets `tsfac_bzero = -0.1` and
+    `tsfac_slope = -0.5` and leaves `tsfac_main` null, so genslip derives the amplitude
+    per fault from the moment. None of the four version overlays override them. These
+    are the seconds that produces, and they are what this package has to reproduce for
+    a rupture generated here to carry the same timing heterogeneity as one generated
+    through the production workflow.
+
+    Signs: the workflow states both as negatives because genslip *subtracts* its
+    `tsfac`. A spread has none, and `onset_scale_s` takes the magnitudes.
+    """
+    workflow = {
+        5.00: 0.135,
+        6.00: 0.212,
+        6.45: 0.288,
+        7.00: 0.454,
+        7.10: 0.497,
+        7.50: 0.729,
+        8.00: 1.219,
+        9.00: 3.640,
+    }
+    for magnitude, expected_s in workflow.items():
+        scale_s = onset_scale_s(seismic_moment_nm(magnitude), 0.1, 0.5)
+        assert scale_s == pytest.approx(expected_s, abs=5.0e-4)
+
+
+def test_the_onset_scale_is_an_offset_plus_a_cube_root_of_moment() -> None:
+    """Each term on its own, so a sign or unit error in either cannot hide.
+
+    The offset is the whole of the spread at zero moment, and doubling the coefficient
+    doubles only the part above it. Without the offset the relation is self-similar and
+    the spread would fall to nothing at small magnitudes, where the recordings say it
+    does not: at Mw 5 the offset is 74% of the total, and at Mw 9 it is 2.7%.
+    """
+    assert onset_scale_s(0.0, 0.1, 0.5) == pytest.approx(0.1)
+    assert onset_scale_s(1.0e18, 0.0, 0.5) == pytest.approx(
+        2.0 * onset_scale_s(1.0e18, 0.0, 0.25)
+    )
+    # Cube root, so a thousandfold moment is a tenfold spread above the offset.
+    small = onset_scale_s(1.0e18, 0.0, 0.5)
+    assert onset_scale_s(1.0e21, 0.0, 0.5) == pytest.approx(10.0 * small)
+    # Both zero is a coherent front, exactly.
+    assert onset_scale_s(1.0e21, 0.0, 0.0) == 0.0
+
+    for magnitude, offset_share in ((5.0, 0.74), (9.0, 0.027)):
+        total = onset_scale_s(seismic_moment_nm(magnitude), 0.1, 0.5)
+        assert 0.1 / total == pytest.approx(offset_share, rel=0.05)
+
+
+def test_the_coefficient_is_in_the_published_dyne_centimetre_units() -> None:
+    """The unit conversion, asserted rather than trusted to a comment.
+
+    ``coefficient`` is per cube-root dyne-centimetre at a scale of 1e-9 -- genslip's
+    own convention, and the one :func:`average_rise_time_s` already takes. This package
+    is otherwise SI, so the conversion is the thing most likely to be silently wrong,
+    and it is a factor of ``(1e7)^(1/3) = 215.4`` rather than 1e7.
+    """
+    moment_nm = 1.0e19
+    moment_dyne_cm = moment_nm * 1.0e7
+
+    above_offset = onset_scale_s(moment_nm, 0.0, 0.5)
+    assert above_offset == pytest.approx(0.5e-9 * moment_dyne_cm ** (1.0 / 3.0))
+    # And that is 215.4x what treating newton-metres as dyne-centimetres would give.
+    assert above_offset / (0.5e-9 * moment_nm ** (1.0 / 3.0)) == pytest.approx(
+        215.443, rel=1.0e-4
     )
 
-    params = OnsetParams(scale_s=-0.35)
-    delay_s = 1.0
-    # No hypocentre: no pin, no clamp, so the relation is exact everywhere and the
-    # perturbation is recoverable.
-    onset = apply_perturbation(
+
+def test_a_blend_with_no_width_is_refused() -> None:
+    """Zero sigma is not a coherent front; it is a front with no blend at all."""
+    with pytest.raises(ConfigError, match="not a width"):
+        OnsetParams(scale_s=0.35, blend_sigma=0.0)
+
+
+def test_a_zero_scale_is_a_coherent_front_and_draws_nothing() -> None:
+    """The off switch, and it has to be bit-exact.
+
+    A displacement field that only *nearly* vanished would make a coherent run
+    irreproducible, and the draw is skipped rather than scaled to zero, so turning the
+    mechanism off costs no sample.
+    """
+    mesh = _flat_chart(16, 24)
+    covariance = VonKarmanFilterParameters(4.0, 2.5)
+    slip_params = SlipParams(covariance=covariance)
+    _, reference = slip_pattern(mesh, slip_params, _rng(5))
+
+    displacement = onset_perturbation(
+        mesh,
+        reference,
+        slip_params.marginal,
+        OnsetParams(scale_s=0.0),
+        _rng(6),
+        covariance,
+    )
+
+    assert np.array_equal(displacement, np.zeros(mesh.cell_counts))
+
+    travel = np.arange(displacement.size, dtype=np.float64).reshape(displacement.shape)
+    assert np.array_equal(
+        taper_onset(travel, displacement, OnsetParams(scale_s=0.0), seed_cell=(0, 0)),
         travel,
-        onset_perturbation(mesh, reference, params, _rng(seed + 1), covariance),
-        params,
-        hypocentre=None,
-        delay_s=delay_s,
     )
-    perturbation = (onset - travel - delay_s) / params.scale_s
-
-    assert float(perturbation.mean()) == pytest.approx(0.0, abs=CONSTRUCTION)
-    assert float(perturbation.std()) == pytest.approx(params.sigma, rel=CONSTRUCTION)
-    assert np.allclose(
-        onset, travel + params.scale_s * perturbation + delay_s, rtol=IDENTITY
-    )
-
-
-# ============================================================================
-# Determinism and independence -- what replaces the draw-order machinery
-# ============================================================================
 
 
 @SETTINGS
@@ -1122,17 +1530,32 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
     depended on what ran before it -- to the point that two dead fields were drawn and
     discarded on every run purely to keep the order intact, and a band-pass was
     forbidden from ever removing a draw. With a named substream per stage that is all
-    unrepresentable: here, changing the rupture speed leaves the onset perturbation
-    identical, so the two stages can be reordered, retried or tested alone.
+    unrepresentable: changing the rupture speed leaves the onset displacement's draw
+    identical, so the two can be reordered, retried or tested alone.
+
+    Asserted bit for bit, which the previous model could not do. There, the
+    displacement was recoverable only as ``onset - travel``, so the assertion had to
+    carry the round-off of adding a sub-second field to a multi-second arrival and
+    subtracting it back off. Now the draw is a separate array that never meets the
+    solve, and the claim is exact.
+
+    The second half is what keeps it from being vacuous: the same displacement, spent
+    over two different speeds, must give *different* onsets. Otherwise a stage that
+    silently ignored the field would pass the first assertion.
     """
     mesh = _flat_chart(8, 16, depth_km=9.0)
     covariance = VonKarmanFilterParameters(4.0, 2.5)
     shear_speed = np.full(mesh.cell_counts, 3.3)
     hypocentre = (4, 8)
+    params = OnsetParams(scale_s=0.45)
 
-    def onset_for(velocity_fraction: float) -> np.ndarray:
+    def draw_and_solve(velocity_fraction: float) -> tuple[np.ndarray, np.ndarray]:
         rng = _rng(99)
-        _, _, reference = slip_pattern(mesh, SlipParams(covariance=covariance), rng)
+        slip_params = SlipParams(covariance=covariance)
+        _, reference = slip_pattern(mesh, slip_params, rng)
+        displacement = onset_perturbation(
+            mesh, reference, slip_params.marginal, params, _rng(7), covariance
+        )
         travel = travel_times(
             mesh,
             shear_speed,
@@ -1143,28 +1566,413 @@ def test_one_stages_parameters_do_not_disturb_another_stages_noise() -> None:
             ),
             [(*hypocentre, 0.0)],
         )
-        params = OnsetParams(scale_s=-0.35)
-        onset = apply_perturbation(
-            travel,
-            onset_perturbation(mesh, reference, params, _rng(7), covariance),
-            params,
-            # No hypocentre, so no clamp: the onset is the wavefront plus the
-            # perturbation exactly, and subtracting recovers the perturbation. With
-            # the clamp in the way the difference would carry the wavefront's own
-            # shape wherever it bound, and this test would be about the clamp.
-            hypocentre=None,
-            delay_s=0.0,
-        )
-        return onset - travel
+        onset = taper_onset(travel, displacement, params, seed_cell=hypocentre)
+        return displacement, onset
 
-    # The perturbation is the onset minus the wavefront, and the wavefront is the only
-    # thing the velocity fraction touches.
-    #
-    # Recovered rather than compared bit for bit: `(T + p) - T` loses about
-    # `eps * |T|` of `p`, which on multi-second arrivals is around 1e-15 s, and the
-    # two solves have different `T`. The tolerance below is three orders above that
-    # and eleven below the 0.35 s the perturbation itself is worth -- so it separates
-    # "the same draw, differently rounded" from "a different draw" by a wide margin.
-    slow = onset_for(0.6)
-    fast = onset_for(0.9)
-    assert np.abs(slow - fast).max() < 1.0e-12
+    slow_field, slow_onset = draw_and_solve(0.6)
+    fast_field, fast_onset = draw_and_solve(0.9)
+
+    assert np.array_equal(slow_field, fast_field)
+    assert not np.allclose(slow_onset, fast_onset)
+
+
+MARGINALS = (
+    NORMAL,
+    Marginal("truncated_normal", 0.75),
+    Marginal("truncated_exponential", 0.75),
+    Marginal("gamma", 0.75),
+)
+"""One of every family a field may take, at the coefficient of variation this package
+ships. The normal is in the list because the identity is a case the fit has to handle,
+not an exemption from it."""
+
+
+@pytest.mark.parametrize("marginal", MARGINALS)
+def test_a_marginal_has_the_mean_and_spread_it_was_asked_for(
+    marginal: Marginal,
+) -> None:
+    """What replaces genslip's clip, asserted on the distribution rather than a field.
+
+    `1 + cov * Z` truncated at zero is a normal with a point mass at zero: neither its
+    mean nor its spread is the one configured. A fitted marginal has both. Asserted
+    through the frozen distribution's own moments, so this is about the fit and not
+    about a sample.
+    """
+    if marginal.is_normal:
+        # The identity: mean 0 and unit spread, and no fitting to check.
+        assert marginal.apply(np.zeros(3)).tolist() == [0.0, 0.0, 0.0]
+        return
+
+    distribution = _distribution(marginal)
+    mean, variance = distribution.mean(), distribution.var()
+    assert float(mean) == pytest.approx(1.0, rel=1.0e-6)
+    assert float(np.sqrt(variance) / mean) == pytest.approx(
+        marginal.coefficient_of_variation, rel=1.0e-6
+    )
+
+
+@pytest.mark.parametrize("marginal", MARGINALS)
+def test_the_correlation_series_sums_to_one(marginal: Marginal) -> None:
+    """`g(1) = 1`: a field can be perfectly correlated with itself.
+
+    The auto series' coefficients are the whole variance of the transformed field
+    decomposed by Hermite order, so they sum to exactly 1 for a converged expansion.
+    This is what `NORTA_ORDER`'s docstring claims at 20 terms, and it is the cheapest
+    check that the expansion has converged at all -- a truncation that had not would
+    leave the sum short.
+    """
+    assert float(attainable_correlation(marginal, marginal)) == pytest.approx(
+        1.0, abs=1.0e-9
+    )
+
+
+@pytest.mark.parametrize("marginal", MARGINALS)
+def test_the_pre_correction_inverts_the_correlation_map(marginal: Marginal) -> None:
+    """`g(g_inv(rho)) == rho`, which is the entire content of the pre-correction.
+
+    Round-tripped through the tabulated inverse, so this measures the tabulation as
+    well as the series. `NORTA_INVERSE_POINTS`' docstring puts the round trip at 2e-10;
+    the tolerance here is loose enough to be about the inversion rather than about the
+    last bit of the interpolation.
+    """
+    targets = np.array([-0.5, -0.2, 0.0, 0.2, 0.5, 0.8, 0.9])
+    latent = latent_correlation(marginal, marginal, targets)
+    delivered = transformed_correlation(marginal, marginal, latent)
+    assert np.allclose(delivered, targets, atol=1.0e-8)
+
+
+def test_the_pre_correction_asks_for_more_than_it_wants() -> None:
+    """The direction of the correction, which a round trip alone would not catch.
+
+    A monotone nonlinear map destroys correlation, so to *deliver* 0.8 the sampler has
+    to be asked for more than 0.8 -- and under `NORMAL` for exactly 0.8, because there
+    the map is the identity. Both halves matter: a pre-correction with the sign wrong
+    still round-trips.
+    """
+    target = np.array(0.8)
+    assert float(latent_correlation(NORMAL, NORMAL, target)) == pytest.approx(
+        0.8, abs=1.0e-12
+    )
+    for marginal in (Marginal("truncated_normal", 0.75), Marginal("gamma", 0.75)):
+        assert float(latent_correlation(marginal, marginal, target)) > 0.8
+
+
+def test_a_correlation_two_marginals_cannot_share_is_refused() -> None:
+    """The Gaussian-copula ceiling, and a refusal rather than the nearest answer.
+
+    Two fields pushed through *different* monotone maps cannot be perfectly correlated
+    even when their latents are, so `g_fg(1) < 1` and a target above it has no latent
+    at all. Returning the closest one that exists would answer a question the caller
+    did not ask, so `latent_correlation` raises.
+    """
+    slip = Marginal("truncated_normal", 0.75)
+    ceiling = attainable_correlation(slip, NORMAL)
+    assert ceiling < 1.0
+
+    # Just inside is fine; just outside is refused.
+    latent_correlation(slip, NORMAL, np.array(ceiling - 1.0e-6))
+    with pytest.raises(ConfigError, match="under a Gaussian copula"):
+        latent_correlation(slip, NORMAL, np.array(ceiling + 1.0e-3))
+
+
+@pytest.mark.parametrize("marginal", MARGINALS)
+def test_the_field_carries_the_correlation_length_not_the_latent(
+    marginal: Marginal,
+) -> None:
+    """Where the fitted correlation length lands: on the field that gets written out.
+
+    The embedding is of a *pre-corrected* covariance, so its latent has a different
+    correlation length from the field the marginal produces. What the model is
+    parameterised on is the field's, and `_attempt` measures the delivered lengths
+    after the marginal for exactly that reason. genslip fits the latent's and writes
+    out the other one.
+    """
+    cell_counts = (32, 64)
+    spacing_km = (0.5, 0.5)
+    covariance = VonKarmanFilterParameters(6.0, 4.0)
+    embedding = _embed(cell_counts, spacing_km, covariance, marginal)
+
+    delivered = np.fft.ifft2(embedding.eigenvalues).real
+    lengths = _delivered_lengths(
+        delivered, cell_counts, spacing_km, covariance, marginal
+    )
+    for got, wanted in zip(
+        lengths,
+        (
+            covariance.correlation_length_strike_km,
+            covariance.correlation_length_dip_km,
+        ),
+        strict=True,
+    ):
+        assert got == pytest.approx(wanted, rel=CORRELATION_LENGTH_TOLERANCE)
+
+
+def test_a_slip_patterns_marginal_is_the_one_it_was_given() -> None:
+    """The stage, not the sampler: what `slip_pattern` actually writes out.
+
+    Statistical, and deliberately over a large chart -- a marginal is a statement about
+    the population and a fault-sized sample of a correlated field carries far fewer
+    independent values than it has cells. Asserted on the mean and spread, and on
+    non-negativity, which is the property a truncated marginal exists to give.
+
+    The largest slip is asserted too, because for the truncated exponential it is not a
+    separate fact: the family is parameterised by where the cut falls, so the spread
+    *is* the maximum, and 0.90 is 4.30 mean slips. That is the whole reason production
+    draws from it -- Thingbaijam & Mai (2016) fit the ratio rather than the spread.
+    """
+    mesh = _flat_chart(64, 128)
+    covariance = VonKarmanFilterParameters(6.0, 6.0)
+    params = SlipParams(
+        covariance=covariance, coefficient_of_variation=0.90, side_taper=0.0
+    )
+    assert params.marginal.family == "truncated_exponential"
+
+    values = np.concatenate(
+        [slip_pattern(mesh, params, _rng(seed))[0].ravel() for seed in range(6)]
+    )
+    assert float(values.min()) > 0.0
+    assert float(values.mean()) == pytest.approx(1.0, abs=0.05)
+    assert float(values.std() / values.mean()) == pytest.approx(0.90, abs=0.12)
+    # The support's own end, not a quantile: no draw can exceed it. Against 4.30 rather
+    # than 4.30 sample means, because the marginal is unit-mean by construction and the
+    # bound is a property of the population.
+    assert float(values.max()) < 4.30
+
+    # The other family still works, and still says what it says.
+    normal = dataclasses.replace(params, marginal_family="truncated_normal")
+    other = np.concatenate(
+        [slip_pattern(mesh, normal, _rng(seed))[0].ravel() for seed in range(6)]
+    )
+    assert float(other.min()) > 0.0
+    assert float(other.std() / other.mean()) == pytest.approx(0.90, abs=0.12)
+    # And has no such end: a normal's tail is unbounded wherever it is truncated below.
+    assert float(other.max()) > 4.30
+
+
+def test_the_shallow_blend_does_not_notch_the_variance() -> None:
+    """The hybrid covariance is unit-variance *through* the transition, not just at it.
+
+    Blending two correlation functions is not the same as blending two fields: a naive
+    weighted sum of two normalised covariances dips below one at intermediate depths,
+    which would show up as a band of suppressed slip across the transition. Asserted at
+    every dip row rather than at the two ends, because the ends are where a notch is
+    absent by construction.
+    """
+    hybrid = _hybrid((12.0, 5.0), (3.0, 1.5))
+    downdip_km = np.linspace(0.0, 25.0, 40)
+    strike_km, dip_km, hurst = hybrid.profile(downdip_km)
+
+    # Zero strike lag, so this is the covariance of each row with every other; its
+    # diagonal is each row's own variance.
+    covariance = _nonstationary_covariance(
+        np.zeros(1), downdip_km, strike_km, dip_km, hurst
+    )
+    variance = np.diag(covariance[0])
+
+    assert np.allclose(variance, 1.0, atol=1.0e-9), (
+        f"variance dips to {float(variance.min()):.6f} across the transition; a "
+        "weighted sum of two normalised covariances would, and the averaged length "
+        "tensor is what avoids it"
+    )
+
+
+# ============================================================================
+# The hybrid profile: correlation lengths that change with depth
+# ============================================================================
+
+
+def _dipping_chart(
+    cells_i: int, cells_j: int, *, dip_deg: float = 90.0, spacing_km: float = 1.0
+) -> RuptureMesh:
+    """A chart with a depth range, which is what a depth profile needs to bite on."""
+    along = np.arange(cells_j + 1) * spacing_km
+    down = np.arange(cells_i + 1) * spacing_km
+    east = np.tile(down[:, None] * np.cos(np.radians(dip_deg)), (1, cells_j + 1))
+    north = np.tile(along[None, :], (cells_i + 1, 1))
+    depth = np.tile(down[:, None] * np.sin(np.radians(dip_deg)), (1, cells_j + 1))
+    return RuptureMesh.from_nodes(
+        east,
+        north,
+        depth,
+        origin_east_km=0.0,
+        origin_north_km=0.0,
+        surface="dipping",
+    )
+
+
+def _hybrid(
+    shallow: tuple[float, float], deep: tuple[float, float]
+) -> HybridFilterParameters:
+    return HybridFilterParameters(
+        shallow=VonKarmanFilterParameters(*shallow),
+        deep=VonKarmanFilterParameters(*deep),
+        transition_depth_km=10.0,
+        transition_half_width_km=3.0,
+    )
+
+
+def _strike_length(
+    fields: np.ndarray, row: int, spacing_km: float, hurst: float
+) -> float:
+    """The along-strike correlation length an ensemble shows at one dip row."""
+    band = fields[:, row, :]
+    band = band - band.mean()
+    cells = band.shape[1]
+    acf = np.array(
+        [float((band[:, : cells - k] * band[:, k:]).mean()) for k in range(cells // 2)]
+    )
+    half = float(von_karman_correlation(np.array([1.0]), hurst)[0])
+    return _crossing_km(acf / acf[0], half, spacing_km)
+
+
+def test_a_hybrid_profile_is_log_linear_between_its_ends() -> None:
+    """A correlation length is a scale, so the transition interpolates in the log.
+
+    Halfway between 2 km and 18 km is 6 km, not 10: the arithmetic midpoint would put
+    most of the change in the shallow half of the ramp and almost none in the deep
+    half, which is not a transition between two relations so much as a jump near one
+    of them.
+    """
+    hybrid = _hybrid((18.0, 18.0), (2.0, 2.0))
+    depth = np.array([0.0, 7.0, 10.0, 13.0, 30.0])
+    strike, dip, hurst = hybrid.profile(depth)
+
+    # Flat outside the ramp, and exactly the two ends there.
+    assert strike[0] == pytest.approx(18.0, rel=IDENTITY)
+    assert strike[-1] == pytest.approx(2.0, rel=IDENTITY)
+    assert strike[1] == pytest.approx(18.0, rel=IDENTITY)
+    assert strike[3] == pytest.approx(2.0, rel=IDENTITY)
+    # The geometric mean at the centre.
+    assert strike[2] == pytest.approx(np.sqrt(18.0 * 2.0), rel=IDENTITY)
+    assert dip[2] == pytest.approx(np.sqrt(18.0 * 2.0), rel=IDENTITY)
+    # One spectral falloff across the whole profile, for a pair that shares one.
+    assert float(np.ptp(hurst)) == pytest.approx(0.0, abs=IDENTITY)
+
+
+def test_a_hybrid_with_equal_ends_is_the_stationary_sampler_exactly() -> None:
+    """The special case is an identity, not an approximation.
+
+    A covariance that does not vary with depth is Toeplitz down dip; a Toeplitz
+    operator embeds in a circulant one, and a circulant operator's eigenvectors are the
+    DFT. So the general sampler's factorisation *is* the stationary sampler's
+    transform, and dispatching to it costs nothing and changes nothing -- asserted
+    bit-for-bit rather than statistically, because there is no estimator in the way.
+    """
+    mesh = _dipping_chart(16, 32)
+    stationary = VonKarmanFilterParameters(4.0, 4.0)
+    hybrid = _hybrid((4.0, 4.0), (4.0, 4.0))
+    assert hybrid.is_stationary
+
+    general = von_karman_field(mesh, hybrid, _rng(11))
+    special = von_karman_field(mesh, stationary, _rng(11))
+
+    assert np.array_equal(general, special)
+
+
+def test_the_hybrid_covariance_has_unit_variance_at_every_depth() -> None:
+    """What makes one marginal a statement about the whole fault.
+
+    Paciorek & Schervish (2006) build the quadratic form from the *averaged* length
+    tensor and divide by the determinant ratio, which is what holds the diagonal at 1
+    while the lengths underneath it change. Without it the shallow and deep halves
+    would carry different variances and the marginal transform would mean two
+    different things on one fault.
+    """
+    hybrid = _hybrid((12.0, 5.0), (3.0, 1.5))
+    depth = np.linspace(0.0, 24.0, 40)
+    strike, dip, hurst = hybrid.profile(depth)
+    downdip = np.linspace(0.0, 24.0, 40)
+
+    covariance = _nonstationary_covariance(np.array([0.0]), downdip, strike, dip, hurst)
+
+    assert np.diag(covariance[0]) == pytest.approx(1.0, abs=CONSTRUCTION)
+    # Symmetric, which the factorisation assumes and does not check.
+    assert covariance[0] == pytest.approx(covariance[0].T, abs=CONSTRUCTION)
+
+
+@pytest.mark.parametrize("marginal", [NORMAL, Marginal("truncated_normal", 0.75)])
+def test_the_hybrid_field_carries_its_profile_at_every_depth(
+    marginal: Marginal,
+) -> None:
+    """The point of the whole sampler, measured where it is supposed to differ.
+
+    Statistical: the correlation length is read off an ensemble ACF at a shallow row
+    and a deep one, and both have to land on their own end of the profile rather than
+    on some average of the two. Under a NORTA marginal the *field* has to carry them,
+    which is what the pre-correction is for -- so this runs for both.
+    """
+    mesh = _dipping_chart(24, 96)
+    hybrid = _hybrid((12.0, 5.0), (3.0, 1.5))
+    depth = mesh.centres()[..., 2].mean(axis=1)
+    strike, _, hurst = hybrid.profile(depth)
+
+    rng = _rng(5)
+    fields = marginal.apply(
+        np.array([von_karman_field(mesh, hybrid, rng, marginal) for _ in range(300)])
+    )
+
+    for row in (0, mesh.cell_counts[0] - 1):
+        delivered = _strike_length(fields, row, mesh.spacing_km()[0], float(hurst[row]))
+        assert delivered == pytest.approx(float(strike[row]), rel=0.12)
+
+    # And the two ends really are different, so the test above is not passing on a
+    # field that happens to sit between them.
+    assert strike[0] > 3.0 * strike[-1]
+
+
+def test_a_hybrid_field_takes_the_marginal_it_was_given() -> None:
+    """NORTA and the depth profile compose: the pre-correction is pointwise.
+
+    It applies to a nonstationary covariance the same way it applies to a stationary
+    one -- entry by entry, on correlations -- and `g_inv(1) = 1` keeps the unit
+    diagonal that makes the marginal one statement about the whole fault.
+    """
+    mesh = _dipping_chart(24, 96)
+    marginal = Marginal("truncated_normal", 0.75)
+    rng = _rng(7)
+    pooled = marginal.apply(
+        np.array(
+            [
+                von_karman_field(mesh, _hybrid((12.0, 5.0), (3.0, 1.5)), rng, marginal)
+                for _ in range(60)
+            ]
+        )
+    )
+
+    assert (pooled >= 0.0).all()
+    assert float(pooled.mean()) == pytest.approx(1.0, abs=0.03)
+    assert float(pooled.std()) == pytest.approx(0.75, rel=0.05)
+
+
+def test_suzukis_down_dip_length_saturates_and_mais_does_not() -> None:
+    """The shallow branch is a relation, not a multiple of the deep one.
+
+    genslip pairs Suzuki et al. (2022) shallow with Mai & Beroza (2002) deep, and the
+    two are not a factor apart on either axis: Suzuki's dip length stops growing above
+    its corner magnitude while Mai's keeps going, so the ratio between the branches
+    depends on the earthquake. Past about M8.6 the *shallow* branch is the shorter one
+    down dip -- which is a thing to know before turning the hybrid on for a subduction
+    interface, and is why this is asserted rather than assumed.
+    """
+    saturation = SUZUKI_COEFFICIENTS["dip_saturation_magnitude"]
+
+    below = correlation_lengths(6.0, **SUZUKI_COEFFICIENTS)
+    at = correlation_lengths(saturation, **SUZUKI_COEFFICIENTS)
+    above = correlation_lengths(8.0, **SUZUKI_COEFFICIENTS)
+
+    assert below.correlation_length_dip_km < at.correlation_length_dip_km
+    assert above.correlation_length_dip_km == pytest.approx(
+        at.correlation_length_dip_km, rel=IDENTITY
+    )
+    # The strike axis has no corner and keeps growing.
+    assert above.correlation_length_strike_km > at.correlation_length_strike_km
+    # Mai does not saturate on either axis.
+    assert (
+        correlation_lengths(8.0).correlation_length_dip_km
+        > correlation_lengths(saturation).correlation_length_dip_km
+    )
+    # And the crossover is real: at M9 Suzuki is the shorter of the two down dip.
+    assert (
+        correlation_lengths(9.0, **SUZUKI_COEFFICIENTS).correlation_length_dip_km
+        < correlation_lengths(9.0).correlation_length_dip_km
+    )

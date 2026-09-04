@@ -485,29 +485,28 @@ def test_the_jump_leaves_from_where_the_front_arrests() -> None:
     assert jump.from_edge
 
 
-def test_the_choice_of_departure_is_not_made_on_the_perturbation() -> None:
-    """Chosen on the wavefront; timed on the onset.
+def test_the_departure_is_the_earliest_reachable_arrest() -> None:
+    """One field, so choosing and timing are the same argmin.
 
-    An argmin over a hundred thousand perturbed cells is an order statistic: it finds
-    the perturbation's negative tail rather than the shape of the front, which biased
-    every jump early by however far the noise reached. So the cell is chosen on the
-    smooth wavefront -- but *when* the rupture reached that cell is still the onset's
-    to report, because the perturbation is part of when it actually got there.
+    This replaces a test that asserted the opposite: departures were once chosen on a
+    smooth wavefront and *timed* on a separate displaced onset field. Two fields is a
+    claim that the front and the times disagree about where the rupture is, which is
+    not a claim this model makes -- see `causal_jump`'s own docstring for what the one
+    field costs, and why the boundary candidates and the delay term keep it bounded.
+    What is left to assert is that the argmin is taken over the *arrests* and lands on
+    the earliest of them.
     """
     parent = _chart(cells=6, name="parent")
     child = _chart(east_km=10.0, cells=6, name="child")
 
-    wavefront_s = np.tile(np.arange(6, dtype=float)[::-1], (6, 1))
-    onset_s = wavefront_s.copy()
-    onset_s[0, 0] = -50.0  # the noise tail: early in the onset, late in the wavefront
+    # Decreasing along strike, so the far column is the earliest arrest.
+    onset_s = np.tile(np.arange(6, dtype=float)[::-1], (6, 1))
 
-    jump = causal_jump(
-        parent, wavefront_s, child, Instantaneous(), parent_onset_s=onset_s
-    )
+    jump = causal_jump(parent, onset_s, child, Instantaneous())
 
-    assert jump.parent_cell != (0, 0)
     assert jump.parent_cell[1] == 5
     assert jump.departure_s == pytest.approx(onset_s[jump.parent_cell])
+    assert jump.departure_s == pytest.approx(float(onset_s.min()))
 
 
 def test_a_child_off_a_fault_face_still_gets_a_jump() -> None:
@@ -543,10 +542,10 @@ def test_a_deeper_edge_wins_without_a_depth_rule() -> None:
     parent = _vertical_chart(cells=6, name="parent")
     child = _vertical_chart(east_km=4.0, cells=6, name="child")
     # Equidistant in time from the top and bottom edges.
-    wavefront_s = np.zeros((6, 6))
+    onset_s = np.zeros((6, 6))
 
     delay = DistanceOverVelocity(np.array([2.0, 100.0]), np.array([1.0, 4.0]))
-    jump = causal_jump(parent, wavefront_s, child, delay)
+    jump = causal_jump(parent, onset_s, child, delay)
 
     depth_km = float(parent.centres()[jump.parent_cell][2])
     assert depth_km > 2.0

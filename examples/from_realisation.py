@@ -339,7 +339,7 @@ def rupture_toml(realisation: dict) -> str:
         f"velocity_fraction = {velocity['rvfrac']}",
         "",
         "[timing]",
-        "rupture_time_scale = -0.35",
+        "rupture_time_scale = 0.45",
         "rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }",
         (
             f"shallow_ramp      = {{ centre_km = {velocity['shallow_depth']}, "

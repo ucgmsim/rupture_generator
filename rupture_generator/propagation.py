@@ -2,7 +2,7 @@
 
 A multi-segment earthquake is a tree: each fault has exactly one triggering parent, and
 the root is where the rupture nucleated. The tree comes from fault separations and is
-fixed before any field is drawn; the jump points come from the solved wavefront on the
+fixed before any field is drawn; the jump points come from the solved onsets on the
 parent, so a rupture that reaches the far end of a fault early jumps from there rather
 than from wherever the two faults happen to be closest.
 
@@ -474,7 +474,7 @@ class Jump:
     """Where and when a rupture front crossed from one fault to the next.
 
     Cells are labelled as their own chart labels them. ``arrival_s`` is the departure
-    plus the delay, and the seed time the child's wavefront is solved from.
+    plus the delay, and the seed time the child's onsets are solved from.
     ``from_edge`` is ``False`` when no edge cell was within reach and the search fell
     back to the whole chart.
     """
@@ -489,18 +489,17 @@ class Jump:
 
 def causal_jump(
     parent: Chart,
-    parent_wavefront_s: FloatArray,
+    parent_onset_s: FloatArray,
     child: Chart,
     delay: JumpDelay,
     *,
-    parent_onset_s: FloatArray | None = None,
     max_distance_km: float = MAX_JUMP_KM,
 ) -> Jump:
     """Where the front crosses to the child fault, and when it gets there.
 
     Candidates are the parent's ``boundary_faces()``, where the front runs out of fault
     and arrests: the trigger is the stress concentration of an arrested tip rather than
-    the wavefront sweeping by. Oglesby (2008) found jumps succeed when donor slip
+    the front sweeping by. Oglesby (2008) found jumps succeed when donor slip
     terminates abruptly and fail when it tapers, Kase & Kuge (2001) that triggering
     follows the front reaching the fault edge by about a second, and Fliss, Bhat,
     Dmowska & Rice (2005) work the mechanism out for the Landers backward branch.
@@ -514,14 +513,26 @@ def causal_jump(
     ----------
     parent, child : Chart
         The two charts, whose origins are added back before differencing.
-    parent_wavefront_s : FloatArray
-        Seconds to each of the parent's subfaults, and the field the choice is made on.
-        Pass the solved wavefront rather than the perturbed onset: an argmin over a
-        hundred thousand perturbed cells selects the perturbation's negative tail.
+    parent_onset_s : FloatArray
+        Seconds to each of the parent's subfaults: both the field the departure is
+        chosen on and the field its time is read from.
+
+        These were once two arguments, a smooth field to choose on and a displaced one
+        to read the clock from. **The onset field carries its displacement**, so an
+        argmin over it is an order statistic and finds the field's negative excursions
+        as well as the shape of the front. Three things keep that bounded rather than
+        removing it. The candidates are ``boundary_faces()``, hundreds of cells and not
+        the whole chart. The displacement carries slip's correlation length, so those
+        cells are nowhere near independent draws and the extreme of the set is far
+        milder than the count suggests. And the minimised quantity is
+        ``onset + delay(distance)``, where the delay varies by seconds across the
+        boundary and dominates a displacement whose spread is
+        ``timing.rupture_time_scale``. What is left is a jump chosen up to about a
+        scale early against the coherent front -- a bias of the same size as the
+        heterogeneity that was asked for, in the direction a real jump goes, and small
+        against the crossing delay itself.
     delay : JumpDelay
         How long the crossing takes.
-    parent_onset_s : FloatArray, optional
-        The field the clock is read from. Defaults to the wavefront.
     max_distance_km : float
         The widest gap a jump may cross, in kilometres.
 
@@ -534,12 +545,7 @@ def causal_jump(
     parent_origin = np.array([*parent.origin_km, 0.0])
     child_origin = np.array([*child.origin_km, 0.0])
 
-    wavefront = np.asarray(parent_wavefront_s, dtype=np.float64).reshape(-1)
-    departures = (
-        wavefront
-        if parent_onset_s is None
-        else np.asarray(parent_onset_s, dtype=np.float64).reshape(-1)
-    )
+    onsets = np.asarray(parent_onset_s, dtype=np.float64).reshape(-1)
     all_points = (parent.centres() + parent_origin).reshape(-1, 3)
     to_points = (child.centres() + child_origin).reshape(-1, 3)
 
@@ -571,13 +577,10 @@ def causal_jump(
 
     delays_s = delay(nearest_km, candidate_points[:, 2])
 
-    # Chosen on the wavefront, timed on the onset.
-    chosen = int(
-        np.argmin(np.where(reachable, wavefront[candidates] + delays_s, np.inf))
-    )
+    chosen = int(np.argmin(np.where(reachable, onsets[candidates] + delays_s, np.inf)))
     from_cell = int(candidates[chosen])
     to_cell = int(nearest[chosen])
-    departure_s = float(departures[from_cell])
+    departure_s = float(onsets[from_cell])
 
     return Jump(
         parent_cell=parent.cell_key(from_cell),
