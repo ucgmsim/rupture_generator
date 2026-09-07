@@ -320,11 +320,8 @@ fn single_seed(
     let up: Vec<usize> = (0..ni).rev().collect();
 
     // A fraction of the fastest single-cell traversal: see `CONVERGENCE_TOLERANCE`.
-    let fastest_cell_s = spacing_km.0.min(spacing_km.1)
-        * slowness
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
+    let fastest_cell_s =
+        spacing_km.0.min(spacing_km.1) * slowness.iter().copied().fold(f64::INFINITY, f64::min);
     let tolerance = CONVERGENCE_TOLERANCE * fastest_cell_s;
 
     let mut rounds = 0;
@@ -357,7 +354,9 @@ fn single_seed(
         let (lo, hi) = slowness
             .iter()
             .copied()
-            .fold((f64::INFINITY, 0.0f64), |(lo, hi), s| (lo.min(s), hi.max(s)));
+            .fold((f64::INFINITY, 0.0f64), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            });
         return Err(Error::DidNotSettle {
             rounds,
             contrast: if lo > 0.0 { hi / lo } else { f64::INFINITY },

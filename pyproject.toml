@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Kinematic rupture model generation: a port of genslip v5.6.2"
 readme = "README.md"
 authors = [{ name = "ucgmsim" }]
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
   "h5py>=3.11",
   # Configuration. The `yaml` and `toml` extras are what make a config file readable in
