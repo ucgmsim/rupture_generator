@@ -31,7 +31,7 @@ import numpy as np
 
 from rupture_generator._kernels import eikonal_solve
 from rupture_generator.geometry import CellArray, CellMask, Geometry
-from rupture_generator.rupture import Realisation
+from rupture_generator.rupture.realisation import Realisation
 from rupture_generator.sampling import (
     NORMAL,
     Covariance,
