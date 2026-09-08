@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 type NodeArray = np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
 """Node positions, ``(n_i+1, n_j+1, 3)``: east, north, depth, kilometres."""
@@ -12,6 +13,9 @@ type CellArray = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 
 type CellMask = np.ndarray[tuple[int, int], np.dtype[np.bool_]]
 """One flag per cell, ``(n_i, n_j)``."""
+
+type CellSelection = tuple[np.ndarray, np.ndarray]
+"""Some cells named as two index arrays, ``(i, j)``: what indexing a field wants."""
 
 _DOWN = np.array([0.0, 0.0, 1.0])
 
@@ -258,3 +262,70 @@ class Geometry:
             _locate(dip_km, self.dip_arc_km(), axis="dip"),
             _locate(strike_km, self.strike_arc_km(), axis="strike"),
         )
+
+    # -------------------------------------------------------- between two charts
+
+    def perimeter(self) -> CellSelection:
+        """The fault's edge cells: occupied, with a neighbour off the fault or off
+        the grid.
+
+        Where a front can leave this chart or land on it. On a chart that is fault
+        everywhere these are its four sides; on a resampled interface they follow the
+        real outline rather than the bounding rectangle.
+        """
+        padded = np.pad(self.occupied, 1, constant_values=False)
+        interior = (
+            padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+        )
+        return np.nonzero(self.occupied & ~interior)
+
+    def _positions_km(self, cells: CellSelection) -> np.ndarray:
+        """Where some cells are in the CRS, ``(n, 3)``, origin added back.
+
+        The only place the origin is read. Positions are stored as offsets from it and
+        two charts have origins of their own, so adding it back is what makes their
+        positions comparable at all.
+
+        Gathers the four corner nodes of the cells asked for rather than taking
+        :meth:`centres` and indexing it: the perimeter of a production-resolution
+        interface is a few thousand cells against twenty million, and the full array is
+        half a gigabyte.
+        """
+        i, j = cells
+        centres = 0.25 * (
+            self.nodes[i, j]
+            + self.nodes[i, j + 1]
+            + self.nodes[i + 1, j + 1]
+            + self.nodes[i + 1, j]
+        )
+        east_km, north_km = self.origin_km
+        return centres + np.array([east_km, north_km, 0.0])
+
+    def nearest_cells_to(
+        self, other: Geometry
+    ) -> tuple[CellSelection, CellSelection, np.ndarray]:
+        """For each of this chart's edge cells, the closest edge cell of ``other``.
+
+        Returns three parallel arrays: this chart's edge cells, the cell on ``other``
+        each one is closest to, and the straight-line distance between them in
+        kilometres. Both cell selections index a field directly.
+
+        Straight-line, so it says nothing about whether the rock in between is there to
+        break -- that judgement belongs to whatever is measuring.
+
+        Raises
+        ------
+        GeometryError
+            If either chart is entirely unoccupied, so there is nothing to measure
+            between.
+        """
+        here, there = self.perimeter(), other.perimeter()
+        if here[0].size == 0 or there[0].size == 0:
+            raise GeometryError(
+                "a distance between charts needs fault on both sides, and one of these "
+                "charts is entirely unoccupied"
+            )
+        distance_km, nearest = cKDTree(other._positions_km(there)).query(
+            self._positions_km(here)
+        )
+        return here, (there[0][nearest], there[1][nearest]), distance_km

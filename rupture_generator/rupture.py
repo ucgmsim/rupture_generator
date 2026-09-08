@@ -8,28 +8,12 @@ import pyproj
 from rupture_generator.geometry import Geometry, GeometryError
 
 
-@dataclasses.dataclass(frozen=True)
-class Jump:
-    """Where and when a rupture front crossed from one chart to the next.
-
-    Cells are labelled as their own chart labels them. ``arrival_s`` is the departure
-    plus the delay, and the seed time the child's onsets are solved from.
-    """
-
-    parent_cell: tuple[int, int]
-    child_cell: tuple[int, int]
-    distance_km: float
-    departure_s: float
-    arrival_s: float
-
-
 @dataclasses.dataclass(frozen=True, eq=False)
 class Realisation(Mapping[str, Geometry]):
     """A fault system, before or after anything is drawn on it.
 
     A read-only mapping from segment name to chart. The same type describes the system
-    before propagation, when ``tree`` and ``jumps`` are empty, and after the whole
-    pipeline has run.
+    before propagation, when ``tree`` is empty, and after the whole pipeline has run.
 
     Attributes
     ----------
@@ -40,14 +24,14 @@ class Realisation(Mapping[str, Geometry]):
     tree : Mapping of str to str or None
         Which segment triggered which, keyed by the child; a root maps to ``None``.
         Empty until propagation; otherwise names exactly the segments and is a forest.
-    jumps : Mapping of str to Jump
-        Where and when the front crossed onto each triggered segment, keyed by the child.
+        Where and when each crossing happened is not recorded here: a crossing time is
+        read off the parent's solved onsets, so it belongs to a drawn rupture rather
+        than to the structure.
     """
 
     segments: Mapping[str, Geometry]
     crs: pyproj.CRS
     tree: Mapping[str, str | None] = dataclasses.field(default_factory=dict)
-    jumps: Mapping[str, Jump] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Check the invariants, then make the mappings read-only."""
@@ -62,19 +46,12 @@ class Realisation(Mapping[str, Geometry]):
             self._check_forest()
         object.__setattr__(self, "segments", MappingProxyType(dict(self.segments)))
         object.__setattr__(self, "tree", MappingProxyType(dict(self.tree)))
-        object.__setattr__(self, "jumps", MappingProxyType(dict(self.jumps)))
 
     def _check_forest(self) -> None:
         names = set(self.segments)
         if set(self.tree) != names:
             raise GeometryError(
                 f"the tree names {sorted(self.tree)} and the segments are {sorted(names)}"
-            )
-        children = {child for child, parent in self.tree.items() if parent is not None}
-        if set(self.jumps) != children:
-            raise GeometryError(
-                f"jumps are recorded for {sorted(self.jumps)} but the triggered "
-                f"segments are {sorted(children)}"
             )
         for name in self.tree:
             seen: set[str] = set()
@@ -115,8 +92,8 @@ class Realisation(Mapping[str, Geometry]):
         Raises
         ------
         GeometryError
-            For a name that is not a segment: the tree and jumps name segments, and a
-            new one would leave them inconsistent.
+            For a name that is not a segment: the tree names segments, and a new one
+            would leave it inconsistent.
         """
         unknown = sorted(set(charts) - set(self.segments))
         if unknown:
@@ -126,11 +103,9 @@ class Realisation(Mapping[str, Geometry]):
             )
         return dataclasses.replace(self, segments={**self.segments, **charts})
 
-    def propagated(
-        self, tree: Mapping[str, str | None], jumps: Mapping[str, Jump]
-    ) -> Realisation:
+    def propagated(self, tree: Mapping[str, str | None]) -> Realisation:
         """This realisation with its trigger forest recorded."""
-        return dataclasses.replace(self, tree=tree, jumps=jumps)
+        return dataclasses.replace(self, tree=tree)
 
     @property
     def root(self) -> str:
@@ -166,6 +141,5 @@ class Realisation(Mapping[str, Geometry]):
 
 
 __all__ = [
-    "Jump",
     "Realisation",
 ]

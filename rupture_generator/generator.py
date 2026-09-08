@@ -16,9 +16,10 @@ read off the segment's own target moment, so a fault system with a magnitude per
 segment gets a rise time and a spread per segment.
 
 :func:`generate` walks a whole fault system. The tree, the moment on each segment and
-the jumps between them are decided before it is called; what it does is turn that
-structure into seed times, hand each segment its own generator, and visit them
-parents-first. There is no stage machinery: the walk is a loop.
+the moment on each segment are decided before it is called. The crossings are not:
+each child's seed is found from its parent's *solved* onsets by :func:`jump_seed`, so
+visiting parents-first is a real dependency rather than a reporting order. There is no
+stage machinery: the walk is a loop.
 """
 
 import dataclasses
@@ -152,6 +153,20 @@ class ParameterError(ValueError):
 
 
 @dataclasses.dataclass(frozen=True)
+class Seed:
+    """A point the rupture front leaves from, at a time already known.
+
+    ``cell`` is ``(i, j)`` on the chart it seeds, ``i`` down dip. ``time_s`` is when the
+    front is there: zero at a hypocentre, and the crossing time on a segment something
+    else triggered. One seed is a hypocentre and several are a segment lit along an
+    edge, so the eikonal solve has no "the hypocentre" special case.
+    """
+
+    cell: tuple[int, int]
+    time_s: float
+
+
+@dataclasses.dataclass(frozen=True)
 class SlipParameters:
     """What shapes a slip field, and the moment that sizes it.
 
@@ -254,20 +269,19 @@ class RakeParameters:
 class RuptureTimeParameters:
     """When each subfault starts: a coherent front, then a displacement blended in.
 
-    ``seeds`` are ``(i, j, t0_s)`` triples the front leaves at known times: one at zero
-    for a hypocentre, several for a segment triggered along an edge. The front travels
-    at ``velocity_fraction / alpha_T`` of the chart's shear speed field, held to the
-    sub-Rayleigh or supershear branch; any depth profile of rupture speed is the
-    caller's, baked into that field.
+    The front travels at ``velocity_fraction / alpha_T`` of the chart's shear speed
+        field, held to the sub-Rayleigh or supershear branch; any depth profile of rupture
+        speed is the caller's, baked into that field. Where the front *starts* is not here:
+        a :class:`Seed` is what the rupture tree decides, not what a segment is configured
+        with.
 
-    The displacement's spread follows the moment, ``offset_s + coefficient *
-    M0^(1/3)`` in the published units: genslip's ``tsfac_bzero`` and ``tsfac_slope``,
-    read as magnitudes. Both zero is a coherent front. ``correlation`` is with slip, so
-    high-slip patches rupture early; ``blend_sigma`` is the width of the zone over which
-    the displacement grows in from the seed, in units of the spread.
+        The displacement's spread follows the moment, ``offset_s + coefficient *
+        M0^(1/3)`` in the published units: genslip's ``tsfac_bzero`` and ``tsfac_slope``,
+        read as magnitudes. Both zero is a coherent front. ``correlation`` is with slip, so
+        high-slip patches rupture early; ``blend_sigma`` is the width of the zone over which
+        the displacement grows in from the seed, in units of the spread.
     """
 
-    seeds: tuple[tuple[int, int, float], ...]
     velocity_fraction: float = 0.8
     offset_s: float = 0.1
     coefficient: float = 0.5
@@ -275,9 +289,7 @@ class RuptureTimeParameters:
     blend_sigma: float = 4.0
 
     def __post_init__(self) -> None:
-        """Refuse a front with nowhere to start or a band it cannot travel in."""
-        if not self.seeds:
-            raise ParameterError("the front needs at least one seed")
+        """Refuse a band the front cannot travel in, or a spread that is not one."""
         if not 0.0 < self.velocity_fraction <= MAXIMUM_VELOCITY_FRACTION:
             raise ParameterError(
                 f"a velocity fraction lies in (0, {MAXIMUM_VELOCITY_FRACTION:.4f}], "
@@ -441,7 +453,10 @@ def speed_field(
 
 
 def travel_times(
-    segment: Geometry, params: RuptureTimeParameters, geometric_correction: float
+    segment: Geometry,
+    params: RuptureTimeParameters,
+    geometric_correction: float,
+    seeds: tuple[Seed, ...],
 ) -> CellArray:
     """First arrivals on ``(i, j)`` in seconds: the coherent front from the seeds.
 
@@ -455,7 +470,9 @@ def travel_times(
     )
     strike_km, dip_km = segment.spacing_km()
     return eikonal_solve(
-        np.ascontiguousarray(slowness), (dip_km, strike_km), list(params.seeds)
+        np.ascontiguousarray(slowness),
+        (dip_km, strike_km),
+        [(seed.cell[0], seed.cell[1], seed.time_s) for seed in seeds],
     )
 
 
@@ -501,6 +518,7 @@ def generate_segment(
     rake_parameters: RakeParameters,
     rupture_time_parameters: RuptureTimeParameters,
     *,
+    seeds: tuple[Seed, ...],
     rng: np.random.Generator,
 ) -> Geometry:
     """One segment's four fields, drawn and attached.
@@ -522,15 +540,18 @@ def generate_segment(
     GeometryError
         If the chart lacks a material field.
     ParameterError
-        If a seed is off the chart, or the pattern carries no moment.
+        If there are no seeds, one is off the chart, or the pattern carries no moment.
     SamplingError
         If the covariance does not embed on this chart.
     """
     rigidity = segment[Field.RIGIDITY]
     cells = segment.cells
-    for i, j, _ in rupture_time_parameters.seeds:
+    if not seeds:
+        raise ParameterError("the front needs at least one seed")
+    for seed in seeds:
+        i, j = seed.cell
         if not (0 <= i < cells[0] and 0 <= j < cells[1]):
-            raise ParameterError(f"seed ({i}, {j}) is off a chart of {cells} cells")
+            raise ParameterError(f"seed {seed.cell} is off a chart of {cells} cells")
 
     correction = alpha_t(
         float(np.mean(segment.strike_dip_deg()[1][segment.occupied])),
@@ -596,7 +617,7 @@ def generate_segment(
     )
 
     # -- onset: the coherent front, then the displacement blended in from the seed
-    travel_s = travel_times(segment, rupture_time_parameters, correction)
+    travel_s = travel_times(segment, rupture_time_parameters, correction, seeds)
     scale_s = rupture_time_parameters.offset_s + _cube_root_scaling(
         rupture_time_parameters.coefficient, moment_nm
     )
@@ -609,14 +630,14 @@ def generate_segment(
     displacement_s = scale_s * standardise(
         mix((rho, slip_latent), (np.sqrt(1.0 - rho * rho), independent))
     )
-    i, j, seed_time_s = min(rupture_time_parameters.seeds, key=lambda seed: seed[2])
+    earliest = min(seeds, key=lambda seed: seed.time_s)
     onset_s = blend_onset(
         travel_s,
         displacement_s,
         rupture_time_parameters,
         scale_s,
-        seed_cell=(i, j),
-        seed_time_s=seed_time_s,
+        seed_cell=earliest.cell,
+        seed_time_s=earliest.time_s,
     )
 
     return segment.with_fields(
@@ -643,8 +664,8 @@ class SegmentParameters:
     """One segment's four parameter sets, as :func:`generate` wants them.
 
     Everything here is the caller's, including the moment on ``slip`` -- :func:`generate`
-    splits nothing and folds nothing. The one field it overwrites is ``timing.seeds``,
-    which follows from the rupture tree rather than from any per-segment choice.
+    splits nothing and folds nothing. Where the front starts is deliberately absent: a
+    seed comes from the rupture tree, not from a segment's configuration.
     """
 
     slip: SlipParameters
@@ -670,20 +691,17 @@ def segment_rng(seed: int, segment: str) -> np.random.Generator:
     return np.random.default_rng(np.random.SeedSequence(entropy=seed, spawn_key=(key,)))
 
 
-def _seeds_of(
-    realisation: Realisation, name: str, parent: str | None
-) -> tuple[tuple[int, int, float], ...]:
-    """Where and when the front starts on one segment.
+def hypocentre_seed(name: str, chart: Geometry) -> Seed:
+    """Where a root segment's rupture starts, from the hypocentre in its attrs.
 
-    A root starts at its own hypocentre at time zero; a triggered segment starts at the
-    cell its jump landed on, at the time the jump arrived.
+    Two arc lengths rather than two indices, so the hypocentre survives the chart being
+    recut at a different resolution.
+
+    Raises
+    ------
+    ParameterError
+        If the chart records no hypocentre.
     """
-    if parent is not None:
-        jump = realisation.jumps[name]
-        row, column = jump.child_cell
-        return ((int(row), int(column), float(jump.arrival_s)),)
-
-    chart = realisation[name]
     missing = [
         str(attribute)
         for attribute in (Attr.HYPOCENTRE_STRIKE, Attr.HYPOCENTRE_DIP)
@@ -694,10 +712,57 @@ def _seeds_of(
             f"{name!r} is where the rupture starts, and its chart records no {missing}; "
             "a root segment carries its hypocentre as two arc lengths in its attrs"
         )
-    row, column = chart.cell_at(
-        chart.attrs[Attr.HYPOCENTRE_STRIKE], chart.attrs[Attr.HYPOCENTRE_DIP]
+    return Seed(
+        cell=chart.cell_at(
+            chart.attrs[Attr.HYPOCENTRE_STRIKE], chart.attrs[Attr.HYPOCENTRE_DIP]
+        ),
+        time_s=0.0,
     )
-    return ((row, column, 0.0),)
+
+
+def jump_seed(
+    parent: Geometry, parent_timing: RuptureTimeParameters, child: Geometry
+) -> Seed:
+    """Where and when the front crosses from a drawn parent onto a child.
+
+    The crossing that arrives first. The geometry is the chart's own --
+    :meth:`~rupture_generator.geometry.Geometry.nearest_cells_to` pairs each of the
+    parent's edge cells with the closest cell of the child and measures between them --
+    and what is left here is the timing argument: minimise ``onset(p) + d(p) / v(p)``,
+    the parent's own solved onset plus that distance at the rupture speed the front had
+    when it left. No free parameter, and no delay model beyond distance over velocity.
+
+    Taking only the nearest child cell loses nothing, since the speed at a given
+    departure is fixed and the objective is then increasing in distance.
+
+    Two known properties, neither fixed here. The departure is an ``argmin`` over a
+    field that already carries its onset displacement, so it is an order statistic and
+    reads early by roughly one onset spread; restricting candidates to the fault's edge
+    rather than the whole chart, and the displacement's own correlation length, are what
+    bound it. And the straight line ignores whether the rock between the two faults is
+    there to break. This is the rule under redesign, so it is one function.
+
+    Raises
+    ------
+    ParameterError
+        If the parent carries no onsets, so it has not been drawn.
+    GeometryError
+        If either chart has no fault cells.
+    """
+    if Field.ONSET not in parent:
+        raise ParameterError(
+            "the parent has no onsets to cross from, so it has not been drawn yet"
+        )
+    departures, landings, distance_km = parent.nearest_cells_to(child)
+    speed_km_s = speed_field(
+        parent[Field.SHEAR_SPEED], parent_timing, parent.attrs[Attr.ALPHA_T]
+    )
+    arrival_s = parent[Field.ONSET][departures] + distance_km / speed_km_s[departures]
+    first = int(np.argmin(arrival_s))
+    return Seed(
+        cell=(int(landings[0][first]), int(landings[1][first])),
+        time_s=float(arrival_s[first]),
+    )
 
 
 def generate(
@@ -708,27 +773,26 @@ def generate(
 ) -> Realisation:
     """Draw every segment of a fault system, parents before children.
 
-    The structure is decided before this is called: ``realisation.tree`` says which
-    segment triggered which, ``realisation.jumps`` says where and when each crossing
-    landed, and each segment's own ``parameters`` carry its moment. What this adds is
-    the seed times -- the hypocentre for the root, the jump's landing cell and arrival
-    time for everything else -- and one generator per segment.
+    ``realisation.tree`` says which segment triggered which, and each segment's own
+        ``parameters`` carry its moment. What this adds is where and when each front starts:
+        :func:`hypocentre_seed` for a root, and :func:`jump_seed` for everything else, read
+        off the parent that has just been drawn. That makes the causal order a real
+        dependency, which is why it is walked rather than iterated.
 
-    Nothing flows between segments during the draw, since the jumps are already fixed,
-    so the causal order is the order the result is *reported* in rather than a
-    dependency. It is walked anyway: when a jump rule that reads a parent's solved
-    onsets arrives, this loop is where it goes.
+        A system with no tree is a lone segment ruptured on its own, or several ruptured
+        independently, each of which
+        :meth:`~rupture_generator.rupture.Realisation.in_causal_order` yields as its own
+        root and each of which then wants a hypocentre of its own.
 
-    Returns the realisation with every chart drawn on; the tree and the jumps come
-    through untouched.
+        Returns the realisation with every chart drawn on; the tree comes through
+        untouched.
 
-    Raises
-    ------
-    ParameterError
-        If a segment has no parameters, if the system has no tree to walk, or if the
-        root records no hypocentre.
-    GeometryError
-        If a chart lacks a material field.
+        Raises
+        ------
+        ParameterError
+            If a segment has no parameters, or a root records no hypocentre.
+        GeometryError
+            If a chart lacks a material field.
     """
     unparameterised = sorted(set(realisation) - set(parameters))
     if unparameterised:
@@ -739,15 +803,19 @@ def generate(
 
     charts: dict[str, Geometry] = {}
     for name, parent, geometry in realisation.in_causal_order():
-        segment = parameters[name]
+        settings = parameters[name]
+        start = (
+            hypocentre_seed(name, geometry)
+            if parent is None
+            else jump_seed(charts[parent], parameters[parent].timing, geometry)
+        )
         charts[name] = generate_segment(
             geometry,
-            segment.slip,
-            segment.rise,
-            segment.rake,
-            dataclasses.replace(
-                segment.timing, seeds=_seeds_of(realisation, name, parent)
-            ),
+            settings.slip,
+            settings.rise,
+            settings.rake,
+            settings.timing,
+            seeds=(start,),
             rng=segment_rng(seed, name),
         )
     return realisation.replace(**charts)
@@ -761,12 +829,15 @@ __all__ = [
     "RakeParameters",
     "RiseParameters",
     "RuptureTimeParameters",
+    "Seed",
     "SegmentParameters",
     "SlipParameters",
     "alpha_t",
     "blend_onset",
     "generate",
     "generate_segment",
+    "hypocentre_seed",
+    "jump_seed",
     "scale_to_moment",
     "segment_rng",
     "speed_field",
