@@ -329,3 +329,7 @@ class Geometry:
             self._positions_km(here)
         )
         return here, (there[0][nearest], there[1][nearest]), distance_km
+
+    def subdivide(self, resolution: float) -> Geometry:
+        # obvious subdivision implementation.
+        pass
