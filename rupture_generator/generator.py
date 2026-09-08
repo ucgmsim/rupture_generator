@@ -1,4 +1,4 @@
-"""Drawing one segment: slip, rise time, rake and onset, from four parameter sets.
+"""Drawing a rupture: slip, rise time, rake and onset, on one segment or many.
 
 :func:`generate_segment` is the whole per-segment pipeline. It takes a chart that
 already carries its materials and returns the chart with the four fields the SRF wants
@@ -14,15 +14,23 @@ never leaves this module.
 Every quantity that follows the moment -- the mean rise time, the onset spread -- is
 read off the segment's own target moment, so a fault system with a magnitude per
 segment gets a rise time and a spread per segment.
+
+:func:`generate` walks a whole fault system. The tree, the moment on each segment and
+the jumps between them are decided before it is called; what it does is turn that
+structure into seed times, hand each segment its own generator, and visit them
+parents-first. There is no stage machinery: the walk is a loop.
 """
 
 import dataclasses
+import hashlib
+from collections.abc import Mapping
 from enum import StrEnum
 
 import numpy as np
 
 from rupture_generator._kernels import eikonal_solve
 from rupture_generator.geometry import CellArray, CellMask, Geometry
+from rupture_generator.rupture import Realisation
 from rupture_generator.sampling import (
     NORMAL,
     Covariance,
@@ -88,6 +96,14 @@ class Attr(StrEnum):
 
     ONSET_SCALE = "onset_scale_s"
     """The spread of the onset displacement, in seconds."""
+
+    HYPOCENTRE_STRIKE = "hypocentre_strike_km"
+    """Where the rupture nucleated, along the root segment's top edge. The caller's:
+    :func:`generate` reads it, and two arc lengths rather than two indices is what
+    keeps a hypocentre meaningful when the chart is recut."""
+
+    HYPOCENTRE_DIP = "hypocentre_dip_km"
+    """Where the rupture nucleated, down the root segment's near edge."""
 
 
 M2_PER_KM2 = 1.0e6
@@ -619,6 +635,124 @@ def generate_segment(
     )
 
 
+# --------------------------------------------------------------- the whole system
+
+
+@dataclasses.dataclass(frozen=True)
+class SegmentParameters:
+    """One segment's four parameter sets, as :func:`generate` wants them.
+
+    Everything here is the caller's, including the moment on ``slip`` -- :func:`generate`
+    splits nothing and folds nothing. The one field it overwrites is ``timing.seeds``,
+    which follows from the rupture tree rather than from any per-segment choice.
+    """
+
+    slip: SlipParameters
+    rise: RiseParameters
+    rake: RakeParameters
+    timing: RuptureTimeParameters
+
+
+def segment_rng(seed: int, segment: str) -> np.random.Generator:
+    """The generator one segment draws from, keyed by its **name**.
+
+    Keying by name rather than by position is what makes a fault system's segments
+    independent of each other's presence: adding a segment, dropping one or reordering
+    the file leaves every other segment's fields bit-identical, which is what makes two
+    realisations of a system comparable at all.
+
+    The name is hashed with BLAKE2b rather than :func:`hash`, whose string hashing is
+    salted per interpreter and so reproduces nothing between runs.
+    """
+    key = int.from_bytes(
+        hashlib.blake2b(segment.encode(), digest_size=8).digest(), "big"
+    )
+    return np.random.default_rng(np.random.SeedSequence(entropy=seed, spawn_key=(key,)))
+
+
+def _seeds_of(
+    realisation: Realisation, name: str, parent: str | None
+) -> tuple[tuple[int, int, float], ...]:
+    """Where and when the front starts on one segment.
+
+    A root starts at its own hypocentre at time zero; a triggered segment starts at the
+    cell its jump landed on, at the time the jump arrived.
+    """
+    if parent is not None:
+        jump = realisation.jumps[name]
+        row, column = jump.child_cell
+        return ((int(row), int(column), float(jump.arrival_s)),)
+
+    chart = realisation[name]
+    missing = [
+        str(attribute)
+        for attribute in (Attr.HYPOCENTRE_STRIKE, Attr.HYPOCENTRE_DIP)
+        if attribute not in chart.attrs
+    ]
+    if missing:
+        raise ParameterError(
+            f"{name!r} is where the rupture starts, and its chart records no {missing}; "
+            "a root segment carries its hypocentre as two arc lengths in its attrs"
+        )
+    row, column = chart.cell_at(
+        chart.attrs[Attr.HYPOCENTRE_STRIKE], chart.attrs[Attr.HYPOCENTRE_DIP]
+    )
+    return ((row, column, 0.0),)
+
+
+def generate(
+    realisation: Realisation,
+    parameters: Mapping[str, SegmentParameters],
+    *,
+    seed: int,
+) -> Realisation:
+    """Draw every segment of a fault system, parents before children.
+
+    The structure is decided before this is called: ``realisation.tree`` says which
+    segment triggered which, ``realisation.jumps`` says where and when each crossing
+    landed, and each segment's own ``parameters`` carry its moment. What this adds is
+    the seed times -- the hypocentre for the root, the jump's landing cell and arrival
+    time for everything else -- and one generator per segment.
+
+    Nothing flows between segments during the draw, since the jumps are already fixed,
+    so the causal order is the order the result is *reported* in rather than a
+    dependency. It is walked anyway: when a jump rule that reads a parent's solved
+    onsets arrives, this loop is where it goes.
+
+    Returns the realisation with every chart drawn on; the tree and the jumps come
+    through untouched.
+
+    Raises
+    ------
+    ParameterError
+        If a segment has no parameters, if the system has no tree to walk, or if the
+        root records no hypocentre.
+    GeometryError
+        If a chart lacks a material field.
+    """
+    unparameterised = sorted(set(realisation) - set(parameters))
+    if unparameterised:
+        raise ParameterError(
+            f"{unparameterised} have no parameters; every segment needs its own, "
+            "including its moment"
+        )
+
+    charts: dict[str, Geometry] = {}
+    for name, parent, geometry in realisation.in_causal_order():
+        segment = parameters[name]
+        charts[name] = generate_segment(
+            geometry,
+            segment.slip,
+            segment.rise,
+            segment.rake,
+            dataclasses.replace(
+                segment.timing, seeds=_seeds_of(realisation, name, parent)
+            ),
+            rng=segment_rng(seed, name),
+        )
+    return realisation.replace(**charts)
+
+
 __all__ = [
     "CAUSAL_MARGIN",
     "Attr",
@@ -627,11 +761,14 @@ __all__ = [
     "RakeParameters",
     "RiseParameters",
     "RuptureTimeParameters",
+    "SegmentParameters",
     "SlipParameters",
     "alpha_t",
     "blend_onset",
+    "generate",
     "generate_segment",
     "scale_to_moment",
+    "segment_rng",
     "speed_field",
     "taper_edges",
     "travel_times",

@@ -150,17 +150,19 @@ class Realisation(Mapping[str, Geometry]):
             case _:
                 raise GeometryError(f"the rupture has several roots: {sorted(roots)}")
 
-    def in_causal_order(self) -> Iterator[str]:
+    def in_causal_order(self) -> Iterator[tuple[str, str | None, Geometry]]:
         """Segment names parents-first, so a child's parent has always been visited."""
-        # A parent is one predecessor, not an iterable of them: a bare string would be
-        # read as its characters. Roots are nodes with none, so they are not dropped.
-        sorter = TopologicalSorter(
-            {
-                name: () if parent is None else (parent,)
-                for name, parent in self.tree.items()
-            }
-        )
-        yield from sorter.static_order()
+        sorter = TopologicalSorter()
+
+        for segment in self.segments:
+            if parent := self.tree.get(segment):
+                sorter.add(segment, parent)
+            else:
+                sorter.add(segment)
+
+        for seg in sorter.static_order():
+            parent = self.tree.get(seg)
+            yield seg, parent, self.segments[seg]
 
 
 __all__ = [
