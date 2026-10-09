@@ -11,15 +11,15 @@
 # its depth column read as layer bottoms. The hypocentre is the FSP's (11 km along
 # strike, 7 km down dip); the epicentre projects to 11.9 km.
 #
-# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 1 km so it runs
-# in about a second; the inversion's subfaults are 3 x 2.5 km.
+# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 0.1 km, about four
+# seconds to generate; the inversion's subfaults are 3 x 2.5 km.
 
 seed = 19920628
 
 [geometry]
 path = "landers.geojson"
 crs = "EPSG:3310"
-spacing_km = 1.0
+spacing_km = 0.1
 
 [hypocentre]
 segment = "Johnson Valley"

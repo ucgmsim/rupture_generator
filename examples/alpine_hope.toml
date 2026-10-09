@@ -10,15 +10,15 @@
 # rise time doubled above 5 km and below 20 km, the front slowed to 0.6 over the same
 # ramps, shallow rise time tied to slip above 3 km, and beta 0.5 -> 0.13 across 1-3 km.
 #
-# Cut at 2 km so the example runs on a laptop in seconds; the workflow runs this
-# scenario at 0.1 km, where its SRF is several gigabytes.
+# Cut at 0.25 km, about ten seconds and 3.5 GB of memory to generate; the workflow
+# runs this scenario at 0.1 km, which takes over a minute and about 20 GB.
 
 seed = 1663495676
 
 [geometry]
 path = "alpine_hope.geojson"
 crs = "EPSG:2193"
-spacing_km = 0.4
+spacing_km = 0.25
 
 [hypocentre]
 segment = "Alpine: Caswell - South George"

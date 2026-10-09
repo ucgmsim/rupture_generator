@@ -4,14 +4,14 @@
 # them. The previous format's `rupture_time_scale = -0.35` had no meaning in its last
 # schema and is not carried.
 #
-# Cut at 1 km so the example runs in about a second; the workflow runs it at 0.1 km.
+# Gridded at 0.1 km, as the workflow runs it; about five seconds to generate.
 
 seed = 45876
 
 [geometry]
 path = "colombia.geojson"
 crs = "EPSG:3116"
-spacing_km = 1.0
+spacing_km = 0.1
 
 [hypocentre]
 segment = "fault"

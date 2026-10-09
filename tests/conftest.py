@@ -1,3 +1,4 @@
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -7,10 +8,15 @@ from rupture_generator.formats.srf import write_rupture
 
 EXAMPLE = Path(__file__).parents[1] / "examples" / "two_faults.toml"
 
+SPACING_KM = 0.5
+"""The fixture's own resolution: the example is drawn finer than a test needs."""
+
 
 @pytest.fixture(scope="session")
 def scenario() -> config.Scenario:
-    return config.build(config.load(EXAMPLE))
+    loaded = config.load(EXAMPLE)
+    geometry = dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM)
+    return config.build(dataclasses.replace(loaded, geometry=geometry))
 
 
 @pytest.fixture(scope="session")

@@ -8,7 +8,7 @@ seed = 7
 [geometry]
 path = "two_faults.geojson"
 crs = "EPSG:2193"
-spacing_km = 0.5
+spacing_km = 0.1
 
 [hypocentre]
 segment = "bent"

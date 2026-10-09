@@ -7,15 +7,15 @@
 # as layer tops). The hypocentre is the FSP's, 15 km along strike and 20 km down
 # dip; the published epicentre and 17.5 km depth project to 15.0 and 19.4 km.
 #
-# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 1 km so it runs
-# in about a second; the inversion's subfaults are 1.29 x 1.71 km.
+# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 0.1 km, about two
+# seconds to generate; the inversion's subfaults are 1.29 x 1.71 km.
 
 seed = 19940117
 
 [geometry]
 path = "northridge.geojson"
 crs = "EPSG:3310"
-spacing_km = 1.0
+spacing_km = 0.1
 
 [hypocentre]
 segment = "Northridge"
