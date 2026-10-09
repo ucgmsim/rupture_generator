@@ -131,14 +131,14 @@ class Geometry:
 
     # ---------------------------------------------------------- one plane at a time
 
-    def _plane_nodes(self) -> list[NodeArray]:
+    def plane_nodes(self) -> list[NodeArray]:
         """Each plane's own node grid: a contiguous slice, never a copy."""
         starts = np.cumsum([0, *(cells + 1 for cells in self.plane_cells)])
         return [self.nodes[:, start:stop] for start, stop in itertools.pairwise(starts)]
 
     def _per_plane(self, cellwise: Callable[[NodeArray], np.ndarray]) -> np.ndarray:
         """A cell quantity computed plane by plane and joined along strike."""
-        parts = [cellwise(plane) for plane in self._plane_nodes()]
+        parts = [cellwise(plane) for plane in self.plane_nodes()]
         return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=1)
 
     @functools.cached_property
@@ -184,7 +184,7 @@ class Geometry:
         anywhere.
         """
         strike, dip = [], []
-        for plane in self._plane_nodes():
+        for plane in self.plane_nodes():
             strike.append(np.linalg.norm(np.diff(plane, axis=1), axis=-1).ravel())
             dip.append(np.linalg.norm(np.diff(plane, axis=0), axis=-1).ravel())
         return float(np.concatenate(strike).mean()), float(np.concatenate(dip).mean())
@@ -197,7 +197,7 @@ class Geometry:
         """
         steps = [
             np.linalg.norm(np.diff(plane[0], axis=0), axis=-1)
-            for plane in self._plane_nodes()
+            for plane in self.plane_nodes()
         ]
         return np.concatenate([[0.0], np.cumsum(np.concatenate(steps))])
 
@@ -230,7 +230,7 @@ class Geometry:
         return np.array(
             [
                 float(np.linalg.norm(near[:, -1] - far[:, 0], axis=-1).max())
-                for near, far in itertools.pairwise(self._plane_nodes())
+                for near, far in itertools.pairwise(self.plane_nodes())
             ]
         )
 
@@ -257,7 +257,7 @@ class Geometry:
             )
         rows = max(1, round(float(self.dip_arc_km[-1]) / spacing_km))
         planes, columns = [], []
-        for plane in self._plane_nodes():
+        for plane in self.plane_nodes():
             length_km = float(np.linalg.norm(np.diff(plane[0], axis=0), axis=-1).sum())
             columns.append(max(1, round(length_km / spacing_km)))
             planes.append(_resample(plane, rows, columns[-1]))
