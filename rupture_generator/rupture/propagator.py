@@ -1,16 +1,16 @@
 """Which faults rupture, and in what order.
 
-A multi-segment earthquake is a tree: every fault has exactly one triggering parent,
-and the root is where the rupture nucleated. The tree is fixed before any field is
-drawn, because it is a statement about fault separations rather than about slip; where
-and *when* the front crossed is not decided here, since a crossing time is read off
-the parent's solved onsets.
+A multi-segment earthquake is a tree. Each fault but the root has one triggering
+parent, and the root is the fault the rupture nucleated on. This module fixes the tree before
+the generator draws any field, because the tree depends on fault separations and not
+on slip. Where and when the front crossed belongs to the generator, which reads a
+crossing time off the parent's solved onsets.
 
-Two ways to choose the tree, from one model. Each gap either transmits the rupture or
-does not, with a probability that decays with its width, so a whole tree has a
-probability and the two natural questions are "draw one" and "which is likeliest".
-:func:`sample_tree` answers the first by Wilson's algorithm and
-:func:`maximum_likelihood_tree` the second as a maximum spanning tree.
+One model gives two ways to choose the tree. Each gap transmits the rupture with a
+probability that decays with its width, which gives every tree a probability. That
+leaves two natural questions: draw one tree, or find the likeliest.
+:func:`_sample_tree` answers the first by Wilson's algorithm and
+:func:`_maximum_likelihood_tree` answers the second as a maximum spanning tree.
 
 References
 ----------
@@ -25,7 +25,7 @@ Shaw, B. E., & Dieterich, J. H. (2007). Probabilities for jumping fault segment
 stepovers. *Geophysical Research Letters*, 34(1), L01307.
 
 Wilson, D. B. (1996). Generating random spanning trees more quickly than the cover
-time. *Proceedings of the 28th ACM Symposium on Theory of Computing*, 296-303.
+time. *Proceedings of the Twenty-Eighth ACM Symposium on Theory of Computing*, 296-303.
 """
 
 import dataclasses
@@ -47,13 +47,25 @@ type Tree = dict[str, str | None]
 class JumpModel:
     """How readily a rupture crosses from one fault to the next.
 
-    Past ``max_jump_km`` the probability only adds noise to the sampler, so longer gaps
-    carry no edge at all and a fault beyond reach of every other leaves the system
-    disconnected rather than merely unlikely.
+    Past ``max_jump_km`` the probability only adds noise to the sampler. A longer gap
+    doesn't get an edge, and a fault farther than that from every other fault leaves
+    the system disconnected.
 
-    ``probability_cap`` is the largest probability an edge may carry, because the
-    reweighting in :func:`_sampling_weights` diverges as the probability approaches
-    one. A gap that certain is a fault that should have been one segment.
+    ``probability_cap`` bounds the probability on any edge, because the reweighting in
+    :func:`_sampling_weights` diverges as the probability approaches one. A gap that
+    certain belongs inside one segment.
+
+    Attributes
+    ----------
+    d0_km : float
+        The decay length of the jump probability beyond ``delta_km``, in kilometres.
+        Shaw & Dieterich's value is 3 km.
+    delta_km : float
+        The gap width below which a jump is certain, in kilometres.
+    max_jump_km : float
+        The widest gap a rupture can jump, in kilometres.
+    probability_cap : float
+        The largest probability an edge may have, in ``(0, 1)``.
     """
 
     d0_km: float = 3.0
@@ -62,7 +74,7 @@ class JumpModel:
     probability_cap: float = 0.99
 
     def __post_init__(self) -> None:
-        """Refuse a model no gap answers to."""
+        """Refuse parameters that make the model meaningless."""
         if self.d0_km <= 0.0:
             raise RuptureGeneratorError(
                 f"the decay length is a length, got {self.d0_km} km; at zero every gap "
@@ -83,12 +95,23 @@ class JumpModel:
             )
 
     def probability(self, distance_km: float) -> float:
-        """The probability that a rupture jumps a gap of a given width.
+        """Return the probability that a rupture jumps a gap of a given width.
 
-        Shaw & Dieterich (2007): certain within ``delta_km``, and decaying with
-        characteristic length ``d0_km`` beyond it, then capped and cut off.
+        Shaw & Dieterich (2007) make a jump certain within ``delta_km`` and let the
+        probability decay with characteristic length ``d0_km`` beyond it. This model
+        then caps it at ``probability_cap`` and cuts it off at ``max_jump_km``.
 
         .. math:: P(d) = \\min\\left(1, e^{-(d - \\delta) / d_0}\\right)
+
+        Parameters
+        ----------
+        distance_km : float
+            The gap width, in kilometres.
+
+        Returns
+        -------
+        float
+            The jump probability, zero at or beyond ``max_jump_km``.
         """
         if distance_km >= self.max_jump_km:
             return 0.0
@@ -96,14 +119,27 @@ class JumpModel:
         return float(min(decay, self.probability_cap))
 
     def reach_km(self, nearest_km: float, rng: np.random.Generator) -> float:
-        """How far a rupture that did jump reached, drawn once.
+        """Draw the widest gap a rupture that did jump can cross.
 
-        :meth:`probability` read as a survival function: the chance a rupture reaches
-        at least ``d`` is ``P(d)``, so its reach is ``delta_km`` plus an exponential of
-        mean ``d0_km``. Given that it crossed the nearest gap, ``nearest_km``, the
-        exponential's memorylessness makes the reach that gap (or ``delta_km``, if
-        wider) plus a fresh exponential. Capped at ``max_jump_km``, but never below the
-        gap the rupture is known to have crossed.
+        Read :meth:`probability` as a survival function: ``P(d)`` is the chance a
+        rupture crosses a gap of at least ``d``, so the widest gap it crosses is
+        ``delta_km`` plus an exponential of mean ``d0_km``. The tree says the rupture
+        crossed the nearest gap, ``nearest_km``. The exponential has no memory, so
+        with that crossing known the distance is the gap (or ``delta_km``, if wider)
+        plus a fresh exponential. This method caps the draw at ``max_jump_km``, but
+        never below the gap the rupture crossed.
+
+        Parameters
+        ----------
+        nearest_km : float
+            The narrowest gap between the parent and the child, in kilometres.
+        rng : numpy.random.Generator
+            The generator the exponential comes from.
+
+        Returns
+        -------
+        float
+            The widest gap the jump can cross, in kilometres.
         """
         reach = max(self.delta_km, nearest_km) + rng.exponential(self.d0_km)
         return float(min(reach, max(self.max_jump_km, nearest_km)))
@@ -114,31 +150,37 @@ DEFAULT_JUMP_MODEL = JumpModel()
 
 
 @dataclasses.dataclass(frozen=True)
-class JumpGraph:
+class _JumpGraph:
     """Faults, and how likely the rupture is to jump between each pair.
 
-    ``weights`` is symmetric ``(n, n)`` over ``faults`` in order. Zero means no edge at
-    all rather than an impossible one: the two are the same thing for a spanning tree.
+    ``weights`` is symmetric ``(n, n)`` over ``faults`` in order. Zero means no edge.
+    For a spanning tree, an impossible edge and a missing one are the same thing.
     """
 
     faults: tuple[str, ...]
     weights: FloatArray
 
     def is_connected(self) -> bool:
-        """Whether every fault is reachable from every other."""
+        """Report whether a path joins every fault to every other.
+
+        Returns
+        -------
+        bool
+            True if the graph has one connected component.
+        """
         components, _ = sp.sparse.csgraph.connected_components(
             self.weights > 0.0, directed=False
         )
         return components == 1
 
 
-def jump_graph(
+def _jump_graph(
     realisation: Realisation, model: JumpModel = DEFAULT_JUMP_MODEL
-) -> JumpGraph:
-    """Jump probabilities between every pair of segments.
+) -> _JumpGraph:
+    """Measure the jump probability between every pair of segments.
 
-    Measured between the faults' *edges*, which is where a front can leave one and land
-    on the other.
+    The distance is between the faults' edges, where a front can leave one fault and
+    start the other.
     """
     faults = tuple(realisation)
     weights = np.zeros((len(faults), len(faults)), dtype=np.float64)
@@ -147,24 +189,24 @@ def jump_graph(
             realisation[near].nearest_cells_to(realisation[far])[2].min()
         )
         weights[u, v] = weights[v, u] = model.probability(distance_km)
-    return JumpGraph(faults, weights)
+    return _JumpGraph(faults, weights)
 
 
 def _log_odds(probability: FloatArray) -> FloatArray:
     return np.log(probability) - np.log1p(-probability)
 
 
-def _sampling_weights(graph: JumpGraph) -> FloatArray:
-    """The edge weights a spanning-tree sampler needs to give the right trees.
+def _sampling_weights(graph: _JumpGraph) -> FloatArray:
+    """Turn jump probabilities into the weights a spanning-tree sampler needs.
 
-    The distribution wanted is every gap deciding for itself, conditioned on the result
-    being one rupture:
+    The target distribution treats each gap as an independent trial, conditioned on the
+    result being one rupture:
 
     .. math:: P(T) \\propto \\prod_{e \\in T} w(e) \\prod_{e \\notin T} (1 - w(e))
 
     Multiplying and dividing by :math:`\\prod_{\\text{all } e} (1 - w)` takes the second
-    product out as a constant, leaving a weighted uniform spanning tree over
-    :math:`w / (1 - w)` -- which is what Wilson's algorithm draws.
+    product out as a constant, and leaves a weighted uniform spanning tree over
+    :math:`w / (1 - w)`, which Wilson's algorithm draws.
     """
     weights = np.zeros_like(graph.weights)
     present = graph.weights > 0.0
@@ -172,7 +214,7 @@ def _sampling_weights(graph: JumpGraph) -> FloatArray:
     return weights
 
 
-def _disconnected(graph: JumpGraph) -> RuptureGeneratorError:
+def _disconnected(graph: _JumpGraph) -> RuptureGeneratorError:
     return RuptureGeneratorError(
         f"{', '.join(graph.faults)} do not form a connected system: at least one is "
         "beyond reach of every other, so no single rupture gets to it. Drop it, widen "
@@ -180,26 +222,26 @@ def _disconnected(graph: JumpGraph) -> RuptureGeneratorError:
     )
 
 
-def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, int]]:
-    """Draw a spanning tree, each tree as likely as the model says it is.
+def _sample_tree(graph: _JumpGraph, rng: np.random.Generator) -> list[tuple[int, int]]:
+    """Draw a spanning tree, each tree as likely as the model says.
 
-    Wilson's algorithm. From a vertex not yet in the tree, walk at random, stepping to
-    a neighbour with probability proportional to that edge's weight, until arriving at
-    a vertex the tree already holds; then adopt the path walked. Overwriting each
-    vertex's onward step *is* the loop erasure, since a vertex reached a second time
-    forgets the excursion it made the first time, and what survives is a simple path.
-    The tree comes out with probability proportional to the product of its edge
-    weights, which under :func:`_sampling_weights` is the distribution wanted.
+    This is Wilson's algorithm. From a vertex outside the tree, walk at random, stepping
+    to a neighbour with probability proportional to that edge's weight, until the walk
+    meets a vertex in the tree. Then add the walked path to the tree. Overwriting each
+    vertex's onward step performs the loop erasure: on a second visit a vertex forgets
+    its first excursion, so the recorded path has no loops. The tree comes out with
+    probability proportional to the product of its edge weights, which under
+    :func:`_sampling_weights` is the target distribution.
 
-    The edges come back as undirected, unrooted ``(u, v)`` index pairs. Which vertex
-    the algorithm grows from does not bias the result: the weights are symmetric, so
-    the walk is reversible and the measure is the same from any start.
+    It returns undirected, unrooted ``(u, v)`` index pairs. The starting vertex
+    doesn't bias the result: the weights are symmetric, so the walk is reversible and
+    the measure is the same from any start.
 
     Raises
     ------
     RuptureGeneratorError
-        If the graph is disconnected, since a forest would be a rupture that started
-        in more than one place.
+        If no path joins every fault to every other, since a forest would be a
+        rupture that started in more than one place.
     """
     if not graph.is_connected():
         raise _disconnected(graph)
@@ -209,10 +251,10 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
         return []
 
     weights = _sampling_weights(graph)
-    # The neighbours each vertex actually has, and their running totals, built once
-    # rather than per step. Drawing among the edges that exist is also what keeps
-    # round-off from stepping across a pair the model excluded, which a cumulative row
-    # over every vertex allows.
+    # Each vertex's neighbours and their running totals, built once for the whole
+    # walk. Drawing only among existing edges also stops round-off from stepping
+    # across a pair the model excluded, which a cumulative row over every vertex
+    # would allow.
     neighbours = [np.flatnonzero(row > 0.0) for row in weights]
     totals = [
         np.cumsum(row[where]) for row, where in zip(weights, neighbours, strict=True)
@@ -234,7 +276,7 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
             )
             onward[walker] = neighbours[walker][choice]
             walker = int(onward[walker])
-        # Retrace what survived the erasure and adopt it.
+        # Retrace the path left after the erasure and add it to the tree.
         walker = start
         while not in_tree[walker]:
             in_tree[walker] = True
@@ -243,19 +285,19 @@ def sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, i
     return [(vertex, int(onward[vertex])) for vertex in range(1, count)]
 
 
-def maximum_likelihood_tree(graph: JumpGraph) -> list[tuple[int, int]]:
-    """The single likeliest tree, rather than a draw from the distribution.
+def _maximum_likelihood_tree(graph: _JumpGraph) -> list[tuple[int, int]]:
+    """Find the likeliest tree.
 
     Maximising :math:`\\prod w / (1 - w)` over trees is maximising the sum of
-    :math:`\\log w - \\log (1 - w)`, so the maximum spanning tree gives it exactly. The
-    log odds are shifted to positive costs, since every spanning tree has the same
-    number of edges and a zero cost reads as no edge. The edges come back as ``(u, v)``
-    index pairs.
+    :math:`\\log w - \\log (1 - w)`, so the maximum spanning tree gives it exactly. This
+    function shifts the log odds to positive costs, since every spanning tree has the
+    same number of edges and a zero cost reads as no edge. It returns the edges as
+    ``(u, v)`` index pairs.
 
     Raises
     ------
     RuptureGeneratorError
-        If the graph is disconnected.
+        If no path joins every fault to every other.
     """
     if not graph.is_connected():
         raise _disconnected(graph)
@@ -269,13 +311,15 @@ def maximum_likelihood_tree(graph: JumpGraph) -> list[tuple[int, int]]:
     return list(zip(u.tolist(), v.tolist(), strict=True))
 
 
-def root_tree(faults: tuple[str, ...], edges: list[tuple[int, int]], root: str) -> Tree:
+def _root_tree(
+    faults: tuple[str, ...], edges: list[tuple[int, int]], root: str
+) -> Tree:
     """Orient an undirected tree away from the fault the rupture started on.
 
     Raises
     ------
     RuptureGeneratorError
-        If the root is not one of the faults, or some fault is unreachable from it.
+        If the root isn't one of the faults, or no path leads from it to some fault.
     """
     if root not in faults:
         raise RuptureGeneratorError(
@@ -305,19 +349,35 @@ def sample_path(
     rng: np.random.Generator,
     model: JumpModel = DEFAULT_JUMP_MODEL,
 ) -> Realisation:
-    """One rupture path through a fault system, drawn from the model.
+    """Draw one rupture path through a fault system from the model.
 
-    Measures the segments' separations, turns them into jump probabilities, draws a
-    tree by :func:`sample_tree` and orients it away from the hypocentre. The result is
-    the realisation with its tree recorded, ready for the generator.
+    The jump probabilities come from the segments' separations. A tree drawn by
+    :func:`_sample_tree` over them, oriented away from the hypocentre, is the path.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        The fault system.
+    hypocentre : Hypocentre
+        Where the rupture nucleates.
+    rng : numpy.random.Generator
+        The generator that draws the tree.
+    model : JumpModel
+        How readily the rupture jumps a gap.
+
+    Returns
+    -------
+    Realisation
+        The realisation with its hypocentre and tree recorded, ready for the generator.
 
     Raises
     ------
     RuptureGeneratorError
-        If the system is disconnected, or the hypocentre is not on one of its segments.
+        If no path joins every segment to every other, or the hypocentre isn't on
+        one of the segments.
     """
-    graph = jump_graph(realisation, model)
-    tree = root_tree(graph.faults, sample_tree(graph, rng), hypocentre.segment)
+    graph = _jump_graph(realisation, model)
+    tree = _root_tree(graph.faults, _sample_tree(graph, rng), hypocentre.segment)
     return realisation.propagated(tree, hypocentre)
 
 
@@ -327,32 +387,42 @@ def likeliest_path(
     *,
     model: JumpModel = DEFAULT_JUMP_MODEL,
 ) -> Realisation:
-    """The likeliest rupture path through a fault system.
+    """Find the likeliest rupture path through a fault system.
 
-    :func:`sample_path`'s counterpart: the same graph, and the tree
-    :func:`maximum_likelihood_tree` picks out of it. Deterministic, so it takes no
-    generator -- which makes it what to use when a study wants one representative
-    rupture per system rather than an ensemble.
+    This is the counterpart of :func:`sample_path`: the same graph, with the tree
+    :func:`_maximum_likelihood_tree` picks from it. The result is deterministic, so it
+    takes no generator. Use it for one representative rupture per system in place of
+    an ensemble.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        The fault system.
+    hypocentre : Hypocentre
+        Where the rupture nucleates.
+    model : JumpModel
+        How readily the rupture jumps a gap.
+
+    Returns
+    -------
+    Realisation
+        The realisation with its hypocentre and tree recorded, ready for the generator.
 
     Raises
     ------
     RuptureGeneratorError
-        If the system is disconnected, or the hypocentre is not on one of its segments.
+        If no path joins every segment to every other, or the hypocentre isn't on
+        one of the segments.
     """
-    graph = jump_graph(realisation, model)
-    tree = root_tree(graph.faults, maximum_likelihood_tree(graph), hypocentre.segment)
+    graph = _jump_graph(realisation, model)
+    tree = _root_tree(graph.faults, _maximum_likelihood_tree(graph), hypocentre.segment)
     return realisation.propagated(tree, hypocentre)
 
 
 __all__ = [
     "DEFAULT_JUMP_MODEL",
-    "JumpGraph",
     "JumpModel",
     "Tree",
-    "jump_graph",
     "likeliest_path",
-    "maximum_likelihood_tree",
-    "root_tree",
     "sample_path",
-    "sample_tree",
 ]

@@ -1,17 +1,17 @@
 //! Counts and indices as floats, named once each.
 //!
-//! The kernels are unit-agnostic everywhere except here: a grid index and a sample
-//! count are integers that arithmetic needs as `f64`, and the two conversions below
-//! are the only casts the crate makes.
+//! A grid index and a sample count are integers that arithmetic needs as `f64`. The
+//! two conversions below are the only casts the crate makes, and the only place the
+//! kernels depend on what a number counts.
 
 /// A grid index, a sample index, or a count of either, as a float.
 ///
-/// `usize as f64` stops being exact above 2⁵³, and clippy says so — correctly, in
+/// `usize as f64` stops being exact past 2⁵³, and clippy rightly warns about it in
 /// general. Every integer this crate converts is a subfault index, a sample index or
-/// a count of one of those: a fault of nine quadrillion subfaults is not a case to
-/// handle, it is a bug somewhere else entirely.
+/// a count of one of those, and a fault of nine quadrillion subfaults would signal a
+/// bug somewhere else entirely.
 ///
-/// So the suppression is written **once**, here, with the bound stated.
+/// So the suppression appears **once**, here, with the bound stated.
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,
@@ -24,8 +24,8 @@ pub(crate) const fn exact(count: usize) -> f64 {
 
 /// How many samples a duration covers, rounded to nearest and floored at zero.
 ///
-/// In Rust the float-to-int cast saturates and NaN becomes zero, which is the answer
-/// we want in every degenerate case — a pulse with no samples, rather than a pulse of
+/// In Rust the float-to-int cast saturates and NaN becomes zero, which is the right
+/// answer in every degenerate case: a pulse with no samples, rather than a pulse of
 /// garbage. Named so the saturation is a decision rather than a language detail
 /// nobody checked.
 #[must_use]
@@ -45,12 +45,12 @@ mod tests {
 
     /// `samples` saturates rather than wrapping, at both ends and on NaN.
     ///
-    /// A negative or NaN duration gives no samples, which is a pulse that does not
-    /// exist; a naive cast would be a huge allocation.
+    /// A negative or NaN duration must come out as an empty pulse. A naive cast would
+    /// be a huge allocation.
     #[test]
     fn a_sample_count_saturates_rather_than_wrapping() {
-        // Ten intervals, not eleven points: `+ 0.5` then truncate rounds to nearest,
-        // and 10.5 truncates down.
+        // The count is of intervals, not points (ten, not eleven). `+ 0.5` then
+        // truncate rounds to nearest, and 10.5 truncates down.
         assert_eq!(samples(1.0, 0.1), 10);
         assert_eq!(samples(1.06, 0.1), 11);
 

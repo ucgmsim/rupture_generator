@@ -2,12 +2,12 @@
 //!
 //! Liu, Archuleta & Hartzell (2006): a piecewise sinusoid whose rising limb occupies
 //! a `beta` fraction of the duration, normalised so its integral is the slip. Nothing
-//! below depends on the pulse being *that* function — a different source-time
-//! function that conserves slip, starts and ends at rest, and gets more impulsive as
-//! `beta` falls would satisfy all of it. That is the point: the contract is the
-//! physics, not the formula. Quantified over generated `(slip, rise time, dt, beta)`,
-//! including rise times *below* what `dt` can represent, because the refusal is as
-//! much the contract as the pulse.
+//! below depends on the pulse being *that* function. A different source-time function
+//! would satisfy all of it if it conserved slip and started and ended at rest, and if
+//! it grew more impulsive as `beta` fell. The properties test the physics, not the
+//! formula. They quantify over generated `(slip, rise time, dt, beta)`, including rise
+//! times *below* what `dt` can represent, because the refusal belongs to the contract
+//! as much as the pulse does.
 
 mod common;
 
@@ -32,10 +32,10 @@ fn row(csr: &CsrPulses, subfault: usize) -> &[f64] {
 
 /// Relative bound on `|dt·Σ − slip|` for a renormalised pulse of `n` samples.
 ///
-/// The renormalisation makes the integral the slip *by construction*; what is left
-/// is rounding. Two sources: the `f64` fold (each add rounds at ≤ half an ulp;
-/// modelled as independent that is ~`ε·√n/3` relative) and the common scale factor
-/// (~2ε, systematic — it does not average away). The factor of four covers the
+/// The renormalisation makes the integral the slip *by construction*, and only
+/// rounding remains. The rounding comes from the `f64` fold (each add rounds at ≤ half
+/// an ulp, and modelled as independent that's ~`ε·√n/3` relative) and from the common
+/// scale factor (~2ε, systematic, which doesn't average away). The factor of four covers the
 /// tails; at 400 samples the bound is ~2e-14, eleven orders below the 1% slip
 /// tolerance of the old bounds table, so "exactly" is the right word for it.
 fn integral_round_trip(samples: usize) -> f64 {
@@ -48,8 +48,8 @@ proptest! {
     /// The CSR is well-formed, empty exactly where the slip is negligible, and every
     /// pulse integrates to its subfault's slip.
     ///
-    /// `dt·Σ = slip` is the one thing both shapes promise, and it is what makes the
-    /// moment come out right whichever is chosen.
+    /// `dt·Σ = slip` is the one thing both shapes promise, and it's what makes the
+    /// moment come out right whichever shape the caller picks.
     #[test]
     fn every_slipping_subfault_conserves_its_slip(subfaults in resolvable_subfaults()) {
         let csr = synthesise(&subfaults).expect("resolvable rise times never refuse");
@@ -81,9 +81,9 @@ proptest! {
 
     /// A pulse's support is its rise time, to the half-sample the rounding allows.
     ///
-    /// The closing zero is not support — it exists so the pulse ends at rest — so
-    /// the support is `(len − 1)·dt`, and the sample count rounds `rise/dt` to
-    /// nearest, hence the half-sample tolerance.
+    /// The closing zero isn't support (it exists so the pulse ends at rest), and the
+    /// support is `(len − 1)·dt`. The sample count rounds `rise/dt` to nearest, which
+    /// gives the half-sample tolerance.
     #[test]
     fn the_support_is_the_rise_time(subfaults in resolvable_subfaults()) {
         let csr = synthesise(&subfaults).expect("resolvable rise times never refuse");
@@ -119,17 +119,17 @@ proptest! {
         }
     }
 
-    /// Every subfault with slip above the guard has a non-empty pulse — or the call
-    /// refuses, naming a subfault whose rise time genuinely rounds to zero samples.
+    /// Every subfault whose slip exceeds the guard has a non-empty pulse, or the call
+    /// refuses and identifies a subfault whose rise time does round to zero samples.
     ///
     /// **`DEFECTS.md` 21.** genslip silently dropped subfaults whose rise time
-    /// rounded to a single zero sample — 0.63% of the moment on the corpus fixture,
-    /// gone without a word — and "unrepresentable rise time is an error naming the
+    /// rounded to zero samples: 0.63% of the moment on the corpus fixture, gone
+    /// without a word. "Unrepresentable rise time is an error that identifies the
     /// subfault, never a silent zero" is one of the four wrong numbers the rewrite
-    /// fixes. This property is what keeps it fixed: over rise times generated down
-    /// to zero, a slipping subfault either gets samples or gets named, and the
-    /// margins (0.6/0.4 of a sample) pin *when* each outcome is required, clear of
-    /// the round-to-nearest boundary at half a sample.
+    /// fixes, and this property keeps it fixed. Over rise times generated down to
+    /// zero, a slipping subfault either gets samples or appears in the error. The
+    /// margins (0.6/0.4 of a sample) pin down *when* each outcome must happen, clear
+    /// of the round-to-nearest boundary at half a sample.
     #[test]
     fn a_slipping_subfault_is_never_silently_dropped(subfaults in adversarial_subfaults()) {
         match synthesise(&subfaults) {
@@ -143,7 +143,7 @@ proptest! {
                     );
                 }
                 // If any slipping subfault's rise time were safely below half a
-                // sample the call was required to refuse instead.
+                // sample, the call should have refused instead.
                 for (subfault, &slip) in subfaults.slip_m.iter().enumerate() {
                     prop_assert!(
                         slip.abs() <= MIN_SLIP_M
@@ -175,9 +175,9 @@ proptest! {
 
     /// `delta` is the impulse `[0, slip/dt, 0]`, whatever the rise time says.
     ///
-    /// Exactly the spike `oliu_p` substitutes for a pulse too short to resolve, so
-    /// it is that branch under its own name — and it is the reason the shape can
-    /// never refuse a rise time.
+    /// Exactly the spike `oliu_p` substitutes for a pulse too short to resolve, and
+    /// this is that branch under its own name. It's also why the shape can never
+    /// refuse a rise time.
     #[test]
     fn delta_is_the_impulse_whatever_the_rise_time(subfaults in adversarial_subfaults()) {
         let csr = pulse::synthesise_pulses(
@@ -211,9 +211,8 @@ proptest! {
 
 /// A smaller `beta` peaks earlier.
 ///
-/// What the parameter means physically: it sets how much of the duration the rising
-/// limb occupies, so a smaller value concentrates the slip earlier and makes the
-/// pulse more impulsive. Deterministic because discrete peak positions move in
+/// The parameter sets how much of the duration the rising limb occupies. A smaller
+/// value concentrates the slip earlier and makes the pulse more impulsive. Deterministic because discrete peak positions move in
 /// sample-sized steps: the claim needs betas far enough apart to be visible at the
 /// fixture's resolution.
 #[test]
@@ -236,10 +235,10 @@ fn a_smaller_beta_gives_a_more_impulsive_pulse() {
     );
 }
 
-/// Around one sample, the shape is a fixed spike rather than a computed curve —
-/// and the spike is exactly what `delta` produces.
+/// Around one sample, the shape is a fixed spike rather than a computed curve, and
+/// the spike is exactly what `delta` produces.
 ///
-/// Pinned because it is a discontinuity in behaviour: a rewrite that computed the
+/// Pinned because it's a discontinuity in behaviour: a rewrite that computed the
 /// sinusoid here instead would change the shortest pulses on every fault without
 /// changing anything a smooth-field test looks at.
 #[test]
@@ -253,8 +252,8 @@ fn a_pulse_of_about_one_sample_is_the_delta_spike() {
     assert_eq!(oliu.samples, vec![0.0, slip / dt_s, 0.0]);
 }
 
-/// The integral carries the slip's sign: a back-slipping subfault is conserved too,
-/// not rectified.
+/// The integral keeps the slip's sign: a back-slipping subfault conserves its slip
+/// too, without rectification.
 #[test]
 fn a_negative_slip_is_conserved_with_its_sign() {
     let (slip, dt_s) = (-2.0, 0.005);
@@ -268,11 +267,11 @@ fn a_negative_slip_is_conserved_with_its_sign() {
 }
 
 // ---------------------------------------------------------------------------------
-// Refusals: bad inputs are named, not synthesised around
+// Refusals: the kernel names bad inputs rather than synthesising around them
 // ---------------------------------------------------------------------------------
 
 /// The refusal names everything the caller needs: which subfault, its rise time,
-/// and the interval that cannot represent it (`DEFECTS.md` 21).
+/// and the interval that can't represent it (`DEFECTS.md` 21).
 #[test]
 fn the_unrepresentable_refusal_names_the_subfault() {
     let error = pulse::synthesise_pulses(
@@ -341,10 +340,9 @@ fn mismatched_arrays_are_refused_by_name() {
     ));
 }
 
-/// `beta` beyond a half would let the sinusoid's second piece overrun the duration;
-/// zero would divide the rising limb by nothing. Both are refused by subfault, and
-/// refused even when that subfault does not slip — a bad parameter is a bad
-/// parameter.
+/// `beta` beyond a half would let the sinusoid's second piece overrun the duration.
+/// Zero would divide the rising limb by nothing. The kernel refuses both by subfault,
+/// even when that subfault doesn't slip: a bad parameter is a bad parameter.
 #[test]
 fn a_beta_outside_its_range_is_refused_by_subfault() {
     for bad in [0.0, -0.1, 0.51, 1.0, f64::NAN] {

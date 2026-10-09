@@ -10,8 +10,9 @@ The library is plain data and plain functions, and the usual run is five calls::
     write_rupture(path, realisation, ruptures, dt_s=0.005)
 
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
-command line runs that file. Embeddings of slip covariances are cached between calls
-by :func:`rupture_generator.sampling.sampler`; ``sampler.cache_clear()`` releases them.
+command line runs that file. :func:`rupture_generator.sampling.sampler` caches the
+embeddings of slip covariances between calls, and ``sampler.cache_clear()`` releases
+them.
 """
 
 from rupture_generator.errors import RuptureGeneratorError

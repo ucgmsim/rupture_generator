@@ -1,7 +1,7 @@
 """Convert a workflow ``realisation.json`` into GeoJSON sections and a rupture config.
 
 The workflow's realisation format is one JSON document holding everything a simulation
-needs -- geometry, source, velocity model, seeds, and the parameters of four other
+needs: geometry, source, velocity model, seeds, and the parameters of four other
 programs. This pulls out the parts that describe *the earthquake* and writes them as a
 GeoJSON fault system and a rupture config.
 
@@ -11,27 +11,27 @@ Run it as::
 
 which writes ``examples/hope.geojson`` and ``examples/hope.toml``.
 
-# What is carried across, and what is not
+# What the conversion keeps, and what it drops
 
-Carried: the fault traces, dips and depths, the causality tree, the per-fault
-magnitudes and rakes, the velocity model, the hypocentre, the tapers, the rupture-speed
-profile and the resolution.
+It keeps the fault traces, dips and depths, the causality tree, the per-fault
+magnitudes and rakes, the velocity model, the hypocentre, the tapers, the
+rupture-speed profile and the resolution.
 
-**Not carried: the jump points.** The realisation records where the rupture crossed
-between faults, fitted by closest approach. This pipeline computes them instead, from
-the solved wavefront on the parent fault -- so importing them would be importing the
-answer to a question this generator asks itself, and asks differently.
+**It drops the jump points.** The realisation records where the rupture crossed
+between faults, fitted by closest approach. This generator works them out itself from
+the parent fault's solved onsets, so importing them would import the answer to a
+question this generator asks differently.
 
-Also not carried: everything belonging to the other programs in the workflow --
-`emod3d`, `hf`, `bb`, `im`, the domain and the 3-D velocity model. They describe how
-the ground motion is simulated, not what the earthquake is.
+It also drops everything belonging to the other programs in the workflow: `emod3d`,
+`hf`, `bb`, `im`, the domain and the 3D velocity model. They describe how to simulate
+the ground motion, not what the earthquake is.
 
 # The corners are quads, four per plane
 
 Each fault's ``corners`` list is a flat run of four-point groups, one per plane:
-two points on the surface trace and two directly below them at the fault's bottom
-depth. Consecutive planes share a trace point, so the trace is recovered by taking
-the first point of each group and the last point of the final one.
+two points on the trace at ground level and two directly below them at the fault's
+bottom depth. Consecutive planes share a trace point, so the trace is the first point
+of each group followed by the last point of the final one.
 """
 
 from __future__ import annotations
@@ -68,10 +68,9 @@ GEOD = pyproj.Geod(ellps="WGS84")
 def section(name: str, corners: list[dict]) -> dict:
     """One fault as a GeoJSON section: its trace, dip, depths and dip direction.
 
-    The dip is recovered from the geometry rather than read from a field, because the
-    realisation does not carry one: it carries the corner positions the dip produced.
-    Taking the mean over the fault's planes is exact where they agree and is the only
-    thing available where they do not.
+    The dip comes from the geometry rather than from a field, because the realisation
+    has no dip field, only the corner positions the dip produced. The mean over the
+    fault's planes is exact where they agree and the only option where they don't.
     """
     planes = len(corners) // 4
     trace = [corners[4 * plane] for plane in range(planes)]
@@ -142,10 +141,10 @@ def fault_system(realisation: dict) -> str:
 def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
     """The earthquake, as a rupture config.
 
-    The depth profiles are the workflow's: the front slowed by ``rvfrac_shal`` and
-    ``rvfrac_deep`` over its shallow and deep transitions, rise time doubled over the
-    same ones, shallow rise time tied to slip above 3 km, and the pulse's rising
-    fraction 0.5 above 1 km and 0.13 below 3 km.
+    The depth profiles are the workflow's. The front slows by ``rvfrac_shal`` and
+    ``rvfrac_deep`` over its shallow and deep transitions, where rise time doubles.
+    Rise time ties to slip shallower than 3 km, and the pulse's rising fraction is 0.5
+    shallower than 1 km and 0.13 deeper than 3 km.
     """
     tree = realisation["rupture_propagation"]["rupture_causality_tree"]
     hypocentre = realisation["rupture_propagation"]["hypocentre"]

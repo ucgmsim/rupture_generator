@@ -1,26 +1,27 @@
 """The rock a rupture happens in, as functions of position.
 
-A :data:`SpatialField` is the whole interface: given positions, return one value per
-position. Nothing here knows what a fault is, so a field is a pure function of where
-it is asked about and testable on its own, and it can be asked anywhere -- at a chart's
-cell centres, along the straight line a jump crosses, or on a 3-D grid. A
-:class:`Medium` is the two fields the rock needs, shear speed and density.
+The whole interface is a :data:`SpatialField`, which takes positions and returns one
+value per position. A field takes no fault geometry, so it depends only on the
+positions passed to it and a test can call it on its own. Callers read it at a chart's
+cell centres, along the straight line a jump crosses, and could equally read it on a 3D
+grid. A :class:`Medium` holds the two fields the rock needs, shear speed and density.
 
-A field is **deterministic**: the same position gives the same value, every time it is
-asked. A random medium is still a medium, but its randomness is realised when it is
-built -- by whatever constructs it, from its own generator -- and never when it is
-called, or a segment and the jump onto it would see different rock.
+Every field is **deterministic**: the same position gives the same value on every call.
+A random medium is still a medium, but whatever constructs it draws the randomness once,
+from its own generator, before anyone calls it. A fresh random value per call would
+give a segment and the jump onto it different rock.
 
-Units follow the field names. Shear speed is kilometres per second and density grams
-per cubic centimetre, which is how a 1-D velocity model is written down; rigidity is
-derived from them in pascals, and the single ``1e9`` in :func:`rigidity_pa` is the
-whole conversion.
+Units follow the field names. Shear speed is in kilometres per second and density in
+grams per cubic centimetre, the units a 1-D velocity model uses. :func:`rigidity_pa`
+derives rigidity in pascals from them, and its factor of ``1e9`` is the whole
+conversion.
 """
 
 import dataclasses
 from collections.abc import Callable
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from rupture_generator.errors import RuptureGeneratorError
 
@@ -36,34 +37,60 @@ DEPTH = 2
 """Which column of a position is depth."""
 
 PA_PER_KM_S_SQUARED_G_CM3 = 1.0e9
-"""``(1e3 m/s)^2 x (1e3 kg/m^3)``: what carries a velocity model's own units to SI."""
+"""``(1e3 m/s)^2 x (1e3 kg/m^3)``, the factor from a velocity model's units to SI."""
 
 CROSSING_SAMPLES = 32
-"""Points along a crossing at which the medium is read, by the midpoint rule."""
+"""How many points along a crossing the midpoint rule reads the medium at."""
 
 
 def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.ndarray:
-    """Rigidity in pascals, :math:`\\mu = \\rho v_s^2`, from a velocity model's units."""
+    """Compute rigidity, :math:`\\mu = \\rho v_s^2`, from a velocity model's units.
+
+    Parameters
+    ----------
+    shear_speed_km_s : np.ndarray
+        Shear speed in kilometres per second.
+    density_g_cm3 : np.ndarray
+        Density in grams per cubic centimetre, broadcastable against the shear speed.
+
+    Returns
+    -------
+    np.ndarray
+        Rigidity in pascals.
+    """
     return density_g_cm3 * shear_speed_km_s**2 * PA_PER_KM_S_SQUARED_G_CM3
 
 
 @dataclasses.dataclass(frozen=True)
 class Medium:
-    """The rock: shear speed and density, everywhere.
+    """Shear speed and density of the rock, defined everywhere.
 
     Attributes
     ----------
     shear_speed_km_s : SpatialField
-        What the front's speed is a fraction of, and what a jump crosses at.
+        Shear speed in kilometres per second. The rupture front travels at a fraction
+        of it, and a shear wave crossing between faults travels at it.
     density_g_cm3 : SpatialField
-        With the shear speed, what the rigidity the moment is counted in comes from.
+        Density in grams per cubic centimetre. With the shear speed it gives the
+        rigidity that converts slip to moment.
     """
 
     shear_speed_km_s: SpatialField
     density_g_cm3: SpatialField
 
     def rigidity_pa(self, positions_km: np.ndarray) -> np.ndarray:
-        """Rigidity at each position, :math:`\\mu = \\rho v_s^2`, in pascals."""
+        """Compute the rigidity, :math:`\\mu = \\rho v_s^2`, at each position.
+
+        Parameters
+        ----------
+        positions_km : np.ndarray
+            Positions, ``(..., 3)``: east, north and depth in kilometres.
+
+        Returns
+        -------
+        np.ndarray
+            Rigidity in pascals, ``(...)``.
+        """
         return rigidity_pa(
             self.shear_speed_km_s(positions_km), self.density_g_cm3(positions_km)
         )
@@ -74,13 +101,27 @@ class Medium:
         end_km: np.ndarray,
         samples: int = CROSSING_SAMPLES,
     ) -> np.ndarray:
-        """How long a shear wave takes along the straight line from each start to its
-        end: :math:`\\int ds / v_s`, by the midpoint rule over ``samples`` points.
+        """Time a shear wave along the straight line from each start to its end.
 
-        That is the length over the *harmonic* mean of the shear speed along the line,
-        which is what a travel time is; the arithmetic mean would let a fast layer hide
-        a slow one. ``start_km`` and ``end_km`` are ``(..., 3)``; the result is
-        ``(...)``.
+        The time is :math:`\\int ds / v_s`, by the midpoint rule over ``samples``
+        points. That equals the length over the *harmonic* mean of the shear speed
+        along the line, which is the mean a travel time needs. The arithmetic mean
+        would let a fast layer hide a slow one.
+
+        Parameters
+        ----------
+        start_km : np.ndarray
+            Where each crossing starts, ``(..., 3)``: east, north and depth in
+            kilometres.
+        end_km : np.ndarray
+            Where each crossing ends, shaped like ``start_km``.
+        samples : int
+            How many points along each line to read the shear speed at.
+
+        Returns
+        -------
+        np.ndarray
+            Travel time of each crossing in seconds, ``(...)``.
         """
         start = np.asarray(start_km, dtype=np.float64)
         step = np.asarray(end_km, dtype=np.float64) - start
@@ -91,7 +132,18 @@ class Medium:
 
 
 def constant_field(value: float) -> SpatialField:
-    """The same value everywhere."""
+    """Build a field with the same value everywhere.
+
+    Parameters
+    ----------
+    value : float
+        The value at every position.
+
+    Returns
+    -------
+    SpatialField
+        The constant field.
+    """
 
     def field(positions_km: np.ndarray) -> np.ndarray:
         return np.full(np.shape(positions_km)[:-1], float(value), dtype=np.float64)
@@ -120,21 +172,26 @@ def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
 
 @dataclasses.dataclass(frozen=True)
 class Layers:
-    """A 1-D earth model: what the rock is like in each depth interval.
+    """A 1-D earth model, as the depth intervals its layers occupy.
 
-    ``bottom_depth_km`` is each layer's lower boundary, increasing, and the deepest one
-    is the floor everything below clamps to -- a subfault deeper than the model gets
-    the deepest layer rather than an error, because a velocity model is a description
-    of the crust and not a bound on the fault.
+    The deepest layer extends to any depth. A subfault deeper than the model gets the
+    deepest layer rather than an error, because a velocity model describes the crust
+    and doesn't limit the fault's depth.
 
-    A depth exactly on a boundary belongs to the layer **above** it, so a layer owns
-    its own bottom.
+    A depth exactly on a boundary belongs to the shallower layer, so each layer
+    includes its own bottom.
+
+    Attributes
+    ----------
+    bottom_depth_km : np.ndarray
+        Each layer's lower boundary in kilometres, strictly increasing and below the
+        surface.
     """
 
     bottom_depth_km: np.ndarray
 
     def __post_init__(self) -> None:
-        """Refuse boundaries that are not a stack of layers."""
+        """Refuse boundaries that fail to form a stack of layers."""
         bottoms = _increasing_depths(self.bottom_depth_km, "layer boundaries")
         if bottoms[0] <= 0.0:
             raise RuptureGeneratorError(
@@ -146,19 +203,19 @@ class Layers:
         """How many layers."""
         return len(self.bottom_depth_km)
 
-    def layer_for(self, depth_km: np.ndarray) -> np.ndarray:
+    def _layer_for(self, depth_km: np.ndarray) -> np.ndarray:
         """Which layer each depth falls in, shaped like ``depth_km``."""
         return np.minimum(
             np.searchsorted(self.bottom_depth_km, depth_km, side="left"), len(self) - 1
         )
 
-    def values(self, name: str, per_layer: np.ndarray) -> np.ndarray:
+    def _values(self, name: str, per_layer: ArrayLike) -> np.ndarray:
         """One value per layer, checked against the boundaries.
 
         Raises
         ------
         RuptureGeneratorError
-            If there is not exactly one value per layer, or one of them is not positive.
+            Unless there is exactly one positive, finite value per layer.
         """
         values = np.asarray(per_layer, dtype=np.float64)
         if values.shape != (len(self),):
@@ -173,40 +230,72 @@ class Layers:
         return values
 
 
-def layered_field(layers: Layers, per_layer: np.ndarray, *, name: str) -> SpatialField:
-    """A property that depends on depth alone, read off a 1-D model.
+def layered_field(layers: Layers, per_layer: ArrayLike, *, name: str) -> SpatialField:
+    """Build a field that depends on depth alone, from a 1-D model.
 
-    Read at each position's **own** depth rather than once per dip row: one lookup
-    broadcast along strike is exact for a plane and for nothing else.
+    The field reads each position's **own** depth rather than one depth per dip row.
+    One lookup broadcast along strike would be exact for a plane and for nothing else.
+
+    Parameters
+    ----------
+    layers : Layers
+        The depth intervals.
+    per_layer : ArrayLike
+        One positive value per layer.
+    name : str
+        The property's name, for error messages.
+
+    Returns
+    -------
+    SpatialField
+        The value of the layer each position lies in.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        Unless there is exactly one positive, finite value per layer.
     """
-    values = layers.values(name, per_layer)
+    values = layers._values(name, per_layer)
 
     def field(positions_km: np.ndarray) -> np.ndarray:
-        return values[layers.layer_for(positions_km[..., DEPTH])]
+        return values[layers._layer_for(positions_km[..., DEPTH])]
 
     return field
 
 
 def interpolated_field(depth_km: np.ndarray, values: np.ndarray) -> SpatialField:
-    """A depth profile, given as points and read linearly between them.
+    """Build a depth profile from points, linear between them.
 
     A thin wrapper on :func:`numpy.interp`, which holds the end values outside the
-    given depths, so the profile is flat above the first point and below the last. That
-    clamping is what makes a whole profile one call rather than a ramp per transition:
+    given depths, so the profile is flat shallower than the first point and deeper
+    than the last. That clamping lets one call describe a whole profile, rather
+    than one ramp per transition:
 
-    - a single ramp, such as the weight tying shallow rise time to slip, is two points,
-      ``[1, 3]`` against ``[0, 1]``;
-    - the two-sided rise-time stretch is four, ``[5, 8, 15, 20]`` against
-      ``[2, 1, 1, 2]`` -- longer pulses near the surface, longer again at depth, and
-      exactly 1 through the middle of the fault where the profile has nothing to say;
-    - a measured profile is however many points were measured.
+    - A ramp, such as the weight tying shallow rise time to slip, takes two points,
+      ``[1, 3]`` against ``[0, 1]``.
+    - The two-sided rise-time stretch takes four, ``[5, 8, 15, 20]`` against
+      ``[2, 1, 1, 2]``. Pulses lengthen near the ground surface and again at depth, and
+      the factor stays at exactly 1 through the middle of the fault.
+    - A measured profile takes one point per measurement.
+
+    Parameters
+    ----------
+    depth_km : np.ndarray
+        Depths of the points in kilometres, strictly increasing.
+    values : np.ndarray
+        The profile's value at each depth.
+
+    Returns
+    -------
+    SpatialField
+        The profile at each position's depth.
 
     Raises
     ------
     RuptureGeneratorError
-        If the depths do not increase, or there is not one finite value per depth.
-        :func:`numpy.interp` reads unsorted points as a different profile rather than
-        as a mistake, so this is the check that matters.
+        If the depths fail to increase, or the values fail to give one finite number
+        per depth. :func:`numpy.interp` reads unsorted points as a different profile
+        rather than as a mistake, so the ordering check is the one that matters.
     """
     depths = _increasing_depths(depth_km, "profile depths")
     heights = np.asarray(values, dtype=np.float64)
@@ -226,8 +315,24 @@ def interpolated_field(depth_km: np.ndarray, values: np.ndarray) -> SpatialField
 def ramp_field(
     centre_km: float, half_width_km: float, shallow: float, deep: float
 ) -> SpatialField:
-    """``shallow`` above the ramp, ``deep`` below it, and linear across
-    ``centre_km +- half_width_km``.
+    """Build a depth profile that ramps linearly from one value to another.
+
+    Parameters
+    ----------
+    centre_km : float
+        Depth of the middle of the ramp in kilometres.
+    half_width_km : float
+        Half the ramp's depth extent in kilometres. The ramp spans
+        ``centre_km +- half_width_km``.
+    shallow : float
+        The value shallower than the ramp.
+    deep : float
+        The value deeper than the ramp.
+
+    Returns
+    -------
+    SpatialField
+        The ramp at each position's depth.
 
     Raises
     ------
@@ -243,9 +348,29 @@ def ramp_field(
 
 
 def layered_medium(
-    layers: Layers, shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray
+    layers: Layers, shear_speed_km_s: ArrayLike, density_g_cm3: ArrayLike
 ) -> Medium:
-    """A 1-D velocity model as a medium: one shear speed and density per layer."""
+    """Build a medium from a 1-D velocity model.
+
+    Parameters
+    ----------
+    layers : Layers
+        The depth intervals.
+    shear_speed_km_s : ArrayLike
+        One shear speed per layer, in kilometres per second.
+    density_g_cm3 : ArrayLike
+        One density per layer, in grams per cubic centimetre.
+
+    Returns
+    -------
+    Medium
+        The layered medium.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        Unless each property has exactly one positive, finite value per layer.
+    """
     return Medium(
         shear_speed_km_s=layered_field(
             layers, shear_speed_km_s, name="shear_speed_km_s"

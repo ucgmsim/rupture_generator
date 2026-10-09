@@ -18,9 +18,9 @@ fn lexical_write<W: Write, T: ToLexical>(
 const POINTS: &[u8] = b"POINTS ";
 const EMPTY_SLIP_TAIL: &[u8] = b" 0.0 0 0.0 0";
 
-/// The eight columns of a point's first line, space-separated, in the SRF's order.
+/// The columns of a point's first line, space-separated, in the SRF's order.
 ///
-/// `rake`, `slip1` and `rise` are not here: they open the *second* line, which
+/// `rake`, `slip1` and `rise` aren't here: they open the *second* line, which
 /// `write_slip_row` writes.
 fn write_point<W: Write>(writer: &mut W, point: &Point, buffer: &mut [u8]) -> Result<()> {
     let columns = [

@@ -1,6 +1,6 @@
-//! The lexical layer: nom for the grammar, `lexical_core` for the numbers.
+//! The lexical layer uses nom for the grammar and `lexical_core` for the numbers.
 //!
-//! Three things here are deliberate.
+//! These choices are deliberate.
 //!
 //! - **nom does the scanning.** What used to be `iter().position(...)` followed by
 //!   `self.index += x + 1` is now a combinator that returns the unconsumed rest. The
@@ -8,10 +8,10 @@
 //! - **The numbers stay `lexical_core`.** nom's `float` recognises the number, checks
 //!   the bytes are UTF-8, then parses them again through `str::parse`;
 //!   `lexical_core::parse_partial` does it in one pass. On the 6,893,172 numbers in
-//!   `tests/srfs/rupture_1.srf` that is **0.113 s against 0.268 s** -- and the whole
-//!   file parses in 0.177 s, so the leaf is most of the work and nom's would roughly
-//!   double it. They agree bit for bit, both rounding correctly, so this is a cost
-//!   question and not an accuracy one. `float_leaf_is_cheaper_through_lexical_core`
+//!   `tests/srfs/rupture_1.srf` the two take **0.113 s against 0.268 s**, and the whole
+//!   file parses in 0.177 s. The leaf is most of the work, and nom's would roughly
+//!   double it. Both agree bit for bit and round correctly, which makes this a
+//!   question of cost and not of accuracy. `float_leaf_is_cheaper_through_lexical_core`
 //!   measures both halves of that claim. The crate is here regardless because
 //!   `srf_writer` formats with it.
 //! - **The API is still a cursor.** `srf_parser` streams each point's pulse straight
@@ -28,7 +28,7 @@ use nom::bytes::complete::{tag, take_until, take_while};
 use nom::sequence::preceded;
 use thiserror::Error;
 
-/// One parser's result over SRF bytes: the unconsumed rest, and what was read.
+/// One parser's result over SRF bytes: the unconsumed rest, and the value it read.
 type Parsed<'a, T> = nom::IResult<&'a [u8], T>;
 
 const NEWLINE: &[u8] = b"\n";
@@ -54,7 +54,7 @@ pub enum ScannerError {
     UnexpectedEof,
 }
 
-/// Everything before a token that is not part of it.
+/// Everything before a token that doesn't belong to it.
 fn spaces(input: &[u8]) -> &[u8] {
     input.trim_ascii_start()
 }
@@ -83,7 +83,7 @@ fn through_newline(input: &[u8]) -> Parsed<'_, &[u8]> {
 pub struct Scanner<'a> {
     /// The whole input, kept only so a failure can say where it was.
     input: &'a [u8],
-    /// What has not been consumed.
+    /// The unconsumed remainder of the input.
     rest: &'a [u8],
 }
 
@@ -129,7 +129,7 @@ impl<'a> Scanner<'a> {
         Ok(())
     }
 
-    /// Consume the rest of the line, which must hold nothing but blank space.
+    /// Consume the rest of the line, which must contain only blank space.
     pub fn expect_end_of_line(&mut self) -> Result<(), ScannerError> {
         let Ok((rest, _)) = blank_then_newline(self.rest) else {
             let (line, column) = self.position();
@@ -215,9 +215,8 @@ mod tests {
     /// `float` costs more for the same answer. This is that claim, measured, and the
     /// "same answer" half asserted.
     ///
-    /// ```sh
-    /// cargo test -p srf --release -- --ignored --nocapture float_leaf
-    /// ```
+    /// Run it with `cargo test -p srf --release float_leaf`, passing `--ignored` and
+    /// `--nocapture` to the test binary after the `--` separator.
     #[test]
     #[ignore = "measures time, not behaviour"]
     fn float_leaf_is_cheaper_through_lexical_core() {
@@ -229,9 +228,9 @@ mod tests {
         let path = std::env::var("SRF_THROUGHPUT_FILE").unwrap_or_else(|_| DEFAULT.to_owned());
         let data = std::fs::read(&path).expect("throughput fixture is readable");
 
-        // Split once, so the timings cover conversion and nothing else. Keep only the
-        // tokens both parsers consume whole -- PLANE, POINTS and the version line are
-        // not numbers.
+        // Split once, and the timings then cover conversion and nothing else. Keep only
+        // the tokens both parsers consume whole (PLANE, POINTS and the version line are
+        // not numbers).
         let numbers: Vec<&[u8]> = data
             .split(u8::is_ascii_whitespace)
             .filter(|token| {

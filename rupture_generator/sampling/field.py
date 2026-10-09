@@ -1,8 +1,8 @@
 """Gaussian random fields on a regular grid, by circulant embedding.
 
-Nothing here knows what correlation function it is embedding or what will be done
-with the field afterwards. A :class:`Covariance` is a :class:`Correlation` and the
-lengths that scale its argument; :func:`sampler` embeds one on a :class:`Grid` once
+This module embeds any correlation function and doesn't assume anything about what
+the caller does with the field. A :class:`Covariance` is a :class:`Correlation` and the
+lengths that scale its argument. :func:`sampler` embeds one on a :class:`Grid` once
 and draws from it as often as asked. Every tuple is ``(axis 0, axis 1)``.
 """
 
@@ -57,7 +57,15 @@ same chart asks for the same two again."""
 
 @dataclasses.dataclass(frozen=True)
 class Grid:
-    """A regular grid: how many cells on each axis, and how far apart they are."""
+    """A regular grid of cells.
+
+    Attributes
+    ----------
+    shape : tuple of int
+        How many cells lie on each axis.
+    resolution_km : tuple of float
+        How far apart the cells lie on each axis, in kilometres.
+    """
 
     shape: tuple[int, int]
     resolution_km: tuple[float, float]
@@ -65,11 +73,18 @@ class Grid:
 
 @dataclasses.dataclass(frozen=True)
 class Covariance:
-    """A stationary covariance: a correlation function and the metric it is read in.
+    """A stationary covariance, as a correlation function and the metric it reads lags in.
 
-    The anisotropy is entirely in ``lengths_km``. Each axis of a lag is divided by its
-    own length before the Euclidean norm, so the correlation's contours are the
-    ellipse through the two lengths.
+    All the anisotropy is in ``lengths_km``. The covariance divides each axis of a lag
+    by its own length before taking the Euclidean norm. The correlation's contours are
+    then the ellipse through the two lengths.
+
+    Attributes
+    ----------
+    correlation : Correlation
+        The correlation as a function of a lag in correlation lengths.
+    lengths_km : tuple of float
+        The correlation length on each axis, in kilometres.
     """
 
     correlation: Correlation
@@ -121,11 +136,11 @@ def _mirror_weights(extent: int) -> np.ndarray:
 def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, int]]:
     """The square-rooted eigenvalues of a circulant embedding, and the padded shape.
 
-    The covariance is periodised onto a padded torus, whose eigenvalues are the
-    transform of its first row. That row is real and even along both axes, so its
-    transform is real and even too, and with an even padded length the non-redundant
-    quarter of it is the type-I DCT of the quarter of the row that is evaluated. Only
-    that quarter is kept; :func:`circulant_draw` mirrors it.
+    The embedding periodises the covariance onto a padded torus, whose eigenvalues are
+    the transform of its first row. That row is real and even along both axes, and so
+    is its transform. With an even padded length, the non-redundant quarter of the
+    transform is the type-I DCT of the quarter of the row this function evaluates. The
+    function keeps only that quarter, and :func:`circulant_draw` mirrors it.
 
     The margin starts at the correlation's decay length and doubles until the variance
     the clipped negative eigenvalues drop is round-off.
@@ -133,12 +148,13 @@ def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, i
     decay = _decay_length(covariance.correlation, WRAP_TOLERANCE)
     for doubling in range(MAXIMUM_EMBEDDING_DOUBLINGS):
         margin = decay * 2**doubling
-        padded = tuple(
+        rows, columns = (
             _padded_extent(extent, resolution, length, margin)
             for extent, resolution, length in zip(
                 grid.shape, grid.resolution_km, covariance.lengths_km, strict=True
             )
         )
+        padded = (rows, columns)
         if padded[0] * padded[1] > MAXIMUM_EMBEDDING_CELLS:
             raise RuptureGeneratorError(
                 f"a {grid.shape[0]}x{grid.shape[1]} grid with correlation lengths "
@@ -176,17 +192,38 @@ def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, i
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Sampler:
-    """One covariance embedded on one grid: the expensive part, done once."""
+    """One covariance embedded on one grid, the expensive part, done once.
+
+    Attributes
+    ----------
+    shape : tuple of int
+        The grid's cell counts, the shape every draw comes back in.
+    amplitudes : FieldArray
+        The square-rooted eigenvalues of the embedding, one quadrant of the padded
+        grid.
+    padded : tuple of int
+        The padded grid's shape.
+    """
 
     shape: tuple[int, int]
     amplitudes: FieldArray
     padded: tuple[int, int]
 
     def draw(self, rng: np.random.Generator) -> tuple[FieldArray, FieldArray]:
-        """Two independent fields on the grid, standard normal at every cell.
+        """Draw a pair of independent fields on the grid, standard normal at every cell.
 
-        One complex transform gives both: its real and imaginary parts are independent
+        One complex transform gives both. Its real and imaginary parts are independent
         fields with the embedded covariance (Dietrich & Newsam 1997).
+
+        Parameters
+        ----------
+        rng : np.random.Generator
+            The generator the draw's seed comes from.
+
+        Returns
+        -------
+        tuple of FieldArray
+            The real and imaginary fields, each shaped like the grid.
         """
         seed = int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
         return circulant_draw(self.amplitudes, self.padded, self.shape, seed)
@@ -196,22 +233,44 @@ class Sampler:
 def sampler(grid: Grid, covariance: Covariance) -> Sampler:
     """Embed ``covariance`` on ``grid``, or return the embedding already made.
 
+    Parameters
+    ----------
+    grid : Grid
+        The grid to draw on.
+    covariance : Covariance
+        The covariance to embed.
+
+    Returns
+    -------
+    Sampler
+        The embedding, ready to draw from.
+
     Raises
     ------
     RuptureGeneratorError
-        If the covariance does not embed within the cell cap, or is not positive
+        If the covariance doesn't embed within the cell cap, or isn't positive
         definite at any margin tried.
     """
     return Sampler(grid.shape, *_embed(grid, covariance))
 
 
 def mix(*terms: tuple[float | FieldArray, FieldArray]) -> FieldArray:
-    """A standard-normal field from loadings on standard-normal fields.
+    """Mix standard-normal fields by their loadings into one standard-normal field.
 
-    ``sum(a * z) / sqrt(sum(a^2))``. Scalar or per-cell loadings; the division is
-    what keeps every cell standard normal, which is the precondition a marginal
-    transform states. Two independent fields loaded at ``(rho, sqrt(1 - rho^2))`` are
-    correlated at ``rho``.
+    The result is ``sum(a * z) / sqrt(sum(a^2))``, with scalar or per-cell loadings.
+    The division keeps every cell standard normal, which is the precondition a
+    marginal transform states. Loading a pair of independent fields at
+    ``(rho, sqrt(1 - rho^2))`` gives a field correlated with the first at ``rho``.
+
+    Parameters
+    ----------
+    *terms : tuple of (float or FieldArray, FieldArray)
+        Each a loading and the standard-normal field it applies to.
+
+    Returns
+    -------
+    FieldArray
+        The mixed field, standard normal at every cell.
     """
     total = sum(loading * field for loading, field in terms)
     norm = np.sqrt(sum(np.square(loading) for loading, _ in terms))
@@ -219,7 +278,18 @@ def mix(*terms: tuple[float | FieldArray, FieldArray]) -> FieldArray:
 
 
 def standardise(field: FieldArray) -> FieldArray:
-    """Zero mean, unit sample variance; zeros for a field with no spread."""
+    """Shift and scale a field to zero mean and unit sample variance.
+
+    Parameters
+    ----------
+    field : FieldArray
+        The field to standardise.
+
+    Returns
+    -------
+    FieldArray
+        The standardised field, or zeros for a field with no spread.
+    """
     spread = float(field.std())
     if spread == 0.0:
         return np.zeros_like(field)

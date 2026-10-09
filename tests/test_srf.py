@@ -114,6 +114,7 @@ def test_the_reader_finds_the_hypocentre(srf_path, scenario):
     east, north, depth_km = chart.centres[i, j]
     lon, lat = to_lon_lat.transform(east * 1000, north * 1000)
     found = read_rupture(srf_path).hypocentre
+    assert found is not None
     _, _, distance_m = pyproj.Geod(ellps="WGS84").inv(lon, lat, found[0], found[1])
     spacing_km = max(chart.spacing_km)
     assert distance_m < 1000 * spacing_km

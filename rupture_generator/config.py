@@ -1,15 +1,15 @@
 """A rupture described in a TOML file, and the inputs :func:`generate` takes built from it.
 
 This module is an adapter over the library and nothing in the library imports it.
-Settings that are already plain data -- :class:`RuptureSettings`' four parts, the
-correlation relation, the jump model -- are the library's own classes, made strict
-about unknown keys by a subclass that restates no field, so every default lives in one
-place. What the file describes declaratively and the library takes as a function --
-a depth profile, a medium -- has a small class here that builds it.
+Settings that are already plain data, such as the parts of :class:`RuptureSettings`,
+the correlation relation and the jump model, are the library's own classes. A subclass
+that restates no field makes each one strict about unknown keys, so the library
+defines every default once. A small class here builds whatever the file describes
+declaratively and the library takes as a function: a depth profile, or a medium.
 
-:func:`load` reads and checks a file, :func:`build` turns it into a :class:`Scenario`,
-and :func:`dump` writes a loaded config back out with every default filled in, which
-is the record of what was run.
+:func:`load` reads and checks a file, and :func:`build` turns it into a
+:class:`Scenario`. :func:`dump` writes a loaded config back out with every default
+filled in, which records what a run used.
 """
 
 import dataclasses
@@ -97,15 +97,18 @@ class Timing(TimingSettings):
 
 @dataclasses.dataclass(frozen=True)
 class Correlation(CorrelationRelation):
-    """A source's ``correlation`` table; Mai & Beroza (2002) when absent."""
+    """A source's ``correlation`` table, Mai & Beroza (2002) when absent."""
 
     Config = _Strict
 
 
 @dataclasses.dataclass(frozen=True)
 class Jump(JumpModel):
-    """A propagation's ``model`` table: Shaw & Dieterich (2007) when absent. It picks
-    the tree, when the tree is not given, and how far each jump reaches."""
+    """A propagation's ``model`` table, Shaw & Dieterich (2007) when absent.
+
+    When the file doesn't give a tree, the model picks one. It also sets the distance each
+    jump can cover.
+    """
 
     Config = _Strict
 
@@ -115,20 +118,44 @@ class Jump(JumpModel):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Constant:
-    """The same value at every depth."""
+    """The same value at every depth.
+
+    Parameters
+    ----------
+    type : {"constant"}
+        The profile's kind.
+    value : float
+        The value everywhere.
+    """
 
     type: Literal["constant"] = "constant"
     value: float
     Config = _Strict
 
     def field(self) -> SpatialField:
-        """The profile as a function of position."""
+        """Build the profile as a function of position.
+
+        Returns
+        -------
+        SpatialField
+            The value at every position.
+        """
         return constant_field(self.value)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Profile:
-    """Values at depths, linear between them and flat beyond."""
+    """Values at depths, linear between them and flat beyond.
+
+    Parameters
+    ----------
+    type : {"profile"}
+        The profile's kind.
+    depth_km : list of float
+        The depths, in kilometres, increasing.
+    values : list of float
+        One value per depth.
+    """
 
     type: Literal["profile"] = "profile"
     depth_km: list[float]
@@ -136,14 +163,33 @@ class Profile:
     Config = _Strict
 
     def field(self) -> SpatialField:
-        """The profile as a function of position."""
+        """Build the profile as a function of position.
+
+        Returns
+        -------
+        SpatialField
+            The values interpolated at each position's depth.
+        """
         return interpolated_field(np.array(self.depth_km), np.array(self.values))
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Ramp:
-    """``shallow`` above ``centre_km - half_width_km``, ``deep`` below
-    ``centre_km + half_width_km``, linear between."""
+    """One value at shallow depths and another at deep ones, linear between.
+
+    Parameters
+    ----------
+    type : {"ramp"}
+        The profile's kind.
+    centre_km : float
+        The depth of the ramp's midpoint, in kilometres.
+    half_width_km : float
+        Half the ramp's depth range, in kilometres. Positive.
+    shallow : float
+        The value shallower than ``centre_km - half_width_km``.
+    deep : float
+        The value below ``centre_km + half_width_km``.
+    """
 
     type: Literal["ramp"] = "ramp"
     centre_km: float
@@ -153,7 +199,13 @@ class Ramp:
     Config = _Strict
 
     def field(self) -> SpatialField:
-        """The profile as a function of position."""
+        """Build the profile as a function of position.
+
+        Returns
+        -------
+        SpatialField
+            The ramp at each position's depth.
+        """
         return ramp_field(self.centre_km, self.half_width_km, self.shallow, self.deep)
 
 
@@ -167,9 +219,19 @@ type DepthProfile = Annotated[
 
 @dataclasses.dataclass(frozen=True)
 class GeometryConfig:
-    """``[geometry]``: the GeoJSON sections, the frame, and the subfault size.
+    """``[geometry]``: where the fault sections are, and how to grid them.
 
-    A relative ``path`` is relative to the config file.
+    Parameters
+    ----------
+    path : Path
+        The GeoJSON file of fault sections. A relative path is relative to the config
+        file.
+    crs : str
+        The projected frame to build the charts in, such as ``"EPSG:2193"``.
+    spacing_km : float
+        The subfault size in kilometres.
+    aliases : {"nshm"}, optional
+        Read the sections' properties under the New Zealand NSHM's names.
     """
 
     path: Path
@@ -181,7 +243,24 @@ class GeometryConfig:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class HypocentreConfig:
-    """``[hypocentre]``: a segment, and either arc lengths or fractions of its extent."""
+    """``[hypocentre]``: a segment, and a position on it.
+
+    Give the position as arc lengths or as fractions of the segment's extent, one
+    complete pair of either.
+
+    Parameters
+    ----------
+    segment : str
+        The segment the rupture starts on.
+    strike_km : float, optional
+        The distance along strike from the segment's start, in kilometres.
+    dip_km : float, optional
+        The distance down dip from the segment's top edge, in kilometres.
+    strike_fraction : float, optional
+        The position along strike, as a fraction of the segment's length.
+    dip_fraction : float, optional
+        The position down dip, as a fraction of the segment's width.
+    """
 
     segment: str
     strike_km: float | None = None
@@ -206,7 +285,17 @@ class HypocentreConfig:
 
 @dataclasses.dataclass(frozen=True)
 class MediumConfig:
-    """``[medium]``: the rock, as a 1-D model with one value per layer."""
+    """``[medium]``: the rock, as a 1-D model with one value per layer.
+
+    Parameters
+    ----------
+    bottom_depth_km : list of float
+        Each layer's lower boundary, in kilometres, increasing.
+    shear_speed_km_s : list of float
+        Each layer's shear speed, in kilometres per second.
+    density_g_cm3 : list of float
+        Each layer's density, in grams per cubic centimetre.
+    """
 
     bottom_depth_km: list[float]
     shear_speed_km_s: list[float]
@@ -214,7 +303,13 @@ class MediumConfig:
     Config = _Strict
 
     def medium(self) -> Medium:
-        """Shear speed and density as functions of position."""
+        """Build the medium the model describes.
+
+        Returns
+        -------
+        Medium
+            Shear speed and density as functions of position.
+        """
         return layered_medium(
             Layers(np.array(self.bottom_depth_km)),
             np.array(self.shear_speed_km_s),
@@ -224,8 +319,21 @@ class MediumConfig:
 
 @dataclasses.dataclass(frozen=True)
 class ProfilesConfig:
-    """``[profiles]``: :class:`~rupture_generator.rupture.generator.FaultProfiles`,
-    each a depth profile and unmodified when absent."""
+    """``[profiles]``: the fault profiles, each a depth profile.
+
+    Each one maps to a field of
+    :class:`~rupture_generator.rupture.generator.FaultProfiles`, and leaving it out
+    leaves that setting unmodified.
+
+    Parameters
+    ----------
+    rise_time_factor : DepthProfile, optional
+        The relative rise time.
+    rise_time_slip_weight : DepthProfile, optional
+        How much of rise time's correlation with slip is the configured value.
+    rupture_speed_factor : DepthProfile, optional
+        The factor on the front's speed.
+    """
 
     rise_time_factor: DepthProfile | None = None
     rise_time_slip_weight: DepthProfile | None = None
@@ -233,7 +341,13 @@ class ProfilesConfig:
     Config = _Strict
 
     def profiles(self) -> FaultProfiles:
-        """The profiles given, as functions of position."""
+        """Build the fault profiles the table gives.
+
+        Returns
+        -------
+        FaultProfiles
+            The profiles given, as functions of position, and the rest unmodified.
+        """
         return FaultProfiles(
             **{
                 field.name: profile.field()
@@ -245,8 +359,16 @@ class ProfilesConfig:
 
 @dataclasses.dataclass(frozen=True)
 class PulseConfig:
-    """``[pulse]``: the slip-rate sample interval, and the Liu-Archuleta-Hartzell
-    rising fraction; without ``beta`` every pulse is a single-sample impulse."""
+    """``[pulse]``: the slip-rate sample interval and the pulse shape.
+
+    Parameters
+    ----------
+    dt_s : float
+        The slip-rate sample interval, in seconds.
+    beta : DepthProfile, optional
+        The Liu-Archuleta-Hartzell rising fraction. Without it, every pulse is a
+        single-sample impulse.
+    """
 
     dt_s: float = 0.005
     beta: DepthProfile | None = None
@@ -260,7 +382,19 @@ class PulseConfig:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class PerFault:
-    """A magnitude and a rake for every segment, as a hazard model states them."""
+    """A magnitude and a rake for every segment, as a hazard model states them.
+
+    Parameters
+    ----------
+    type : {"per_fault"}
+        The source's kind.
+    magnitudes : dict of str to float
+        Each segment's moment magnitude, by name.
+    rakes : dict of str to float
+        Each segment's mean rake in degrees, by name.
+    correlation : Correlation
+        How the slip correlation lengths follow each segment's magnitude.
+    """
 
     type: Literal["per_fault"] = "per_fault"
     magnitudes: dict[str, float]
@@ -271,8 +405,22 @@ class PerFault:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Finite:
-    """One magnitude and rake for the event, its moment shared between segments by
-    :func:`~rupture_generator.rupture.source.split_moment`."""
+    """One magnitude and rake for the whole event.
+
+    :func:`~rupture_generator.rupture.source.split_moment` shares the event's moment
+    between its segments.
+
+    Parameters
+    ----------
+    type : {"finite"}
+        The source's kind.
+    magnitude : float
+        The event's moment magnitude.
+    rake_deg : float
+        The mean rake in degrees, on every segment.
+    correlation : Correlation
+        How the slip correlation lengths follow each segment's magnitude.
+    """
 
     type: Literal["finite"] = "finite"
     magnitude: float
@@ -288,7 +436,18 @@ type SourceConfig = Annotated[
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Predetermined:
-    """Which segment triggers which, as a scenario states it."""
+    """Which segment triggers which, as a scenario states it.
+
+    Parameters
+    ----------
+    type : {"predetermined"}
+        The propagation's kind.
+    parents : dict of str to str
+        Each triggered segment's parent, by name. The segment holding the hypocentre
+        has none.
+    model : Jump
+        How far each jump can cover.
+    """
 
     type: Literal["predetermined"] = "predetermined"
     parents: dict[str, str]
@@ -298,7 +457,15 @@ class Predetermined:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Sampled:
-    """A tree drawn from the jump model."""
+    """A tree drawn from the jump model.
+
+    Parameters
+    ----------
+    type : {"sampled"}
+        The propagation's kind.
+    model : Jump
+        The jump model to draw the tree from.
+    """
 
     type: Literal["sampled"] = "sampled"
     model: Jump = dataclasses.field(default_factory=Jump)
@@ -307,7 +474,15 @@ class Sampled:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Likeliest:
-    """The jump model's likeliest tree."""
+    """The jump model's likeliest tree.
+
+    Parameters
+    ----------
+    type : {"likeliest"}
+        The propagation's kind.
+    model : Jump
+        The jump model to find the tree in.
+    """
 
     type: Literal["likeliest"] = "likeliest"
     model: Jump = dataclasses.field(default_factory=Jump)
@@ -322,7 +497,35 @@ type PropagationConfig = Annotated[
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class RuptureConfig:
-    """A whole rupture file. ``[propagation]`` may be left out for one segment."""
+    """A whole rupture file.
+
+    Parameters
+    ----------
+    seed : int
+        The seed every random draw derives from.
+    geometry : GeometryConfig
+        ``[geometry]``.
+    hypocentre : HypocentreConfig
+        ``[hypocentre]``.
+    medium : MediumConfig
+        ``[medium]``.
+    source : PerFault or Finite
+        ``[source]``.
+    propagation : Predetermined or Sampled or Likeliest, optional
+        ``[propagation]``, which a single-segment rupture can leave out.
+    profiles : ProfilesConfig
+        ``[profiles]``.
+    slip : Slip
+        ``[slip]``.
+    rise : Rise
+        ``[rise]``.
+    rake : Rake
+        ``[rake]``.
+    timing : Timing
+        ``[timing]``.
+    pulse : PulseConfig
+        ``[pulse]``.
+    """
 
     seed: int
     geometry: GeometryConfig
@@ -347,10 +550,10 @@ _ENCODER = TOMLEncoder(RuptureConfig)
 
 
 def _describe(error: Exception) -> RuptureGeneratorError:
-    """One error naming the key at fault, from mashumaro's chain of them.
+    """Build one error that states the key at fault, from mashumaro's chain of them.
 
     Mashumaro wraps each level of nesting in its own exception, so the key path is the
-    chain's field names and the reason is at its far end.
+    chain's field names, and the reason is at its far end.
     """
     path: list[str] = []
     reason = str(error)
@@ -381,14 +584,25 @@ def _describe(error: Exception) -> RuptureGeneratorError:
 
 
 def load(path: str | Path) -> RuptureConfig:
-    """Read and check a rupture file. The geometry's path is resolved against it.
+    """Read and check a rupture file.
+
+    Parameters
+    ----------
+    path : str or Path
+        The rupture file.
+
+    Returns
+    -------
+    RuptureConfig
+        The file's contents, with the geometry's path resolved against the file's
+        directory.
 
     Raises
     ------
     RuptureGeneratorError
-        If the file is not TOML, or does not describe a rupture.
+        If the file isn't TOML, or describes no rupture.
     OSError
-        If the file cannot be read.
+        If reading the file fails.
     """
     path = Path(path)
     try:
@@ -404,7 +618,18 @@ def load(path: str | Path) -> RuptureConfig:
 
 
 def dump(config: RuptureConfig) -> str:
-    """A config as TOML, every default written out."""
+    """Write a config as TOML, every default filled in.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        The config to write.
+
+    Returns
+    -------
+    str
+        The TOML text.
+    """
     return _ENCODER.encode(config)
 
 
@@ -413,11 +638,29 @@ def dump(config: RuptureConfig) -> str:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Scenario:
-    """Everything :func:`~rupture_generator.rupture.generator.generate` and the SRF
-    writer take, built from a config.
+    """Everything that :func:`~rupture_generator.rupture.generator.generate` takes.
 
-    ``beta`` is the pulse shape's rising fraction per segment, or ``None`` for
-    single-sample impulses.
+    The SRF writer's inputs too, all built from a config.
+
+    Parameters
+    ----------
+    realisation : Realisation
+        The fault system, its hypocentre and its triggering tree.
+    medium : Medium
+        The rock.
+    sources : dict of str to SegmentSource
+        Each segment's source, by name.
+    settings : RuptureSettings
+        What every segment shares.
+    jump_model : JumpModel
+        How far each jump can cover.
+    seed : int
+        The seed every random draw derives from.
+    dt_s : float
+        The slip-rate sample interval, in seconds.
+    beta : dict of str to CellArray or None
+        The pulse shape's rising fraction per cell by segment. ``None`` gives
+        single-sample impulses.
     """
 
     realisation: Realisation
@@ -499,15 +742,25 @@ def _propagated(
 
 
 def build(config: RuptureConfig) -> Scenario:
-    """Read the geometry a config names, and build everything a rupture is drawn from.
+    """Read the geometry a config names, and build every input a rupture needs.
+
+    Parameters
+    ----------
+    config : RuptureConfig
+        A loaded rupture file.
+
+    Returns
+    -------
+    Scenario
+        The fault system, its rock and sources, and every setting the draw takes.
 
     Raises
     ------
     RuptureGeneratorError
-        If the parts of the config do not fit together, or the geometry does not
-        describe a fault system.
+        If the parts of the config are inconsistent, or the geometry describes no
+        fault system.
     OSError
-        If the geometry file cannot be read.
+        If reading the geometry file fails.
     """
     crs = pyproj.CRS(config.geometry.crs)
     aliases = NSHM_ALIASES if config.geometry.aliases == "nshm" else None
@@ -523,13 +776,14 @@ def build(config: RuptureConfig) -> Scenario:
         raise RuptureGeneratorError(
             f"hypocentre.segment: {spec.segment!r} is not one of {sorted(charts)}"
         )
-    hypocentre = (
-        Hypocentre(spec.segment, spec.strike_km, spec.dip_km)
-        if spec.strike_km is not None
-        else Hypocentre.from_fractions(
+    # `HypocentreConfig` refuses anything but exactly one complete pair.
+    if spec.strike_km is not None and spec.dip_km is not None:
+        hypocentre = Hypocentre(spec.segment, spec.strike_km, spec.dip_km)
+    else:
+        assert spec.strike_fraction is not None and spec.dip_fraction is not None
+        hypocentre = Hypocentre.from_fractions(
             spec.segment, charts[spec.segment], spec.strike_fraction, spec.dip_fraction
         )
-    )
     realisation = Realisation(charts, crs, hypocentre=hypocentre)
 
     medium = config.medium.medium()

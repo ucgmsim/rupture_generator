@@ -1,5 +1,5 @@
-// These arguments are taken by value because their callers require it: PyO3's
-// `#[pyfunction]` will not accept a reference to a `PyBuffer` or a `Py<T>`, and
+// These functions take their arguments by value because their callers require it:
+// PyO3's `#[pyfunction]` doesn't accept a reference to a `PyBuffer` or a `Py<T>`, and
 // `map_err` hands its closure an owned error. The lint is right in general and wrong
 // at every site in this file.
 #![expect(
@@ -38,16 +38,16 @@ fn marshall_value_error<T, U: error::Error>(e: U) -> PyResult<T> {
 }
 
 fn buffer_bytes(buf: &PyBuffer<u8>) -> &[u8] {
-    // SAFETY: caller guarantees a live, C-contiguous, readable u8 export.
-    // Lifetime is tied to `buf`, so the borrow checker forbids dropping the
-    // PyBuffer while this slice is in use.
+    // SAFETY: the caller promises a live, C-contiguous, readable u8 export. The
+    // slice's lifetime is that of `buf`, and dropping the PyBuffer while the slice
+    // is in use is a compile error.
     unsafe { std::slice::from_raw_parts(buf.buf_ptr().cast(), buf.item_count()) }
 }
 
 #[pyfunction]
 /// # Errors
 ///
-/// If the buffer is not C-contiguous, or does not hold a valid SRF file.
+/// If the buffer isn't C-contiguous, or isn't a valid SRF file.
 pub fn parse_srf(py: Python<'_>, buffer: PyBuffer<u8>) -> PyResult<Py<PySrfFile>> {
     if !buffer.is_c_contiguous() {
         return Err(PyValueError::new_err("SRF buffer must be C-contiguous"));
@@ -66,7 +66,7 @@ pub fn parse_srf(py: Python<'_>, buffer: PyBuffer<u8>) -> PyResult<Py<PySrfFile>
 #[pyfunction]
 /// # Errors
 ///
-/// If the file cannot be opened or written.
+/// If opening or writing the file fails.
 pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) -> PyResult<()> {
     let srf = py_srf_file.borrow(py);
     let metadata = srf.metadata.borrow(py);
@@ -74,9 +74,10 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
 
     let planes: Vec<SrfPlane> = srf.planes.iter().map(|plane| *plane.borrow(py)).collect();
 
-    // Readonly borrows of the numpy buffers, so nothing large is copied between Python
-    // and Rust. The guards have to outlive the slices taken from them, which is why
-    // they are bound to named locals here rather than inside the struct literal.
+    // Readonly borrows of the numpy buffers, and no large copy between Python and
+    // Rust. The guards must stay in scope as long as the slices taken from them.
+    // Named locals here, rather than temporaries inside the struct literal, keep them
+    // in scope.
     //
     // The view's name is an argument because a `let` introduced inside a macro is
     // hygienic and would not be visible here.
@@ -96,8 +97,8 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     let density = metadata.density.as_ref().map(|arr| arr.bind(py).readonly());
     let row_ptr = slipt1.row_ptr.bind(py).readonly();
     let data = slipt1.data.bind(py).readonly();
-    // Absent unless a caller went out of its way to supply it, and the writer does not
-    // read it either way -- `srf_writer` walks `row_ptr` and `data`. See `PyCsrMatrix`.
+    // Absent unless a caller went out of its way to supply it, and the writer doesn't
+    // read it either way: `srf_writer` walks `row_ptr` and `data`. See `PyCsrMatrix`.
     let indices = slipt1
         .indices
         .as_ref()

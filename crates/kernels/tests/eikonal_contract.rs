@@ -1,26 +1,26 @@
 //! What any first-arrival solver must satisfy, whatever scheme it uses.
 //!
-//! Carried from the port's contract and made generative: every property below is
-//! quantified over generated grid shapes, spacings, slowness fields and seed sets,
-//! because a property asserted at a single point is a smoke test, not a contract.
-//! Accuracy is judged against **analytic truth** on the two media where truth is
-//! known — uniform, and a constant gradient — never against another solver.
+//! Taken from the port's contract and made generative. Every property below quantifies
+//! over generated grid shapes, spacings, slowness fields and seed sets, because a
+//! property asserted at one point is only a smoke test. The accuracy tests compare
+//! against **analytic truth** on the two media whose truth has a closed form (uniform,
+//! and a constant gradient), never against another solver.
 //!
-//! # What is asserted, and what is deliberately not
+//! # Asserted properties, and properties deliberately left out
 //!
-//! Several plausible-sounding properties are false for a discrete solution and are
-//! called out here rather than left for someone to add:
+//! Several plausible-sounding properties are false for a discrete solution, and this
+//! list names them rather than leaving them for someone to add:
 //!
 //! - **"Travel time increases with distance from the source"** is false in a
-//!   heterogeneous medium — a fast channel reaches a distant cell before a slow one
-//!   nearby. The correct universal statement is *causality*: every cell has a
+//!   heterogeneous medium: the front arrives at a distant cell through a fast channel
+//!   before it arrives at a slow one nearby. The correct universal statement is *causality*: every cell has a
 //!   neighbour that ruptured earlier.
 //! - **The Lipschitz bound `|T(a) − T(b)| ≤ ‖a − b‖₂ · s_max`** holds for the
-//!   viscosity solution and is violated by a first-order scheme by ~20% on the
-//!   diagonal — legitimate discretisation error, not a bug. Only the *neighbour* form
+//!   viscosity solution, and a first-order scheme violates it by ~20% on the diagonal.
+//!   That's ordinary discretisation error. Only the *neighbour* form
 //!   is sharp.
-//! - **Mesh convergence on max relative error** does not converge: the worst cell
-//!   sits at a fixed grid offset from the source, so its relative error is
+//! - **Mesh convergence on max relative error** doesn't converge: the worst cell
+//!   lies at a fixed grid offset from the source, so its relative error is
 //!   resolution-independent. Absolute error is what converges.
 
 mod common;
@@ -63,12 +63,12 @@ proptest! {
 
     /// A multi-seed solve is the pointwise minimum of its single-seed solves.
     ///
-    /// The property the seed contract rests on: first arrival from
-    /// several sources *is* the minimum over sources. Today the implementation
-    /// solves per seed and combines, so this is exact to the bit — asserted that
-    /// tightly on purpose, because this test is the contract a future single-pass
-    /// multi-source sweep has to meet, and whoever writes one will have to loosen
-    /// this equality *here*, with the tolerance argued in front of them.
+    /// The seed contract rests on this: first arrival from several sources equals the
+    /// minimum over sources. The solver solves per seed and combines, so this is
+    /// exact to the bit. The test asserts it that tightly on purpose: it's the
+    /// contract a future single-pass multi-source sweep has to meet, and whoever
+    /// writes one has to loosen this equality *here*, with the tolerance argued in
+    /// front of them.
     #[test]
     fn a_multi_seed_solve_is_the_min_of_its_single_seed_solves(grid in grid(4)) {
         let combined = solve(&grid);
@@ -91,12 +91,11 @@ proptest! {
         }
     }
 
-    /// No seed's cell ruptures after the time it was seeded at — and with one seed,
-    /// it ruptures exactly then.
+    /// No seed's cell ruptures after its seed time, and with one seed, it ruptures
+    /// exactly then.
     ///
-    /// The inequality is the multi-seed statement: an earlier wavefront is allowed
-    /// to sweep past a later seed, and then the seed's `t0` is not the first
-    /// arrival there.
+    /// The inequality covers several seeds. An earlier wavefront may sweep past a later
+    /// seed, and then the seed's `t0` isn't the first arrival there.
     #[test]
     fn a_seed_never_ruptures_after_its_own_start_time(grid in grid(4)) {
         let times = solve(&grid);
@@ -113,12 +112,12 @@ proptest! {
         }
     }
 
-    /// Every non-seed cell has a neighbour that ruptured before it.
+    /// A non-seed cell always has a neighbour that ruptured before it.
     ///
     /// The correct form of "the front expands outward". Distance monotonicity is
-    /// *false* here: in a heterogeneous medium a fast channel reaches a far cell
-    /// before a slow one nearby. Causality is not — a first arrival came from
-    /// somewhere, and on a four-connected grid that somewhere is a face neighbour.
+    /// *false* here: in a heterogeneous medium the front arrives at a far cell through
+    /// a fast channel before it arrives at a slow one nearby. Causality holds: a first
+    /// arrival came from somewhere, and on a four-connected grid that somewhere is a face neighbour.
     #[test]
     fn every_cell_ruptures_after_a_neighbour(grid in grid(3)) {
         let times = solve(&grid);
@@ -170,15 +169,14 @@ proptest! {
         }
     }
 
-    /// First arrival is sandwiched between the straight line and the lattice path.
+    /// First arrival lies between the straight line and the lattice path.
     ///
-    /// The strongest check available on a medium with no closed-form solution, and
-    /// the one that catches the errors worth catching: speed used where slowness
-    /// belongs, an axis's spacing on the wrong axis, the seed in the wrong cell.
-    /// Above: the axis-only path is *a* path, so first arrival cannot beat it.
-    /// Below: no path is shorter than the straight line and none faster than the
-    /// medium's fastest cell, less one cell's slack for how the seed cell itself is
-    /// discretised.
+    /// The strongest check available on a medium with no closed-form solution. It
+    /// catches speed used where slowness belongs and an axis's spacing on the wrong
+    /// axis, as well as a seed in the wrong cell. Upper bound: the axis-only path is
+    /// *a* path, and first arrival can't be later. Lower bound: the straight line at the
+    /// medium's minimum slowness, less one cell's slack for the discretisation of the
+    /// seed cell.
     #[test]
     fn arrival_is_between_the_straight_line_and_the_lattice_path(grid in grid(3)) {
         let times = solve(&grid);
@@ -251,7 +249,7 @@ proptest! {
 
     /// On a uniform medium the solver is exact: `T = t0 + s·distance`, every cell.
     ///
-    /// The factorisation's designed-in case — `τ ≡ 1` satisfies the discrete
+    /// The factorisation's designed-in case: `τ ≡ 1` satisfies the discrete
     /// equations at any spacing, square cells or not, so the error is rounding, not
     /// truncation. Asserted at 1e-9 relative rather than the ~1e-14 measured,
     /// because the reference below accumulates its distance in a different order
@@ -305,8 +303,8 @@ fn gradient_slowness(cells: usize, h: f64, v0: f64, g: f64) -> Vec<f64> {
 ///
 /// with `d` the straight-line distance and `v₁`, `v₂` the speeds at the two
 /// endpoints. It depends on the endpoints' *depths* only through their speeds, not
-/// on the path — which is what makes it usable as a per-cell reference, and it is an
-/// analytic solution rather than a re-implementation of the subject (rule 5).
+/// on the path, which makes it usable as a per-cell reference. It's an analytic
+/// solution rather than a second copy of the code under test (rule 5).
 fn gradient_arrival_s(cell: (usize, usize), seed: (usize, usize), h: f64, v0: f64, g: f64) -> f64 {
     let speed_at = |depth_cells: usize| v0 + g * exact(depth_cells) * h;
     let distance = distance_km(cell, seed, (h, h));
@@ -348,14 +346,14 @@ proptest! {
 
     /// Halving the spacing at least halves the error: first-order convergence.
     ///
-    /// The discriminating accuracy measurement. A uniform medium rewards any scheme
-    /// that is exact for plane waves; a gradient bends the rays into circular arcs
-    /// and asks whether the scheme reproduces curvature. This is the check that
-    /// told the two rejected solvers apart from the one that ships (`DEFECTS.md`
-    /// 19): a scheme polluted by the source singularity does not converge at all.
-    /// The bound is loose on purpose — 1.5 against a measured 2.0, where both
-    /// rejected solvers sat at 1.01 and 1.03. Quantified over crustal-looking
-    /// profiles, 1.5–3 km/s at the surface gaining 30–90 m/s per km.
+    /// The discriminating accuracy measurement. Any scheme exact for plane waves passes
+    /// on a uniform medium, but a gradient bends the rays into circular arcs and tests
+    /// whether the scheme reproduces curvature. This check separated the two rejected
+    /// solvers from the one in use (`DEFECTS.md` 19): a scheme polluted by the source
+    /// singularity doesn't converge at all. The bound is loose on purpose: 1.5
+    /// against a measured 2.0, where the rejected solvers scored 1.01 and 1.03. The
+    /// test quantifies over crustal-looking profiles, 1.5 to 3 km/s at zero depth
+    /// and gaining 30 to 90 m/s per km.
     #[test]
     fn the_gradient_error_converges_at_first_order(v0 in 1.5_f64..3.0, g in 0.03_f64..0.09) {
         let (coarse, _) = gradient_error(33, 1.0, v0, g);
@@ -373,9 +371,9 @@ proptest! {
 /// The round count is a property of the medium, not of the mesh.
 ///
 /// Zhao's alternating orderings exist to give this: each ordering follows one family
-/// of characteristics, so a fixed number of sweeps covers every ray direction however
-/// fine the grid. It is the whole basis for the O(N) claim — a solver whose rounds
-/// grew with the grid would be O(N log N) at best.
+/// of characteristics, and a fixed number of sweeps handles each ray direction
+/// however fine the grid. The O(N) claim rests on this. A solver whose rounds grew
+/// with the grid would be O(N log N) at most.
 #[test]
 fn the_sweep_count_does_not_grow_with_the_mesh() {
     let counts: Vec<(usize, usize)> = [(33, 1.0), (65, 0.5), (129, 0.25)]
@@ -394,17 +392,16 @@ fn the_sweep_count_does_not_grow_with_the_mesh() {
 
 /// A high-contrast medium settles, and settles on the round-off-free answer.
 ///
-/// The regression this exists for: the sweep's stopping test had no tolerance, so a
-/// strict `<` on `f64` kept it iterating while sweeps shaved femtoseconds off, and the
-/// round limit tripped on round-off rather than on the medium. Measured on the shipped
-/// Wellington `Ohariu` segment, three of its seventeen rounds were spent on improvements
-/// below 1e-8 s, and the same three-round tail appeared at every contrast from 3.3x to
+/// This test exists for a regression. The sweep's stopping test had no tolerance, and
+/// a strict `<` on `f64` kept it iterating while sweeps shaved femtoseconds off. The
+/// round limit then tripped on round-off rather than on the medium. On the Wellington
+/// `Ohariu` segment, three of its seventeen rounds went on improvements below 1e-8 s, and the same three-round tail appeared at every contrast from 3.3x to
 /// 26x. Widening the rupture velocity band onto the supershear branch took that segment's
 /// contrast to 26x and pushed it past a limit of 16.
 ///
-/// The contrast here is built from the band the generator actually permits --
-/// `0.25 Vs` to `sqrt(2) Vs` over a shear speed varying by a factor of four with depth,
-/// which is about 23x -- rather than from a number chosen to pass.
+/// The test builds its contrast from the band the generator permits (`0.25 Vs` to
+/// `sqrt(2) Vs` over a shear speed varying by a factor of four with depth, about 23x)
+/// rather than from a number chosen to pass.
 #[test]
 fn a_high_contrast_medium_settles_well_inside_the_round_limit() {
     let (ni, nj) = (120, 200);
@@ -440,13 +437,13 @@ fn a_high_contrast_medium_settles_well_inside_the_round_limit() {
         rounds + 4 <= 64,
         "settled in {rounds} rounds, leaving under four rounds of headroom"
     );
-    // The seed keeps its own time exactly, and nothing precedes it.
+    // The seed's arrival is its own time exactly, and nothing precedes it.
     assert!((times[seed.i * nj + seed.j] - 20.0).abs() < 1.0e-9);
     assert!(times.iter().all(|t| t.is_finite() && *t >= 20.0 - 1.0e-9));
 }
 
 // ---------------------------------------------------------------------------------
-// Refusals: bad inputs are named, not solved around
+// Refusals: the solver names bad inputs rather than solving around them
 // ---------------------------------------------------------------------------------
 
 const OK_SLOWNESS: f64 = 0.4;

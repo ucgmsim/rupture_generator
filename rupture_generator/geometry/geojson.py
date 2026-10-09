@@ -2,9 +2,9 @@
 
 A fault system is one ``FeatureCollection``. Each ``Feature`` is a section: a named
 surface trace as a ``LineString`` in WGS84 longitude and latitude (:rfc:`7946`), hung
-on one dip and one depth range. That is OpenQuake's ``simpleFaultSource`` and the
-data model of the GEM, USGS and New Zealand hazard models, so a hazard model's file
-loads here and opens in QGIS. A section whose dip changes along strike is two
+on one dip and one depth range. OpenQuake's ``simpleFaultSource`` and the GEM, USGS
+and New Zealand hazard models share this data model, so a hazard model's file loads
+here and opens in QGIS. A section whose dip changes along strike is two
 sections.
 """
 
@@ -40,7 +40,22 @@ _GEOD = pyproj.Geod(ellps="WGS84")
 
 @dataclass(frozen=True)
 class Segment:
-    """One planar fault section, its trace ordered so the fault dips to the right."""
+    """One fault section, its trace ordered so the fault dips to the right.
+
+    Attributes
+    ----------
+    trace : TraceArray
+        The fault's trace on the ground, ``(n+1, 2)``, in WGS84 longitude and
+        latitude. Each consecutive pair of points is one plane.
+    name : str
+        The section's name, unique within its file.
+    dip_deg : float
+        Dip from horizontal in degrees, in ``(0, 90]``.
+    upper_depth_km : float
+        Depth of the top edge in kilometres.
+    lower_depth_km : float
+        Depth of the bottom edge in kilometres.
+    """
 
     trace: TraceArray
     name: str
@@ -52,16 +67,27 @@ class Segment:
     def from_feature(
         cls, feature: Mapping[str, Any], aliases: Mapping[str, str] | None = None
     ) -> Self:
-        """A segment from a GeoJSON ``Feature`` with a ``LineString`` trace.
+        """Read a segment from a GeoJSON ``Feature`` with a ``LineString`` trace.
 
-        ``aliases`` renames properties before they are read; pass
-        :data:`NSHM_ALIASES` for a New Zealand hazard model file.
+        Parameters
+        ----------
+        feature : Mapping[str, Any]
+            The decoded ``Feature``. Its properties give ``name``, ``dip_deg``,
+            ``dip_direction_deg``, ``upper_depth_km`` and ``lower_depth_km``.
+        aliases : Mapping[str, str] or None
+            Property names to rename before reading them. Pass :data:`NSHM_ALIASES`
+            for a New Zealand hazard model file.
+
+        Returns
+        -------
+        Self
+            The section, its trace reversed if needed so the fault dips to the right.
 
         Raises
         ------
         RuptureGeneratorError
-            For a missing property, a dip outside ``(0, 90]``, a depth range that does
-            not reach downward, or a dip direction that does not pick one side of every
+            For a missing property, a dip outside ``(0, 90]``, a depth range that fails
+            to reach downward, or a dip direction that fails to pick one side of every
             plane.
         """
         properties = {
@@ -93,7 +119,7 @@ class Segment:
                 f"{name}: the trace is shaped {trace.shape}; it wants at least two "
                 "longitude, latitude pairs"
             )
-        # Each plane's strike on the ellipsoid; the dip direction only picks a side.
+        # Each plane's strike on the ellipsoid. The dip direction only picks a side.
         strikes_deg, _, _ = _GEOD.inv(
             trace[:-1, 0], trace[:-1, 1], trace[1:, 0], trace[1:, 1]
         )
@@ -123,11 +149,21 @@ class Segment:
         )
 
     def to_geometry(self, transformer: pyproj.Transformer) -> Geometry:
-        """The coarsest chart: one cell per plane, each plane keeping its own seam.
+        """Build the coarsest chart, with one cell per plane.
 
-        ``transformer`` takes WGS84 longitude and latitude to the projected CRS, in
-        metres. Each plane hangs perpendicular to its own projected strike.
-        :meth:`Geometry.subdivide` cuts the chart to a working resolution.
+        Each plane has its own column of nodes at the junction with the next, and
+        hangs perpendicular to its own projected strike. :meth:`Geometry.subdivide`
+        cuts the chart to a working resolution.
+
+        Parameters
+        ----------
+        transformer : pyproj.Transformer
+            Takes WGS84 longitude and latitude to the projected CRS, in metres.
+
+        Returns
+        -------
+        Geometry
+            The chart, in kilometres in the projected CRS.
         """
         east_m, north_m = transformer.transform(self.trace[:, 0], self.trace[:, 1])
         trace_km = np.column_stack([east_m, north_m]) / 1000.0
@@ -147,7 +183,8 @@ class Segment:
         surface = np.column_stack(
             [trace_km, np.full(len(trace_km), self.upper_depth_km)]
         )
-        # Each plane's near then far node, so every plane carries its own seam.
+        # Each plane's near then far node, so each plane has its own nodes at the
+        # junction with the next.
         top = np.stack([surface[:-1], surface[1:]], axis=1).reshape(-1, 3)
         bottom = top + np.repeat(down, 2, axis=0)
         planes = len(steps_km)
@@ -163,14 +200,27 @@ def geometry_from_geojson(
 ) -> dict[str, Geometry]:
     """Read a ``FeatureCollection`` of sections into coarse charts, keyed by name.
 
-    ``crs`` is the projected frame the charts are built in, and the one their
-    :class:`~rupture_generator.rupture.realisation.Realisation` records.
+    Parameters
+    ----------
+    handle : TextIO
+        The open GeoJSON document.
+    crs : pyproj.CRS
+        The projected frame to build the charts in, which their
+        :class:`~rupture_generator.rupture.realisation.Realisation` then records.
+    aliases : Mapping[str, str] or None
+        Property names to rename before reading them, as in
+        :meth:`Segment.from_feature`.
+
+    Returns
+    -------
+    dict[str, Geometry]
+        One coarse chart per section, keyed by section name.
 
     Raises
     ------
     RuptureGeneratorError
-        If the document is not a collection of ``LineString`` sections, or two
-        sections share a name.
+        Unless the document is a collection of ``LineString`` sections with distinct
+        names.
     """
     transformer = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 

@@ -1,15 +1,15 @@
 """A drawn rupture as a Standard Rupture Format file, written and read back.
 
-Version 2.0, which carries each point's shear speed and density. The SRF is in CGS --
-slip in centimetres, area in square centimetres, slip rate and shear speed in
-centimetres per second, density in grams per cubic centimetre -- and this module is
-the only place those units appear. Depth stays in kilometres and positions are WGS84
-longitude and latitude.
+Version 2.0, which records each point's shear speed and density. The SRF is in CGS.
+Slip is in centimetres and area in square centimetres. Slip rate and shear speed are
+in centimetres per second, and density is in grams per cubic centimetre. This module is the only
+place those units appear. Depth stays in kilometres and positions are WGS84 longitude
+and latitude.
 
-Every plane of every segment is one SRF plane, in the order the segments were drawn.
-Its points run down dip in rows, strike fastest, as the format orders them. A plane's
-strike is the geodesic azimuth along its top edge, so the projection's grid
-convergence never reaches the file.
+Every plane of every segment is one SRF plane, in the order :func:`generate` drew the
+segments. Its points run down dip in rows, with the along-strike index varying first,
+as the format orders them. A plane's strike is the geodesic azimuth along its top
+edge, so the projection's grid convergence never reaches the file.
 """
 
 import dataclasses
@@ -66,9 +66,9 @@ def _planes(
 ) -> tuple[list[PySrfPlane], list[float]]:
     """One header per plane, and each plane's strike for its points.
 
-    ``hypocentre`` is the realisation's if it lies on this segment, and only the plane
-    holding it gets a ``shyp`` and ``dhyp``: along strike from the plane's top centre,
-    and down dip from its top edge.
+    ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
+    it gets a ``shyp`` and ``dhyp``, along strike from the plane's top centre and down
+    dip from its top edge, and every other plane gets neither.
     """
     arc_km = geometry.strike_arc_km
     width_km = float(geometry.dip_arc_km[-1])
@@ -112,8 +112,10 @@ def _planes(
 
 
 def _plane_major(geometry: Geometry, field: CellArray) -> np.ndarray:
-    """A cell field flattened in SRF order: plane by plane, then dip rows, strike
-    fastest."""
+    """A cell field flattened in SRF order.
+
+    Plane by plane, then dip rows, with the along-strike index varying first.
+    """
     return np.concatenate(
         [field[:, columns].ravel() for columns in _plane_slices(geometry)]
     )
@@ -129,8 +131,19 @@ def write_rupture(
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
 
-    ``beta`` is the Liu-Archuleta-Hartzell rising fraction per cell, by segment; a
-    segment without one gets a single-sample impulse per subfault.
+    Parameters
+    ----------
+    path : str
+        Where to write the file.
+    realisation : Realisation
+        The fault system, for its projection and its hypocentre.
+    ruptures : Mapping of str to SegmentRupture
+        The drawn segments by name, written in the mapping's order.
+    dt_s : float
+        The slip-rate sample interval in seconds.
+    beta : Mapping of str to CellArray, optional
+        The Liu-Archuleta-Hartzell rising fraction per cell, by segment. A segment
+        without one gets a single-sample impulse per subfault.
 
     Raises
     ------
@@ -230,10 +243,40 @@ def write_rupture(
 class SrfRupture:
     """An SRF read back in SI: one array per point column, in file order.
 
-    Positions are WGS84 degrees and depth in kilometres; ``hypocentre`` is
-    ``(longitude, latitude, depth_km)``, or ``None`` if no plane records one. Point
-    ``k``'s slip rate is ``pulses_m_s[pulse_offsets[k]:pulse_offsets[k + 1]]``, from
-    its own onset at ``dt_s[k]``, kept in single precision as the file holds it.
+    Parameters
+    ----------
+    planes : list of PySrfPlane
+        The plane headers, as the file states them.
+    hypocentre : tuple of float or None
+        ``(longitude, latitude, depth_km)``, or ``None`` if no plane records one.
+    lon_deg, lat_deg : np.ndarray
+        Each point's WGS84 longitude and latitude in degrees.
+    depth_km : np.ndarray
+        Each point's depth in kilometres.
+    strike_deg, dip_deg : np.ndarray
+        Each point's strike and dip in degrees.
+    area_m2 : np.ndarray
+        Each point's area in square metres.
+    onset_s : np.ndarray
+        When each point starts to slip, in seconds.
+    dt_s : np.ndarray
+        Each point's slip-rate sample interval in seconds.
+    rake_deg : np.ndarray
+        Each point's rake in degrees.
+    slip_m : np.ndarray
+        Each point's slip, in metres.
+    rise_time_s : np.ndarray
+        Each point's rise time in seconds.
+    shear_speed_km_s : np.ndarray
+        The shear speed at each point in kilometres per second.
+    density_g_cm3 : np.ndarray
+        The density at each point in grams per cubic centimetre.
+    pulse_offsets : np.ndarray
+        Row offsets into ``pulses_m_s``: point ``k``'s slip rate is
+        ``pulses_m_s[pulse_offsets[k]:pulse_offsets[k + 1]]``, from its own onset.
+    pulses_m_s : np.ndarray
+        Every point's slip rate in metres per second, end to end, in single precision
+        as the file holds it.
     """
 
     planes: list[PySrfPlane]
@@ -256,7 +299,7 @@ class SrfRupture:
 
     @property
     def rigidity_pa(self) -> np.ndarray:
-        """Each point's rigidity, from the file's own shear speed and density."""
+        """np.ndarray: Each point's rigidity in pascals, from the file's own rock."""
         return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
 
 
@@ -274,23 +317,33 @@ def _hypocentre(plane: PySrfPlane) -> tuple[float, float, float]:
 def read_rupture(path: str | Path) -> SrfRupture:
     """Read a version 2 SRF, as :func:`write_rupture` writes, into SI.
 
-    Only ``slip1`` is read: this package writes no other component.
+    Only the ``slip1`` component comes back, the only one this package writes.
+
+    Parameters
+    ----------
+    path : str or Path
+        The SRF to read.
+
+    Returns
+    -------
+    SrfRupture
+        The file's points and pulses, in SI.
 
     Raises
     ------
     RuptureGeneratorError
-        If the file is not an SRF, or is version 1 and so carries no rock.
+        If the file isn't an SRF, or is version 1 and so lacks the rock.
     OSError
-        If the file cannot be read.
+        If reading the file fails.
     """
     try:
         srf = parse_srf(Path(path).read_bytes())
     except ValueError as error:
         raise RuptureGeneratorError(f"{path}: {error}") from None
     points = srf.metadata
-    if points.vs is None:
+    if points.vs is None or points.density is None:
         raise RuptureGeneratorError(
-            f"{path} is a version 1 SRF, which carries no shear speed or density"
+            f"{path} is a version 1 SRF, which records no shear speed or density"
         )
     pulses = srf.slipt1.data
     pulses /= CM_PER_M

@@ -5,9 +5,9 @@ use crate::py_record;
 use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
 
 py_record! {
-    // `Copy` is safe: every field is a scalar, and it is what lets `write_srf`
-    // read a plane out of its `Py<SrfPlane>` with a dereference rather than a
-    // clone or a field-by-field rebuild.
+    // `Copy` is safe because every field is a scalar. It lets `write_srf` read a
+    // plane out of its `Py<SrfPlane>` with a dereference rather than a clone or a
+    // field-by-field rebuild.
     #[pyclass(name = "PySrfPlane", from_py_object)]
     #[derive(Debug, Copy, Clone)]
     SrfPlane {
@@ -32,14 +32,14 @@ impl SrfPlane {
 }
 
 /// CSR matrix over any storage: `Vec`s when parsing (the parser appends), or
-/// borrowed slices when writing data that another allocator (e.g. numpy) owns.
+/// borrowed slices when writing data that another allocator (numpy, say) owns.
 ///
 /// `row_ptr` follows the scipy `indptr` convention: an n-row matrix has n+1
-/// entries, `row_ptr[0] == 0`, `row_ptr[n] == data.len()`, and row i occupies
-/// `data[row_ptr[i]..row_ptr[i + 1]]`. This holds after every `add_row`, so the
-/// matrix can be handed to scipy or iterated at any point without a fixup pass.
-/// `indices` is filled by the parser, for a caller that wants to hand the result to
-/// `scipy.sparse`, and is **empty on the write path** -- writing needs `row_ptr` and
+/// entries, `row_ptr[0] == 0`, `row_ptr[n] == data.len()`, and row `i` occupies
+/// `data[row_ptr[i]..row_ptr[i + 1]]`. This holds after every `add_row`. At any
+/// point the matrix is ready for scipy, or for iteration, without a fixup pass.
+/// The parser fills `indices` for a caller that wants to hand the result to
+/// `scipy.sparse`. It stays **empty on the write path**: writing needs `row_ptr` and
 /// `data` only, and one `usize` per sample is gigabytes on a large rupture. Nothing
 /// in [`crate::srf_writer`] reads it.
 #[derive(Debug)]
@@ -87,17 +87,17 @@ impl CsrMatrix {
     /// Append one point's slip-rate pulse.
     ///
     /// Column `i` is the `i`th sample **of the pulse**, not of the rupture. The
-    /// onset time lives in `tinit`, as a float, and is not folded in here.
+    /// onset time is a float in `tinit` and plays no part in the column index.
     ///
-    /// It used to be. `add_row` took a `starting` column of `floor(tinit / dt)` and
-    /// placed the samples there, which quantised every onset to a sample boundary --
-    /// a pulse starting at 1.003 s with `dt = 0.005` was written at 1.000 s. It also
+    /// It once did. `add_row` took a `starting` column of `floor(tinit / dt)` and
+    /// placed the samples there, which quantised every onset to a sample boundary:
+    /// a pulse starting at 1.003 s with `dt = 0.005` began at 1.000 s instead. It also
     /// made the matrix as wide as the whole rupture rather than as wide as its
     /// longest pulse, and needed a guard against a negative `tinit` casting to a huge
     /// index.
     ///
-    /// Relative columns remove all three, and they are the layout the rupture
-    /// generator already produces.
+    /// Relative columns remove all three problems, and the rupture generator already
+    /// produces that layout.
     pub fn add_row<I>(&mut self, values: I)
     where
         I: Iterator<Item = f32>,
@@ -137,8 +137,8 @@ impl<'a> Iterator for CsrRowIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let i = self.index;
-        // n rows are described by n+1 row_ptr entries, so the last valid row
-        // index is row_ptr.len() - 2.
+        // n+1 row_ptr entries describe n rows. The last valid row index is
+        // row_ptr.len() - 2.
         if i + 1 >= self.row_ptr.len() {
             return None;
         }
@@ -193,7 +193,7 @@ mod csr_tests {
 
     /// Every row starts at column zero, whatever its onset time.
     ///
-    /// This test used to assert the opposite: rows were placed at
+    /// This test used to assert the opposite: `add_row` put each row at
     /// `floor(tinit / dt)` on a shared timeline, so two pulses with different onsets
     /// occupied different columns and the matrix was as wide as the whole rupture.
     /// The onset is a float in the metadata now, so nothing quantises it and the
@@ -215,8 +215,8 @@ mod csr_tests {
         assert_eq!(rows, vec![&[1.0f32, 2.0][..], &[][..], &[3.0][..]]);
     }
 
-    // The bug this guards: a trailing empty phantom row, previously produced by
-    // iterating a finalised row_ptr and masked downstream by zip().
+    // This guards against a trailing empty phantom row, which iterating a finalised
+    // row_ptr used to produce and zip() masked downstream.
     #[test]
     fn finalise_does_not_change_the_rows() {
         let mut matrix = build(&[&[1.0, 2.0], &[3.0]]);
@@ -250,11 +250,11 @@ mod csr_tests {
 /// conversion into `PySrfMetadata`. Nothing but care kept the eight in step, and
 /// several of them would still compile with a field quietly reading the wrong column.
 ///
-/// `$first` is taken separately because the iterator needs one column to measure its
+/// The macro takes `$first` separately because the iterator needs one column to measure its
 /// own length against, and picking it out is what lets every other use be uniform.
 macro_rules! point_columns {
     ($first:ident, $($rest:ident),* $(,)?) => {
-        /// One point: a row of the SRF's point block.
+        /// One point, a row of the SRF's point block.
         #[derive(Debug, Copy, Clone)]
         pub struct Point {
             pub $first: f32,
@@ -332,8 +332,8 @@ macro_rules! point_columns {
                     PySrfMetadata {
                         $first: PyArray1::from_vec(py, self.$first).unbind(),
                         $($rest: PyArray1::from_vec(py, self.$rest).unbind(),)*
-                        // Not columns of the point block: an SRF carries them only
-                        // when a velocity model was written alongside it.
+                        // Not columns of the point block: an SRF has them only when
+                        // its writer had a velocity model to record.
                         vs: None,
                         density: None,
                     },

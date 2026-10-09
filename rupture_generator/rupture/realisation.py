@@ -1,3 +1,5 @@
+"""The fault system a rupture runs over, with its hypocentre and triggering tree."""
+
 import dataclasses
 import graphlib
 from collections.abc import Iterator, Mapping
@@ -12,8 +14,17 @@ from rupture_generator.geometry import Geometry
 class Hypocentre:
     """Where the rupture nucleated: a segment, and two arc lengths on its chart.
 
-    Arc lengths rather than indices, so the hypocentre survives the chart being recut
-    at a different resolution.
+    The position is two arc lengths, not two cell indices. Recutting the chart at a
+    different resolution leaves it where it was.
+
+    Attributes
+    ----------
+    segment : str
+        The segment the rupture starts on.
+    strike_km : float
+        Distance along strike from the chart's first edge, in kilometres.
+    dip_km : float
+        Distance down dip from the chart's top edge, in kilometres.
     """
 
     segment: str
@@ -24,7 +35,23 @@ class Hypocentre:
     def from_fractions(
         cls, segment: str, geometry: Geometry, strike: float, dip: float
     ) -> Hypocentre:
-        """A hypocentre at fractions of a chart's extent along strike and down dip.
+        """Place a hypocentre at fractions of a chart's extent.
+
+        Parameters
+        ----------
+        segment : str
+            The segment the rupture starts on.
+        geometry : Geometry
+            That segment's chart.
+        strike : float
+            Fraction of the chart's length along strike, in ``[0, 1]``.
+        dip : float
+            Fraction of the chart's width down dip, in ``[0, 1]``.
+
+        Returns
+        -------
+        Hypocentre
+            The hypocentre at those fractions, as arc lengths.
 
         Raises
         ------
@@ -45,9 +72,9 @@ class Hypocentre:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Realisation(Mapping[str, Geometry]):
-    """A fault system: its charts, where the rupture starts, and the order it spreads.
+    """A fault system with its charts, its starting point and its triggering order.
 
-    A read-only mapping from segment name to chart.
+    It reads as a mapping from segment name to chart, and nothing changes it.
 
     Attributes
     ----------
@@ -56,11 +83,11 @@ class Realisation(Mapping[str, Geometry]):
     crs : pyproj.CRS
         The projected frame every chart's positions are in.
     hypocentre : Hypocentre or None
-        Where the rupture nucleates. A lone segment needs only this to be drawn.
+        Where the rupture nucleates. A system of one segment needs nothing more.
     tree : Mapping of str to str or None
-        Which segment triggered which, keyed by the child, the hypocentre's segment
-        mapped to ``None``. Empty until propagation; otherwise one tree over exactly
-        the segments.
+        Each segment's parent, the one that triggered it. The hypocentre's segment
+        maps to ``None``. It's empty before propagation, and after that it's one tree
+        over exactly the segments.
     """
 
     segments: Mapping[str, Geometry]
@@ -133,11 +160,33 @@ class Realisation(Mapping[str, Geometry]):
     def propagated(
         self, tree: Mapping[str, str | None], hypocentre: Hypocentre
     ) -> Realisation:
-        """This realisation with where it starts and how it spreads recorded."""
+        """Record where the rupture starts and how it spreads.
+
+        Parameters
+        ----------
+        tree : Mapping of str to str or None
+            Each segment's parent, with ``None`` for the hypocentre's segment.
+        hypocentre : Hypocentre
+            Where the rupture nucleates.
+
+        Returns
+        -------
+        Realisation
+            A copy of this realisation with the tree and hypocentre set.
+        """
         return dataclasses.replace(self, tree=tree, hypocentre=hypocentre)
 
     def in_causal_order(self) -> Iterator[tuple[str, str | None, Geometry]]:
-        """Segments parents-first, so a child's parent has always been visited.
+        """Walk the segments parents-first.
+
+        Each segment comes after the one that triggered it, so a caller drawing
+        them in this order has always drawn the parent already.
+
+        Yields
+        ------
+        tuple of (str, str or None, Geometry)
+            The segment's name, its parent's name (``None`` for the hypocentre's
+            segment) and its chart.
 
         Raises
         ------
