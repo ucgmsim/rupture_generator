@@ -10,11 +10,13 @@ a pure function of position and testable on its own. The functions below build o
 closing over a model, and :func:`sample_materials` runs them over a chart.
 
 Units follow the field names. Shear speed is kilometres per second and density grams
-per cubic centimetre, which is how a 1-D velocity model is written down; rigidity comes
-out in pascals, and the single ``1e9`` in :func:`rigidity_pa` is the whole conversion.
+per cubic centimetre, which is how a 1-D velocity model is written down; rigidity is
+derived from them in pascals, and the single ``1e9`` in :attr:`Materials.rigidity_pa`
+is the whole conversion.
 """
 
 import dataclasses
+import functools
 from collections.abc import Callable
 
 import numpy as np
@@ -44,8 +46,8 @@ class Materials:
     ----------
     shear_speed_km_s : CellArray
         What the front's speed is a fraction of.
-    rigidity_pa : CellArray
-        What the moment is counted in.
+    density_g_cm3 : CellArray
+        With the shear speed, what the rigidity the moment is counted in comes from.
     rise_time_factor : CellArray or float
         The relative rise time, 1 where it is unmodified: any depth dependence of the
         pulse length is prescribed here.
@@ -57,7 +59,7 @@ class Materials:
     """
 
     shear_speed_km_s: CellArray
-    rigidity_pa: CellArray
+    density_g_cm3: CellArray
     rise_time_factor: CellArray | float = 1.0
     rise_time_slip_weight: CellArray | float = 1.0
 
@@ -70,12 +72,21 @@ class Materials:
                 f"{float(weight.max()):.3g}; a weight lies in [0, 1]"
             )
 
+    @functools.cached_property
+    def rigidity_pa(self) -> CellArray:
+        """Rigidity in pascals, :math:`\\mu = \\rho v_s^2`.
+
+        In the velocity model's own units of km/s and g/cm^3, carried to SI by a single
+        factor. Crustal rock is about 3e10 Pa.
+        """
+        return self.density_g_cm3 * self.shear_speed_km_s**2 * PA_PER_KM_S_SQUARED_G_CM3
+
 
 def sample_materials(
     geometry: Geometry,
     *,
     shear_speed_km_s: CellSampler,
-    rigidity_pa: CellSampler,
+    density_g_cm3: CellSampler,
     rise_time_factor: CellSampler | None = None,
     rise_time_slip_weight: CellSampler | None = None,
 ) -> Materials:
@@ -106,23 +117,8 @@ def sample_materials(
     }
     return Materials(
         shear_speed_km_s=sample("shear_speed_km_s", shear_speed_km_s),
-        rigidity_pa=sample("rigidity_pa", rigidity_pa),
+        density_g_cm3=sample("density_g_cm3", density_g_cm3),
         **optional,
-    )
-
-
-def rigidity_pa(
-    shear_speed_km_s: float | np.ndarray, density_g_cm3: float | np.ndarray
-) -> np.ndarray:
-    """Rigidity in pascals, from shear speed and density.
-
-    :math:`\\mu = \\rho v_s^2`, in the velocity model's own units of km/s and g/cm^3,
-    carried to SI by a single factor. Crustal rock is about 3e10 Pa.
-    """
-    return (
-        np.asarray(density_g_cm3, dtype=np.float64)
-        * np.asarray(shear_speed_km_s, dtype=np.float64) ** 2
-        * PA_PER_KM_S_SQUARED_G_CM3
     )
 
 
@@ -264,18 +260,16 @@ def interpolated_sampler(depth_km: np.ndarray, values: np.ndarray) -> CellSample
 def velocity_model(
     layers: Layers, shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray
 ) -> tuple[CellSampler, CellSampler]:
-    """Shear speed and rigidity from one 1-D model, in that order.
+    """Shear speed and density from one 1-D model, in that order::
 
-    One call, so the two cannot disagree about which model they came from::
-
-        speed, rigidity = velocity_model(layers, shear_speed_km_s, density_g_cm3)
-        materials = sample_materials(chart, shear_speed_km_s=speed, rigidity_pa=rigidity)
+    speed, density = velocity_model(layers, shear_speed_km_s, density_g_cm3)
+    materials = sample_materials(
+        chart, shear_speed_km_s=speed, density_g_cm3=density
+    )
     """
-    speed = layers.values("shear_speed_km_s", shear_speed_km_s)
-    density = layers.values("density_g_cm3", density_g_cm3)
     return (
-        layered_1d_sampler(layers, speed, name="shear_speed_km_s"),
-        layered_1d_sampler(layers, rigidity_pa(speed, density), name="rigidity_pa"),
+        layered_1d_sampler(layers, shear_speed_km_s, name="shear_speed_km_s"),
+        layered_1d_sampler(layers, density_g_cm3, name="density_g_cm3"),
     )
 
 
@@ -287,7 +281,6 @@ __all__ = [
     "constant_sampler",
     "interpolated_sampler",
     "layered_1d_sampler",
-    "rigidity_pa",
     "sample_materials",
     "velocity_model",
 ]
