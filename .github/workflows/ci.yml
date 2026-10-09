@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  ci:
+    uses: ucgmsim/meta-ci-action/.github/workflows/ci.yml@v2
+    with:
+      # npdlint parses the package, which needs the interpreter
+      # requires-python names.
+      python-version: "3.14"
+      # `test` and `vis` are extras and `dev` is a dependency group, so both
+      # flags are needed; `vis` brings rerun-sdk, which the viewer tests import.
+      uv-extra-args: "--all-extras --dev"
+      enable-coverage: true
+      cov-package: rupture_generator
+      cov-fail-under: 95

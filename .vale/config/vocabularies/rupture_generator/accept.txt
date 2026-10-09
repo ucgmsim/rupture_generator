@@ -1,0 +1,36 @@
+# Project vocabulary for Vale. One term per line, treated as a regex.
+
+# The project and the tools and formats around it
+rupture-generator
+genslip
+SRF
+TOML
+CRS
+GEM
+USGS
+QGIS
+codec
+toolchain
+docstrings
+
+# Rupture modelling
+[Ss]ubfaults?
+eikonal
+supershear
+circulant
+NORTA
+von
+
+# People and places in the references and examples
+Beroza
+Dieterich
+Landers
+Northridge
+Beavan
+
+# British spelling, the house style
+[Cc]entres?
+[Cc]olou?r(?:s|ed|ing)?
+[Mm]etres?
+[Kk]ilometres?
+[Cc]entimetres?
