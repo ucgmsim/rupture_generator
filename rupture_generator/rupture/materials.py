@@ -89,7 +89,12 @@ class Materials:
         In the velocity model's own units of km/s and g/cm^3, carried to SI by a single
         factor. Crustal rock is about 3e10 Pa.
         """
-        return self.density_g_cm3 * self.shear_speed_km_s**2 * PA_PER_KM_S_SQUARED_G_CM3
+        return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
+
+
+def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.ndarray:
+    """Rigidity in pascals, :math:`\\mu = \\rho v_s^2`, from a velocity model's units."""
+    return density_g_cm3 * shear_speed_km_s**2 * PA_PER_KM_S_SQUARED_G_CM3
 
 
 def sample_materials(
@@ -313,6 +318,7 @@ __all__ = [
     "interpolated_sampler",
     "layered_1d_sampler",
     "ramp_sampler",
+    "rigidity_pa",
     "sample_materials",
     "velocity_model",
 ]

@@ -18,9 +18,11 @@ dependencies = [
 
 [project.scripts]
 rupture-generator = "rupture_generator.cli:main"
+rupture-view = "rupture_generator.view:main"
 
 [project.optional-dependencies]
 test = ["hypothesis>=6.151.0", "pytest>=8", "pytest-cov>=5"]
+vis = ["rerun-sdk>=0.26"]
 
 [dependency-groups]
 dev = ["deptry", "ruff", "ty", "numpydoc", "py-spy"]

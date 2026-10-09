@@ -2,22 +2,19 @@ import numpy as np
 import pyproj
 import pytest
 
-from rupture_generator.formats.srf import NO_HYPOCENTRE, _plane_major, write_rupture
+from rupture_generator import RuptureGeneratorError
+from rupture_generator.formats.srf import (
+    NO_HYPOCENTRE,
+    _plane_major,
+    read_rupture,
+    write_rupture,
+)
 from rupture_generator.srf_parser import parse_srf
 
 
 @pytest.fixture(scope="module")
-def srf(tmp_path_factory, scenario, ruptures):
-    path = tmp_path_factory.mktemp("srf") / "rupture.srf"
-    write_rupture(
-        str(path),
-        scenario.realisation,
-        ruptures,
-        scenario.materials,
-        dt_s=scenario.dt_s,
-        beta=scenario.beta,
-    )
-    return path, parse_srf(path.read_bytes())
+def srf(srf_path):
+    return srf_path, parse_srf(srf_path.read_bytes())
 
 
 def column(ruptures, materials, pick):
@@ -101,3 +98,49 @@ def test_positions_are_the_charts(srf, scenario, ruptures):
     lon, lat = to_lon_lat.transform(east * 1000, north * 1000)
     np.testing.assert_allclose(parsed.metadata.lon, lon, atol=1e-4)
     np.testing.assert_allclose(parsed.metadata.lat, lat, atol=1e-4)
+
+
+def test_the_reader_returns_si(srf_path, srf, scenario):
+    _, parsed = srf
+    rupture = read_rupture(srf_path)
+    np.testing.assert_allclose(rupture.slip_m, parsed.metadata.slip1 / 100.0)
+    np.testing.assert_allclose(rupture.area_m2, parsed.metadata.area * 1e-4)
+    moment = np.sum(rupture.rigidity_pa * rupture.area_m2 * rupture.slip_m)
+    expected = sum(source.moment_nm for source in scenario.sources.values())
+    assert moment == pytest.approx(expected, rel=1e-5)
+
+
+def test_the_reader_finds_the_hypocentre(srf_path, scenario):
+    hypocentre = scenario.realisation.hypocentre
+    chart = scenario.realisation[hypocentre.segment]
+    i, j = chart.cell_at(hypocentre.strike_km, hypocentre.dip_km)
+    to_lon_lat = pyproj.Transformer.from_crs(
+        scenario.realisation.crs, "EPSG:4326", always_xy=True
+    )
+    east, north, depth_km = chart.centres[i, j]
+    lon, lat = to_lon_lat.transform(east * 1000, north * 1000)
+    found = read_rupture(srf_path).hypocentre
+    _, _, distance_m = pyproj.Geod(ellps="WGS84").inv(lon, lat, found[0], found[1])
+    spacing_km = max(chart.spacing_km)
+    assert distance_m < 1000 * spacing_km
+    assert abs(found[2] - depth_km) < spacing_km
+
+
+def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptures):
+    beta = {name: np.full(r.geometry.cells, 0.7) for name, r in ruptures.items()}
+    with pytest.raises(RuptureGeneratorError, match="beta"):
+        write_rupture(
+            str(tmp_path / "bad.srf"),
+            scenario.realisation,
+            ruptures,
+            scenario.materials,
+            dt_s=scenario.dt_s,
+            beta=beta,
+        )
+
+
+def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
+    path = tmp_path / "not.srf"
+    path.write_text("garbage")
+    with pytest.raises(RuptureGeneratorError):
+        read_rupture(path)

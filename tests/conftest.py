@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from rupture_generator import config, generate
+from rupture_generator.formats.srf import write_rupture
 
 EXAMPLE = Path(__file__).parents[1] / "examples" / "two_faults.toml"
 
@@ -21,3 +22,17 @@ def ruptures(scenario: config.Scenario) -> dict:
         scenario.settings,
         seed=scenario.seed,
     )
+
+
+@pytest.fixture(scope="session")
+def srf_path(tmp_path_factory, scenario, ruptures):
+    path = tmp_path_factory.mktemp("srf") / "rupture.srf"
+    write_rupture(
+        str(path),
+        scenario.realisation,
+        ruptures,
+        scenario.materials,
+        dt_s=scenario.dt_s,
+        beta=scenario.beta,
+    )
+    return path

@@ -1,4 +1,4 @@
-"""Writing a drawn rupture as a Standard Rupture Format file.
+"""A drawn rupture as a Standard Rupture Format file, written and read back.
 
 Version 2.0, which carries each point's shear speed and density. The SRF is in CGS --
 slip in centimetres, area in square centimetres, slip rate and shear speed in
@@ -12,22 +12,26 @@ strike is the geodesic azimuth along its top edge, so the projection's grid
 convergence never reaches the file.
 """
 
+import dataclasses
 import itertools
 from collections.abc import Mapping
+from pathlib import Path
 
 import numpy as np
 import pyproj
 
 from rupture_generator._kernels import synthesise_pulses
+from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.generator import SegmentRupture
-from rupture_generator.rupture.materials import Materials
+from rupture_generator.rupture.materials import Materials, rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.srf_parser import (
     PyCsrMatrix,
     PySrfFile,
     PySrfMetadata,
     PySrfPlane,
+    parse_srf,
     write_srf,
 )
 
@@ -131,9 +135,9 @@ def write_rupture(
 
     Raises
     ------
-    ValueError
-        From pulse synthesis, for a slipping subfault whose rise time rounds to no
-        samples at ``dt_s`` or a ``beta`` outside ``(0, 0.5]``.
+    RuptureGeneratorError
+        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, or a
+        ``beta`` outside ``(0, 0.5]``.
     """
     transformer = pyproj.Transformer.from_crs(
         realisation.crs, "EPSG:4326", always_xy=True
@@ -200,7 +204,10 @@ def write_rupture(
             if beta is None or name not in beta
             else _plane_major(geometry, beta[name])
         )
-        row_offsets, rates = synthesise_pulses(slip_m, rise_s, dt_s, segment_beta)
+        try:
+            row_offsets, rates = synthesise_pulses(slip_m, rise_s, dt_s, segment_beta)
+        except ValueError as error:
+            raise RuptureGeneratorError(f"{name}: {error}") from None
         offsets.append(row_offsets[1:] + offsets[-1][-1])
         samples.append(rates * CM_PER_M)
 
@@ -219,4 +226,94 @@ def write_rupture(
     write_srf(PySrfFile(planes, metadata, slip_rate), path)
 
 
-__all__ = ["NO_HYPOCENTRE", "write_rupture"]
+@dataclasses.dataclass(frozen=True, eq=False)
+class SrfRupture:
+    """An SRF read back in SI: one array per point column, in file order.
+
+    Positions are WGS84 degrees and depth in kilometres; ``hypocentre`` is
+    ``(longitude, latitude, depth_km)``, or ``None`` if no plane records one. Point
+    ``k``'s slip rate is ``pulses_m_s[pulse_offsets[k]:pulse_offsets[k + 1]]``, from
+    its own onset at ``dt_s[k]``, kept in single precision as the file holds it.
+    """
+
+    planes: list[PySrfPlane]
+    hypocentre: tuple[float, float, float] | None
+    lon_deg: np.ndarray
+    lat_deg: np.ndarray
+    depth_km: np.ndarray
+    strike_deg: np.ndarray
+    dip_deg: np.ndarray
+    area_m2: np.ndarray
+    onset_s: np.ndarray
+    dt_s: np.ndarray
+    rake_deg: np.ndarray
+    slip_m: np.ndarray
+    rise_time_s: np.ndarray
+    shear_speed_km_s: np.ndarray
+    density_g_cm3: np.ndarray
+    pulse_offsets: np.ndarray
+    pulses_m_s: np.ndarray
+
+    @property
+    def rigidity_pa(self) -> np.ndarray:
+        """Each point's rigidity, from the file's own shear speed and density."""
+        return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
+
+
+def _hypocentre(plane: PySrfPlane) -> tuple[float, float, float]:
+    """The inverse of :func:`_planes`: ``shyp`` along strike from the top centre, then
+    ``dhyp`` down dip."""
+    dip = np.radians(plane.dip)
+    lon, lat, _ = _GEOD.fwd(plane.elon, plane.elat, plane.stk, plane.shyp * M_PER_KM)
+    lon, lat, _ = _GEOD.fwd(
+        lon, lat, plane.stk + 90.0, plane.dhyp * np.cos(dip) * M_PER_KM
+    )
+    return float(lon), float(lat), plane.dtop + plane.dhyp * float(np.sin(dip))
+
+
+def read_rupture(path: str | Path) -> SrfRupture:
+    """Read a version 2 SRF, as :func:`write_rupture` writes, into SI.
+
+    Only ``slip1`` is read: this package writes no other component.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the file is not an SRF, or is version 1 and so carries no rock.
+    OSError
+        If the file cannot be read.
+    """
+    try:
+        srf = parse_srf(Path(path).read_bytes())
+    except ValueError as error:
+        raise RuptureGeneratorError(f"{path}: {error}") from None
+    points = srf.metadata
+    if points.vs is None:
+        raise RuptureGeneratorError(
+            f"{path} is a version 1 SRF, which carries no shear speed or density"
+        )
+    pulses = srf.slipt1.data
+    pulses /= CM_PER_M
+    located = [plane for plane in srf.planes if plane.shyp != NO_HYPOCENTRE]
+    return SrfRupture(
+        planes=list(srf.planes),
+        hypocentre=_hypocentre(located[0]) if located else None,
+        lon_deg=points.lon.astype(np.float64),
+        lat_deg=points.lat.astype(np.float64),
+        depth_km=points.dep.astype(np.float64),
+        strike_deg=points.stk.astype(np.float64),
+        dip_deg=points.dip.astype(np.float64),
+        area_m2=points.area.astype(np.float64) / CM_PER_M**2,
+        onset_s=points.tinit.astype(np.float64),
+        dt_s=points.dt.astype(np.float64),
+        rake_deg=points.rake.astype(np.float64),
+        slip_m=points.slip1.astype(np.float64) / CM_PER_M,
+        rise_time_s=points.rise.astype(np.float64),
+        shear_speed_km_s=points.vs.astype(np.float64) / CM_PER_KM,
+        density_g_cm3=points.density.astype(np.float64),
+        pulse_offsets=srf.slipt1.row_ptr.astype(np.int64),
+        pulses_m_s=pulses,
+    )
+
+
+__all__ = ["NO_HYPOCENTRE", "SrfRupture", "read_rupture", "write_rupture"]
