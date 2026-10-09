@@ -13,6 +13,11 @@ cargo:
 
 lint: ty ruff clippy numpydoc
 
+# The kernels, and every example end to end with its peak RSS. Extra arguments go to
+# pytest, e.g. `just bench --benchmark-json run.json`.
+bench *args:
+    uv run --extra bench pytest benchmarks {{args}}
+
 ty:
     uv run ty check rupture_generator
 

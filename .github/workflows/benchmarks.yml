@@ -1,0 +1,84 @@
+name: Benchmarks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmarks:
+    name: Kernels and end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+
+      # The base branch runs its own suite, when it has one, so each side is timed
+      # by the benchmarks written for its own API. Both run on the same runner, one
+      # after the other, which is as close to a like-for-like comparison as a
+      # shared runner gives.
+      - name: Benchmark the base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git cat-file -e "$BASE_SHA:benchmarks/test_kernels.py" 2>/dev/null; then
+            git worktree add ../base "$BASE_SHA"
+            cd ../base
+            uv sync --all-extras --dev
+            uv run --no-sync pytest benchmarks -q --benchmark-json "$GITHUB_WORKSPACE/base.json"
+          else
+            echo "The base has no benchmark suite; the report shows the head alone."
+          fi
+
+      - name: Benchmark the head
+        run: |
+          uv sync --all-extras --dev
+          uv run --no-sync pytest benchmarks -q --benchmark-json head.json
+
+      - name: Render the report
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=()
+          if [ -f base.json ]; then
+            base=(--base base.json)
+          fi
+          uv run --no-sync python benchmarks/report.py head.json "${base[@]}" \
+            --head-ref "${HEAD_SHA::7}" --base-ref "${BASE_SHA::7}" > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # One report per pull request, rewritten on each run rather than appended.
+      - name: Post the report to the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          marker=$(head -n 1 report.md)
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@report.md > /dev/null
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file report.md
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmarks
+          path: |
+            head.json
+            base.json
+            report.md
+          if-no-files-found: ignore

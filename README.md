@@ -180,7 +180,12 @@ crates/
 ```sh
 just test     # pytest, doctests, and the Rust suites
 just lint     # ty, ruff, clippy, numpydoc
+just bench    # the kernels, and every example end to end with its peak RSS
 ```
+
+The benchmarks use pytest-benchmark. CI runs them on every pull request, against
+the base branch's own suite when it has one, and posts the comparison to the pull
+request.
 
 Tests state properties wherever one exists to state, with Hypothesis on the Python
 side and `proptest` on the Rust side. Numbers quoted in docstrings are measurements,
