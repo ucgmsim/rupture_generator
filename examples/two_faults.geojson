@@ -1,0 +1,15 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {"type": "LineString", "coordinates": [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]]},
+      "properties": {"name": "bent", "dip_deg": 60, "dip_direction_deg": 300, "upper_depth_km": 0, "lower_depth_km": 15}
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "LineString", "coordinates": [[172.71, -41.72], [173.1, -41.6]]},
+      "properties": {"name": "next", "dip_deg": 75, "dip_direction_deg": 330, "upper_depth_km": 0, "lower_depth_km": 15}
+    }
+  ]
+}

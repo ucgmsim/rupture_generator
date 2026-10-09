@@ -1,0 +1,6 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[-118.58704, 34.4015], [-118.42111, 34.31551]]}, "properties": {"name": "Northridge", "dip_deg": 40.0, "dip_direction_deg": 212.0, "upper_depth_km": 5.0, "lower_depth_km": 20.427}}
+  ]
+}

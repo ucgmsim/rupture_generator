@@ -1,0 +1,158 @@
+# Colombia Mw 7.4, a single intermediate-depth plane (97-109 km). The correlation
+# relation is Mai & Beroza's, spelled out. The deep ramp sits at 200 km, below the
+# fault, so only the shallow profiles could act and the fault is deeper than all of
+# them. The previous format's `rupture_time_scale = -0.35` had no meaning in its last
+# schema and is not carried.
+#
+# Cut at 1 km so the example runs in about a second; the workflow runs it at 0.1 km.
+
+seed = 45876
+
+[geometry]
+path = "colombia.geojson"
+crs = "EPSG:3116"
+spacing_km = 1.0
+
+[hypocentre]
+segment = "fault"
+strike_km = 52.85
+dip_km = 8.7
+
+[velocity_model]
+bottom_depth_km = [
+    2.8,
+    3.0,
+    3.2,
+    3.4,
+    3.6,
+    3.8,
+    4.0,
+    4.2,
+    4.4,
+    4.6,
+    4.8,
+    5.0,
+    8.0,
+    12.0,
+    27.0,
+    39.0,
+    1038.0,
+]
+shear_speed_km_s = [
+    2.49,
+    2.7,
+    2.77,
+    2.84,
+    2.91,
+    2.98,
+    3.05,
+    3.12,
+    3.19,
+    3.26,
+    3.33,
+    3.4,
+    3.6,
+    3.6,
+    3.7,
+    4.3,
+    4.6,
+]
+density_g_cm3 = [
+    2.44,
+    2.48,
+    2.49,
+    2.51,
+    2.52,
+    2.54,
+    2.56,
+    2.58,
+    2.6,
+    2.61,
+    2.63,
+    2.66,
+    2.72,
+    2.72,
+    2.83,
+    3.12,
+    3.33,
+]
+
+[source]
+type = "finite"
+magnitude = 7.4
+rake_deg = 162.38
+
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333
+dip_offset = 1.5
+
+[materials.rise_time_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    197.5,
+    202.5,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[materials.rise_time_slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[materials.rupture_speed_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    197.5,
+    202.5,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[slip]
+coefficient_of_variation = 0.75
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rake]
+sigma_deg = 15.0
+
+[timing]
+velocity_fraction = 0.8
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13

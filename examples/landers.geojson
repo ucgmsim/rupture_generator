@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[-116.42083, 34.09329], [-116.44921, 34.36271]]}, "properties": {"name": "Johnson Valley", "dip_deg": 90.0, "dip_direction_deg": 85.0, "upper_depth_km": 0.0, "lower_depth_km": 15.0}},
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[-116.41571, 34.3056], [-116.54446, 34.52436]]}, "properties": {"name": "Homestead Valley", "dip_deg": 90.0, "dip_direction_deg": 64.0, "upper_depth_km": 0.0, "lower_depth_km": 15.0}},
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[-116.4641, 34.44764], [-116.71628, 34.69623]]}, "properties": {"name": "Camp Rock - Emerson", "dip_deg": 90.0, "dip_direction_deg": 50.0, "upper_depth_km": 0.0, "lower_depth_km": 15.0}}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[-76.64952, 5.30771], [-75.86667, 4.76364]]}, "properties": {"name": "fault", "dip_deg": 44.49, "dip_direction_deg": 214.689, "upper_depth_km": 96.9, "lower_depth_km": 109.09}}
+  ]
+}

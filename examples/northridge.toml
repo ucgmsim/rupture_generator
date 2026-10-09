@@ -1,0 +1,132 @@
+# The 1994 Mw 6.8 Northridge earthquake, from Wald, Heaton & Hudnut (1996), SRCMOD
+# s1994NORTHR01WALD. A blind thrust: one plane striking 122 and dipping 40 to the
+# south-west, its top 5 km down, 18 km along strike and 24 km down dip. The trace is
+# the plane's top edge, through the centre of the inversion's top row of subfaults.
+#
+# Magnitude, average rake and velocity model are the FSP's (its depth column read
+# as layer tops). The hypocentre is the FSP's, 15 km along strike and 20 km down
+# dip; the published epicentre and 17.5 km depth project to 15.0 and 19.4 km.
+#
+# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 1 km so it runs
+# in about a second; the inversion's subfaults are 1.29 x 1.71 km.
+
+seed = 19940117
+
+[geometry]
+path = "northridge.geojson"
+crs = "EPSG:3310"
+spacing_km = 1.0
+
+[hypocentre]
+segment = "Northridge"
+strike_km = 15.0
+dip_km = 20.0
+
+[velocity_model]
+bottom_depth_km = [
+    0.5,
+    1.5,
+    4.0,
+    27.0,
+    60.0,
+    165.0,
+    1000.0,
+]
+shear_speed_km_s = [
+    1.0,
+    2.0,
+    3.2,
+    3.6,
+    3.9,
+    4.67,
+    4.73,
+]
+density_g_cm3 = [
+    2.1,
+    2.4,
+    2.7,
+    2.8,
+    2.9,
+    3.2,
+    3.3,
+]
+
+[source]
+type = "finite"
+magnitude = 6.8
+rake_deg = 102.2
+
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333333333333333
+dip_offset = 1.5
+
+[materials.rise_time_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[materials.rise_time_slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[materials.rupture_speed_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[slip]
+coefficient_of_variation = 0.9
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rake]
+sigma_deg = 15.0
+
+[timing]
+velocity_fraction = 0.8
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13

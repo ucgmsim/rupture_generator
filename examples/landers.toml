@@ -1,0 +1,145 @@
+# The 1992 Mw 7.28 Landers earthquake, from Wald & Heaton (1994), SRCMOD
+# s1992LANDER01WALD. Three vertical right-lateral segments, each a straight plane
+# from the inversion: Johnson Valley, Homestead Valley and Camp Rock - Emerson.
+# Each trace runs half the segment's length either side of the top-centre the FSP
+# gives, so the stepovers between segments are the inversion's own.
+#
+# The rupture started on Johnson Valley and ran north, so the propagation is
+# predetermined. Each segment's magnitude is its share of the inverted slip times
+# rigidity, scaled to the published Mw 7.28 (the FSP's own moment does not close at
+# its velocity model, so only the shares are taken). The velocity model is the FSP's,
+# its depth column read as layer bottoms. The hypocentre is the FSP's (11 km along
+# strike, 7 km down dip); the epicentre projects to 11.9 km.
+#
+# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 1 km so it runs
+# in about a second; the inversion's subfaults are 3 x 2.5 km.
+
+seed = 19920628
+
+[geometry]
+path = "landers.geojson"
+crs = "EPSG:3310"
+spacing_km = 1.0
+
+[hypocentre]
+segment = "Johnson Valley"
+strike_km = 11.0
+dip_km = 7.0
+
+[velocity_model]
+bottom_depth_km = [
+    1.5,
+    4.0,
+    26.0,
+    32.0,
+    80.0,
+]
+shear_speed_km_s = [
+    1.98,
+    3.15,
+    3.52,
+    3.83,
+    4.64,
+]
+density_g_cm3 = [
+    2.3,
+    2.6,
+    2.7,
+    2.87,
+    3.5,
+]
+
+[source]
+type = "per_fault"
+
+[source.magnitudes]
+"Johnson Valley" = 6.88
+"Homestead Valley" = 7.07
+"Camp Rock - Emerson" = 6.89
+
+[source.rakes]
+"Johnson Valley" = 180.0
+"Homestead Valley" = 180.0
+"Camp Rock - Emerson" = 180.0
+
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333333333333333
+dip_offset = 1.5
+
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Homestead Valley" = "Johnson Valley"
+"Camp Rock - Emerson" = "Homestead Valley"
+
+[materials.rise_time_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[materials.rise_time_slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[materials.rupture_speed_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[slip]
+coefficient_of_variation = 0.9
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rake]
+sigma_deg = 15.0
+
+[timing]
+velocity_fraction = 0.8
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13
