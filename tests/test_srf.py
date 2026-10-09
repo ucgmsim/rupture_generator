@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 import pyproj
 import pytest
@@ -5,11 +7,16 @@ import pytest
 from rupture_generator import RuptureGeneratorError
 from rupture_generator.formats.srf import (
     NO_HYPOCENTRE,
-    _plane_major,
+    _plane_slices,
     read_rupture,
     write_rupture,
 )
-from rupture_generator.srf_parser import parse_srf
+from rupture_generator.srf_parser import (
+    PyCsrMatrix,
+    PySrfMetadata,
+    SrfWriter,
+    parse_srf,
+)
 
 
 @pytest.fixture(scope="module")
@@ -19,7 +26,11 @@ def srf(srf_path):
 
 def column(ruptures, pick):
     return np.concatenate(
-        [_plane_major(r.geometry, pick(r)) for r in ruptures.values()]
+        [
+            pick(r)[:, columns].ravel()
+            for r in ruptures.values()
+            for columns in _plane_slices(r.geometry)
+        ]
     )
 
 
@@ -131,10 +142,92 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
             dt_s=scenario.dt_s,
             beta=beta,
         )
+    # The writer had already put the header out. The failure removed the partial file.
+    assert not (tmp_path / "bad.srf").exists()
 
 
 def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
     path = tmp_path / "not.srf"
     path.write_text("garbage")
+    with pytest.raises(RuptureGeneratorError):
+        read_rupture(path)
+
+
+COLUMNS = [
+    "lon",
+    "lat",
+    "dep",
+    "stk",
+    "dip",
+    "area",
+    "tinit",
+    "dt",
+    "rake",
+    "slip1",
+    "rise",
+    "vs",
+    "density",
+]
+
+
+def _chunk(parsed, start, stop):
+    """Points ``start`` to ``stop`` of a parsed SRF, with their rows re-based to zero."""
+    metadata = PySrfMetadata(
+        **{name: getattr(parsed.metadata, name)[start:stop] for name in COLUMNS}
+    )
+    row_ptr = parsed.slipt1.row_ptr[start : stop + 1]
+    data = parsed.slipt1.data[row_ptr[0] : row_ptr[-1]]
+    return metadata, PyCsrMatrix(row_ptr=row_ptr - row_ptr[0], data=data)
+
+
+def test_a_stream_in_any_chunks_writes_the_same_file(srf, tmp_path):
+    path, parsed = srf
+    count = len(parsed.metadata.lon)
+    # Chunks of seven points mostly start and end mid-plane, and span a boundary.
+    edges = [*range(0, count, 7), count]
+    streamed = tmp_path / "streamed.srf"
+    with SrfWriter(str(streamed), parsed.planes) as writer:
+        for start, stop in itertools.pairwise(edges):
+            writer.write(*_chunk(parsed, start, stop))
+    assert streamed.read_bytes() == path.read_bytes()
+
+
+def test_a_stream_refuses_points_the_planes_do_not_declare(srf, tmp_path):
+    _, parsed = srf
+    count = len(parsed.metadata.lon)
+    writer = SrfWriter(str(tmp_path / "long.srf"), parsed.planes[:1])
+    with pytest.raises(ValueError, match="more than that"):
+        writer.write(*_chunk(parsed, 0, count))
+
+
+def test_a_stream_refuses_to_close_short(srf, tmp_path):
+    _, parsed = srf
+    writer = SrfWriter(str(tmp_path / "short.srf"), parsed.planes)
+    writer.write(*_chunk(parsed, 0, 3))
+    with pytest.raises(ValueError, match="3 were written"):
+        writer.close()
+    with pytest.raises(ValueError, match="closed"):
+        writer.write(*_chunk(parsed, 3, 4))
+
+
+def test_a_stream_needs_the_rows_to_match_the_points(srf, tmp_path):
+    _, parsed = srf
+    metadata, _ = _chunk(parsed, 0, 3)
+    _, rows = _chunk(parsed, 0, 2)
+    writer = SrfWriter(str(tmp_path / "rows.srf"), parsed.planes)
+    with pytest.raises(ValueError, match="row offsets"):
+        writer.write(metadata, rows)
+    writer.write(*_chunk(parsed, 0, len(parsed.metadata.lon)))
+    writer.close()
+
+
+def test_an_exception_leaves_the_stream_unfinished(srf, tmp_path):
+    _, parsed = srf
+    path = tmp_path / "interrupted.srf"
+    with pytest.raises(RuntimeError), SrfWriter(str(path), parsed.planes) as writer:
+        writer.write(*_chunk(parsed, 0, 3))
+        raise RuntimeError
+    # The context manager left the file unfinished. Closing it as whole would have
+    # raised for the missing points instead.
     with pytest.raises(RuptureGeneratorError):
         read_rupture(path)

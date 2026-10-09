@@ -31,8 +31,9 @@ rupture-view alpine_hope.srf --save alpine_hope.rrd
 
 The examples under `examples/` include the Landers, Northridge, and Colombia
 earthquakes, the Beavan and Alpine-Hope workflow realisations, and two small systems
-for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to fit in
-about 3.5 GB of memory. `examples/from_realisation.py` converts a workflow
+for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to generate
+in about ten seconds. At 0.1 km it takes about a minute and writes an SRF of
+8.9 GB. `examples/from_realisation.py` converts a workflow
 `realisation.json` into the same pair of files.
 
 From Python, the usual run is five calls:
