@@ -1,29 +1,44 @@
 use numpy::PyArray1;
 use pyo3::prelude::*;
 
-use crate::py_record;
 use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
 
-py_record! {
-    // `Copy` is safe because every field is a scalar. It lets `write_srf` read a
-    // plane out of its `Py<SrfPlane>` with a dereference rather than a clone or a
-    // field-by-field rebuild.
-    #[pyclass(name = "PySrfPlane", from_py_object)]
-    #[derive(Debug, Copy, Clone)]
-    SrfPlane {
-        elon: f32,
-        elat: f32,
-        nstk: usize,
-        ndip: usize,
-        len: f32,
-        wid: f32,
-        stk: f32,
-        dip: f32,
-        dtop: f32,
-        shyp: f32,
-        dhyp: f32,
+mod plane {
+    // The clone is in the extraction impl that `from_py_object` generates. An
+    // attribute on the struct doesn't apply to that impl. This module holds only
+    // `SrfPlane`, so allowing the lint here covers that impl and nothing else.
+    #![allow(
+        clippy::clone_on_copy,
+        reason = "pyo3's from_py_object clones a Copy class"
+    )]
+
+    use pyo3::prelude::*;
+
+    use crate::py_record;
+
+    py_record! {
+        // `Copy` is safe because every field is a scalar. It lets `write_srf` read a
+        // plane out of its `Py<SrfPlane>` with a dereference rather than a clone or
+        // a field-by-field rebuild.
+        #[pyclass(name = "PySrfPlane", from_py_object)]
+        #[derive(Debug, Copy, Clone)]
+        SrfPlane {
+            elon: f32,
+            elat: f32,
+            nstk: usize,
+            ndip: usize,
+            len: f32,
+            wid: f32,
+            stk: f32,
+            dip: f32,
+            dtop: f32,
+            shyp: f32,
+            dhyp: f32,
+        }
     }
 }
+
+pub use plane::SrfPlane;
 
 impl SrfPlane {
     pub fn points(&self) -> usize {

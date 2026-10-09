@@ -288,6 +288,6 @@ POINTS 1\n\
         let srf = parse(data);
         let reparsed = parse(&write_to_vec(&srf));
         assert_eq!(srf.slipt1.row_ptr, reparsed.slipt1.row_ptr);
-        assert!(reparsed.slipt1.data.is_empty());
+        assert_eq!(reparsed.slipt1.data, Vec::<f32>::new());
     }
 }
