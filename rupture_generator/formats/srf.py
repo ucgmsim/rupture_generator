@@ -24,7 +24,7 @@ from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.generator import SegmentRupture
-from rupture_generator.rupture.materials import Materials, rigidity_pa
+from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.srf_parser import (
     PyCsrMatrix,
@@ -123,12 +123,11 @@ def write_rupture(
     path: str,
     realisation: Realisation,
     ruptures: Mapping[str, SegmentRupture],
-    materials: Mapping[str, Materials],
     *,
     dt_s: float,
     beta: Mapping[str, CellArray] | None = None,
 ) -> None:
-    """Write drawn segments, and the rock they slipped in, as an SRF.
+    """Write drawn segments, and the rock each one read, as an SRF.
 
     ``beta`` is the Liu-Archuleta-Hartzell rising fraction per cell, by segment; a
     segment without one gets a single-sample impulse per subfault.
@@ -195,9 +194,10 @@ def write_rupture(
         columns["rake"].append(_plane_major(geometry, rupture.rake_deg))
         columns["slip1"].append(slip_m * CM_PER_M)
         columns["rise"].append(rise_s)
-        rock = materials[name]
-        columns["vs"].append(_plane_major(geometry, rock.shear_speed_km_s) * CM_PER_KM)
-        columns["density"].append(_plane_major(geometry, rock.density_g_cm3))
+        columns["vs"].append(
+            _plane_major(geometry, rupture.shear_speed_km_s) * CM_PER_KM
+        )
+        columns["density"].append(_plane_major(geometry, rupture.density_g_cm3))
 
         segment_beta = (
             None

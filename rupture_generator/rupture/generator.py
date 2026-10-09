@@ -1,10 +1,13 @@
 """Drawing a rupture: slip, rise time, rake and onset, on one segment or many.
 
-:func:`generate_segment` is the whole per-segment pipeline: a chart, its materials, its
+:func:`generate_segment` is the whole per-segment pipeline: a chart, the
+:class:`~rupture_generator.rupture.medium.Medium`, its
 :class:`~rupture_generator.rupture.source.SegmentSource` and the shared
 :class:`RuptureSettings` in, a :class:`SegmentRupture` out. Everything stochastic
 happens here, in a fixed draw order, from the one generator passed in, so a segment's
-fields are a pure function of ``(chart, materials, source, settings, rng state)``.
+fields are a pure function of ``(chart, medium, source, settings, rng state)``. The
+medium and the fault profiles are read at the chart's cell centres once, here, and the
+rupture keeps what it read.
 
 The four fields are one batch because three of them share slip's latent Gaussian:
 rise time and the onset displacement both correlate against it, and the correlation
@@ -30,7 +33,13 @@ import numpy as np
 from rupture_generator._kernels import eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
-from rupture_generator.rupture.materials import Materials
+from rupture_generator.rupture.medium import (
+    Medium,
+    SpatialField,
+    constant_field,
+    rigidity_pa,
+)
+from rupture_generator.rupture.propagator import DEFAULT_JUMP_MODEL, JumpModel
 from rupture_generator.rupture.realisation import Realisation
 from rupture_generator.rupture.source import SegmentSource
 from rupture_generator.sampling import (
@@ -135,7 +144,7 @@ class RiseSettings:
     square root of slip. The values follow a unit-mean gamma at
     ``coefficient_of_variation``: below unit spread its mode is away from zero, so no
     subfault slips in no time at all. Where rise time is longer or shorter, and where it
-    follows slip more tightly, are the chart's :class:`Materials`.
+    follows slip more tightly, are the :class:`FaultProfiles`.
     """
 
     coefficient: float = 1.6
@@ -217,6 +226,38 @@ class TimingSettings:
         _correlation(self.correlation)
 
 
+UNMODIFIED = constant_field(1.0)
+"""A profile that changes nothing: 1 everywhere."""
+
+
+@dataclasses.dataclass(frozen=True)
+class FaultProfiles:
+    """Where the rupture is prescribed to differ, as functions of position.
+
+    Not the rock, which is the :class:`~rupture_generator.rupture.medium.Medium`, but the
+    rupture's own settings varied over the fault, 1 where unmodified: any depth
+    dependence of the pulse length or of the front's speed is prescribed here, where it
+    can be inspected and plotted before a rupture is drawn.
+
+    Attributes
+    ----------
+    rise_time_factor : SpatialField
+        The relative rise time.
+    rise_time_slip_weight : SpatialField
+        How much of rise time's correlation with slip is the configured value (1)
+        rather than exact (0). At 0 the rise-time latent is slip's own, so the two
+        fields share their rank order -- the shallow treatment of Graves & Pitarka,
+        where the pulse length tracks the slip in the velocity-strengthening crust.
+    rupture_speed_factor : SpatialField
+        What the front's speed is multiplied by: a slower front near the surface or at
+        depth.
+    """
+
+    rise_time_factor: SpatialField = UNMODIFIED
+    rise_time_slip_weight: SpatialField = UNMODIFIED
+    rupture_speed_factor: SpatialField = UNMODIFIED
+
+
 @dataclasses.dataclass(frozen=True)
 class RuptureSettings:
     """Everything every segment shares: how its fields are drawn, not how big it is."""
@@ -225,14 +266,16 @@ class RuptureSettings:
     rise: RiseSettings = dataclasses.field(default_factory=RiseSettings)
     rake: RakeSettings = dataclasses.field(default_factory=RakeSettings)
     timing: TimingSettings = dataclasses.field(default_factory=TimingSettings)
+    profiles: FaultProfiles = dataclasses.field(default_factory=FaultProfiles)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class SegmentRupture:
     """One segment, drawn: its four fields, and what the draw decided along the way.
 
-    ``speed_km_s`` is the rupture speed the front travelled at, which is what a jump
-    off this segment leaves with.
+    ``speed_km_s`` is the rupture speed the front travelled at;
+    ``shear_speed_km_s`` and ``density_g_cm3`` are the medium as this segment read it,
+    at its cell centres, which is the rock the moment was counted in.
     """
 
     geometry: Geometry
@@ -241,9 +284,16 @@ class SegmentRupture:
     rake_deg: CellArray
     onset_s: CellArray
     speed_km_s: CellArray
+    shear_speed_km_s: CellArray
+    density_g_cm3: CellArray
     alpha_t: float
     rise_time_mean_s: float
     onset_scale_s: float
+
+    @property
+    def rigidity_pa(self) -> CellArray:
+        """Rigidity in pascals, from the rock this segment read."""
+        return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
 
 
 # ---------------------------------------------------------------- shared readings
@@ -410,9 +460,40 @@ def blend_onset(
     return travel_s + np.minimum(weight, causal) * displacement
 
 
+def _read(
+    geometry: Geometry,
+    name: str,
+    field: SpatialField,
+    accept: Callable[[CellArray], np.ndarray],
+    wanted: str,
+) -> CellArray:
+    """A field at a chart's cell centres, checked.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the field gives the wrong shape, or a value ``accept`` refuses.
+    """
+    values = np.asarray(field(geometry.centres), dtype=np.float64)
+    if values.shape != geometry.cells:
+        raise RuptureGeneratorError(
+            f"{name} is shaped {values.shape} and the chart has {geometry.cells} cells"
+        )
+    if not np.all(accept(values)):
+        raise RuptureGeneratorError(
+            f"{name} runs {float(values.min()):.3g} to {float(values.max()):.3g}; "
+            f"it wants {wanted}"
+        )
+    return values
+
+
+def _positive(values: CellArray) -> np.ndarray:
+    return np.isfinite(values) & (values > 0.0)
+
+
 def generate_segment(
     geometry: Geometry,
-    materials: Materials,
+    medium: Medium,
     source: SegmentSource,
     settings: RuptureSettings,
     *,
@@ -430,10 +511,40 @@ def generate_segment(
     Raises
     ------
     RuptureGeneratorError
-        If the pattern carries no moment, the speed field is not positive, or the
-        covariance does not embed on this chart.
+        If the medium or a profile reads out of range on this chart, the pattern
+        carries no moment, the speed field is not positive, or the covariance does not
+        embed on this chart.
     """
     slip, rise, timing = settings.slip, settings.rise, settings.timing
+    profiles = settings.profiles
+    shear_speed_km_s = _read(
+        geometry, "shear speed", medium.shear_speed_km_s, _positive, "positive values"
+    )
+    density_g_cm3 = _read(
+        geometry, "density", medium.density_g_cm3, _positive, "positive values"
+    )
+    rise_time_factor = _read(
+        geometry,
+        "the rise-time factor",
+        profiles.rise_time_factor,
+        _positive,
+        "positive values",
+    )
+    rise_time_slip_weight = _read(
+        geometry,
+        "the rise-time slip weight",
+        profiles.rise_time_slip_weight,
+        lambda weight: (weight >= 0.0) & (weight <= 1.0),
+        "weights in [0, 1]",
+    )
+    rupture_speed_factor = _read(
+        geometry,
+        "the rupture speed factor",
+        profiles.rupture_speed_factor,
+        _positive,
+        "positive values, or the front never arrives",
+    )
+
     correction = alpha_t(
         float(np.mean(geometry.dip_deg[geometry.occupied])), source.rake_deg
     )
@@ -451,7 +562,10 @@ def generate_segment(
     slip_latent, rise_independent = latent.draw(rng)
     pattern = taper_edges(slip.marginal.apply(slip_latent), geometry.occupied, slip)
     slip_m = scale_to_moment(
-        pattern, materials.rigidity_pa, geometry.areas_km2, moment_nm
+        pattern,
+        rigidity_pa(shear_speed_km_s, density_g_cm3),
+        geometry.areas_km2,
+        moment_nm,
     )
 
     mean_rise_s = _cube_root_scaling(rise.coefficient, moment_nm) * correction
@@ -462,14 +576,13 @@ def generate_segment(
     # standard normal at every cell, which the marginal transform assumes. Loadings
     # rather than correlations are also what let the weight reach exact slip: NORTA
     # cannot invert a correlation of 1 between two different marginals.
-    weight = materials.rise_time_slip_weight
+    weight = rise_time_slip_weight
     rise_latent = mix(
         (weight * rho + (1.0 - weight), slip_latent),
         (weight * np.sqrt(1.0 - rho * rho), rise_independent),
     )
     rise_pattern = (
-        rise.marginal.apply(rise_latent) ** rise.slip_exponent
-        * materials.rise_time_factor
+        rise.marginal.apply(rise_latent) ** rise.slip_exponent * rise_time_factor
     )
     rise_time_s = rise_pattern * (
         mean_rise_s / float(rise_pattern[geometry.occupied].mean())
@@ -479,8 +592,7 @@ def generate_segment(
     rake_deg = source.rake_deg + settings.rake.sigma_deg * standardise(rake_latent)
 
     speed_km_s = (
-        speed_field(materials.shear_speed_km_s, timing, correction)
-        * materials.rupture_speed_factor
+        speed_field(shear_speed_km_s, timing, correction) * rupture_speed_factor
     )
     travel_s = travel_times(geometry, speed_km_s, seed)
     scale_s = timing.offset_s + _cube_root_scaling(timing.coefficient, moment_nm)
@@ -499,6 +611,8 @@ def generate_segment(
             travel_s, displacement_s, scale_s, seed, timing.blend_sigma
         ),
         speed_km_s=speed_km_s,
+        shear_speed_km_s=shear_speed_km_s,
+        density_g_cm3=density_g_cm3,
         alpha_t=correction,
         rise_time_mean_s=mean_rise_s,
         onset_scale_s=scale_s,
@@ -525,38 +639,54 @@ def segment_rng(seed: int, segment: str) -> np.random.Generator:
     return np.random.default_rng(np.random.SeedSequence(entropy=seed, spawn_key=(key,)))
 
 
-type JumpRule = Callable[[SegmentRupture, Geometry], Seed]
-"""Where and when the front crosses from a drawn parent onto a child."""
+type JumpRule = Callable[
+    [SegmentRupture, Geometry, Medium, JumpModel, np.random.Generator], Seed
+]
+"""Where and when the front crosses from a drawn parent onto a child: the parent, the
+child's chart, the medium between them, the jump model, and the jump's own generator."""
 
 
-def jump_seed(parent: SegmentRupture, child: Geometry) -> Seed:
+def jump_seed(
+    parent: SegmentRupture,
+    child: Geometry,
+    medium: Medium,
+    model: JumpModel,
+    rng: np.random.Generator,
+) -> Seed:
     """Where and when the front crosses from a drawn parent onto a child.
 
-    The crossing that arrives first. The geometry is the chart's own --
-    :meth:`~rupture_generator.geometry.Geometry.nearest_cells_to` pairs each of the
-    parent's edge cells with the closest cell of the child and measures between them --
-    and what is left here is the timing argument: minimise ``onset(p) + d(p) / v(p)``,
-    the parent's own solved onset plus that distance at the rupture speed the front had
-    when it left. No free parameter, and no delay model beyond distance over velocity.
+    Searched from the child's side. Each of the child's edge cells listens to the one
+    parent cell nearest it,
+    :meth:`~rupture_generator.geometry.Geometry.nearest_cells_to`, and is reached when
+    the front gets there plus the time a shear wave takes across the gap,
+    :meth:`~rupture_generator.rupture.medium.Medium.crossing_time_s`. The rupture does
+    not cross; the S wave from the front's near field does. Pairing from the parent's
+    side instead would let a wave from far back along the parent outrun the front --
+    the shear speed beats the rupture speed along any straight line -- so every jump
+    would leave from as far upstream as it was allowed to.
 
-    Taking only the nearest child cell loses nothing, since the speed at a given
-    departure is fixed and the objective is then increasing in distance.
+    How far is allowed is the jump model, drawn once per jump: a reach from
+    :meth:`~rupture_generator.rupture.propagator.JumpModel.reach_km`, conditioned on
+    the rupture having crossed the nearest gap, since the tree says it did. Child cells
+    farther than that from the parent cannot be triggered, and the earliest arrival
+    among the rest is the seed. One draw rather than one trial per cell keeps the
+    result independent of the mesh.
 
-    Two known properties, neither fixed here. The departure is an ``argmin`` over a
-    field that already carries its onset displacement, so it is an order statistic and
-    reads early by roughly one onset spread; restricting candidates to the fault's edge
-    rather than the whole chart, and the displacement's own correlation length, are what
-    bound it. And the straight line ignores whether the rock between the two faults is
-    there to break. This is the rule under redesign, so it is one function, and
-    :func:`generate` takes any other :data:`JumpRule` in its place.
+    One known property, not fixed here. The arrival is an ``argmin`` over a field that
+    already carries its onset displacement, so it is an order statistic and reads early
+    by roughly one onset spread.
 
     Raises
     ------
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    departures, landings, distance_km = parent.geometry.nearest_cells_to(child)
-    arrival_s = parent.onset_s[departures] + distance_km / parent.speed_km_s[departures]
+    landings, departures, gap_km = child.nearest_cells_to(parent.geometry)
+    reach_km = model.reach_km(float(gap_km.min()), rng)
+    arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
+        parent.geometry.centres[departures], child.centres[landings]
+    )
+    arrival_s = np.where(gap_km <= reach_km, arrival_s, np.inf)
     first = int(np.argmin(arrival_s))
     return Seed(
         cell=(int(landings[0][first]), int(landings[1][first])),
@@ -566,32 +696,33 @@ def jump_seed(parent: SegmentRupture, child: Geometry) -> Seed:
 
 def generate(
     realisation: Realisation,
-    materials: Mapping[str, Materials],
+    medium: Medium,
     sources: Mapping[str, SegmentSource],
     settings: RuptureSettings,
     *,
     seed: int,
     jump: JumpRule = jump_seed,
+    jump_model: JumpModel = DEFAULT_JUMP_MODEL,
 ) -> dict[str, SegmentRupture]:
     """Draw every segment of a fault system, parents before children.
 
     What this adds to the realisation is where and when each front starts: the
     hypocentre on the root, and ``jump`` for everything else, read off the parent that
     has just been drawn. That makes the causal order a real dependency, which is why it
-    is walked rather than iterated.
+    is walked rather than iterated. Each jump draws from its own generator, keyed by
+    the child, so how a front crosses never moves any segment's fields.
 
     Returns the drawn segments in the order they were drawn.
 
     Raises
     ------
     RuptureGeneratorError
-        If a segment has no materials or no source, or the realisation has no
-        hypocentre or no tree to walk.
+        If a segment has no source, or the realisation has no hypocentre or no tree
+        to walk.
     """
-    for what, given in (("materials", materials), ("source", sources)):
-        missing = sorted(set(realisation) - set(given))
-        if missing:
-            raise RuptureGeneratorError(f"{missing} have no {what}")
+    missing = sorted(set(realisation) - set(sources))
+    if missing:
+        raise RuptureGeneratorError(f"{missing} have no source")
 
     drawn: dict[str, SegmentRupture] = {}
     for name, parent, geometry in realisation.in_causal_order():
@@ -599,10 +730,16 @@ def generate(
             hypocentre = realisation.hypocentre
             start = Seed(geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0)
         else:
-            start = jump(drawn[parent], geometry)
+            start = jump(
+                drawn[parent],
+                geometry,
+                medium,
+                jump_model,
+                segment_rng(seed, f"jump:{name}"),
+            )
         drawn[name] = generate_segment(
             geometry,
-            materials[name],
+            medium,
             sources[name],
             settings,
             seed=start,
@@ -613,6 +750,8 @@ def generate(
 
 __all__ = [
     "CAUSAL_MARGIN",
+    "UNMODIFIED",
+    "FaultProfiles",
     "JumpRule",
     "RakeSettings",
     "RiseSettings",

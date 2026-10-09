@@ -1,5 +1,5 @@
 # Two faults, the first bent into two planes, ruptured from a hypocentre on the first.
-# Every table but [geometry], [hypocentre], [velocity_model] and [source] is optional;
+# Every table but [geometry], [hypocentre], [medium] and [source] is optional;
 # what is left out takes the library's defaults, which `rupture-generator` writes out
 # in full next to the SRF.
 
@@ -15,7 +15,7 @@ segment = "bent"
 strike_fraction = 0.3
 dip_fraction = 0.5
 
-[velocity_model]
+[medium]
 bottom_depth_km  = [5.0, 15.0, 40.0]
 shear_speed_km_s = [3.0, 3.5, 3.8]
 density_g_cm3    = [2.6, 2.7, 2.8]
@@ -32,7 +32,7 @@ type = "sampled"
 bottom_taper = 0.02
 
 # Shallow rise time follows slip's rank order, fading out between 1 and 3 km.
-[materials.rise_time_slip_weight]
+[profiles.rise_time_slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
@@ -40,7 +40,7 @@ shallow = 0.0
 deep = 1.0
 
 # A slower front in the top few kilometres.
-[materials.rupture_speed_factor]
+[profiles.rupture_speed_factor]
 type = "profile"
 depth_km = [5.0, 8.0]
 values = [0.6, 1.0]

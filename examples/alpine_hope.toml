@@ -18,14 +18,14 @@ seed = 1663495676
 [geometry]
 path = "alpine_hope.geojson"
 crs = "EPSG:2193"
-spacing_km = 2.0
+spacing_km = 0.4
 
 [hypocentre]
 segment = "Alpine: Caswell - South George"
 strike_fraction = 0.5
 dip_fraction = 0.5465986642702483
 
-[velocity_model]
+[medium]
 bottom_depth_km = [
     2.8,
     3.0,
@@ -161,7 +161,7 @@ Hanmer = "Hope: Hanmer NW"
 "Te Rapa 2" = "Te Rapa 1"
 "Opouawe - Uruti" = "Te Rapa 2"
 
-[materials.rise_time_factor]
+[profiles.rise_time_factor]
 type = "profile"
 depth_km = [
     5.0,
@@ -176,14 +176,14 @@ values = [
     2.0,
 ]
 
-[materials.rise_time_slip_weight]
+[profiles.rise_time_slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
 shallow = 0.0
 deep = 1.0
 
-[materials.rupture_speed_factor]
+[profiles.rupture_speed_factor]
 type = "profile"
 depth_km = [
     5.0,

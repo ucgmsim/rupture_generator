@@ -18,7 +18,7 @@ segment = "fault"
 strike_km = 52.85
 dip_km = 8.7
 
-[velocity_model]
+[medium]
 bottom_depth_km = [
     2.8,
     3.0,
@@ -88,7 +88,7 @@ strike_offset = 2.5
 dip_exponent = 0.3333
 dip_offset = 1.5
 
-[materials.rise_time_factor]
+[profiles.rise_time_factor]
 type = "profile"
 depth_km = [
     5.0,
@@ -103,14 +103,14 @@ values = [
     2.0,
 ]
 
-[materials.rise_time_slip_weight]
+[profiles.rise_time_slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
 shallow = 0.0
 deep = 1.0
 
-[materials.rupture_speed_factor]
+[profiles.rupture_speed_factor]
 type = "profile"
 depth_km = [
     5.0,

@@ -26,7 +26,7 @@ segment = "Johnson Valley"
 strike_km = 11.0
 dip_km = 7.0
 
-[velocity_model]
+[medium]
 bottom_depth_km = [
     1.5,
     4.0,
@@ -75,7 +75,7 @@ type = "predetermined"
 "Homestead Valley" = "Johnson Valley"
 "Camp Rock - Emerson" = "Homestead Valley"
 
-[materials.rise_time_factor]
+[profiles.rise_time_factor]
 type = "profile"
 depth_km = [
     5.0,
@@ -90,14 +90,14 @@ values = [
     2.0,
 ]
 
-[materials.rise_time_slip_weight]
+[profiles.rise_time_slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
 shallow = 0.0
 deep = 1.0
 
-[materials.rupture_speed_factor]
+[profiles.rupture_speed_factor]
 type = "profile"
 depth_km = [
     5.0,

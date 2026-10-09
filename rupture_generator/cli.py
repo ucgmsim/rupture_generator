@@ -29,16 +29,16 @@ def main(argv: list[str] | None = None) -> int:
         scenario = rupture_config.build(config)
         ruptures = generate(
             scenario.realisation,
-            scenario.materials,
+            scenario.medium,
             scenario.sources,
             scenario.settings,
             seed=scenario.seed,
+            jump_model=scenario.jump_model,
         )
         write_rupture(
             str(args.output),
             scenario.realisation,
             ruptures,
-            scenario.materials,
             dt_s=scenario.dt_s,
             beta=scenario.beta,
         )

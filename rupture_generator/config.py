@@ -5,7 +5,7 @@ Settings that are already plain data -- :class:`RuptureSettings`' four parts, th
 correlation relation, the jump model -- are the library's own classes, made strict
 about unknown keys by a subclass that restates no field, so every default lives in one
 place. What the file describes declaratively and the library takes as a function --
-a depth profile, a velocity model -- has a small class here that builds it.
+a depth profile, a medium -- has a small class here that builds it.
 
 :func:`load` reads and checks a file, :func:`build` turns it into a :class:`Scenario`,
 and :func:`dump` writes a loaded config back out with every default filled in, which
@@ -14,7 +14,6 @@ is the record of what was run.
 
 import dataclasses
 import tomllib
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -33,21 +32,21 @@ from mashumaro.types import Discriminator
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import NSHM_ALIASES, CellArray, geometry_from_geojson
 from rupture_generator.rupture.generator import (
+    FaultProfiles,
     RakeSettings,
     RiseSettings,
     RuptureSettings,
     SlipSettings,
     TimingSettings,
 )
-from rupture_generator.rupture.materials import (
-    CellSampler,
+from rupture_generator.rupture.medium import (
     Layers,
-    Materials,
-    constant_sampler,
-    interpolated_sampler,
-    ramp_sampler,
-    sample_materials,
-    velocity_model,
+    Medium,
+    SpatialField,
+    constant_field,
+    interpolated_field,
+    layered_medium,
+    ramp_field,
 )
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
@@ -105,7 +104,8 @@ class Correlation(CorrelationRelation):
 
 @dataclasses.dataclass(frozen=True)
 class Jump(JumpModel):
-    """A propagation's ``model`` table: Shaw & Dieterich (2007) when absent."""
+    """A propagation's ``model`` table: Shaw & Dieterich (2007) when absent. It picks
+    the tree, when the tree is not given, and how far each jump reaches."""
 
     Config = _Strict
 
@@ -121,9 +121,9 @@ class Constant:
     value: float
     Config = _Strict
 
-    def sampler(self) -> CellSampler:
-        """The profile as a function of cell position."""
-        return constant_sampler(self.value)
+    def field(self) -> SpatialField:
+        """The profile as a function of position."""
+        return constant_field(self.value)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -135,9 +135,9 @@ class Profile:
     values: list[float]
     Config = _Strict
 
-    def sampler(self) -> CellSampler:
-        """The profile as a function of cell position."""
-        return interpolated_sampler(np.array(self.depth_km), np.array(self.values))
+    def field(self) -> SpatialField:
+        """The profile as a function of position."""
+        return interpolated_field(np.array(self.depth_km), np.array(self.values))
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -152,9 +152,9 @@ class Ramp:
     deep: float
     Config = _Strict
 
-    def sampler(self) -> CellSampler:
-        """The profile as a function of cell position."""
-        return ramp_sampler(self.centre_km, self.half_width_km, self.shallow, self.deep)
+    def field(self) -> SpatialField:
+        """The profile as a function of position."""
+        return ramp_field(self.centre_km, self.half_width_km, self.shallow, self.deep)
 
 
 type DepthProfile = Annotated[
@@ -205,17 +205,17 @@ class HypocentreConfig:
 
 
 @dataclasses.dataclass(frozen=True)
-class VelocityModelConfig:
-    """``[velocity_model]``: a 1-D model, one value per layer."""
+class MediumConfig:
+    """``[medium]``: the rock, as a 1-D model with one value per layer."""
 
     bottom_depth_km: list[float]
     shear_speed_km_s: list[float]
     density_g_cm3: list[float]
     Config = _Strict
 
-    def samplers(self) -> tuple[CellSampler, CellSampler]:
-        """Shear speed and density as functions of cell position."""
-        return velocity_model(
+    def medium(self) -> Medium:
+        """Shear speed and density as functions of position."""
+        return layered_medium(
             Layers(np.array(self.bottom_depth_km)),
             np.array(self.shear_speed_km_s),
             np.array(self.density_g_cm3),
@@ -223,13 +223,24 @@ class VelocityModelConfig:
 
 
 @dataclasses.dataclass(frozen=True)
-class MaterialsConfig:
-    """``[materials]``: the depth profiles :class:`Materials` takes beyond the rock."""
+class ProfilesConfig:
+    """``[profiles]``: :class:`~rupture_generator.rupture.generator.FaultProfiles`,
+    each a depth profile and unmodified when absent."""
 
     rise_time_factor: DepthProfile | None = None
     rise_time_slip_weight: DepthProfile | None = None
     rupture_speed_factor: DepthProfile | None = None
     Config = _Strict
+
+    def profiles(self) -> FaultProfiles:
+        """The profiles given, as functions of position."""
+        return FaultProfiles(
+            **{
+                field.name: profile.field()
+                for field in dataclasses.fields(self)
+                if (profile := getattr(self, field.name)) is not None
+            }
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -281,6 +292,7 @@ class Predetermined:
 
     type: Literal["predetermined"] = "predetermined"
     parents: dict[str, str]
+    model: Jump = dataclasses.field(default_factory=Jump)
     Config = _Strict
 
 
@@ -315,10 +327,10 @@ class RuptureConfig:
     seed: int
     geometry: GeometryConfig
     hypocentre: HypocentreConfig
-    velocity_model: VelocityModelConfig
+    medium: MediumConfig
     source: SourceConfig
     propagation: PropagationConfig | None = None
-    materials: MaterialsConfig = dataclasses.field(default_factory=MaterialsConfig)
+    profiles: ProfilesConfig = dataclasses.field(default_factory=ProfilesConfig)
     slip: Slip = dataclasses.field(default_factory=Slip)
     rise: Rise = dataclasses.field(default_factory=Rise)
     rake: Rake = dataclasses.field(default_factory=Rake)
@@ -409,9 +421,10 @@ class Scenario:
     """
 
     realisation: Realisation
-    materials: dict[str, Materials]
+    medium: Medium
     sources: dict[str, SegmentSource]
     settings: RuptureSettings
+    jump_model: JumpModel
     seed: int
     dt_s: float
     beta: dict[str, CellArray] | None
@@ -420,7 +433,7 @@ class Scenario:
 def _sources(
     source: PerFault | Finite,
     realisation: Realisation,
-    materials: Mapping[str, Materials],
+    medium: Medium,
 ) -> dict[str, SegmentSource]:
     names = set(realisation)
     match source:
@@ -442,7 +455,7 @@ def _sources(
             }
         case Finite():
             shares = split_moment(
-                moment_from_magnitude(source.magnitude), realisation, materials
+                moment_from_magnitude(source.magnitude), realisation, medium
             )
             return {
                 name: segment_source(
@@ -519,23 +532,12 @@ def build(config: RuptureConfig) -> Scenario:
     )
     realisation = Realisation(charts, crs, hypocentre=hypocentre)
 
-    speed, density = config.velocity_model.samplers()
-    profiles = {
-        field.name: getattr(config.materials, field.name).sampler()
-        for field in dataclasses.fields(config.materials)
-        if getattr(config.materials, field.name) is not None
-    }
-    materials = {
-        name: sample_materials(
-            chart, shear_speed_km_s=speed, density_g_cm3=density, **profiles
-        )
-        for name, chart in charts.items()
-    }
+    medium = config.medium.medium()
     beta = (
         None
         if config.pulse.beta is None
         else {
-            name: config.pulse.beta.sampler()(chart.centres)
+            name: config.pulse.beta.field()(chart.centres)
             for name, chart in charts.items()
         }
     )
@@ -544,11 +546,16 @@ def build(config: RuptureConfig) -> Scenario:
         realisation=_propagated(
             config.propagation, realisation, hypocentre, config.seed
         ),
-        materials=materials,
-        sources=_sources(config.source, realisation, materials),
+        medium=medium,
+        sources=_sources(config.source, realisation, medium),
         settings=RuptureSettings(
-            slip=config.slip, rise=config.rise, rake=config.rake, timing=config.timing
+            slip=config.slip,
+            rise=config.rise,
+            rake=config.rake,
+            timing=config.timing,
+            profiles=config.profiles.profiles(),
         ),
+        jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,
         dt_s=config.pulse.dt_s,
         beta=beta,

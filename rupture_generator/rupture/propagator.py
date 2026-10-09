@@ -95,6 +95,19 @@ class JumpModel:
         decay = np.exp(-(distance_km - self.delta_km) / self.d0_km)
         return float(min(decay, self.probability_cap))
 
+    def reach_km(self, nearest_km: float, rng: np.random.Generator) -> float:
+        """How far a rupture that did jump reached, drawn once.
+
+        :meth:`probability` read as a survival function: the chance a rupture reaches
+        at least ``d`` is ``P(d)``, so its reach is ``delta_km`` plus an exponential of
+        mean ``d0_km``. Given that it crossed the nearest gap, ``nearest_km``, the
+        exponential's memorylessness makes the reach that gap (or ``delta_km``, if
+        wider) plus a fresh exponential. Capped at ``max_jump_km``, but never below the
+        gap the rupture is known to have crossed.
+        """
+        reach = max(self.delta_km, nearest_km) + rng.exponential(self.d0_km)
+        return float(min(reach, max(self.max_jump_km, nearest_km)))
+
 
 DEFAULT_JUMP_MODEL = JumpModel()
 """Shaw & Dieterich's own decay length."""

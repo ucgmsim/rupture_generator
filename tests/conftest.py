@@ -17,10 +17,11 @@ def scenario() -> config.Scenario:
 def ruptures(scenario: config.Scenario) -> dict:
     return generate(
         scenario.realisation,
-        scenario.materials,
+        scenario.medium,
         scenario.sources,
         scenario.settings,
         seed=scenario.seed,
+        jump_model=scenario.jump_model,
     )
 
 
@@ -31,7 +32,6 @@ def srf_path(tmp_path_factory, scenario, ruptures):
         str(path),
         scenario.realisation,
         ruptures,
-        scenario.materials,
         dt_s=scenario.dt_s,
         beta=scenario.beta,
     )

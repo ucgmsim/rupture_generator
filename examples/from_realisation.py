@@ -48,17 +48,17 @@ from rupture_generator import config
 from rupture_generator.config import (
     GeometryConfig,
     HypocentreConfig,
-    MaterialsConfig,
+    MediumConfig,
     PerFault,
     Predetermined,
     Profile,
+    ProfilesConfig,
     PulseConfig,
     Ramp,
     Rise,
     RuptureConfig,
     Slip,
     Timing,
-    VelocityModelConfig,
 )
 from rupture_generator.rupture.source import moment_from_magnitude
 
@@ -119,7 +119,9 @@ def section(name: str, corners: list[dict]) -> dict:
             "dip_deg": round(float(np.clip(np.mean(dips), 1.0, 90.0)), 3),
             "dip_direction_deg": round((strike_deg + turn) % 360.0, 3),
             "upper_depth_km": 0.0,
-            "lower_depth_km": round(max(point["depth"] for point in corners) / 1000.0, 3),
+            "lower_depth_km": round(
+                max(point["depth"] for point in corners) / 1000.0, 3
+            ),
         },
     }
 
@@ -171,8 +173,10 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
         hypocentre=HypocentreConfig(
             segment=root, strike_fraction=hypocentre["s"], dip_fraction=hypocentre["d"]
         ),
-        velocity_model=VelocityModelConfig(
-            bottom_depth_km=np.cumsum([layer["thickness"] for layer in layers]).tolist(),
+        medium=MediumConfig(
+            bottom_depth_km=np.cumsum(
+                [layer["thickness"] for layer in layers]
+            ).tolist(),
             shear_speed_km_s=[layer["Vs"] for layer in layers],
             density_g_cm3=[layer["rho"] for layer in layers],
         ),
@@ -186,7 +190,7 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
         propagation=Predetermined(
             parents={child: parent for child, parent in tree.items() if parent}
         ),
-        materials=MaterialsConfig(
+        profiles=ProfilesConfig(
             rise_time_factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
             rise_time_slip_weight=Ramp(
                 centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0

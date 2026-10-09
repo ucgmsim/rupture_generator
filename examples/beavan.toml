@@ -4,19 +4,19 @@
 #
 # Cut at 1 km so the example runs in about a second; the workflow runs it at 0.1 km.
 
-seed = 100000
+seed = 99999
 
 [geometry]
 path = "beavan.geojson"
 crs = "EPSG:2193"
-spacing_km = 1.0
+spacing_km = 0.1
 
 [hypocentre]
 segment = "Charing_Cross"
 strike_km = 9.0
 dip_km = 10.0
 
-[velocity_model]
+[medium]
 bottom_depth_km = [
     0.05,
     0.1,
@@ -164,7 +164,7 @@ Fault_Near_Hororata = "Greendale_NW_SE"
 Greendale_East = "Greendale_central"
 Fault_NE = "Greendale_East"
 
-[materials.rise_time_factor]
+[profiles.rise_time_factor]
 type = "profile"
 depth_km = [
     5.0,
@@ -179,14 +179,14 @@ values = [
     2.0,
 ]
 
-[materials.rise_time_slip_weight]
+[profiles.rise_time_slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
 shallow = 0.0
 deep = 1.0
 
-[materials.rupture_speed_factor]
+[profiles.rupture_speed_factor]
 type = "profile"
 depth_km = [
     5.0,

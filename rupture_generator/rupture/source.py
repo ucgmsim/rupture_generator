@@ -15,12 +15,11 @@ complexity in earthquake slip. *Journal of Geophysical Research*, 107(B11), 2308
 """
 
 import dataclasses
-from collections.abc import Mapping
 
 import numpy as np
 
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.rupture.materials import Materials
+from rupture_generator.rupture.medium import Medium
 from rupture_generator.rupture.realisation import Realisation
 from rupture_generator.sampling import Correlation, Covariance, VonKarman
 
@@ -103,7 +102,7 @@ def segment_source(
 
 
 def split_moment(
-    moment_nm: float, realisation: Realisation, materials: Mapping[str, Materials]
+    moment_nm: float, realisation: Realisation, medium: Medium
 ) -> dict[str, float]:
     """One event's moment shared between its segments.
 
@@ -112,7 +111,9 @@ def split_moment(
     """
     weights = {
         name: float(
-            np.sum((materials[name].rigidity_pa * chart.areas_km2)[chart.occupied])
+            np.sum(
+                (medium.rigidity_pa(chart.centres) * chart.areas_km2)[chart.occupied]
+            )
         )
         for name, chart in realisation.items()
     }

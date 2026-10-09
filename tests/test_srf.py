@@ -17,12 +17,9 @@ def srf(srf_path):
     return srf_path, parse_srf(srf_path.read_bytes())
 
 
-def column(ruptures, materials, pick):
+def column(ruptures, pick):
     return np.concatenate(
-        [
-            _plane_major(r.geometry, pick(r, materials[name]))
-            for name, r in ruptures.items()
-        ]
+        [_plane_major(r.geometry, pick(r)) for r in ruptures.values()]
     )
 
 
@@ -43,23 +40,22 @@ def test_only_the_hypocentre_plane_has_a_hypocentre(srf):
     )
 
 
-def test_points_round_trip(srf, scenario, ruptures):
+def test_points_round_trip(srf, ruptures):
     _, parsed = srf
     metadata = parsed.metadata
-    materials = scenario.materials
-    slip_cm = column(ruptures, materials, lambda r, m: r.slip_m) * 100.0
+    slip_cm = column(ruptures, lambda r: r.slip_m) * 100.0
     np.testing.assert_allclose(metadata.slip1, slip_cm, rtol=1e-6)
     np.testing.assert_allclose(
-        metadata.tinit, column(ruptures, materials, lambda r, m: r.onset_s), atol=1e-5
+        metadata.tinit, column(ruptures, lambda r: r.onset_s), atol=1e-5
     )
     np.testing.assert_allclose(
         metadata.vs,
-        column(ruptures, materials, lambda r, m: m.shear_speed_km_s) * 1e5,
+        column(ruptures, lambda r: r.shear_speed_km_s) * 1e5,
         rtol=1e-6,
     )
     np.testing.assert_allclose(
         metadata.density,
-        column(ruptures, materials, lambda r, m: m.density_g_cm3),
+        column(ruptures, lambda r: r.density_g_cm3),
         rtol=1e-6,
     )
 
@@ -91,10 +87,8 @@ def test_positions_are_the_charts(srf, scenario, ruptures):
     to_lon_lat = pyproj.Transformer.from_crs(
         scenario.realisation.crs, "EPSG:4326", always_xy=True
     )
-    east = column(ruptures, scenario.materials, lambda r, m: r.geometry.centres[..., 0])
-    north = column(
-        ruptures, scenario.materials, lambda r, m: r.geometry.centres[..., 1]
-    )
+    east = column(ruptures, lambda r: r.geometry.centres[..., 0])
+    north = column(ruptures, lambda r: r.geometry.centres[..., 1])
     lon, lat = to_lon_lat.transform(east * 1000, north * 1000)
     np.testing.assert_allclose(parsed.metadata.lon, lon, atol=1e-4)
     np.testing.assert_allclose(parsed.metadata.lat, lat, atol=1e-4)
@@ -133,7 +127,6 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
             str(tmp_path / "bad.srf"),
             scenario.realisation,
             ruptures,
-            scenario.materials,
             dt_s=scenario.dt_s,
             beta=beta,
         )

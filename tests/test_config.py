@@ -46,7 +46,7 @@ def test_defaults_are_the_librarys():
         (
             "centre_km = 2.0",
             'centre_km = "two"',
-            "materials.rise_time_slip_weight.centre_km:",
+            "profiles.rise_time_slip_weight.centre_km:",
         ),
         (
             "dip_fraction = 0.5\n",
