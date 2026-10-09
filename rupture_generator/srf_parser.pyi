@@ -1,6 +1,8 @@
 """Type stubs for the SRF extension; the classes are `crates/srf/src/pytypes.rs`."""
 
 from collections.abc import Buffer
+from types import TracebackType
+from typing import Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -84,6 +86,18 @@ class PySrfFile:
         metadata: PySrfMetadata,
         slipt1: PyCsrMatrix,
     ) -> None: ...
+
+class SrfWriter:
+    def __init__(self, file_path: str, planes: list[PySrfPlane]) -> None: ...
+    def write(self, metadata: PySrfMetadata, slipt1: PyCsrMatrix) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool: ...
 
 def parse_srf(buffer: Buffer) -> PySrfFile: ...
 def write_srf(py_srf_file: PySrfFile, file_path: str) -> None: ...

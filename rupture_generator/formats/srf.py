@@ -28,11 +28,10 @@ from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.srf_parser import (
     PyCsrMatrix,
-    PySrfFile,
     PySrfMetadata,
     PySrfPlane,
+    SrfWriter,
     parse_srf,
-    write_srf,
 )
 
 CM_PER_M = 100.0
@@ -111,14 +110,63 @@ def _planes(
     return headers, strikes
 
 
-def _plane_major(geometry: Geometry, field: CellArray) -> np.ndarray:
-    """A cell field flattened in SRF order.
+def _plane_points(
+    name: str,
+    rupture: SegmentRupture,
+    columns: slice,
+    strike_deg: float,
+    transformer: pyproj.Transformer,
+    *,
+    dt_s: float,
+    beta: CellArray | None,
+) -> tuple[PySrfMetadata, PyCsrMatrix]:
+    """One plane's points and slip-rate rows, in SRF order and SRF units.
 
-    Plane by plane, then dip rows, with the along-strike index varying first.
+    Raises
+    ------
+    RuptureGeneratorError
+        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, or a
+        ``beta`` outside ``(0, 0.5]``.
     """
-    return np.concatenate(
-        [field[:, columns].ravel() for columns in _plane_slices(geometry)]
+    geometry = rupture.geometry
+
+    def cells(field: CellArray) -> np.ndarray:
+        return np.ascontiguousarray(field[:, columns]).ravel()
+
+    centres = geometry.centres[:, columns]
+    lon, lat = _to_lon_lat(
+        transformer, centres[..., 0].ravel(), centres[..., 1].ravel()
     )
+    slip_m, rise_s = cells(rupture.slip_m), cells(rupture.rise_time_s)
+    try:
+        row_offsets, rates = synthesise_pulses(
+            slip_m, rise_s, dt_s, None if beta is None else cells(beta)
+        )
+    except ValueError as error:
+        raise RuptureGeneratorError(f"{name}: {error}") from error
+
+    def single(values: np.ndarray) -> np.ndarray:
+        return np.asarray(values, dtype=np.float32)
+
+    metadata = PySrfMetadata(
+        lon=single(lon),
+        lat=single(lat),
+        dep=single(centres[..., 2].ravel()),
+        stk=np.full(lon.size, strike_deg, dtype=np.float32),
+        dip=single(cells(geometry.dip_deg)),
+        area=single(cells(geometry.areas_km2) * CM2_PER_KM2),
+        tinit=single(cells(rupture.onset_s)),
+        dt=np.full(lon.size, dt_s, dtype=np.float32),
+        rake=single(cells(rupture.rake_deg)),
+        slip1=single(slip_m * CM_PER_M),
+        rise=single(rise_s),
+        vs=single(cells(rupture.shear_speed_km_s) * CM_PER_KM),
+        density=single(cells(rupture.density_g_cm3)),
+    )
+    slip_rate = PyCsrMatrix(
+        row_ptr=row_offsets.astype(np.uint64), data=single(rates * CM_PER_M)
+    )
+    return metadata, slip_rate
 
 
 def write_rupture(
@@ -154,89 +202,35 @@ def write_rupture(
     transformer = pyproj.Transformer.from_crs(
         realisation.crs, "EPSG:4326", always_xy=True
     )
+    hypocentre = realisation.hypocentre
     planes: list[PySrfPlane] = []
-    columns: dict[str, list[np.ndarray]] = {
-        name: []
-        for name in (
-            "lon",
-            "lat",
-            "dep",
-            "stk",
-            "dip",
-            "area",
-            "tinit",
-            "rake",
-            "slip1",
-            "rise",
-            "vs",
-            "density",
-        )
-    }
-    offsets: list[np.ndarray] = [np.zeros(1, dtype=np.int64)]
-    samples: list[np.ndarray] = []
-
+    strikes: dict[str, list[float]] = {}
     for name, rupture in ruptures.items():
-        geometry = rupture.geometry
-        on_segment = (
-            realisation.hypocentre
-            if realisation.hypocentre and realisation.hypocentre.segment == name
-            else None
-        )
-        headers, strikes = _planes(geometry, on_segment, transformer)
+        on_segment = hypocentre if hypocentre and hypocentre.segment == name else None
+        headers, strikes[name] = _planes(rupture.geometry, on_segment, transformer)
         planes.extend(headers)
 
-        centres = geometry.centres
-        lon, lat = _to_lon_lat(
-            transformer,
-            _plane_major(geometry, centres[..., 0]),
-            _plane_major(geometry, centres[..., 1]),
-        )
-        slip_m, rise_s = (
-            _plane_major(geometry, rupture.slip_m),
-            _plane_major(geometry, rupture.rise_time_s),
-        )
-        columns["lon"].append(lon)
-        columns["lat"].append(lat)
-        columns["dep"].append(_plane_major(geometry, centres[..., 2]))
-        columns["stk"].append(
-            np.repeat(strikes, [geometry.cells[0] * n for n in geometry.plane_cells])
-        )
-        columns["dip"].append(_plane_major(geometry, geometry.dip_deg))
-        columns["area"].append(_plane_major(geometry, geometry.areas_km2) * CM2_PER_KM2)
-        columns["tinit"].append(_plane_major(geometry, rupture.onset_s))
-        columns["rake"].append(_plane_major(geometry, rupture.rake_deg))
-        columns["slip1"].append(slip_m * CM_PER_M)
-        columns["rise"].append(rise_s)
-        columns["vs"].append(
-            _plane_major(geometry, rupture.shear_speed_km_s) * CM_PER_KM
-        )
-        columns["density"].append(_plane_major(geometry, rupture.density_g_cm3))
-
-        segment_beta = (
-            None
-            if beta is None or name not in beta
-            else _plane_major(geometry, beta[name])
-        )
-        try:
-            row_offsets, rates = synthesise_pulses(slip_m, rise_s, dt_s, segment_beta)
-        except ValueError as error:
-            raise RuptureGeneratorError(f"{name}: {error}") from None
-        offsets.append(row_offsets[1:] + offsets[-1][-1])
-        samples.append(rates * CM_PER_M)
-
-    count = sum(len(lon) for lon in columns["lon"])
-    metadata = PySrfMetadata(
-        **{
-            name: np.concatenate(parts).astype(np.float32)
-            for name, parts in columns.items()
-        },
-        dt=np.full(count, dt_s, dtype=np.float32),
-    )
-    slip_rate = PyCsrMatrix(
-        row_ptr=np.concatenate(offsets).astype(np.uint64),
-        data=np.concatenate(samples).astype(np.float32),
-    )
-    write_srf(PySrfFile(planes, metadata, slip_rate), path)
+    try:
+        with SrfWriter(path, planes) as writer:
+            for name, rupture in ruptures.items():
+                segment_beta = None if beta is None else beta.get(name)
+                for columns, strike_deg in zip(
+                    _plane_slices(rupture.geometry), strikes[name], strict=True
+                ):
+                    writer.write(
+                        *_plane_points(
+                            name,
+                            rupture,
+                            columns,
+                            strike_deg,
+                            transformer,
+                            dt_s=dt_s,
+                            beta=segment_beta,
+                        )
+                    )
+    except BaseException:
+        Path(path).unlink(missing_ok=True)
+        raise
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -339,7 +333,7 @@ def read_rupture(path: str | Path) -> SrfRupture:
     try:
         srf = parse_srf(Path(path).read_bytes())
     except ValueError as error:
-        raise RuptureGeneratorError(f"{path}: {error}") from None
+        raise RuptureGeneratorError(f"{path}: {error}") from error
     points = srf.metadata
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(

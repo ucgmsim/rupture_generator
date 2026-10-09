@@ -22,22 +22,34 @@ type FieldArray = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 type Correlation = Callable[[np.ndarray], np.ndarray]
 """A stationary correlation function of a lag measured in correlation lengths."""
 
-WRAP_TOLERANCE = 1.0e-5
+WRAP_TOLERANCE = 1.0e-2
 """The correlation two cells may pick up through the periodic boundary.
 
 The embedding is periodic, so cells at opposite ends of the grid are also neighbours
 across the wrap. The margin is sized so the correlation function has decayed to this
 by the time it wraps, which is what the embedding delivers as spurious correlation
 between the fault's far edges.
+
+A percent, not round-off, because the correlation lengths it protects are an
+empirical regression's, and they scatter far more than that. Measured on a 25 x 60
+km fault at 0.1 km, the delivered covariance's own best-fit lengths stay within
+0.01% of the target's at Mw 6.5 and 7.5, and the largest error at any lag is 1e-2.
+The padding is what this buys back: at Mw 7.5 the embedding shrinks from 13.7
+million cells to 1.2 million and takes a tenth of the time.
 """
 
-MAXIMUM_VARIANCE_DEFICIT = 1.0e-10
+MAXIMUM_VARIANCE_DEFICIT = 1.0e-2
 """How much of a covariance's variance may sit in unsamplable directions.
 
-An embedding is sampled through the square roots of its eigenvalues; a negative one
-is clipped to zero and the variance it carried is dropped. This is the ratio of what
-was dropped to what was kept. At this level it is round-off; above it the covariance
-is not positive definite on this grid and a larger margin is the cure.
+An embedding is sampled through the square roots of its eigenvalues. A negative one
+is clipped to zero, and the variance it held is dropped. This is the ratio of what
+was dropped to what was kept. Past it, the covariance is not positive definite
+enough on this grid, and a larger margin is the cure.
+
+It moves with :data:`WRAP_TOLERANCE`. Held at round-off, it forces a doubled margin
+on nearly every embedding a looser wrap allows, and then costs more than the wrap
+saves. At a percent each, the first margin passes, and the clipped variance is a
+few parts in a thousand on the faults above.
 """
 
 MAXIMUM_EMBEDDING_DOUBLINGS = 3
@@ -143,7 +155,7 @@ def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, i
     function keeps only that quarter, and :func:`circulant_draw` mirrors it.
 
     The margin starts at the correlation's decay length and doubles until the variance
-    the clipped negative eigenvalues drop is round-off.
+    the clipped negative eigenvalues drop is within :data:`MAXIMUM_VARIANCE_DEFICIT`.
     """
     decay = _decay_length(covariance.correlation, WRAP_TOLERANCE)
     for doubling in range(MAXIMUM_EMBEDDING_DOUBLINGS):

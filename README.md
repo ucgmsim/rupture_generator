@@ -31,8 +31,9 @@ rupture-view alpine_hope.srf --save alpine_hope.rrd
 
 The examples under `examples/` include the Landers, Northridge, and Colombia
 earthquakes, the Beavan and Alpine-Hope workflow realisations, and two small systems
-for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to fit in
-about 3.5 GB of memory. `examples/from_realisation.py` converts a workflow
+for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to generate
+in about ten seconds. At 0.1 km it takes about a minute and writes an SRF of
+8.9 GB. `examples/from_realisation.py` converts a workflow
 `realisation.json` into the same pair of files.
 
 From Python, the usual run is five calls:
@@ -179,7 +180,12 @@ crates/
 ```sh
 just test     # pytest, doctests, and the Rust suites
 just lint     # ty, ruff, clippy, numpydoc
+just bench    # the kernels, and every example end to end with its peak RSS
 ```
+
+The benchmarks use pytest-benchmark. CI runs them on every pull request, against
+the base branch's own suite when it has one, and posts the comparison to the pull
+request.
 
 Tests state properties wherever one exists to state, with Hypothesis on the Python
 side and `proptest` on the Rust side. Numbers quoted in docstrings are measurements,
