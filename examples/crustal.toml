@@ -1,111 +1,114 @@
-# A crustal M6.2, in the shape `rupture-generator generate` reads.
-#
-# This is the only description of a rupture model in the package: the stages take
-# frozen parameter objects built from these classes, and the kernels take arrays, so
-# there is nothing for a second copy to disagree with.
+# A crustal M6.2 on the bent Hope fault: one magnitude for the event, its correlation
+# lengths from Mai & Beroza (2002). Depth profiles as in alpine_hope.toml.
 
-schema_version = 1
-title = "Crustal M6.2"
+seed = 1234
 
-# Where the rupture starts, in the fault's own coordinates: along strike from the j = 0
-# end, and down dip from the top edge. Arc lengths rather than cell indices, so they mean
-# the same thing whatever the fault is cut into.
+[geometry]
+path = "hope.geojson"
+crs = "EPSG:2193"
+spacing_km = 1.0
+
 [hypocentre]
+segment = "hope"
 strike_km = 12.0
 dip_km = 6.0
 
-# Shallow to deep. `bottom_depth_km` is the depth to the *bottom* of each layer, and a
-# subfault below the last one takes that layer's properties rather than an extrapolation.
 [velocity_model]
-bottom_depth_km  = [1.0, 5.0, 12.0, 1000.0]
-shear_speed_km_s = [1.8, 3.2, 3.5, 4.6]
-density_g_cm3    = [2.1, 2.5, 2.7, 3.2]
+bottom_depth_km = [
+    1.0,
+    5.0,
+    12.0,
+    1000.0,
+]
+shear_speed_km_s = [
+    1.8,
+    3.2,
+    3.5,
+    4.6,
+]
+density_g_cm3 = [
+    2.1,
+    2.5,
+    2.7,
+    3.2,
+]
 
 [source]
 type = "finite"
 magnitude = 6.2
-# The corner relation, which sets how big the slip patches are at this magnitude:
-# `lambda = 10 ** (exponent * Mw - offset)` km, along strike and down dip. `mai` is
-# Mai & Beroza (2002), what production selects, and carries no coefficients -- they
-# are the published fit. The alternative is a relation of your own:
-#
-#     model = "custom"
-#     strike_offset = 2.50
-#     dip_offset = 1.50
-#     strike_exponent = 0.5
-#     dip_exponent = 0.33333333333333331   # those four are Mai, spelled out
-#
-# which takes all four, so the file says what the relation is rather than naming one
-# and trusting this package to remember it. The relations the rewrite removed by name
-# -- somerville, suzuki, given -- come back this way, coefficients first.
-model = "mai"
-average_dip_deg = 70.0
-average_rake_deg = 175.0
+rake_deg = 175.0
 
-# Optional. Mai & Beroza's correlation lengths are inconsistent with observed surface
-# faulting, and on a surface-rupturing event they let the shallow fault radiate more
-# high-frequency energy than it should. Uncommenting this uses a different corner
-# relation over the upper few kilometres -- Suzuki et al. (2022) -- and Mai & Beroza
-# below, as one field whose correlation length varies rather than two fields blended:
-#
-#     [source.hybrid]
-#     depth_km = 6.5        # middle of the ramp; `hc_dep` in genslip
-#     half_width_km = 1.5   # so Suzuki alone above 5 km, Mai & Beroza alone below 8
-#     model = "suzuki"      # or "custom", which states all four coefficients here
-#
-# It is not free: a depth-varying profile makes the covariance across depths dense at
-# every wavenumber, which costs the square of the dip resolution in memory and its
-# cube in time. See `README.md`'s known limits before turning it on for an interface.
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333333333333333
+dip_offset = 1.5
+
+[materials.rise_time_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[materials.rise_time_slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[materials.rupture_speed_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
 
 [slip]
-# The spectral falloff. von Karman is Mai's own, and the only one left.
-shape = "von_karman"
-# Dimensionless: the slip field's spread. `rake_sigma_deg` below is the rake field's and
-# is in degrees -- handing one to the other is DEFECTS.md 14, a factor of twenty on every
-# fault, which is why they never appear as bare numbers in the same expression.
-#
-# Slip is drawn from a truncated exponential (Thingbaijam & Mai 2016, fitted to 190
-# SRCMOD models), for which the spread and the largest slip on the fault are one number:
-# 0.90 is a maximum of 4.30 mean slips, and their own regression puts that ratio at 3.9
-# to 4.4. The family runs from 0.5774 to 1 and attains neither end, so a spread outside
-# that is refused when the file is read. The 0.75 this used to carry came from genslip,
-# alongside the clip that the truncated marginal replaced.
-coefficient_of_variation = 0.90
-rake_sigma_deg = 15.0
+coefficient_of_variation = 0.9
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rake]
+sigma_deg = 15.0
 
 [timing]
-# The rupture times are made heterogeneous after the eikonal solve, not inside it: the
-# solve produces a coherent front over a smooth speed field, and a slip-correlated
-# displacement is added to it. Seconds is the currency because that spread is the one
-# quantity in this model fitted against recorded ground motion.
-#
-# The spread follows the moment rather than being a constant:
-#     sigma = offset + coefficient * 1e-9 * M0^(1/3)     M0 in dyne-cm
-# which is Graves & Pitarka's relation, and these two numbers are the magnitudes of
-# genslip's `tsfac_bzero` and `tsfac_slope` as the production defaults set them. At
-# this file's Mw 6.2 that is 0.241 s; at Mw 9 it would be 3.64 s. Both zero is a
-# coherent front. The coefficient is in the published units, per cube-root
-# dyne-centimetre, the same convention `rise_time_coefficient` uses.
-rupture_time_offset_s = 0.1
-rupture_time_coefficient = 0.5
-rupture_time_correlation = 0.8
+velocity_fraction = 0.8
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
 
-# How far the front travels before it carries the full displacement, in units of that
-# spread. The rupture leaves the hypocentre smooth and roughens with distance --
-# heterogeneity is something a front accumulates, not something it starts with -- and
-# the hypocentre stays exactly where it was declared because the blend is zero there.
-# A per-cell causal clamp catches the draws that dip deeper than the zone admits, so no
-# subfault ruptures before the front that seeded it whatever this is set to.
-rupture_time_blend_sigma = 4.0
-rise_time_blend   = { centre_km = 2.0,  half_width_km = 1.0 }
-shallow_ramp      = { centre_km = 6.5,  half_width_km = 1.5 }
-deep_ramp         = { centre_km = 17.5, half_width_km = 2.5 }
-beta_shallow_ramp = { centre_km = 2.0,  half_width_km = 1.0 }
-beta_mid_ramp     = { centre_km = 6.5,  half_width_km = 1.5 }
+[pulse]
+dt_s = 0.005
 
-[random]
-# One event seed; every stage draws from its own named substream of it, so changing one
-# stage's parameters cannot change another stage's noise. `realisation` selects an
-# independent stream from the same seed, which is what makes a campaign restartable.
-seed = 1234
-realisation = 0
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13

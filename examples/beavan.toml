@@ -1,183 +1,234 @@
-schema_version = 1
-title = "Beavan_BF15"
+# The Beavan BF15 rupture, converted from a workflow realisation: seven faults, each with
+# its own magnitude, in a predetermined triggering order. Depth profiles as in
+# alpine_hope.toml.
+#
+# Cut at 1 km so the example runs in about a second; the workflow runs it at 0.1 km.
+
+seed = 100000
+
+[geometry]
+path = "beavan.geojson"
+crs = "EPSG:2193"
+spacing_km = 1.0
 
 [hypocentre]
-fault = "Charing_Cross"
+segment = "Charing_Cross"
 strike_km = 9.0
 dip_km = 10.0
 
 [velocity_model]
 bottom_depth_km = [
-  0.05,
-  0.10,
-  0.15,
-  0.20,
-  0.30,
-  0.40,
-  0.60,
-  0.80,
-  1.00,
-  1.20,
-  1.40,
-  1.60,
-  1.80,
-  2.00,
-  2.20,
-  2.40,
-  2.60,
-  2.80,
-  3.00,
-  3.20,
-  3.40,
-  3.60,
-  3.80,
-  4.00,
-  4.20,
-  4.40,
-  4.60,
-  4.80,
-  5.00,
-  8.00,
-  12.00,
-  27.00,
-  39.00,
-  1039.00,
+    0.05,
+    0.1,
+    0.15,
+    0.2,
+    0.3,
+    0.4,
+    0.6,
+    0.8,
+    1.0,
+    1.2,
+    1.4,
+    1.6,
+    1.8,
+    2.0,
+    2.2,
+    2.4,
+    2.6,
+    2.8,
+    3.0,
+    3.2,
+    3.4,
+    3.6,
+    3.8,
+    4.0,
+    4.2,
+    4.4,
+    4.6,
+    4.8,
+    5.0,
+    8.0,
+    12.0,
+    27.0,
+    39.0,
+    1039.0,
 ]
 shear_speed_km_s = [
-  0.500,
-  0.500,
-  0.580,
-  0.680,
-  0.750,
-  0.830,
-  0.900,
-  1.000,
-  1.050,
-  1.100,
-  1.150,
-  1.200,
-  1.430,
-  1.640,
-  1.860,
-  2.070,
-  2.280,
-  2.490,
-  2.700,
-  2.770,
-  2.840,
-  2.910,
-  2.980,
-  3.050,
-  3.120,
-  3.190,
-  3.260,
-  3.330,
-  3.400,
-  3.600,
-  3.600,
-  3.700,
-  4.300,
-  4.600,
+    0.5,
+    0.5,
+    0.58,
+    0.68,
+    0.75,
+    0.83,
+    0.9,
+    1.0,
+    1.05,
+    1.1,
+    1.15,
+    1.2,
+    1.43,
+    1.64,
+    1.86,
+    2.07,
+    2.28,
+    2.49,
+    2.7,
+    2.77,
+    2.84,
+    2.91,
+    2.98,
+    3.05,
+    3.12,
+    3.19,
+    3.26,
+    3.33,
+    3.4,
+    3.6,
+    3.6,
+    3.7,
+    4.3,
+    4.6,
 ]
 density_g_cm3 = [
-  1.810,
-  1.810,
-  1.810,
-  1.810,
-  1.810,
-  1.810,
-  1.860,
-  1.920,
-  1.970,
-  1.990,
-  2.060,
-  2.150,
-  2.220,
-  2.280,
-  2.320,
-  2.360,
-  2.400,
-  2.440,
-  2.480,
-  2.490,
-  2.510,
-  2.520,
-  2.540,
-  2.560,
-  2.580,
-  2.600,
-  2.610,
-  2.630,
-  2.660,
-  2.720,
-  2.720,
-  2.830,
-  3.120,
-  3.330,
+    1.81,
+    1.81,
+    1.81,
+    1.81,
+    1.81,
+    1.81,
+    1.86,
+    1.92,
+    1.97,
+    1.99,
+    2.06,
+    2.15,
+    2.22,
+    2.28,
+    2.32,
+    2.36,
+    2.4,
+    2.44,
+    2.48,
+    2.49,
+    2.51,
+    2.52,
+    2.54,
+    2.56,
+    2.58,
+    2.6,
+    2.61,
+    2.63,
+    2.66,
+    2.72,
+    2.72,
+    2.83,
+    3.12,
+    3.33,
 ]
 
 [source]
 type = "per_fault"
-rise_time_coefficient = 1.6
 
 [source.magnitudes]
-"Greendale_NW_SE" = 6.650525
-"Greendale_East" = 6.563069
-"Greendale_central" = 6.698780
-"Fault_Near_Hororata" = 5.982427
-"Charing_Cross" = 6.483556
-"Fault_NNW" = 6.425610
-"Fault_NE" = 6.539360
+Greendale_NW_SE = 6.650525
+Greendale_East = 6.563069
+Greendale_central = 6.69878
+Fault_Near_Hororata = 5.982427
+Charing_Cross = 6.483556
+Fault_NNW = 6.42561
+Fault_NE = 6.53936
 
 [source.rakes]
-"Greendale_NW_SE" = 53.910
-"Greendale_East" = -104.100
-"Greendale_central" = 37.060
-"Fault_Near_Hororata" = 77.700
-"Charing_Cross" = 66.500
-"Fault_NNW" = 6.230
-"Fault_NE" = 15.460
+Greendale_NW_SE = 53.91
+Greendale_East = -104.1
+Greendale_central = 37.06
+Fault_Near_Hororata = 77.7
+Charing_Cross = 66.5
+Fault_NNW = 6.23
+Fault_NE = 15.46
 
-[slip]
-coefficient_of_variation = 0.90
-side_taper = 0.02
-top_taper = 0.0
-bottom_taper = 0.0
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333333333333333
+dip_offset = 1.5
 
-[field]
-velocity_fraction = 0.8
-
-[timing]
-# The displacement added to the solved onsets follows the moment,
-# `offset + coefficient * 1e-9 * M0^(1/3)`, per fault. Graves & Pitarka's relation and
-# genslip's own numbers; the defaults are these, spelled out here because this is the
-# amplitude of every rupture's timing heterogeneity and it should not be invisible.
-rupture_time_offset_s = 0.1
-rupture_time_coefficient = 0.5
-rupture_time_blend_sigma = 4.0
-rise_time_blend = { centre_km = 2.0, half_width_km = 1.0 }
-shallow_ramp = { centre_km = 6.5, half_width_km = 1.5 }
-deep_ramp = { centre_km = 17.5, half_width_km = 2.5 }
-beta_shallow_ramp = { centre_km = 2.0, half_width_km = 1.0 }
-beta_mid_ramp = { centre_km = 6.5, half_width_km = 1.5 }
-shallow_speed_factor = 0.6
-deep_speed_factor = 0.6
-
-[random]
-seed = 100000
-realisation = 0
-
-# Who triggers whom. The jump *points* are not carried across: this
-# generator finds them from the solved wavefront rather than by closest
-# approach, so importing them would import an answer to a question it asks
-# itself, and asks differently.
 [propagation]
 type = "predetermined"
 
 [propagation.parents]
-"Greendale_NW_SE" = "Charing_Cross"
-"Fault_NNW" = "Charing_Cross"
-"Greendale_central" = "Greendale_NW_SE"
-"Fault_Near_Hororata" = "Greendale_NW_SE"
-"Greendale_East" = "Greendale_central"
-"Fault_NE" = "Greendale_East"
+Greendale_NW_SE = "Charing_Cross"
+Fault_NNW = "Charing_Cross"
+Greendale_central = "Greendale_NW_SE"
+Fault_Near_Hororata = "Greendale_NW_SE"
+Greendale_East = "Greendale_central"
+Fault_NE = "Greendale_East"
+
+[materials.rise_time_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[materials.rise_time_slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[materials.rupture_speed_factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[slip]
+coefficient_of_variation = 0.9
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rake]
+sigma_deg = 15.0
+
+[timing]
+velocity_fraction = 0.8
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13

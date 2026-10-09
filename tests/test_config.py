@@ -105,3 +105,12 @@ def test_the_cli_reports_a_bad_file(tmp_path, capsys):
     bad.write_text(BASE.replace("seed = 7\n", ""))
     assert main([str(bad), str(tmp_path / "out.srf")]) == 2
     assert "seed: is missing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "example",
+    sorted(path.name for path in EXAMPLE.parent.glob("*.toml")),
+)
+def test_every_example_builds(example):
+    scenario = rupture_config.build(rupture_config.load(EXAMPLE.parent / example))
+    assert set(scenario.sources) == set(scenario.realisation)
