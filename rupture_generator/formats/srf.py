@@ -1,8 +1,10 @@
 """Writing a drawn rupture as a Standard Rupture Format file.
 
-The SRF is in CGS -- slip in centimetres, area in square centimetres, slip rate in
-centimetres per second -- and this module is the only place those units appear. Depth
-stays in kilometres and positions are WGS84 longitude and latitude.
+Version 2.0, which carries each point's shear speed and density. The SRF is in CGS --
+slip in centimetres, area in square centimetres, slip rate and shear speed in
+centimetres per second, density in grams per cubic centimetre -- and this module is
+the only place those units appear. Depth stays in kilometres and positions are WGS84
+longitude and latitude.
 
 Every plane of every segment is one SRF plane, in the order the segments were drawn.
 Its points run down dip in rows, strike fastest, as the format orders them. A plane's
@@ -19,6 +21,7 @@ import pyproj
 from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.generator import SegmentRupture
+from rupture_generator.rupture.materials import Materials
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.srf_parser import (
     PyCsrMatrix,
@@ -29,6 +32,7 @@ from rupture_generator.srf_parser import (
 )
 
 CM_PER_M = 100.0
+CM_PER_KM = 1.0e5
 CM2_PER_KM2 = 1.0e10
 M_PER_KM = 1000.0
 
@@ -115,11 +119,12 @@ def write_rupture(
     path: str,
     realisation: Realisation,
     ruptures: Mapping[str, SegmentRupture],
+    materials: Mapping[str, Materials],
     *,
     dt_s: float,
     beta: Mapping[str, CellArray] | None = None,
 ) -> None:
-    """Write drawn segments as an SRF (version 1).
+    """Write drawn segments, and the rock they slipped in, as an SRF.
 
     ``beta`` is the Liu-Archuleta-Hartzell rising fraction per cell, by segment; a
     segment without one gets a single-sample impulse per subfault.
@@ -147,6 +152,8 @@ def write_rupture(
             "rake",
             "slip1",
             "rise",
+            "vs",
+            "density",
         )
     }
     offsets: list[np.ndarray] = [np.zeros(1, dtype=np.int64)]
@@ -184,6 +191,9 @@ def write_rupture(
         columns["rake"].append(_plane_major(geometry, rupture.rake_deg))
         columns["slip1"].append(slip_m * CM_PER_M)
         columns["rise"].append(rise_s)
+        rock = materials[name]
+        columns["vs"].append(_plane_major(geometry, rock.shear_speed_km_s) * CM_PER_KM)
+        columns["density"].append(_plane_major(geometry, rock.density_g_cm3))
 
         segment_beta = (
             None
