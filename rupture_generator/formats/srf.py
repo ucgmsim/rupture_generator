@@ -122,10 +122,6 @@ def _plane_points(
 ) -> tuple[PySrfMetadata, PyCsrMatrix]:
     """One plane's points and slip-rate rows, in SRF order and SRF units.
 
-    Dip rows, with the along-strike index varying first. The kernel synthesises the
-    pulses here, one plane at a time. Memory then never has more pulses in it than
-    one plane has.
-
     Raises
     ------
     RuptureGeneratorError
@@ -147,7 +143,7 @@ def _plane_points(
             slip_m, rise_s, dt_s, None if beta is None else cells(beta)
         )
     except ValueError as error:
-        raise RuptureGeneratorError(f"{name}: {error}") from None
+        raise RuptureGeneratorError(f"{name}: {error}") from error
 
     def single(values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32)
@@ -182,11 +178,6 @@ def write_rupture(
     beta: Mapping[str, CellArray] | None = None,
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
-
-    The file streams out a plane at a time. Every plane's header goes first, since
-    geometry alone decides it. Each plane's points and pulses follow. Peak memory is
-    then one plane's pulses rather than the whole rupture's. If anything fails part
-    of the way through, this removes the partial file.
 
     Parameters
     ----------
@@ -342,7 +333,7 @@ def read_rupture(path: str | Path) -> SrfRupture:
     try:
         srf = parse_srf(Path(path).read_bytes())
     except ValueError as error:
-        raise RuptureGeneratorError(f"{path}: {error}") from None
+        raise RuptureGeneratorError(f"{path}: {error}") from error
     points = srf.metadata
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(

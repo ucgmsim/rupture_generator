@@ -44,12 +44,6 @@ fn marshall_stream_error<T>(e: StreamError) -> PyResult<T> {
 }
 
 /// Readonly borrows of a `PySrfMetadata`'s base columns, as a `SrfMetadataView`.
-///
-/// No large copy between Python and Rust. The guards must stay in scope as long as
-/// the slices taken from them. The macro binds them as named locals in the caller,
-/// not as temporaries inside the struct literal. The view's name, the metadata and
-/// `py` are arguments because a `let` or a name inside a macro is hygienic, and the
-/// other side couldn't see it otherwise.
 macro_rules! borrow_columns {
     ($py:ident, $metadata:ident, $view:ident = $($column:ident),* $(,)?) => {
         $(let $column = $metadata.$column.bind($py).readonly();)*
@@ -152,14 +146,7 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     })
 }
 
-/// A version 2 SRF written as its points arrive, so no caller has to hold them all.
-///
-/// The header goes out when the writer opens: the version line and every plane,
-/// whose point counts fix how many points the file takes. `write` then takes them
-/// in chunks of any size, in file order, and each plane's `POINTS` line goes where
-/// its first point lands. `close` checks the count came out right. Used as a
-/// context manager, an exception inside the block leaves the file unfinished
-/// rather than closing it as if it were whole.
+/// Streaming SRF writer.
 #[pyclass(name = "SrfWriter")]
 pub struct PySrfWriter {
     writer: Option<BufWriter<File>>,
@@ -197,14 +184,14 @@ impl PySrfWriter {
         slipt1: PyRef<'_, PyCsrMatrix>,
     ) -> PyResult<()> {
         let Some(writer) = self.writer.as_mut() else {
-            return Err(PyValueError::new_err("the SRF writer is closed"));
+            return Err(PyValueError::new_err("SRF writer is closed"));
         };
         borrow_columns! {
             py, metadata, base = lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise
         }
         let (Some(vs), Some(density)) = (&metadata.vs, &metadata.density) else {
             return Err(PyValueError::new_err(
-                "a streamed SRF is version 2, so every point needs vs and density",
+                "Only SRF 2.0 is supported: vs and density are required",
             ));
         };
         let vs = vs.bind(py).readonly();
@@ -214,9 +201,8 @@ impl PySrfWriter {
         let points = base.lon.len();
         if row_ptr.len()? != points + 1 {
             return Err(PyValueError::new_err(format!(
-                "{points} points want {} row offsets, and there are {}",
-                points + 1,
-                row_ptr.len()?
+                "Points declared in sparse matrix ({}) do not match point metadata length ({points})",
+                row_ptr.len()?.saturating_sub(1)
             )));
         }
         let metadata_view = SrfMetadataV2View {
@@ -266,8 +252,6 @@ impl PySrfWriter {
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
         if exc_type.is_some() {
-            // Drop the handle without finishing. The file ends where the last write
-            // left it, and the exception says why.
             self.writer = None;
         } else {
             self.close(py)?;

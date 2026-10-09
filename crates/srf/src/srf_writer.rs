@@ -86,24 +86,18 @@ fn write_srf_points_v1<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f
     Ok(())
 }
 
-/// Why a stream of points doesn't fit the planes its header declared.
+/// A stream of points that doesn't match the plane headers.
 #[derive(Debug, Error)]
 pub enum StreamError {
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("the planes declare {expected} points, and more than that were written")]
+    #[error("Points written exceed the {expected} declared by the plane headers")]
     TooMany { expected: usize },
-    #[error("the planes declare {expected} points, and {written} were written")]
+    #[error("Points written ({written}) do not match the {expected} declared by the plane headers")]
     TooFew { written: usize, expected: usize },
 }
 
-/// The points of a version 2 SRF, written as they arrive.
-///
-/// The header declares every plane's point count up front, so a writer that has it
-/// can take the points in chunks of any size: each plane's `POINTS` line goes out
-/// where that plane's first point lands, and a chunk may end mid-plane or span
-/// several. The counts are the only state. A caller can then write a rupture one
-/// plane at a time, with only that plane in memory.
+/// Writes the points of a version 2 SRF in chunks of any size.
 pub struct PointStream {
     counts: Vec<usize>,
     plane: usize,
@@ -122,27 +116,26 @@ impl PointStream {
         }
     }
 
-    /// The `POINTS` lines of every plane that has none left to wait for, up to and
-    /// including the next plane with points in it.
-    fn open_plane<W: Write>(&mut self, writer: &mut W, buffer: &mut [u8]) -> Result<bool> {
-        while self.left == 0 {
-            let Some(&count) = self.counts.get(self.plane) else {
-                return Ok(false);
-            };
-            writer.write_all(POINTS)?;
-            lexical_write(writer, count, buffer)?;
-            writer.write_all(b"\n")?;
-            self.plane += 1;
-            self.left = count;
-        }
-        Ok(true)
+    fn expected(&self) -> usize {
+        self.counts.iter().sum()
+    }
+
+    /// Write the `POINTS` line of the next plane.
+    fn open_plane<W: Write>(&mut self, writer: &mut W, buffer: &mut [u8]) -> Result<()> {
+        let count = self.counts[self.plane];
+        writer.write_all(POINTS)?;
+        lexical_write(writer, count, buffer)?;
+        writer.write_all(b"\n")?;
+        self.plane += 1;
+        self.left = count;
+        Ok(())
     }
 
     /// Write the next points.
     ///
     /// # Errors
     ///
-    /// If writing fails, or the points run past the last plane's count.
+    /// If writing fails, or the points exceed those the plane headers declare.
     pub fn write<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
         &mut self,
         writer: &mut W,
@@ -151,10 +144,13 @@ impl PointStream {
     ) -> std::result::Result<(), StreamError> {
         let mut buffer = [0u8; BUFFER_SIZE];
         for (point, slip) in metadata.iter().zip(slipt1.rows()) {
-            if !self.open_plane(writer, &mut buffer)? {
-                return Err(StreamError::TooMany {
-                    expected: self.counts.iter().sum(),
-                });
+            while self.left == 0 {
+                if self.plane == self.counts.len() {
+                    return Err(StreamError::TooMany {
+                        expected: self.expected(),
+                    });
+                }
+                self.open_plane(writer, &mut buffer)?;
             }
             write_point(writer, &point.base, &mut buffer)?;
             writer.write_all(b" ")?;
@@ -170,23 +166,26 @@ impl PointStream {
         Ok(())
     }
 
-    /// Close the stream: the `POINTS` lines of any trailing planes with no points.
+    /// Check the stream wrote every declared point, then write the `POINTS` lines of
+    /// any trailing planes with no points.
     ///
     /// # Errors
     ///
-    /// If writing fails, or fewer points arrived than the planes declare.
+    /// If the stream wrote fewer points than the plane headers declare, or writing
+    /// fails.
     pub fn finish<W: Write>(&mut self, writer: &mut W) -> std::result::Result<(), StreamError> {
-        let mut buffer = [0u8; BUFFER_SIZE];
-        self.open_plane(writer, &mut buffer)?;
-        let expected = self.counts.iter().sum();
-        if self.written == expected {
-            Ok(())
-        } else {
-            Err(StreamError::TooFew {
+        let expected = self.expected();
+        if self.written != expected {
+            return Err(StreamError::TooFew {
                 written: self.written,
                 expected,
-            })
+            });
         }
+        let mut buffer = [0u8; BUFFER_SIZE];
+        while self.plane < self.counts.len() {
+            self.open_plane(writer, &mut buffer)?;
+        }
+        Ok(())
     }
 }
 
@@ -463,7 +462,8 @@ POINTS 1\n\
         let (view, csr) = chunk(metadata, &srf.slipt1, 0, 1);
         let mut stream = PointStream::new(&srf.planes);
         stream.write(&mut Vec::new(), &view, &csr).unwrap();
-        let error = stream.finish(&mut Vec::new()).unwrap_err();
+        let mut tail = Vec::new();
+        let error = stream.finish(&mut tail).unwrap_err();
         assert!(matches!(
             error,
             StreamError::TooFew {
@@ -471,6 +471,7 @@ POINTS 1\n\
                 expected: 2
             }
         ));
+        assert_eq!(tail, Vec::<u8>::new());
     }
 
     #[test]

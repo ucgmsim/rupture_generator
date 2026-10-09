@@ -196,7 +196,7 @@ def test_a_stream_refuses_points_the_planes_do_not_declare(srf, tmp_path):
     _, parsed = srf
     count = len(parsed.metadata.lon)
     writer = SrfWriter(str(tmp_path / "long.srf"), parsed.planes[:1])
-    with pytest.raises(ValueError, match="more than that"):
+    with pytest.raises(ValueError, match="exceed the"):
         writer.write(*_chunk(parsed, 0, count))
 
 
@@ -204,9 +204,9 @@ def test_a_stream_refuses_to_close_short(srf, tmp_path):
     _, parsed = srf
     writer = SrfWriter(str(tmp_path / "short.srf"), parsed.planes)
     writer.write(*_chunk(parsed, 0, 3))
-    with pytest.raises(ValueError, match="3 were written"):
+    with pytest.raises(ValueError, match=r"Points written \(3\)"):
         writer.close()
-    with pytest.raises(ValueError, match="closed"):
+    with pytest.raises(ValueError, match="is closed"):
         writer.write(*_chunk(parsed, 3, 4))
 
 
@@ -215,7 +215,7 @@ def test_a_stream_needs_the_rows_to_match_the_points(srf, tmp_path):
     metadata, _ = _chunk(parsed, 0, 3)
     _, rows = _chunk(parsed, 0, 2)
     writer = SrfWriter(str(tmp_path / "rows.srf"), parsed.planes)
-    with pytest.raises(ValueError, match="row offsets"):
+    with pytest.raises(ValueError, match="do not match point metadata length"):
         writer.write(metadata, rows)
     writer.write(*_chunk(parsed, 0, len(parsed.metadata.lon)))
     writer.close()
