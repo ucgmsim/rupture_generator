@@ -7,6 +7,7 @@ import pytest
 import scipy as sp
 
 from rupture_generator import geometry_from_geojson, moment_from_magnitude
+from rupture_generator.rupture.source import segment_source
 from rupture_generator.sampling import (
     Covariance,
     Grid,
@@ -14,7 +15,11 @@ from rupture_generator.sampling import (
     PreCorrected,
     VonKarman,
 )
-from rupture_generator.sampling.field import _embed
+from rupture_generator.sampling.field import (
+    MAXIMUM_VARIANCE_DEFICIT,
+    WRAP_TOLERANCE,
+    _embed,
+)
 
 SECTION = {
     "type": "FeatureCollection",
@@ -71,6 +76,45 @@ def test_the_dct_embedding_is_the_wrapped_fft():
         np.maximum(spectrum[: padded[0] // 2 + 1, : padded[1] // 2 + 1], 0.0),
         atol=1e-12 * spectrum.max(),
     )
+
+
+def _target(covariance, grid, scale=(1.0, 1.0)):
+    lags = [
+        np.arange(e) * r / (ln * k)
+        for e, r, ln, k in zip(
+            grid.shape, grid.resolution_km, covariance.lengths_km, scale
+        )
+    ]
+    return covariance.correlation(np.hypot(lags[0][:, None], lags[1][None, :]))
+
+
+@pytest.mark.parametrize(
+    ("shape", "magnitude"),
+    [((80, 150), 6.5), ((80, 150), 7.5), ((125, 300), 7.5)],
+    ids=["8x15 km Mw6.5", "8x15 km Mw7.5", "12x30 km Mw7.5"],
+)
+def test_the_embedding_delivers_the_covariance_within_its_tolerances(shape, magnitude):
+    # The covariance the draws have is exactly the inverse transform of the clipped
+    # spectrum, read at a grid lag h through the wrap as min(h, P - h), with no draws.
+    grid = Grid(shape, (0.1, 0.1))
+    covariance = segment_source(magnitude, 90.0).covariance
+    amplitudes, padded = _embed(grid, covariance)
+    quadrant = sp.fft.idctn(amplitudes**2, type=1)
+    wrapped = [
+        np.minimum(np.arange(e), p - np.arange(e)) for e, p in zip(shape, padded)
+    ]
+    delivered = quadrant[np.ix_(*wrapped)]
+
+    error = np.abs(delivered - _target(covariance, grid)).max()
+    assert error <= WRAP_TOLERANCE + MAXIMUM_VARIANCE_DEFICIT
+
+    # The lengths the delivered covariance corresponds to: what the tolerances are
+    # really answerable to, since the regression that sets them scatters by far more.
+    fit = sp.optimize.least_squares(
+        lambda scale: (_target(covariance, grid, scale) - delivered)[::4, ::4].ravel(),
+        [1.0, 1.0],
+    )
+    np.testing.assert_allclose(fit.x, 1.0, atol=1e-3)
 
 
 def test_moment_magnitude_is_hanks_kanamori_equation_7():
