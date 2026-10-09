@@ -22,3 +22,17 @@ target/
 
 # Hypothesis
 .hypothesis/
+
+### Vale ###
+# `vale sync` downloads the styles named by `Packages` in .vale.ini into
+# StylesPath. Only the project vocabulary under .vale/config is tracked.
+/.vale/*
+!/.vale/config/
+/.vale/config/*
+!/.vale/config/vocabularies/
+# The repo's own style, alongside the downloaded packages.
+!/.vale/ucgmsim/
+
+### Coverage ###
+.coverage
+htmlcov/

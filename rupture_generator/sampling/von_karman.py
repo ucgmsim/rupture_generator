@@ -18,6 +18,11 @@ class VonKarman:
 
     ``C(r) = 2^(1-H) / Gamma(H) * r^H * K_H(r)``, with ``K_H`` the modified Bessel
     function of the second kind. ``C(1) = 0.5005`` at ``H = 0.75``.
+
+    Attributes
+    ----------
+    hurst : float
+        The Hurst exponent ``H``, in ``(0, 1)``.
     """
 
     hurst: float = HURST
@@ -28,7 +33,20 @@ class VonKarman:
             raise RuptureGeneratorError(f"hurst must be in (0, 1), got {self.hurst}")
 
     def __call__(self, lag: np.ndarray) -> np.ndarray:
-        """Evaluate the correlation; the limit 1 is taken at zero lag."""
+        """Evaluate the correlation at a lag in correlation lengths.
+
+        At zero lag the formula reads 0/0, and the correlation takes its limit, 1.
+
+        Parameters
+        ----------
+        lag : np.ndarray
+            Lags in correlation lengths, of any shape.
+
+        Returns
+        -------
+        np.ndarray
+            The correlation at each lag.
+        """
         lag = np.asarray(lag, dtype=np.float64)
         correlation = np.ones_like(lag)
         away = lag > 0.0

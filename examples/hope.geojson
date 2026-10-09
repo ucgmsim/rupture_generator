@@ -1,0 +1,6 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[172.00, -42.60], [172.30, -42.50], [172.55, -42.32]]}, "properties": {"name": "hope", "dip_deg": 75.0, "dip_direction_deg": 145.0, "upper_depth_km": 0.0, "lower_depth_km": 14.0}}
+  ]
+}

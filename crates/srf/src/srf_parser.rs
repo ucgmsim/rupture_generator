@@ -82,7 +82,7 @@ fn read_srf_header(
     Ok(plane_vec)
 }
 
-// Slip values dominate SRF files and are written fixed-width by EMOD3D (%13.5e
+// Slip values dominate SRF files, and EMOD3D writes them fixed-width (%13.5e
 // style: 11 chars + separator). This is especially true of large magnitude
 // ruptures with large slip histories.
 const APPROX_BYTES_PER_SLIP_VALUE: usize = 12;
@@ -183,12 +183,12 @@ fn read_srf_points_v1(
     for _ in 0..point_count {
         let header = read_point_header(scanner)?;
         // technically the read_srf routines in EMOD3D don't need to have a
-        // newline here but it allows us to distinguish between a mislabelled
+        // newline here, but requiring one distinguishes a mislabelled
         // version 1.0 SRF and a version 2.0 SRF because EOL conveniently
         // follows the point header (where-as SRF V2.0 has two vs/density still
         // to go):
         //
-        // - read_srf (in the srf_subs.c versions): reads the floats with scanf() that is newline tolerant.
+        // - read_srf (in the srf_subs.c versions): reads the floats with scanf(), which tolerates newlines.
         // - write_srf (same files): always writes a newline after the header (header + vs + density in SRF 2.0).
         scanner.expect_end_of_line()?;
         let rake = scanner.next()?;
@@ -211,7 +211,7 @@ fn skip_comments(scanner: &mut scanner::Scanner) -> Result<(), SrfParseError> {
     scanner.skip_spaces()?;
     while scanner.peek()? == b'#' {
         let _ = scanner.line()?;
-        // Technically you could have whitespace here, but again we're parsing a very strict subset.
+        // Whitespace could legally appear here, but this parser accepts only a strict subset.
     }
     Ok(())
 }
@@ -437,7 +437,7 @@ POINTS 2\n\
     #[test]
     fn rejects_v2_plane_point_count_mismatch() {
         // Second plane is 1x1 but its POINTS block declares 2; the first
-        // plane must parse cleanly before the mismatch is hit.
+        // plane must parse cleanly before the mismatch can fail it.
         let data = replace_once(SRF_V2_TWO_PLANES, b"POINTS 1\n0.2", b"POINTS 2\n0.2");
         let mut scanner = scanner::Scanner::new(&data);
         let err = read_srf_struct(&mut scanner).unwrap_err();
@@ -454,7 +454,7 @@ POINTS 2\n\
     #[test]
     fn truncated_file_never_panics() {
         // Truncating mid-token can still parse ("0.5" cut to "0." is a valid
-        // float), so not every prefix errors — but none may panic, and a cut
+        // float), and not every prefix errors. None may panic, though, and a cut
         // mid-record must error.
         for len in 0..SRF_V1.len() {
             let mut scanner = scanner::Scanner::new(&SRF_V1[..len]);
@@ -468,7 +468,7 @@ POINTS 2\n\
     fn rejects_v1_data_mislabeled_as_v2() {
         // read_srf_points_v2 reads vs/density right after the point header,
         // so on v1 data it swallows the v1 line's rake/slip1 tokens and the
-        // expect_end_of_line() check right after fails to land on a newline.
+        // expect_end_of_line() check right after doesn't find a newline.
         let data = replace_once(SRF_V1, b"1.0\n", b"2.0\n");
         let mut scanner = scanner::Scanner::new(&data);
         let err = read_srf_struct(&mut scanner).unwrap_err();
@@ -512,13 +512,11 @@ POINTS 2\n\
 
     /// Parse throughput, not correctness. `#[ignore]`d so the gate stays a gate.
     ///
-    /// ```sh
-    /// cargo test -p srf --release -- --ignored --nocapture parse_throughput
-    /// ```
+    /// Run it with `cargo test -p srf --release parse_throughput`, passing `--ignored`
+    /// and `--nocapture` to the test binary after the `--` separator.
     ///
-    /// The number that matters is MB/s: this parser is expected to be handed
-    /// multi-gigabyte files, and a scanner change is worth landing only if it holds
-    /// throughput. Override the input with `SRF_THROUGHPUT_FILE`.
+    /// The number that matters is MB/s: callers hand this parser multi-gigabyte
+    /// files, and a scanner change should land only if it keeps the throughput. Override the input with `SRF_THROUGHPUT_FILE`.
     #[test]
     #[ignore = "measures time, not behaviour"]
     fn parse_throughput() {

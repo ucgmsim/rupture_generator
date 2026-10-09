@@ -1,7 +1,7 @@
-"""``rupture-generator CONFIG OUTPUT``: the typical case, a rupture file in, an SRF out.
+"""``rupture-generator CONFIG OUTPUT``: read a rupture file and write an SRF.
 
 Everything here is a library call. Next to the SRF goes the config with every default
-written out, ``OUTPUT.toml``, which is the record of what was run.
+written out, ``OUTPUT.toml``, which records what the run used.
 """
 
 import argparse
@@ -15,7 +15,20 @@ from rupture_generator.rupture.generator import generate
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the command line; the return value is the exit status."""
+    """Run the command line.
+
+    Parameters
+    ----------
+    argv : list of str, optional
+        The arguments after the program name. ``None`` reads them from
+        :data:`sys.argv`.
+
+    Returns
+    -------
+    int
+        The exit status: 0 on success, 2 when the input describes no rupture or a
+        file read or write fails.
+    """
     parser = argparse.ArgumentParser(
         prog="rupture-generator",
         description="Draw a kinematic rupture from a TOML file and write it as an SRF.",

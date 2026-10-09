@@ -1,15 +1,15 @@
-"""One chart: a fault surface as a grid of quadrilateral cells.
+"""A chart, which describes one fault as a grid of quadrilateral cells.
 
 Positions are east, north and depth in kilometres in the realisation's projected CRS,
 depth positive down. ``i`` runs down dip and ``j`` along strike. A chart is one or more
-planes laid side by side along strike, and each keeps its **own** seam column of nodes,
-so two planes hung from a bent trace meet along the trace and are free to part below
-it, which is what a kinked fault actually does.
+planes laid side by side along strike. Each plane has its **own** column of nodes at
+the junction with the next, so two planes hung from a bent trace meet along the trace
+and can separate below it, as a kinked fault does.
 
 Cell arrays are two-dimensional across the whole chart, ``(n_i, n_j)``, because the
-eikonal solve and the slip spectrum are both index-grid calculations on a uniform
-``(strike, dip)`` metric. Node positions carry the real geometry: the areas, the dips,
-and the distances between charts.
+eikonal solve and the slip spectrum both work on an index grid with a uniform
+``(strike, dip)`` metric. The node positions hold the real geometry, from which the
+areas, the dips and the distances between charts follow.
 """
 
 import dataclasses
@@ -38,7 +38,7 @@ type CellSelection = tuple[np.ndarray, np.ndarray]
 def _locate(position_km: float, arc_km: np.ndarray, *, axis: str) -> int:
     """The cell containing a position along an arc of node distances.
 
-    A position on an interior boundary belongs to the cell after it; one on the far
+    A position on an interior boundary belongs to the cell after it, and one on the far
     edge belongs to the last cell.
     """
     extent = float(arc_km[-1])
@@ -66,17 +66,17 @@ def _resample(plane: NodeArray, rows: int, columns: int) -> NodeArray:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Geometry:
-    """One chart. See the module docstring for frames and the plane layout.
+    """One chart. The module docstring describes the frames and the plane layout.
 
-    Derived quantities are computed once and cached, which is safe because nothing
-    here changes after construction.
+    A chart caches each derived quantity on first use, which is safe because a chart
+    never changes after construction.
 
     Attributes
     ----------
     nodes : NodeArray
         Node positions, ``(n_i+1, n_j+n_k, 3)``, kilometres in the projected CRS.
     occupied : CellMask
-        Which cells are fault. All true for a chart built from planes; a resampled
+        Which cells are fault. All true for a chart built from planes. A resampled
         curved interface fills only part of its parameter rectangle.
     plane_cells : tuple of int
         How many cell columns each plane has, in trace order.
@@ -121,18 +121,24 @@ class Geometry:
 
     @property
     def cells(self) -> tuple[int, int]:
-        """``(n_i, n_j)``: cells down dip, cells along strike."""
+        """tuple[int, int]: Cell counts down dip and along strike, ``(n_i, n_j)``."""
         return (self.nodes.shape[0] - 1, sum(self.plane_cells))
 
     @property
     def planes(self) -> int:
-        """How many planes the chart is made of."""
+        """int: How many planes make up the chart."""
         return len(self.plane_cells)
 
     # ---------------------------------------------------------- one plane at a time
 
     def plane_nodes(self) -> list[NodeArray]:
-        """Each plane's own node grid: a contiguous slice, never a copy."""
+        """List each plane's own node grid, as a contiguous slice rather than a copy.
+
+        Returns
+        -------
+        list of NodeArray
+            One ``(n_i+1, columns+1, 3)`` view per plane, in trace order.
+        """
         starts = np.cumsum([0, *(cells + 1 for cells in self.plane_cells)])
         return [self.nodes[:, start:stop] for start, stop in itertools.pairwise(starts)]
 
@@ -143,30 +149,31 @@ class Geometry:
 
     @functools.cached_property
     def centres(self) -> NodeArray:
-        """Cell centres, ``(n_i, n_j, 3)``: the mean of the four corners."""
+        """NodeArray: Cell centres, ``(n_i, n_j, 3)``, the mean of the corners."""
         return self._per_plane(
             lambda p: 0.25 * (p[:-1, :-1] + p[:-1, 1:] + p[1:, 1:] + p[1:, :-1])
         )
 
     @functools.cached_property
     def _diagonal_normals(self) -> NodeArray:
-        """``AC x BD`` for every cell: along its normal, at twice its area."""
+        """NodeArray: ``AC x BD`` per cell, along its normal, twice its area long."""
         return self._per_plane(
             lambda p: np.cross(p[1:, 1:] - p[:-1, :-1], p[1:, :-1] - p[:-1, 1:])
         )
 
     @functools.cached_property
     def areas_km2(self) -> CellArray:
-        """Cell areas, ``(n_i, n_j)``: half the cross product of the diagonals.
+        """CellArray: Cell areas in square kilometres, ``(n_i, n_j)``.
 
-        Exact for a planar quadrilateral; for a warped one it is the area projected
-        onto the plane the two diagonals span.
+        Each area is half the cross product of the cell's diagonals, exact for a planar
+        quadrilateral. For a warped one it gives the area projected onto the plane the
+        two diagonals span.
         """
         return 0.5 * np.linalg.norm(self._diagonal_normals, axis=-1)
 
     @functools.cached_property
     def dip_deg(self) -> CellArray:
-        """Cell dips from horizontal, ``(n_i, n_j)``; zero for a degenerate cell."""
+        """CellArray: Cell dips from horizontal in degrees, 0 for a degenerate cell."""
         normal = self._diagonal_normals
         length = np.linalg.norm(normal, axis=-1)
         cosine = np.divide(
@@ -176,12 +183,12 @@ class Geometry:
 
     @functools.cached_property
     def spacing_km(self) -> tuple[float, float]:
-        """One ``(strike, dip)`` spacing for the chart: what the sampler and the
-        eikonal get.
+        """tuple[float, float]: The chart's ``(strike, dip)`` spacing in kilometres.
 
-        The mean of every along-strike and every down-dip step, not one edge's: a plane
-        hung from a bent trace is a trapezoid, and a resampled interface is not uniform
-        anywhere.
+        The sampler and the eikonal solve both take this one spacing. It averages
+        every along-strike and every down-dip step rather than reading one edge,
+        because a plane hung from a bent trace is a trapezoid and a resampled
+        interface has no uniform spacing anywhere.
         """
         strike, dip = [], []
         for plane in self.plane_nodes():
@@ -191,9 +198,10 @@ class Geometry:
 
     @functools.cached_property
     def strike_arc_km(self) -> np.ndarray:
-        """Distance along strike of each cell boundary on the top edge, ``(n_j+1,)``.
+        """np.ndarray: Distance along strike of each top-edge cell boundary, in km.
 
-        With the dip arc, what makes a hypocentre two lengths rather than two indices.
+        Shaped ``(n_j+1,)``. With :attr:`dip_arc_km` it lets a hypocentre be two
+        lengths rather than two indices.
         """
         steps = [
             np.linalg.norm(np.diff(plane[0], axis=0), axis=-1)
@@ -203,12 +211,24 @@ class Geometry:
 
     @functools.cached_property
     def dip_arc_km(self) -> np.ndarray:
-        """Distance down dip of each node row on the ``j = 0`` edge, ``(n_i+1,)``."""
+        """np.ndarray: Distance down dip of each ``j = 0`` edge node row, in km."""
         steps = np.linalg.norm(np.diff(self.nodes[:, 0], axis=0), axis=-1)
         return np.concatenate([[0.0], np.cumsum(steps)])
 
     def cell_at(self, strike_km: float, dip_km: float) -> tuple[int, int]:
-        """The cell containing an in-fault position, as 0-based ``(i, j)``.
+        """Find the cell containing a position on the fault.
+
+        Parameters
+        ----------
+        strike_km : float
+            Distance along strike from the chart's first top corner, in kilometres.
+        dip_km : float
+            Distance down dip from the top edge, in kilometres.
+
+        Returns
+        -------
+        tuple[int, int]
+            The cell's 0-based ``(i, j)``.
 
         Raises
         ------
@@ -221,11 +241,16 @@ class Geometry:
         )
 
     def seam_divergence_km(self) -> np.ndarray:
-        """How far apart adjacent planes' shared edges run, one value per seam.
+        """Measure how far apart adjacent planes' shared edges run.
 
-        Two planes hung from a bent trace meet along the trace and part below it, by
-        1.285 km at the deepest row of the Hope example. The largest separation down
-        each seam, ``(n_k-1,)``, empty for one plane.
+        Planes hung from a bent trace meet along the trace and separate below it, by
+        1.285 km at the deepest row of the Hope example.
+
+        Returns
+        -------
+        np.ndarray
+            The largest separation down each junction between planes in kilometres,
+            ``(n_k-1,)``. Empty for one plane.
         """
         return np.array(
             [
@@ -235,17 +260,28 @@ class Geometry:
         )
 
     def subdivide(self, spacing_km: float) -> Geometry:
-        """This chart recut into cells of about ``spacing_km`` on a side.
+        """Recut this chart into cells of about ``spacing_km`` on a side.
 
-        Each plane is resampled bilinearly over its own nodes, its cell count rounded
-        and floored at one. Every plane takes the rows the ``j = 0`` edge asks for,
-        since the planes of one chart share a dip extent.
+        Bilinear interpolation over each plane's own nodes gives the new nodes, with
+        the cell count along each plane rounded and at least one. The planes of one
+        chart share a dip extent, so all of them take the row count the ``j = 0``
+        edge implies.
+
+        Parameters
+        ----------
+        spacing_km : float
+            The target cell size in kilometres.
+
+        Returns
+        -------
+        Geometry
+            The recut chart.
 
         Raises
         ------
         RuptureGeneratorError
-            For a spacing that is not a positive length, or a chart that is not fault
-            everywhere: a partial outline has nothing to resample it by.
+            For a spacing that fails to be a positive length, or a chart with any cell
+            off the fault, since a partial outline gives nothing to resample it by.
         """
         if not spacing_km > 0.0 or not np.isfinite(spacing_km):
             raise RuptureGeneratorError(
@@ -271,17 +307,16 @@ class Geometry:
 
     @functools.cached_property
     def _edge(self) -> tuple[CellSelection, sp.spatial.cKDTree]:
-        """The fault's edge cells, and a tree over their centres.
+        """tuple[CellSelection, sp.spatial.cKDTree]: Edge cells and a tree over them.
 
-        An edge cell is occupied with a neighbour off the fault or off the grid: where
-        a front can leave this chart or land on it. Their centres are gathered from the
-        nodes rather than read off :attr:`centres`, since the edge of a production
-        interface is a few thousand cells against twenty million.
+        An edge cell is a fault cell with a neighbour off the fault or off the grid,
+        where a front can leave this chart or arrive from another. The code averages
+        their centres from the nodes rather than reading :attr:`centres`, because the
+        edge of a production interface is a few thousand cells out of twenty million.
         """
-        cells = np.nonzero(
+        i, j = np.nonzero(
             self.occupied & ~sp.ndimage.binary_erosion(self.occupied, border_value=0)
         )
-        i, j = cells
         left = j + np.repeat(np.arange(self.planes), self.plane_cells)[j]
         nodes = self.nodes
         centres = 0.25 * (
@@ -290,21 +325,29 @@ class Geometry:
             + nodes[i + 1, left + 1]
             + nodes[i + 1, left]
         )
-        return cells, sp.spatial.cKDTree(centres)
+        return (i, j), sp.spatial.cKDTree(centres)
 
     def nearest_cells_to(
         self, other: Geometry
     ) -> tuple[CellSelection, CellSelection, np.ndarray]:
-        """For each of this chart's edge cells, the closest edge cell of ``other``.
+        """Pair each of this chart's edge cells with the closest edge cell of another.
 
-        Returns three parallel arrays: this chart's edge cells, the cell on ``other``
-        each one is closest to, and the straight-line distance between them in
-        kilometres.
+        Parameters
+        ----------
+        other : Geometry
+            The chart to search.
+
+        Returns
+        -------
+        tuple[CellSelection, CellSelection, np.ndarray]
+            This chart's edge cells, the edge cell of ``other`` nearest each, and the
+            straight-line distance between each pair in kilometres, as parallel
+            arrays.
 
         Raises
         ------
         RuptureGeneratorError
-            If either chart is entirely unoccupied.
+            If either chart has no fault cells.
         """
         (here, mine), (there, theirs) = self._edge, other._edge
         if here[0].size == 0 or there[0].size == 0:

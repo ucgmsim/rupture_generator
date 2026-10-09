@@ -1,21 +1,21 @@
 //! Drawing Gaussian random fields from a circulant embedding.
 //!
 //! Python computes the embedding's spectrum once per (chart, covariance), clamps it,
-//! square-roots it and caches the result; this draws from it. One draw is complex
+//! square-roots it and caches the result. This module draws from it. One draw is complex
 //! noise scaled by the amplitudes, an inverse 2-D FFT, and a crop to the fault. The
 //! real and imaginary parts of the result are two independent fields with the
-//! embedded covariance (Dietrich & Newsam 1997), so a draw yields two.
+//! embedded covariance (Dietrich & Newsam 1997), and one draw yields both.
 //!
 //! > **Dietrich, C. R. & Newsam, G. N. (1997).** Fast and exact simulation of
 //! > stationary Gaussian processes through circulant embedding of the covariance
-//! > matrix. *SIAM Journal on Scientific Computing* **18**(4), 1088–1107.
+//! > matrix. *SIAM Journal on Scientific Computing* **18**(4), 1088-1107.
 //!
-//! It is a kernel because the padded grid is large and the work is all memory
-//! traffic: the noise is generated straight into the buffer the transform runs in,
-//! with no intermediate arrays, rows and columns are transformed on every core, and
-//! only the columns the crop keeps are transformed at all. The spectrum itself stays in Python: it needs
-//! `scipy.special.kv` at fractional order, and it is computed once where this runs
-//! several times per segment.
+//! This is a kernel because the padded grid is large and the work is all memory
+//! traffic. The noise goes straight into the buffer the transform runs in, with no
+//! intermediate arrays. The row and column passes run on every core, and the column
+//! pass transforms only the columns the crop keeps. The spectrum itself stays in
+//! Python: it needs `scipy.special.kv` at fractional order, and Python computes it
+//! once where this runs several times per segment.
 
 use std::sync::Arc;
 
@@ -79,12 +79,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Two independent standard-normal fields from one embedding draw.
+/// A pair of independent standard-normal fields from one embedding draw.
 ///
 /// `amplitudes` is row-major over `quadrant`, the square-rooted, non-negative
 /// eigenvalues for `i <= P_i/2, j <= P_j/2`; the full grid's amplitude at `(i, j)` is
 /// the quadrant's at `(min(i, P_i - i), min(j, P_j - j))`. `cells` is the fault's
-/// shape, which the padded grid's leading corner is cropped to.
+/// shape, and the crop keeps that much of the padded grid's leading corner.
 ///
 /// The transform is an unscaled inverse FFT times `1/sqrt(n)`, so each field's
 /// covariance is what the eigenvalues describe. Returns `(real, imaginary)`, each
@@ -93,12 +93,12 @@ impl std::error::Error for Error {}
 ///
 /// # Errors
 ///
-/// [`Error`]: an empty embedding, a quadrant of the wrong shape, or a fault that does
-/// not fit.
+/// [`Error`] if the embedding is empty, or if the quadrant's or the fault's shape
+/// doesn't fit the padded grid.
 ///
 /// # Panics
 ///
-/// If `amplitudes` is not `quadrant.0 * quadrant.1` long, or a worker thread panics.
+/// If `amplitudes` isn't `quadrant.0 * quadrant.1` long, or a worker thread panics.
 pub fn draw(
     amplitudes: &[f64],
     quadrant: (usize, usize),
@@ -123,7 +123,7 @@ pub fn draw(
     debug_assert!(amplitudes.iter().all(|&a| a >= 0.0));
 
     // One generator per chunk of rows, all drawn up front from the seed: the
-    // assignment of chunks to threads then cannot change the noise.
+    // assignment of chunks to threads then can't change the noise.
     let chunks = padded_i.div_ceil(ROWS_PER_CHUNK);
     let mut master = Pcg64::seed_from_u64(seed);
     let generators: Vec<Pcg64> = (0..chunks).map(|_| Pcg64::from_rng(&mut master)).collect();
@@ -156,7 +156,7 @@ pub fn draw(
 /// corner, unscaled, in blocks of [`COLUMNS_PER_BLOCK`] column-major columns.
 ///
 /// `fill(chunk, rows)` appends rows `chunk * ROWS_PER_CHUNK..` of the spectrum to an
-/// empty buffer; the same thread transforms them straight after. Each chunk is its
+/// empty buffer, and the same thread transforms them straight after. Each chunk is its
 /// own allocation, so no thread waits on zeroing or faulting in the whole grid. The
 /// column pass then transforms only the `cells.1` columns the crop keeps.
 fn transform(
@@ -262,8 +262,8 @@ fn row_major_parts(
 
 /// Run `work` over `items` on every core, each thread with its own `init()` state.
 ///
-/// Items are dealt round-robin; each is independent, so the result does not depend
-/// on how many threads there are.
+/// The threads take items round-robin. Each item is independent, and the result
+/// doesn't depend on how many threads there are.
 fn spread<T: Send, S>(items: Vec<T>, init: impl Fn() -> S + Sync, work: impl Fn(&mut S, T) + Sync) {
     let threads = std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
@@ -335,7 +335,7 @@ mod tests {
         assert!(correlation.abs() < 0.05, "correlation {correlation}");
     }
 
-    /// The same seed gives the same fields; a different one does not.
+    /// The same seed gives the same fields, and a different seed gives different ones.
     #[test]
     fn a_draw_is_determined_by_its_seed() {
         let padded = (70, 45);
@@ -348,7 +348,7 @@ mod tests {
         assert_ne!(first.0, other.0);
     }
 
-    /// Shapes are checked against the padded grid.
+    /// `draw` checks shapes against the padded grid.
     #[test]
     fn a_mismatched_quadrant_or_oversized_fault_is_refused() {
         let (amplitudes, quadrant) = flat((8, 8));

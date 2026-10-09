@@ -57,6 +57,9 @@ find = { where = [
 [tool.deptry]
 pep621_dev_dependency_groups = ["test"]
 
+[tool.deptry.package_module_name_map]
+rerun-sdk = "rerun"
+
 [tool.pytest.ini_options]
 markers = ["slow: mark a test as slow"]
 
@@ -96,24 +99,36 @@ known-first-party = [
 "__init__.py" = ["D104"]
 "tests/**.py" = ["D", "ANN001"]
 
-[tool.numpydoc_validation]
-checks = [
-  "GL05",
-  "GL08",
-  "GL10",
-  "PR01",
-  "PR02",
-  "PR03",
-  "PR04",
-  "PR05",
-  "PR06",
-  "PR07",
-  "RT01",
-  "RT02",
-  "RT03",
-  "RT04",
-  "YD01",
-]
+[tool.npdlint]
+include = ["rupture_generator"]
+select = ["ALL"]
+ignore = ["ES01", "SA01", "EX01"]
+
+[tool.npdlint.per-file-ignores]
+"**/__init__.py" = ["GL08"]
+
+# Properties read as attributes, so document them as "type: summary".
+[[tool.npdlint.scope]]
+match = { kind = "property" }
+extend-ignore = ["PR", "RT", "ES01"]
+extend-select = ["PT"]
+property-form = "type-line"
+
+# Dunder methods only need to exist.
+[[tool.npdlint.scope]]
+match = { kind = "any-method", dunder = true }
+select = ["GL08"]
+
+# Last, so no block above re-selects a rule for them: private helpers, private
+# properties included, are not part of the public API and need no docstring.
+[[tool.npdlint.scope]]
+match = { private = true }
+skip = true
+
+# Closures are their enclosing function's implementation, as private as a helper.
+[[tool.npdlint.scope]]
+match = { nested = true }
+skip = true
 
 [tool.uv]
 cache-keys = [

@@ -1,12 +1,11 @@
-//! The rupture kernels: stateless, array-in/array-out, and nothing else.
+//! The rupture kernels, stateless and array-in/array-out.
 //!
-//! Three functions cross the Python boundary as `rupture_generator._kernels`:
-//! `eikonal_solve` ([`eikonal::solve`]), `synthesise_pulses`
-//! ([`pulse::synthesise_pulses`]) and `circulant_draw` ([`field::draw`]). Parameters
-//! arrive as scalars and arrays; every default lives in Python. The maths lives in
-//! [`eikonal`], [`pulse`] and [`field`] over plain slices, where `tests/` can
-//! generate inputs for it; this file only marshals numpy arrays in and out, and
-//! releases the GIL around each computation.
+//! `rupture_generator._kernels` exposes `eikonal_solve` ([`eikonal::solve`]),
+//! `synthesise_pulses` ([`pulse::synthesise_pulses`]) and `circulant_draw`
+//! ([`field::draw`]) to Python. Parameters arrive as scalars and arrays, and Python
+//! sets every default. The maths is in [`eikonal`], [`pulse`] and [`field`] over
+//! plain slices, where `tests/` can generate inputs for it. This file only marshals
+//! numpy arrays in and out, and releases the GIL around each computation.
 
 // PyO3's `#[pyfunction]` extraction hands wrappers owned values, and the lint is
 // right in general and wrong at every site in this file.
@@ -41,9 +40,9 @@ type PyFieldPair<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
 /// First-arrival times over a fault chart, by factored fast sweeping.
 ///
 /// `slowness` is 2-D in s/km, `i` down-dip and `j` along-strike; `spacing_km` is
-/// `(d_i, d_j)`; `seeds` is a list of `(i, j, t0_seconds)` — points the front leaves
-/// at known times, which is one triple for a hypocentre and several for a fault
-/// triggered along an edge. Returns travel times in seconds, same shape as
+/// `(d_i, d_j)`; `seeds` is a list of `(i, j, t0_seconds)`, the points the front leaves
+/// at known times: one triple for a hypocentre, and several for a fault triggered
+/// along an edge. Returns travel times in seconds, same shape as
 /// `slowness`. Exact on uniform media, first-order convergent on smooth ones;
 /// `crates/kernels/src/eikonal.rs` has the papers.
 #[pyfunction]
@@ -72,9 +71,9 @@ fn eikonal_solve<'py>(
 ///
 /// `slip_m` (metres) and `rise_time_s` are flat, one entry per subfault. `beta`, the
 /// per-subfault rising fraction in `(0, 0.5]`, selects the shape: given, the
-/// Liu–Archuleta–Hartzell piecewise sinusoid; absent, a single-sample impulse. Returns `(offsets, samples)`:
+/// Liu-Archuleta-Hartzell piecewise sinusoid; absent, a single-sample impulse. Returns `(offsets, samples)`:
 /// subfault `k`'s pulse is `samples[offsets[k]:offsets[k+1]]` in m/s, normalised so
-/// `dt_s * samples.sum()` recovers the slip. An empty row is a subfault that does not
+/// `dt_s * samples.sum()` recovers the slip. An empty row is a subfault that doesn't
 /// slip; a subfault that slips but whose rise time rounds to zero samples at `dt_s`
 /// is a `ValueError` naming it, never a silent zero.
 #[pyfunction]
@@ -106,11 +105,11 @@ fn synthesise_pulses<'py>(
     Ok((offsets.into_pyarray(py), pulses.samples.into_pyarray(py)))
 }
 
-/// Two independent standard-normal fields from one circulant-embedding draw.
+/// A pair of independent standard-normal fields from one circulant-embedding draw.
 ///
 /// `amplitudes` is the `(padded_i//2 + 1, padded_j//2 + 1)` quadrant of the
 /// square-rooted, non-negative eigenvalues of the embedding on the `padded_shape`
-/// grid; the full grid mirrors it. Returns `(real, imaginary)`, each cropped to
+/// grid, which the full grid mirrors. Returns `(real, imaginary)`, each cropped to
 /// `cell_counts` and each a field with the embedded covariance, independent of the
 /// other (Dietrich & Newsam 1997). The same `seed` gives the same pair.
 ///

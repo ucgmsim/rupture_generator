@@ -18,9 +18,9 @@ fn lexical_write<W: Write, T: ToLexical>(
 const POINTS: &[u8] = b"POINTS ";
 const EMPTY_SLIP_TAIL: &[u8] = b" 0.0 0 0.0 0";
 
-/// The eight columns of a point's first line, space-separated, in the SRF's order.
+/// The columns of a point's first line, space-separated, in the SRF's order.
 ///
-/// `rake`, `slip1` and `rise` are not here: they open the *second* line, which
+/// `rake`, `slip1` and `rise` aren't here: they open the *second* line, which
 /// `write_slip_row` writes.
 fn write_point<W: Write>(writer: &mut W, point: &Point, buffer: &mut [u8]) -> Result<()> {
     let columns = [
@@ -288,6 +288,6 @@ POINTS 1\n\
         let srf = parse(data);
         let reparsed = parse(&write_to_vec(&srf));
         assert_eq!(srf.slipt1.row_ptr, reparsed.slipt1.row_ptr);
-        assert!(reparsed.slipt1.data.is_empty());
+        assert_eq!(reparsed.slipt1.data, Vec::<f32>::new());
     }
 }

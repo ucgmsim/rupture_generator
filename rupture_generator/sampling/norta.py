@@ -11,10 +11,10 @@ matrix Sigma_Z. The vector Z is the "latent vector" and its distribution the
 2. Apply the transform X_i = F_i^-1(Phi(Z_i)). The vector X_i is the "marginal
 vector" and its distribution the "marginal distribution". The matrix Sigma_X is the "marginal correlation".
 
-There is a theorem in statistics that states that X_i will have the distribution
-given by the CDF F_i. The correlation between Z_i is not preserved by the map F
-= (F_i). The algorithms in this module derive the Sigma_Z such that X = F(Z) has
-correlation matrix Sigma_X.
+A theorem in statistics states that X_i then has the distribution given by the CDF
+F_i. The map F = (F_i) doesn't preserve the correlation between the Z_i. The
+algorithms in this module derive the Sigma_Z such that X = F(Z) has correlation
+matrix Sigma_X.
 """
 
 import dataclasses
@@ -73,19 +73,27 @@ type MarginalFamily = Literal[
 class Marginal:
     """The distribution one field's values follow.
 
-    ``normal`` is the standard normal and the identity transform. The other three are
-    unit-mean, with ``coefficient_of_variation`` their spread: ``truncated_normal``
-    and ``gamma`` on the positive half-line, and ``truncated_exponential`` the family
-    Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose cut also fixes the largest
-    value on the fault. Frozen and hashable: every expensive function here is cached
-    on it.
+    ``normal`` is the standard normal and the identity transform. The other families
+    are unit-mean, with ``coefficient_of_variation`` their spread. ``truncated_normal``
+    and ``gamma`` lie on the positive half-line, and ``truncated_exponential`` is the
+    family Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose cut also fixes the
+    largest value on the fault. Every expensive function in this module caches its
+    results by marginal, so instances are immutable and hashable.
+
+    Attributes
+    ----------
+    family : MarginalFamily
+        Which distribution the values follow.
+    coefficient_of_variation : float
+        The spread of a unit-mean family, its standard deviation over its mean.
+        Unused by ``normal``.
     """
 
     family: MarginalFamily = "normal"
     coefficient_of_variation: float = 0.0
 
     def __post_init__(self) -> None:
-        """Refuse a marginal no distribution answers to."""
+        """Refuse a family and spread that no distribution in the family attains."""
         if self.family == "normal":
             return
         value = self.coefficient_of_variation
@@ -112,15 +120,26 @@ class Marginal:
 
     @property
     def is_normal(self) -> bool:
-        """Whether this marginal is the identity transform."""
+        """bool: Whether this marginal is the identity transform."""
         return self.family == "normal"
 
     def apply(self, latent: np.ndarray) -> np.ndarray:
-        """``F^-1(Phi(latent))``: give a standard-normal field this marginal, cellwise.
+        """Give a standard-normal field this marginal, cell by cell.
 
-        Read off a table rather than through the quantile function, which for a gamma
-        costs seconds per million cells. Beyond the tails the table clamps, as clipping
-        ``Phi`` to :data:`NORTA_TAIL` did.
+        The transform is ``F^-1(Phi(latent))``, read off a table rather than through
+        the quantile function, which for a gamma costs seconds per million cells.
+        Beyond the tails the table clamps, as clipping ``Phi`` to :data:`NORTA_TAIL`
+        did.
+
+        Parameters
+        ----------
+        latent : np.ndarray
+            Standard-normal values, of any shape.
+
+        Returns
+        -------
+        np.ndarray
+            The values transformed to this marginal, shaped like ``latent``.
         """
         if self.is_normal:
             return np.asarray(latent, dtype=np.float64)
@@ -146,9 +165,9 @@ def _truncated_exponential_spread(cut: float) -> float:
 def _distribution(marginal: Marginal) -> Any:
     """The frozen SciPy distribution a marginal names, fitted to unit mean.
 
-    A gamma inverts in closed form. The two truncated families separate: the spread
-    depends on one shape parameter alone, so a bracketed root-find fixes the shape
-    and a division fixes the mean.
+    A gamma inverts in closed form. In each truncated family the spread depends on one
+    shape parameter alone. A bracketed root-find fixes that shape, and a division then
+    fixes the mean.
     """
     if marginal.is_normal:
         return norm(0.0, 1.0)
@@ -212,9 +231,9 @@ def _hermite_coefficients(
 def _correlation_series(first: Marginal, second: Marginal) -> np.ndarray:
     """Coefficients of ``g_fg``, the map from latent to delivered correlation.
 
-    ``g_fg(rho) = sum_{k>=1} a^f_k a^g_k k! / (sigma_f sigma_g) rho^k``. The auto
-    series is increasing and sums to exactly 1; between different marginals it sums
-    to ``g_fg(1) <= 1``, the most they can be correlated.
+    ``g_fg(rho) = sum_{k>=1} a^f_k a^g_k factorial(k) rho^k / (sigma_f sigma_g)``. The
+    auto series is increasing and sums to exactly 1. Between different marginals it
+    sums to ``g_fg(1) <= 1``, the strongest correlation they can share.
     """
     left, factorials, left_spread = _hermite_coefficients(first)
     right, _, right_spread = _hermite_coefficients(second)
@@ -224,14 +243,28 @@ def _correlation_series(first: Marginal, second: Marginal) -> np.ndarray:
 def latent_correlation(
     first: Marginal, second: Marginal, target: np.ndarray
 ) -> np.ndarray:
-    """What correlation to ask the sampler for, to deliver ``target`` on the fields.
+    """Compute the latent correlation that delivers ``target`` on the fields.
 
-    ``g_fg^-1``, tabulated on :data:`NORTA_INVERSE_POINTS` and read backwards.
+    This is ``g_fg^-1``, tabulated on :data:`NORTA_INVERSE_POINTS` and read backwards.
+
+    Parameters
+    ----------
+    first : Marginal
+        The first field's marginal.
+    second : Marginal
+        The second field's marginal.
+    target : np.ndarray
+        The correlations to deliver between the transformed fields, of any shape.
+
+    Returns
+    -------
+    np.ndarray
+        The latent correlations that deliver ``target``, shaped like it.
 
     Raises
     ------
     RuptureGeneratorError
-        If the target sits outside the correlations the two marginals can share
+        If the target lies outside the correlations the two marginals can share
         under a Gaussian copula by more than :data:`NORTA_CORRELATION_SLACK`.
     """
     if first.is_normal and second.is_normal:
@@ -239,7 +272,7 @@ def latent_correlation(
 
     coefficients = _correlation_series(first, second)
     grid = np.linspace(-1.0, 1.0, NORTA_INVERSE_POINTS)
-    # The series has no constant term: a latent correlation of 0 delivers 0.
+    # The series has no constant term, so a latent correlation of 0 delivers 0.
     delivered = np.polynomial.polynomial.polyval(grid, np.r_[0.0, coefficients])
     if not np.all(np.diff(delivered) > 0.0):
         raise RuptureGeneratorError(
@@ -263,15 +296,33 @@ def latent_correlation(
 class PreCorrected:
     """A correlation function pre-corrected so a marginal delivers ``target``.
 
-    ``g^-1`` applied pointwise: ask the sampler for this and, after
-    :meth:`Marginal.apply`, the field's correlation function is ``target``. A
+    It applies ``g^-1`` pointwise. Ask the sampler for this and, after
+    :meth:`Marginal.apply`, the field's correlation function is ``target``. It's a
     :class:`~rupture_generator.sampling.field.Correlation` like any other, so the
-    sampler cannot tell it from the uncorrected one. The identity for ``NORMAL``.
+    sampler can't tell it from the uncorrected one. For ``NORMAL`` it's the identity.
+
+    Attributes
+    ----------
+    target : Correlation
+        The correlation function the transformed field should have.
+    marginal : Marginal
+        The marginal the field takes after the transform.
     """
 
     target: Correlation
     marginal: Marginal
 
     def __call__(self, lag: np.ndarray) -> np.ndarray:
-        """Evaluate the latent correlation at a lag in correlation lengths."""
+        """Evaluate the latent correlation at a lag in correlation lengths.
+
+        Parameters
+        ----------
+        lag : np.ndarray
+            Lags in correlation lengths, of any shape.
+
+        Returns
+        -------
+        np.ndarray
+            The latent correlation at each lag.
+        """
         return latent_correlation(self.marginal, self.marginal, self.target(lag))

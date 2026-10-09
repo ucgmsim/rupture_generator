@@ -105,7 +105,7 @@ def _first_jump(scenario, ruptures):
 
 
 def test_a_jump_crosses_the_nearest_gap_at_the_shear_speed(scenario, ruptures):
-    # A reach that dies at once leaves only the nearest gap to cross.
+    # With a decay length near zero, the jump crosses only the nearest gap.
     drawn, child = _first_jump(scenario, ruptures)
     model = JumpModel(d0_km=1e-12, delta_km=0.0)
     seed = jump_seed(drawn, child, scenario.medium, model, np.random.default_rng(0))

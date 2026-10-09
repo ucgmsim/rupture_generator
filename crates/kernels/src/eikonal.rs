@@ -3,20 +3,20 @@
 //! # Reference papers
 //!
 //! > **Zhao, H. (2005).** A fast sweeping method for eikonal equations.
-//! > *Mathematics of Computation* **74**(250), 603–627.
+//! > *Mathematics of Computation* **74**(250), 603-627.
 //! >
 //! > **Fomel, S., Luo, S. & Zhao, H. (2009).** Fast sweeping method for the factored
-//! > eikonal equation. *Journal of Computational Physics* **228**(17), 6440–6455.
+//! > eikonal equation. *Journal of Computational Physics* **228**(17), 6440-6455.
 //!
 //! Zhao gives the sweeping strategy and Fomel et al. give the factorisation.
 //!
 //! Their **Eq. (3)** splits the traveltime multiplicatively, `T = T₀·τ`, with
-//! `|∇T₀| = S₀` (**Eq. 4**). Taking `S₀` constant and `T₀(x) = S₀·|x − x₀|` — the
-//! analytic answer for a homogeneous medium at the source's own slowness — puts the
-//! singularity entirely inside `T₀`, where it is known in closed form, and leaves `τ`
+//! `|∇T₀| = S₀` (**Eq. 4**). Taking `S₀` constant and `T₀(x) = S₀·|x − x₀|` (the
+//! analytic answer for a homogeneous medium at the source's own slowness) puts the
+//! singularity entirely inside `T₀`, whose closed form handles it, and leaves `τ`
 //! smooth.
 //!
-//! **Eq. (5)** is what is actually solved:
+//! **Eq. (5)** is the equation the solver works on:
 //!
 //! ```text
 //!     T₀²|∇τ|² + 2T₀τ ∇T₀·∇τ + (τ² − α²)S₀² = 0
@@ -32,7 +32,7 @@ use crate::counts::exact;
 /// Measured on the Wellington `Ohariu` segment: 9, 12, 13 and 14 rounds at contrasts
 /// of 3.3x, 6.8x, 12.9x and 26x, roughly one more round per doubling.
 ///
-/// The contrast a caller can present is bounded a priori by
+/// The contrast a caller can present has the a priori bound
 ///
 /// ```text
 /// (max_fraction * Vs_max) / (min_fraction * Vs_min) * off_fault_factor
@@ -40,36 +40,36 @@ use crate::counts::exact;
 ///
 /// which is 41.9x on Wellington (fully occupied, Vs 0.50 to 3.70) and 144.6x on the
 /// Hikurangi interface, where 37% of the chart is off-fault and
-/// `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. 64 is set against that
-/// 144.6x.
+/// `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. The limit of 64 allows
+/// for that 144.6x.
 const MAX_ROUNDS: usize = 64;
 
 /// How much a sweep must improve a cell's arrival for the sweep to count as unsettled,
-/// as a fraction of the fastest single-cell traversal on the grid.
+/// as a fraction of the shortest single-cell traversal time on the grid.
 ///
-/// Gauss-Seidel on the eikonal approaches its fixed point from above and never stops
+/// Gauss-Seidel on the eikonal decreases towards its fixed point and never stops
 /// improving in exact terms: without a tolerance the `changed` flag stays set while
 /// sweeps shave femtoseconds off, and the round limit trips on round-off rather than on
-/// anything about the medium. Measured on the shipped Wellington `Ohariu` segment at a
-/// 26x slowness contrast: the field is physically settled by round 14, where the largest
+/// anything about the medium. On the Wellington `Ohariu` segment at a 26x slowness
+/// contrast, the field is physically settled by round 14, where the largest
 /// improvement is 9.7e-9 s, and rounds 15 to 17 move cells by 2e-10, 3.6e-12 and
-/// 2.7e-12 s. That three-round round-off tail was measured at every contrast from 3.3x
-/// to 26x, so it is the stopping rule and not the problem.
+/// 2.7e-12 s. The same three-round tail appeared at every contrast from 3.3x to 26x:
+/// the stopping rule causes it, not the problem.
 ///
 /// The tolerance is a fraction of `min(spacing) * min(slowness)` rather than an absolute
-/// time or a relative one. Absolute would not survive a change of grid spacing; relative
-/// to each cell's own arrival would degenerate near a seed at time zero and behave
-/// differently again for a segment seeded at an absolute jump time of twenty seconds,
+/// time or a relative one. An absolute time would go wrong whenever the grid spacing
+/// changed. A time relative to each cell's own arrival would degenerate near a seed at
+/// time zero, and behave differently again for a segment seeded at an absolute jump time of twenty seconds,
 /// which is exactly the case that first hit this.
 ///
-/// An improvement below the tolerance is still *taken* -- it is strictly better -- so the
-/// tolerance decides when to stop, never what the answer is. That is why the error is far
-/// smaller than the tolerance: against the exact fixed point on that same segment, where
+/// The solver still *takes* an improvement below the tolerance (it's strictly better),
+/// and the tolerance sets only when to stop, never what the answer is. This keeps the
+/// error far smaller than the tolerance: against the exact fixed point on that same segment, where
 /// the tolerance works out to 1.9e-8 s, the arrival times come out at most 2.4e-10 s late
-/// and 1.7e-13 s late on average. Late and never early, since Gauss-Seidel approaches the
-/// fixed point from above. The loose bound is the tolerance times the path length in
-/// cells, around 1e-5 s over a three-hundred-cell path; the measurement is four orders
-/// inside it, and either way it is far below the 0.005 s sample interval.
+/// and 1.7e-13 s late on average. Late and never early, since Gauss-Seidel decreases
+/// towards the fixed point. The loose bound is the tolerance times the path length in
+/// cells, around 1e-5 s over a three-hundred-cell path. The measurement is four orders
+/// inside it, and either way it's far below the 0.005 s sample interval.
 const CONVERGENCE_TOLERANCE: f64 = 1.0e-6;
 
 /// Location and initiation time of hypocentre.
@@ -91,9 +91,9 @@ pub enum Error {
     NonPositiveSpacing { axis: &'static str, value: f64 },
     /// Slowness must be positive and finite everywhere.
     NonPositiveSlowness { i: usize, j: usize, value: f64 },
-    /// Solver must be supplied at least one seed.
+    /// The solver needs at least one seed.
     NoSeeds,
-    /// Seeds must be located inside domain.
+    /// Every seed must lie inside the domain.
     SeedOutOfBounds {
         seed: usize,
         i: usize,
@@ -103,7 +103,7 @@ pub enum Error {
     },
     /// A seed's initial time must be finite.
     NonFiniteSeedTime { seed: usize, t0_s: f64 },
-    /// The sweep did not settle in [`MAX_ROUNDS`] rounds.
+    /// The sweep didn't settle in [`MAX_ROUNDS`] rounds.
     DidNotSettle { rounds: usize, contrast: f64 },
 }
 
@@ -149,7 +149,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// First-arrival times from every seed, on the whole grid.
+/// First-arrival times from every seed, over the entire grid.
 ///
 /// `slowness_s_per_km` is row-major over `(ni, nj)`. The convention is: `i` down-dip, `j` along-strike
 /// and `spacing_km` is `(h_i, h_j)`, the cell size on each axis. The result has the
@@ -170,10 +170,10 @@ pub fn solve(
 /// [`solve`], also reporting the most rounds of four sweeps any seed's solve took.
 ///
 /// Exposed because the round count is the evidence for the cost claim rather than a
-/// diagnostic: Zhao's alternating orderings exist to make it a property of the
-/// *medium* and not of the mesh, so a solver whose rounds grew with the grid would be
-/// O(N log N) or worse in disguise. `tests/eikonal_contract.rs` asserts it stays put
-/// across a fourfold refinement.
+/// diagnostic. Zhao's alternating orderings exist to make it a property of the
+/// *medium* and not of the mesh. A solver whose rounds grew with the grid would cost
+/// O(N log N) or worse. `tests/eikonal_contract.rs` asserts that a fourfold
+/// refinement leaves the count where it was.
 ///
 /// # Errors
 ///
@@ -279,8 +279,8 @@ fn known_factor(
 ///
 /// # Panics
 ///
-/// If a cell is never reached, which is considered a panic rather than an error
-/// because the solver's inputs should be checked at the boundary of the module.
+/// If a cell is never reached. This is a panic rather than an error because the
+/// module's boundary checks the solver's inputs.
 fn single_seed(
     slowness: &[f64],
     extent: (usize, usize),
@@ -291,8 +291,9 @@ fn single_seed(
     let at = |i: usize, j: usize| i * nj + j;
     let source_slowness = slowness[at(seed.i, seed.j)];
 
-    // The analytical solution on a homogeneous medium. Only `T₀` is tabled; the
-    // update recomputes the gradient at its own node, which is cheaper than loading it.
+    // The analytical solution on a homogeneous medium. The table stores only `T₀`,
+    // and the update recomputes the gradient at its own node, which is cheaper than
+    // loading it.
     let known: Vec<f64> = (0..ni)
         .flat_map(|i| (0..nj).map(move |j| (i, j)))
         .map(|(i, j)| known_factor(i, j, seed, spacing_km, source_slowness).time_s)
@@ -304,14 +305,15 @@ fn single_seed(
     let mut times = vec![f64::INFINITY; ni * nj];
     times[at(seed.i, seed.j)] = 0.0;
 
-    // Zhao's four alternating orderings: every ray direction is covered by one of
-    // them, which is why a fixed number of rounds suffices.
+    // Zhao's four alternating orderings: each ray direction falls in one of them, and
+    // a fixed number of rounds suffices.
     let forward: Vec<usize> = (0..nj).collect();
     let backward: Vec<usize> = (0..nj).rev().collect();
     let down: Vec<usize> = (0..ni).collect();
     let up: Vec<usize> = (0..ni).rev().collect();
 
-    // A fraction of the fastest single-cell traversal: see `CONVERGENCE_TOLERANCE`.
+    // A fraction of the shortest single-cell traversal time: see
+    // `CONVERGENCE_TOLERANCE`.
     let fastest_cell_s =
         spacing_km.0.min(spacing_km.1) * slowness.iter().copied().fold(f64::INFINITY, f64::min);
     let tolerance = CONVERGENCE_TOLERANCE * fastest_cell_s;
@@ -338,7 +340,7 @@ fn single_seed(
                             slowness[at(i, j)],
                         );
                         if candidate < times[at(i, j)] {
-                            // Taken either way; the tolerance only decides when to stop.
+                            // Taken either way. The tolerance sets only when to stop.
                             changed |= candidate < times[at(i, j)] - tolerance;
                             times[at(i, j)] = candidate;
                         }
@@ -376,16 +378,15 @@ fn single_seed(
     Ok((times, rounds))
 }
 
-/// A reached neighbour on one axis: its arrival, its own `T₀`, and which side it is
-/// on. `sign` is +1 when the neighbour is at the lower index, matching the sign the
-/// upwind difference carries.
+/// A reached neighbour on one axis: `(arrival, T₀, sign)`. `sign` is +1 when the
+/// neighbour is at the lower index, matching the sign of the upwind difference.
 type Side = (f64, f64, f64);
 
-/// The best arrival this node can be given from its current neighbours.
+/// The earliest arrival this node's current neighbours allow.
 ///
 /// Fomel et al. Eq. (7) on each of the four quadrant triangles, with the causality
-/// condition, then the one-sided cap that stands in for their Eq. (8). Each axis
-/// carries its own spacing; nothing here assumes the cells are square. `known` is
+/// condition, then the one-sided cap in place of their Eq. (8). Each axis has its
+/// own spacing, and nothing here assumes the cells are square. `known` is
 /// `T₀` on the grid and `here` is `T₀` with its gradient at `(i, j)`.
 #[expect(
     clippy::too_many_arguments,
@@ -405,9 +406,9 @@ fn update(
     let (h_i, h_j) = spacing_km;
     let at = |i: usize, j: usize| i * nj + j;
 
-    // A neighbour that is off the grid or not yet reached contributes nothing to any
-    // triangle and is causal against anything, which is exactly the absent case: so
-    // only reached neighbours are kept.
+    // A neighbour off the grid or not yet reached contributes nothing to any
+    // triangle and is causal against anything, exactly as an absent neighbour, and
+    // `side` returns `None` for it.
     let side = |index: usize, sign: f64| {
         let arrival = times[index];
         arrival.is_finite().then_some((arrival, known[index], sign))
@@ -432,8 +433,8 @@ fn update(
     let term = |side: Option<Side>, gradient: f64, spacing: f64| match side {
         Some((arrival, factor, sign)) => {
             // From Fomel et al. Remark 1: at the source `T₀` is zero and `τ = T/T₀` is
-            // 0/0. By l'Hôpital, or from Eq. (5) directly, `τ(x₀) = α(x₀)` — and with
-            // `S₀` taken as the source's own slowness that is exactly 1.
+            // 0/0. By l'Hôpital, or from Eq. (5) directly, `τ(x₀) = α(x₀)`, and with
+            // the source's own slowness as `S₀`, that's exactly 1.
             let tau = if factor > 0.0 { arrival / factor } else { 1.0 };
             (
                 sign * here.time_s / spacing + gradient,
@@ -446,7 +447,7 @@ fn update(
     let mut best = f64::INFINITY;
 
     // One triangle per quadrant, plus the two one-sided degenerations. Eq. (7) is a
-    // quadratic in this node's `τ`; the larger root is the causal branch.
+    // quadratic in this node's `τ`, and the larger root is the causal branch.
     for x in along_j.into_iter().flatten().map(Some).chain([None]) {
         for y in along_i.into_iter().flatten().map(Some).chain([None]) {
             if x.is_none() && y.is_none() {
@@ -485,13 +486,13 @@ fn update(
         return best;
     }
 
-    // Standing in for Eq. (8), and **only** when no triangle produced a causal root.
-    // A wave crossing one cell along an axis is always causal, so a node whose
-    // triangles all failed still gets a bound rather than staying unreachable.
+    // In place of Eq. (8), and **only** when no triangle produced a causal root. A
+    // wave crossing one cell along an axis is always causal, so a node whose
+    // triangles all failed still gets a bound rather than an infinite arrival.
     //
     // Offering this alongside the triangles rather than after them costs a factor of
-    // six on a gradient: it is an unfactored first-order update, so wherever it is
-    // the smaller of the two it wins and injects exactly the source-singularity error
+    // six on a gradient. It's an unfactored first-order update, and wherever it's the
+    // smaller of the two, it replaces the triangles' value and injects exactly the source-singularity error
     // the factorisation exists to remove. Measured at 1.03e-02 against 1.75e-03 on
     // the constant-gradient case.
     for (arrival, spacing) in along_j

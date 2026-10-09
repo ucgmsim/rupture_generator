@@ -1,4 +1,4 @@
-"""Fault geometry: one chart type, and the GeoJSON sections it is built from."""
+"""Fault geometry: one chart type, and the GeoJSON sections that build it."""
 
 from rupture_generator.geometry.geojson import (
     NSHM_ALIASES,

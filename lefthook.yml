@@ -1,19 +1,28 @@
+# lefthook.yml
+
+# Git hooks that run the same checks as CI, from ucgmsim/meta-ci-action's
+# lefthook/ci.yml (pinned to v2, like the CI workflow). Set up once per clone:
+
+#   uv sync --all-extras --dev
+#   uvx lefthook install
+
+# Turn shared checks off with `exclude_tags`; add repo-specific hooks under new names.
+remotes:
+  - git_url: https://github.com/ucgmsim/meta-ci-action
+    ref: v2
+    configs:
+      - lefthook/ci.yml
 pre-push:
   parallel: true
   commands:
-    ty:
-      run: uv run ty check rupture_generator
-    ruff:
-      run: uv run ruff check rupture_generator tests
-    format:
-      run: uv run ruff format --check rupture_generator tests
-    clippy:
-      run: cargo clippy --manifest-path crates/kernels/Cargo.toml -- -D warnings
+    yaml:
+      # Upstream writes this glob as "*.{yaml, yml}". The space is inside the
+      # alternation, so the second branch only matches a file named "* yml"
+      # and the hook never fires on a .yml.
+      run: uvx yamllint {push_files}
+      glob: "*.{yaml,yml}"
 
-pre-commit:
-  parallel: true
-  commands:
-    ruff:
-      glob: "*.py"
-      run: uv run ruff format {staged_files} && uv run ruff check --fix {staged_files}
-      stage_fixed: true
+    vale:
+      # Needs `vale sync` once, to fetch the styles named in .vale.ini.
+      run: vale {push_files}
+      glob: "*.{py,md,rs}"

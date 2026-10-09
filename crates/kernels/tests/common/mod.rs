@@ -1,11 +1,11 @@
 //! Generative strategies for the kernel contracts, shared so the two contract files
 //! quantify over the same input space rather than each inventing a narrower one.
 //!
-//! Ranges are physical: slowness 0.2–2.0 s/km is shear speed 0.5–5 km/s, spacing
-//! 0.1–2 km brackets every production subfault size, slip up to 30 m covers a
-//! magnitude-9 asperity, and `dt` 1–50 ms brackets the sample intervals SRF files
-//! carry. Grids are kept small because the properties are resolution-independent —
-//! the one that is not, convergence order, sets its own sizes.
+//! Ranges are physical: slowness 0.2 to 2.0 s/km is shear speed 0.5 to 5 km/s, spacing
+//! from 0.1 to 2 km brackets every production subfault size, slip up to 30 m covers a
+//! magnitude-9 asperity, and `dt` from 1 to 50 ms brackets the sample intervals SRF
+//! files record. The grids are small because the properties are resolution-independent.
+//! The one that isn't, convergence order, sets its own sizes.
 
 // Each integration test compiles this module and uses its half.
 #![allow(dead_code)]
@@ -55,9 +55,9 @@ fn slowness_s_per_km() -> impl Strategy<Value = f64> {
     0.2_f64..2.0
 }
 
-/// Grids of every aspect ratio, media with no structure at all — rougher than any
-/// rupture-speed field, which is the point: the properties hold pointwise, not
-/// because the medium is smooth — and up to `max_seeds` seeds at distinct or
+/// Grids of every aspect ratio and media with no structure at all, rougher than any
+/// rupture-speed field. That roughness is deliberate: the properties hold pointwise,
+/// not because the medium is smooth. Up to `max_seeds` seeds sit at distinct or
 /// coincident positions, with start times up to five seconds apart.
 pub fn grid(max_seeds: usize) -> impl Strategy<Value = Grid> {
     ((2_usize..=20), (2_usize..=20))
@@ -80,7 +80,7 @@ pub fn grid(max_seeds: usize) -> impl Strategy<Value = Grid> {
         })
 }
 
-/// A uniform medium with a single seed — the case with an exact analytic answer.
+/// A uniform medium with one seed: the case with an exact analytic answer.
 #[derive(Clone, Debug)]
 pub struct UniformGrid {
     pub extent: (usize, usize),
@@ -116,8 +116,8 @@ pub struct Subfaults {
     pub dt_s: f64,
 }
 
-/// Slip in metres: mostly slipping subfaults, salted with exact zeros and
-/// slips at or below the guard, because the empty-row contract is half the point.
+/// Slip values in metres. Most subfaults slip, and the strategy mixes in exact zeros
+/// and slips at or below the guard, because the empty-row contract is half the point.
 fn slip_m() -> impl Strategy<Value = f64> {
     prop_oneof![
         2 => Just(0.0),
@@ -151,8 +151,8 @@ pub fn resolvable_subfaults() -> impl Strategy<Value = Subfaults> {
     subfaults(1.6_f64..400.0)
 }
 
-/// Rise times down to zero — *below* what the sample interval can represent — so
-/// the refusal contract is exercised, not just the happy path.
+/// Rise times down to zero, *below* what the sample interval can represent, which
+/// exercises the refusal contract and not just the happy path.
 pub fn adversarial_subfaults() -> impl Strategy<Value = Subfaults> {
     subfaults(0.0_f64..3.0)
 }
