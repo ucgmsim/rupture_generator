@@ -2,20 +2,25 @@
 
 Nothing here knows what correlation function it is embedding or what will be done
 with the field afterwards. A :class:`Covariance` is a :class:`Correlation` and the
-lengths that scale its argument; a :class:`Sampler` embeds one on a :class:`Grid`
-once and draws from it as often as asked. Every tuple is ``(axis 0, axis 1)``.
+lengths that scale its argument; :func:`sampler` embeds one on a :class:`Grid` once
+and draws from it as often as asked. Every tuple is ``(axis 0, axis 1)``.
 """
 
 import dataclasses
+import functools
 import math
-from typing import Protocol
+from collections.abc import Callable
 
 import numpy as np
 import scipy as sp
 
 from rupture_generator._kernels import circulant_draw
+from rupture_generator.errors import RuptureGeneratorError
 
 type FieldArray = np.ndarray[tuple[int, int], np.dtype[np.float64]]
+
+type Correlation = Callable[[np.ndarray], np.ndarray]
+"""A stationary correlation function of a lag measured in correlation lengths."""
 
 WRAP_TOLERANCE = 1.0e-5
 """The correlation two cells may pick up through the periodic boundary.
@@ -38,20 +43,16 @@ is not positive definite on this grid and a larger margin is the cure.
 MAXIMUM_EMBEDDING_DOUBLINGS = 3
 """How many times the margin is doubled before the embedding is refused."""
 
-MAXIMUM_EMBEDDING_CELLS = 1 << 26
+MAXIMUM_EMBEDDING_CELLS = 1 << 27
 """The largest padded grid to transform.
 
-The transform holds the covariance as ``float64`` and its spectrum as ``complex128``
-at once: at 2^26 cells that is 0.5 GB and 1.0 GB, before the caller's own fields.
+A draw holds the padded grid as ``complex128``, 2 GB at 2^27 cells; the embedding
+itself keeps a quarter of it as ``float64``.
 """
 
-
-class Correlation(Protocol):
-    """A stationary correlation function of a dimensionless lag."""
-
-    def __call__(self, lag: np.ndarray) -> np.ndarray:
-        """Evaluate at a lag measured in correlation lengths."""
-        ...
+SAMPLER_CACHE_SIZE = 4
+"""Embeddings kept between segments: a segment uses two, and a realisation of the
+same chart asks for the same two again."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -75,22 +76,13 @@ class Covariance:
     lengths_km: tuple[float, float]
 
 
-class SamplingError(ValueError):
-    """A covariance that does not embed on the grid it was asked for."""
-
-
-def _wrapped_lag_index(extent: int) -> np.ndarray:
-    positions = np.arange(extent)
-    return np.minimum(positions, extent - positions)
-
-
 def _decay_length(correlation: Correlation, tolerance: float) -> float:
     """The lag, in correlation lengths, past which the correlation is below ``tolerance``."""
     upper = 1.0
     while correlation(np.array([upper]))[0] > tolerance:
         upper *= 2.0
         if upper > 2.0**20:
-            raise SamplingError(
+            raise RuptureGeneratorError(
                 f"the correlation function has not decayed below {tolerance:.0e} by "
                 f"{upper:.0e} correlation lengths"
             )
@@ -106,21 +98,38 @@ def _decay_length(correlation: Correlation, tolerance: float) -> float:
 def _padded_extent(
     extent: int, resolution_km: float, length_km: float, margin: float
 ) -> int:
-    return int(
-        sp.fft.next_fast_len(extent + math.ceil(margin * length_km / resolution_km))
+    """The smallest fast, **even** transform length holding the grid and its margin.
+
+    Even, because then the wrapped covariance's spectrum is exactly the DCT-I of its
+    first half, which is what :func:`_embed` computes.
+    """
+    padded = sp.fft.next_fast_len(
+        extent + math.ceil(margin * length_km / resolution_km)
     )
+    while padded % 2:
+        padded = sp.fft.next_fast_len(padded + 1)
+    return int(padded)
 
 
-def _embed(grid: Grid, covariance: Covariance) -> FieldArray:
-    # The circulant embedding method samples a stationary random field by
-    # embedding that field on a torus, and using fourier transforms to shape
-    # noise. To do that in a stable fashion (i.e. to capture the correlation
-    # lengths properly), one must pad the grid appropriately. The circulant
-    # embedding method can measure the variance deficit *before sampling* which
-    # is what we do when we check deficit against the maximum variance deficit.
-    # A Sampler holds the result, so repeatedly sampling fields with the same
-    # shape and correlation lengths (e.g., sampling slip, rise, rake independently)
-    # only has to pay the cost of this search once.
+def _mirror_weights(extent: int) -> np.ndarray:
+    """How many times each entry of a half spectrum appears in the whole one."""
+    weights = np.full(extent // 2 + 1, 2.0)
+    weights[[0, -1]] = 1.0
+    return weights
+
+
+def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, int]]:
+    """The square-rooted eigenvalues of a circulant embedding, and the padded shape.
+
+    The covariance is periodised onto a padded torus, whose eigenvalues are the
+    transform of its first row. That row is real and even along both axes, so its
+    transform is real and even too, and with an even padded length the non-redundant
+    quarter of it is the type-I DCT of the quarter of the row that is evaluated. Only
+    that quarter is kept; :func:`circulant_draw` mirrors it.
+
+    The margin starts at the correlation's decay length and doubles until the variance
+    the clipped negative eigenvalues drop is round-off.
+    """
     decay = _decay_length(covariance.correlation, WRAP_TOLERANCE)
     for doubling in range(MAXIMUM_EMBEDDING_DOUBLINGS):
         margin = decay * 2**doubling
@@ -131,7 +140,7 @@ def _embed(grid: Grid, covariance: Covariance) -> FieldArray:
             )
         )
         if padded[0] * padded[1] > MAXIMUM_EMBEDDING_CELLS:
-            raise SamplingError(
+            raise RuptureGeneratorError(
                 f"a {grid.shape[0]}x{grid.shape[1]} grid with correlation lengths "
                 f"{covariance.lengths_km} km embeds in {padded[0]}x{padded[1]} = "
                 f"{padded[0] * padded[1]:,} cells, past the {MAXIMUM_EMBEDDING_CELLS:,} "
@@ -145,17 +154,19 @@ def _embed(grid: Grid, covariance: Covariance) -> FieldArray:
             )
         ]
         quadrant = covariance.correlation(np.hypot(lags[0][:, None], lags[1][None, :]))
-        wrapped = quadrant[np.ix_(*(_wrapped_lag_index(extent) for extent in padded))]
+        spectrum = sp.fft.dctn(quadrant, type=1, workers=-1)
 
-        spectrum = np.fft.fft2(wrapped).real
-        eigenvalues = np.maximum(spectrum, 0.0)
-        kept = eigenvalues.sum().item()
-        deficit = (kept - spectrum.sum().item()) / kept if kept > 0.0 else 0.0
+        weights = np.outer(*(_mirror_weights(extent) for extent in padded))
+        total = float(np.sum(weights * spectrum))
+        eigenvalues = np.maximum(spectrum, 0.0, out=spectrum)
+        kept = float(np.sum(weights * eigenvalues))
+        deficit = (kept - total) / kept if kept > 0.0 else 0.0
         if deficit <= MAXIMUM_VARIANCE_DEFICIT:
-            eigenvalues.setflags(write=False)
-            return eigenvalues
+            amplitudes = np.sqrt(eigenvalues, out=eigenvalues)
+            amplitudes.setflags(write=False)
+            return amplitudes, padded
 
-    raise SamplingError(
+    raise RuptureGeneratorError(
         f"correlation lengths {covariance.lengths_km} km do not embed on a "
         f"{grid.shape[0]}x{grid.shape[1]} grid at {grid.resolution_km} km: "
         f"{deficit:.1e} of the variance is unsamplable even at a "
@@ -163,29 +174,35 @@ def _embed(grid: Grid, covariance: Covariance) -> FieldArray:
     )
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
 class Sampler:
-    """One covariance embedded on one grid: the expensive part, done once.
+    """One covariance embedded on one grid: the expensive part, done once."""
 
-    Every :meth:`draw` is a fresh standard-normal field with this covariance. Fields
-    that must be mixed by :func:`mix` are drawn from the same sampler.
-    """
+    shape: tuple[int, int]
+    amplitudes: FieldArray
+    padded: tuple[int, int]
 
-    def __init__(self, grid: Grid, covariance: Covariance) -> None:
-        """Embed ``covariance`` on ``grid``.
+    def draw(self, rng: np.random.Generator) -> tuple[FieldArray, FieldArray]:
+        """Two independent fields on the grid, standard normal at every cell.
 
-        Raises
-        ------
-        SamplingError
-            If the covariance does not embed within the cell cap, or is not
-            positive definite at any margin tried.
+        One complex transform gives both: its real and imaginary parts are independent
+        fields with the embedded covariance (Dietrich & Newsam 1997).
         """
-        self.shape = grid.shape
-        self.eigenvalues = _embed(grid, covariance)
-
-    def draw(self, rng: np.random.Generator) -> FieldArray:
-        """A field on the grid, standard normal at every cell."""
         seed = int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
-        return circulant_draw(self.eigenvalues, self.shape, seed)
+        return circulant_draw(self.amplitudes, self.padded, self.shape, seed)
+
+
+@functools.lru_cache(maxsize=SAMPLER_CACHE_SIZE)
+def sampler(grid: Grid, covariance: Covariance) -> Sampler:
+    """Embed ``covariance`` on ``grid``, or return the embedding already made.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the covariance does not embed within the cell cap, or is not positive
+        definite at any margin tried.
+    """
+    return Sampler(grid.shape, *_embed(grid, covariance))
 
 
 def mix(*terms: tuple[float | FieldArray, FieldArray]) -> FieldArray:
@@ -193,11 +210,9 @@ def mix(*terms: tuple[float | FieldArray, FieldArray]) -> FieldArray:
 
     ``sum(a * z) / sqrt(sum(a^2))``. Scalar or per-cell loadings; the division is
     what keeps every cell standard normal, which is the precondition a marginal
-    transform states. Two fields drawn from one :class:`Sampler` loaded at
-    ``(rho, sqrt(1 - rho^2))`` are correlated at ``rho``.
+    transform states. Two independent fields loaded at ``(rho, sqrt(1 - rho^2))`` are
+    correlated at ``rho``.
     """
-    if not terms:
-        raise ValueError("mix needs at least one term")
     total = sum(loading * field for loading, field in terms)
     norm = np.sqrt(sum(np.square(loading) for loading, _ in terms))
     return np.asarray(total / norm, dtype=np.float64)

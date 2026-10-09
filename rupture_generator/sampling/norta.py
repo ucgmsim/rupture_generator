@@ -1,13 +1,20 @@
-"""NORTA: giving a Gaussian field a marginal, and paying for it in correlation.
+"""Generate joint distributions with the normal to anything (NORTA) framework.
 
-Cario & Nelson (1997). A field is drawn Gaussian and pushed through
-``F^-1(Phi(.))``, which gives every cell the requested distribution exactly. The map
-is monotone, so it preserves which patch is the large one, but it is nonlinear, so
-it shrinks every correlation strictly between 0 and 1. :func:`latent_correlation`
-inverts that shrinkage, and :class:`PreCorrected` applies the inverse to a whole
-correlation function so the field comes out with the correlation lengths it was
-asked for. The sampler never sees any of this: it embeds whatever correlation
-function it is handed.
+NORTA is a framework for generating random vectors from an arbitrary joint
+distribution introduced in Cario & Nelson (1997). The general idea to generate a
+random vector X = (X_1, X_2, ..., X_N), where X_i ~ F_i and Corr[X] = Sigma_X is
+as follows:
+
+1. Sample a multivariate random vector Z = (Z_1, Z_2, ..., Z_k) with correlation
+matrix Sigma_Z. The vector Z is the "latent vector" and its distribution the
+"latent space". The matrix Sigma_Z is the "latent correlation",
+2. Apply the transform X_i = F_i^-1(Phi(Z_i)). The vector X_i is the "marginal
+vector" and its distribution the "marginal distribution". The matrix Sigma_X is the "marginal correlation".
+
+There is a theorem in statistics that states that X_i will have the distribution
+given by the CDF F_i. The correlation between Z_i is not preserved by the map F
+= (F_i). The algorithms in this module derive the Sigma_Z such that X = F(Z) has
+correlation matrix Sigma_X.
 """
 
 import dataclasses
@@ -20,7 +27,8 @@ from scipy.special import factorial
 from scipy.stats import gamma as gamma_distribution
 from scipy.stats import norm, truncexpon, truncnorm
 
-from rupture_generator.sampling.field import Correlation, SamplingError
+from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.sampling.field import Correlation
 
 NORTA_ORDER = 20
 """Hermite terms in a marginal's expansion; both production marginals sum to
@@ -32,6 +40,11 @@ NORTA_QUADRATURE_POINTS = 160
 NORTA_TAIL = 1.0e-12
 """How far into the tails the quantile function is evaluated: ``Phi`` rounds to 0
 and 1 at the outermost nodes and an unbounded marginal answers those with infinity."""
+
+NORTA_TRANSFORM_POINTS = 20001
+"""Points ``F^-1(Phi(z))`` is tabulated on between the tails; read back linearly, the
+gamma marginal agrees with the direct quantile to 6e-7 and the truncated exponential to
+2e-6, relative."""
 
 NORTA_INVERSE_POINTS = 20001
 """Points ``g`` is tabulated on for inversion; the round trip measures 2e-10."""
@@ -77,12 +90,12 @@ class Marginal:
             return
         value = self.coefficient_of_variation
         if not (value > 0.0) or not np.isfinite(value):
-            raise SamplingError(
+            raise RuptureGeneratorError(
                 f"a {self.family} marginal needs a positive coefficient of variation, "
                 f"got {value}"
             )
         if self.family == "truncated_normal" and value >= TRUNCATED_NORMAL_MAXIMUM_COV:
-            raise SamplingError(
+            raise RuptureGeneratorError(
                 f"a unit-mean truncated normal cannot have a coefficient of variation "
                 f"of {value}; use a gamma marginal"
             )
@@ -91,7 +104,7 @@ class Marginal:
             < value
             < TRUNCATED_EXPONENTIAL_MAXIMUM_COV
         ):
-            raise SamplingError(
+            raise RuptureGeneratorError(
                 f"a unit-mean truncated exponential cannot have a coefficient of "
                 f"variation of {value}: the family runs over "
                 f"({TRUNCATED_EXPONENTIAL_MINIMUM_COV:.4f}, 1) and attains neither end"
@@ -102,17 +115,17 @@ class Marginal:
         """Whether this marginal is the identity transform."""
         return self.family == "normal"
 
-    @property
-    def is_positive(self) -> bool:
-        """Whether the support excludes negative values."""
-        return self.family in ("truncated_normal", "truncated_exponential", "gamma")
-
     def apply(self, latent: np.ndarray) -> np.ndarray:
-        """``F^-1(Phi(latent))``: give a standard-normal field this marginal, cellwise."""
+        """``F^-1(Phi(latent))``: give a standard-normal field this marginal, cellwise.
+
+        Read off a table rather than through the quantile function, which for a gamma
+        costs seconds per million cells. Beyond the tails the table clamps, as clipping
+        ``Phi`` to :data:`NORTA_TAIL` did.
+        """
         if self.is_normal:
             return np.asarray(latent, dtype=np.float64)
-        probability = np.clip(norm.cdf(latent), NORTA_TAIL, 1.0 - NORTA_TAIL)
-        return np.asarray(_distribution(self).ppf(probability), dtype=np.float64)
+        latents, values = _transform_table(self)
+        return np.interp(latent, latents, values)
 
 
 NORMAL = Marginal()
@@ -165,12 +178,23 @@ def _distribution(marginal: Marginal) -> Any:
 
 
 @functools.lru_cache(maxsize=16)
-def _hermite_coefficients(marginal: Marginal) -> tuple[np.ndarray, float]:
+def _transform_table(marginal: Marginal) -> tuple[np.ndarray, np.ndarray]:
+    """``F^-1(Phi(z))`` tabulated between the latents ``Phi`` sends to the tails."""
+    edge = float(norm.isf(NORTA_TAIL))
+    latents = np.linspace(-edge, edge, NORTA_TRANSFORM_POINTS)
+    values = _distribution(marginal).ppf(norm.cdf(latents))
+    return latents, np.asarray(values, dtype=np.float64)
+
+
+@functools.lru_cache(maxsize=16)
+def _hermite_coefficients(
+    marginal: Marginal,
+) -> tuple[np.ndarray, np.ndarray, float]:
     """A marginal's probabilists' Hermite coefficients, and the spread they imply.
 
     ``h(z) = sum_k a_k He_k(z)`` with ``a_k = E[h(Z) He_k(Z)] / k!`` by Gauss-Hermite
-    quadrature. Returns the coefficients and ``sqrt(sum_{k>=1} a_k^2 k!)``, the
-    transformed field's standard deviation.
+    quadrature. Returns the coefficients, ``k!``, and ``sqrt(sum_{k>=1} a_k^2 k!)``,
+    the transformed field's standard deviation.
     """
     nodes, weights = np.polynomial.hermite_e.hermegauss(NORTA_QUADRATURE_POINTS)
     weights = weights / np.sqrt(2.0 * np.pi)
@@ -180,7 +204,8 @@ def _hermite_coefficients(marginal: Marginal) -> tuple[np.ndarray, float]:
     factorials = np.asarray(factorial(orders), np.float64)
     basis = np.polynomial.hermite_e.hermevander(nodes, NORTA_ORDER)
     coefficients = (weights * transformed) @ basis / factorials
-    return coefficients, float(np.sqrt(np.sum(coefficients[1:] ** 2 * factorials[1:])))
+    spread = float(np.sqrt(np.sum(coefficients[1:] ** 2 * factorials[1:])))
+    return coefficients, factorials, spread
 
 
 @functools.lru_cache(maxsize=64)
@@ -191,28 +216,9 @@ def _correlation_series(first: Marginal, second: Marginal) -> np.ndarray:
     series is increasing and sums to exactly 1; between different marginals it sums
     to ``g_fg(1) <= 1``, the most they can be correlated.
     """
-    left, left_spread = _hermite_coefficients(first)
-    right, right_spread = _hermite_coefficients(second)
-    orders = np.arange(1, NORTA_ORDER + 1)
-    factorials = np.asarray(factorial(orders), np.float64)
-    return left[1:] * right[1:] * factorials / (left_spread * right_spread)
-
-
-def _evaluate_series(coefficients: np.ndarray, latent: np.ndarray) -> np.ndarray:
-    latent = np.asarray(latent, dtype=np.float64)
-    delivered = np.zeros_like(latent)
-    for coefficient in coefficients[::-1]:
-        delivered = (delivered + coefficient) * latent
-    return delivered
-
-
-def transformed_correlation(
-    first: Marginal, second: Marginal, latent: np.ndarray
-) -> np.ndarray:
-    """What correlation two NORTA fields have, given their latents' correlation."""
-    if first.is_normal and second.is_normal:
-        return np.asarray(latent, dtype=np.float64)
-    return _evaluate_series(_correlation_series(first, second), latent)
+    left, factorials, left_spread = _hermite_coefficients(first)
+    right, _, right_spread = _hermite_coefficients(second)
+    return left[1:] * right[1:] * factorials[1:] / (left_spread * right_spread)
 
 
 def latent_correlation(
@@ -224,7 +230,7 @@ def latent_correlation(
 
     Raises
     ------
-    SamplingError
+    RuptureGeneratorError
         If the target sits outside the correlations the two marginals can share
         under a Gaussian copula by more than :data:`NORTA_CORRELATION_SLACK`.
     """
@@ -233,9 +239,10 @@ def latent_correlation(
 
     coefficients = _correlation_series(first, second)
     grid = np.linspace(-1.0, 1.0, NORTA_INVERSE_POINTS)
-    delivered = _evaluate_series(coefficients, grid)
+    # The series has no constant term: a latent correlation of 0 delivers 0.
+    delivered = np.polynomial.polynomial.polyval(grid, np.r_[0.0, coefficients])
     if not np.all(np.diff(delivered) > 0.0):
-        raise SamplingError(
+        raise RuptureGeneratorError(
             f"the correlation map between a {first.family} and a {second.family} "
             "marginal is not increasing, so it cannot be inverted"
         )
@@ -244,17 +251,12 @@ def latent_correlation(
     floor, ceiling = float(delivered[0]), float(delivered[-1])
     worst = max(float(target.max()) - ceiling, floor - float(target.min()))
     if worst > NORTA_CORRELATION_SLACK:
-        raise SamplingError(
+        raise RuptureGeneratorError(
             f"a {first.family} and a {second.family} marginal can be correlated "
             f"between {floor:.4f} and {ceiling:.4f} under a Gaussian copula, and "
             f"{float(target.min()):.4f} to {float(target.max()):.4f} was asked for"
         )
     return np.interp(np.clip(target, floor, ceiling), delivered, grid)
-
-
-def attainable_correlation(first: Marginal, second: Marginal) -> float:
-    """The largest correlation two marginals can share, ``g_fg(1)``."""
-    return float(np.sum(_correlation_series(first, second)))
 
 
 @dataclasses.dataclass(frozen=True)

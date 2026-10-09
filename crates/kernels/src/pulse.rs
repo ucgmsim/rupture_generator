@@ -42,8 +42,8 @@ pub enum Error {
     BetaOutOfRange { subfault: usize, beta: f64 },
     /// A slipping subfault whose rise time rounds to zero samples at this interval.
     ///
-    /// The refusal that replaces the silent drop of `DEFECTS.md` 21. The caller can
-    /// lower `dt_s` or floor the rise time; what it cannot do is lose the moment.
+    /// Refused rather than dropped: the caller can lower `dt_s` or floor the rise
+    /// time; what it cannot do is lose the moment.
     UnrepresentableRiseTime {
         subfault: usize,
         rise_time_s: f64,
@@ -110,7 +110,7 @@ pub struct CsrPulses {
 ///
 /// [`Error`]: mismatched array lengths, a non-positive `dt_s`, non-finite slip, a
 /// `beta` outside `(0, 0.5]`, or a slipping subfault whose rise time
-/// is unrepresentable at `dt_s` (`DEFECTS.md` 21).
+/// is unrepresentable at `dt_s`.
 pub fn synthesise_pulses(
     slip_m: &[f64],
     rise_time_s: &[f64],

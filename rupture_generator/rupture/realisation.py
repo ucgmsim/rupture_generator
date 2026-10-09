@@ -1,66 +1,92 @@
 import dataclasses
+import graphlib
 from collections.abc import Iterator, Mapping
-from graphlib import TopologicalSorter
-from types import MappingProxyType
 
 import pyproj
 
-from rupture_generator.geometry import Geometry, GeometryError
+from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.geometry import Geometry
+
+
+@dataclasses.dataclass(frozen=True)
+class Hypocentre:
+    """Where the rupture nucleated: a segment, and two arc lengths on its chart.
+
+    Arc lengths rather than indices, so the hypocentre survives the chart being recut
+    at a different resolution.
+    """
+
+    segment: str
+    strike_km: float
+    dip_km: float
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Realisation(Mapping[str, Geometry]):
-    """A fault system, before or after anything is drawn on it.
+    """A fault system: its charts, where the rupture starts, and the order it spreads.
 
-    A read-only mapping from segment name to chart. The same type describes the system
-    before propagation, when ``tree`` is empty, and after the whole pipeline has run.
+    A read-only mapping from segment name to chart.
 
     Attributes
     ----------
     segments : Mapping of str to Geometry
         One chart per segment.
     crs : pyproj.CRS
-        The projected frame every chart's positions are offsets in.
+        The projected frame every chart's positions are in.
+    hypocentre : Hypocentre or None
+        Where the rupture nucleates. A lone segment needs only this to be drawn.
     tree : Mapping of str to str or None
-        Which segment triggered which, keyed by the child; a root maps to ``None``.
-        Empty until propagation; otherwise names exactly the segments and is a forest.
-        Where and when each crossing happened is not recorded here: a crossing time is
-        read off the parent's solved onsets, so it belongs to a drawn rupture rather
-        than to the structure.
+        Which segment triggered which, keyed by the child, the hypocentre's segment
+        mapped to ``None``. Empty until propagation; otherwise one tree over exactly
+        the segments.
     """
 
     segments: Mapping[str, Geometry]
     crs: pyproj.CRS
+    hypocentre: Hypocentre | None = None
     tree: Mapping[str, str | None] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Check the invariants, then make the mappings read-only."""
+        """Check the invariants."""
         if not self.segments:
-            raise GeometryError("a realisation needs at least one segment")
+            raise RuptureGeneratorError("a realisation needs at least one segment")
         if not self.crs.is_projected:
-            raise GeometryError(
+            raise RuptureGeneratorError(
                 f"{self.crs.to_string()!r} is not a projected CRS; positions are "
-                "kilometre offsets, so the frame has to be one"
+                "kilometres, so the frame has to be one"
+            )
+        if self.hypocentre and self.hypocentre.segment not in self.segments:
+            raise RuptureGeneratorError(
+                f"the rupture starts on {self.hypocentre.segment!r}, which is not one "
+                f"of {sorted(self.segments)}"
             )
         if self.tree:
-            self._check_forest()
-        object.__setattr__(self, "segments", MappingProxyType(dict(self.segments)))
-        object.__setattr__(self, "tree", MappingProxyType(dict(self.tree)))
+            self._check_tree()
 
-    def _check_forest(self) -> None:
+    def _check_tree(self) -> None:
         names = set(self.segments)
-        if set(self.tree) != names:
-            raise GeometryError(
+        if set(self.tree) != names or not set(self.tree.values()) <= names | {None}:
+            raise RuptureGeneratorError(
                 f"the tree names {sorted(self.tree)} and the segments are {sorted(names)}"
             )
-        for name in self.tree:
-            seen: set[str] = set()
-            current: str | None = name
-            while current is not None:
-                if current in seen:
-                    raise GeometryError(f"the tree has a cycle through {current!r}")
-                seen.add(current)
-                current = self.tree[current]
+        roots = [name for name, parent in self.tree.items() if parent is None]
+        start = self.hypocentre.segment if self.hypocentre else None
+        if roots != [start]:
+            raise RuptureGeneratorError(
+                f"the tree is rooted at {roots} and the rupture starts on {start!r}; a "
+                "rupture is one tree grown from its hypocentre"
+            )
+        try:
+            self._sorter().prepare()
+        except graphlib.CycleError as cycle:
+            raise RuptureGeneratorError(
+                f"the tree has a cycle through {cycle.args[1]}"
+            ) from None
+
+    def _sorter(self) -> graphlib.TopologicalSorter:
+        return graphlib.TopologicalSorter(
+            {child: [parent] if parent else [] for child, parent in self.tree.items()}
+        )
 
     # ------------------------------------------------------------ the mapping
 
@@ -77,69 +103,39 @@ class Realisation(Mapping[str, Geometry]):
         return len(self.segments)
 
     def __repr__(self) -> str:
-        """The segments and the union of what is on them."""
-        names = sorted(set().union(*(set(chart.fields) for chart in self.values())))
-        return (
-            f"{type(self).__name__}({', '.join(self.segments)}; "
-            f"fields: {', '.join(names) or 'none'})"
-        )
+        """The segments, not the charts."""
+        return f"{type(self).__name__}({', '.join(self.segments)})"
 
-    # -------------------------------------------------------------- the writes
+    # -------------------------------------------------------------- the walk
 
-    def replace(self, **charts: Geometry) -> Realisation:
-        """This realisation with some segments' charts swapped. The only write path.
-
-        Raises
-        ------
-        GeometryError
-            For a name that is not a segment: the tree names segments, and a new one
-            would leave it inconsistent.
-        """
-        unknown = sorted(set(charts) - set(self.segments))
-        if unknown:
-            raise GeometryError(
-                f"{unknown} are not segments of this realisation; it has "
-                f"{sorted(self.segments)}"
-            )
-        return dataclasses.replace(self, segments={**self.segments, **charts})
-
-    def propagated(self, tree: Mapping[str, str | None]) -> Realisation:
-        """This realisation with its trigger forest recorded."""
-        return dataclasses.replace(self, tree=tree)
-
-    @property
-    def root(self) -> str:
-        """The segment the rupture started on.
-
-        Raises
-        ------
-        GeometryError
-            If nothing has propagated yet, or if the forest has several trees.
-        """
-        roots = [name for name, parent in self.tree.items() if parent is None]
-        match roots:
-            case [root]:
-                return root
-            case []:
-                raise GeometryError("nothing has propagated yet, so there is no root")
-            case _:
-                raise GeometryError(f"the rupture has several roots: {sorted(roots)}")
+    def propagated(
+        self, tree: Mapping[str, str | None], hypocentre: Hypocentre
+    ) -> Realisation:
+        """This realisation with where it starts and how it spreads recorded."""
+        return dataclasses.replace(self, tree=tree, hypocentre=hypocentre)
 
     def in_causal_order(self) -> Iterator[tuple[str, str | None, Geometry]]:
-        """Segment names parents-first, so a child's parent has always been visited."""
-        sorter = TopologicalSorter()
+        """Segments parents-first, so a child's parent has always been visited.
 
-        for segment in self.segments:
-            if parent := self.tree.get(segment):
-                sorter.add(segment, parent)
-            else:
-                sorter.add(segment)
+        Raises
+        ------
+        RuptureGeneratorError
+            If there is no hypocentre, or several segments and no tree to order them.
+        """
+        if self.hypocentre is None:
+            raise RuptureGeneratorError(
+                "the realisation has no hypocentre to start from"
+            )
+        if not self.tree:
+            if len(self.segments) > 1:
+                raise RuptureGeneratorError(
+                    f"{sorted(self.segments)} have not been propagated, so nothing says "
+                    "which triggers which"
+                )
+            yield self.hypocentre.segment, None, self.segments[self.hypocentre.segment]
+            return
+        for name in self._sorter().static_order():
+            yield name, self.tree[name], self.segments[name]
 
-        for seg in sorter.static_order():
-            parent = self.tree.get(seg)
-            yield seg, parent, self.segments[seg]
 
-
-__all__ = [
-    "Realisation",
-]
+__all__ = ["Hypocentre", "Realisation"]

@@ -12,11 +12,11 @@ def synthesise_pulses(
     slip_m: NDArray[np.float64],
     rise_time_s: NDArray[np.float64],
     dt_s: float,
-    shape: str,
     beta: NDArray[np.float64] | None = None,
 ) -> tuple[NDArray[np.int64], NDArray[np.float64]]: ...
 def circulant_draw(
-    eigenvalues: NDArray[np.float64],
+    amplitudes: NDArray[np.float64],
+    padded_shape: tuple[int, int],
     cell_counts: tuple[int, int],
     seed: int,
-) -> NDArray[np.float64]: ...
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...

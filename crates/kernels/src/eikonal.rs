@@ -24,34 +24,24 @@
 
 use crate::counts::exact;
 
-/// Rounds of four sweeps before giving up on convergence.
+/// Rounds of four sweeps before the solver refuses.
 ///
-/// Fomel et al. show only 3 sweeps worked generally, this is a pessimistic
-/// assumption and an upper bound on compute because termination occurs at grid
-/// convergence.
-/// How many alternating-ordering sweeps the solver will make before refusing.
+/// Termination is at grid convergence, so this is only an upper bound on compute.
+/// Fomel et al. find three sweeps enough in general; rounds grow with the medium's
+/// slowness contrast, not with the grid (`the_sweep_count_does_not_grow_with_the_mesh`).
+/// Measured on the Wellington `Ohariu` segment: 9, 12, 13 and 14 rounds at contrasts
+/// of 3.3x, 6.8x, 12.9x and 26x, roughly one more round per doubling.
 ///
-/// Rounds grow with the medium's slowness contrast, not with the grid -- see
-/// `the_sweep_count_does_not_grow_with_the_mesh`. Measured on the shipped Wellington
-/// `Ohariu` segment: 9, 12, 13 and 14 rounds at contrasts of 3.3x, 6.8x, 12.9x and 26x,
-/// so roughly one more round per doubling.
-///
-/// The contrast a caller can present is bounded a priori, which is what makes this
-/// number checkable rather than a guess. It is
+/// The contrast a caller can present is bounded a priori by
 ///
 /// ```text
 /// (max_fraction * Vs_max) / (min_fraction * Vs_min) * off_fault_factor
 /// ```
 ///
-/// which the velocity band caps whatever the depth profile does. For the shipped examples
-/// that bound is 41.9x on Wellington (fully
-/// occupied, Vs 0.50 to 3.70) and 144.6x on the Hikurangi interface, where 37% of the
-/// chart is off-fault and `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. The
-/// wall dominates the band by a wide margin on a resampled interface.
-///
-/// 64 is set against that 144.6x rather than against the case that first failed. A limit
-/// of 16 was calibrated when the band ceiling was the shear speed and three of every
-/// run's rounds went on round-off; both of those changed.
+/// which is 41.9x on Wellington (fully occupied, Vs 0.50 to 3.70) and 144.6x on the
+/// Hikurangi interface, where 37% of the chart is off-fault and
+/// `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. 64 is set against that
+/// 144.6x.
 const MAX_ROUNDS: usize = 64;
 
 /// How much a sweep must improve a cell's arrival for the sweep to count as unsettled,
@@ -253,6 +243,7 @@ pub fn solve_with_rounds(
 }
 
 /// The known factor `T₀` and its gradient at one node, in seconds and s/km.
+#[derive(Clone, Copy)]
 struct Known {
     time_s: f64,
     /// `(dT_0/di, dT_0/dj)` in physical units.
@@ -300,10 +291,11 @@ fn single_seed(
     let at = |i: usize, j: usize| i * nj + j;
     let source_slowness = slowness[at(seed.i, seed.j)];
 
-    // Calculate the analytical solution on a homogeneous medium.
-    let known: Vec<Known> = (0..ni)
+    // The analytical solution on a homogeneous medium. Only `T₀` is tabled; the
+    // update recomputes the gradient at its own node, which is cheaper than loading it.
+    let known: Vec<f64> = (0..ni)
         .flat_map(|i| (0..nj).map(move |j| (i, j)))
-        .map(|(i, j)| known_factor(i, j, seed, spacing_km, source_slowness))
+        .map(|(i, j)| known_factor(i, j, seed, spacing_km, source_slowness).time_s)
         .collect();
 
     // Solved in `T` throughout, converting to `τ` only where the discretisation
@@ -334,8 +326,17 @@ fn single_seed(
                         if (i, j) == (seed.i, seed.j) {
                             continue;
                         }
-                        let candidate =
-                            update(&times, &known, i, j, extent, spacing_km, slowness[at(i, j)]);
+                        let here = known_factor(i, j, seed, spacing_km, source_slowness);
+                        let candidate = update(
+                            &times,
+                            &known,
+                            here,
+                            i,
+                            j,
+                            extent,
+                            spacing_km,
+                            slowness[at(i, j)],
+                        );
                         if candidate < times[at(i, j)] {
                             // Taken either way; the tolerance only decides when to stop.
                             changed |= candidate < times[at(i, j)] - tolerance;
@@ -375,14 +376,25 @@ fn single_seed(
     Ok((times, rounds))
 }
 
+/// A reached neighbour on one axis: its arrival, its own `T₀`, and which side it is
+/// on. `sign` is +1 when the neighbour is at the lower index, matching the sign the
+/// upwind difference carries.
+type Side = (f64, f64, f64);
+
 /// The best arrival this node can be given from its current neighbours.
 ///
 /// Fomel et al. Eq. (7) on each of the four quadrant triangles, with the causality
 /// condition, then the one-sided cap that stands in for their Eq. (8). Each axis
-/// carries its own spacing; nothing here assumes the cells are square.
+/// carries its own spacing; nothing here assumes the cells are square. `known` is
+/// `T₀` on the grid and `here` is `T₀` with its gradient at `(i, j)`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the hot loop's inputs, passed flat so nothing is packed per cell"
+)]
 fn update(
     times: &[f64],
-    known: &[Known],
+    known: &[f64],
+    here: Known,
     i: usize,
     j: usize,
     extent: (usize, usize),
@@ -392,84 +404,80 @@ fn update(
     let (ni, nj) = extent;
     let (h_i, h_j) = spacing_km;
     let at = |i: usize, j: usize| i * nj + j;
-    let here = &known[at(i, j)];
 
-    // The two neighbours on each axis, as (arrival, its own T₀, which side).
-    // `sign` is +1 when the neighbour is at the lower index, matching the sign the
-    // upwind difference carries.
-    let mut along_j: Vec<(f64, f64, f64)> = Vec::with_capacity(2);
-    if j > 0 {
-        let index = at(i, j - 1);
-        along_j.push((times[index], known[index].time_s, 1.0));
-    }
-    if j + 1 < nj {
-        let index = at(i, j + 1);
-        along_j.push((times[index], known[index].time_s, -1.0));
-    }
-    let mut along_i: Vec<(f64, f64, f64)> = Vec::with_capacity(2);
-    if i > 0 {
-        let index = at(i - 1, j);
-        along_i.push((times[index], known[index].time_s, 1.0));
-    }
-    if i + 1 < ni {
-        let index = at(i + 1, j);
-        along_i.push((times[index], known[index].time_s, -1.0));
-    }
+    // A neighbour that is off the grid or not yet reached contributes nothing to any
+    // triangle and is causal against anything, which is exactly the absent case: so
+    // only reached neighbours are kept.
+    let side = |index: usize, sign: f64| {
+        let arrival = times[index];
+        arrival.is_finite().then_some((arrival, known[index], sign))
+    };
+    let along_j: [Option<Side>; 2] = [
+        if j > 0 { side(at(i, j - 1), 1.0) } else { None },
+        if j + 1 < nj {
+            side(at(i, j + 1), -1.0)
+        } else {
+            None
+        },
+    ];
+    let along_i: [Option<Side>; 2] = [
+        if i > 0 { side(at(i - 1, j), 1.0) } else { None },
+        if i + 1 < ni {
+            side(at(i + 1, j), -1.0)
+        } else {
+            None
+        },
+    ];
+
+    let term = |side: Option<Side>, gradient: f64, spacing: f64| match side {
+        Some((arrival, factor, sign)) => {
+            // From Fomel et al. Remark 1: at the source `T₀` is zero and `τ = T/T₀` is
+            // 0/0. By l'Hôpital, or from Eq. (5) directly, `τ(x₀) = α(x₀)` — and with
+            // `S₀` taken as the source's own slowness that is exactly 1.
+            let tau = if factor > 0.0 { arrival / factor } else { 1.0 };
+            (
+                sign * here.time_s / spacing + gradient,
+                sign * here.time_s * tau / spacing,
+            )
+        }
+        None => (0.0, 0.0),
+    };
 
     let mut best = f64::INFINITY;
 
     // One triangle per quadrant, plus the two one-sided degenerations. Eq. (7) is a
     // quadratic in this node's `τ`; the larger root is the causal branch.
-    for corner in along_j
-        .iter()
-        .map(Some)
-        .chain([None])
-        .flat_map(|x| along_i.iter().map(Some).chain([None]).map(move |y| (x, y)))
-    {
-        let (x, y) = corner;
-        if x.is_none() && y.is_none() {
-            continue;
-        }
-
-        let term = |side: Option<&(f64, f64, f64)>, gradient: f64, spacing: f64| match side {
-            Some(&(arrival, factor, sign)) if arrival.is_finite() => {
-                // From Fomel et al. Remark 1: at the source `T₀` is zero and `τ = T/T₀` is 0/0. By
-                // l'Hôpital, or from Eq. (5) directly, `τ(x₀) = α(x₀)` — and with
-                // `S₀` taken as the source's own slowness that is exactly 1.
-                let tau = if factor > 0.0 { arrival / factor } else { 1.0 };
-                Some((
-                    sign * here.time_s / spacing + gradient,
-                    sign * here.time_s * tau / spacing,
-                ))
+    for x in along_j.into_iter().flatten().map(Some).chain([None]) {
+        for y in along_i.into_iter().flatten().map(Some).chain([None]) {
+            if x.is_none() && y.is_none() {
+                continue;
             }
-            _ => None,
-        };
-        let (a_x, b_x) = term(x, here.gradient.1, h_j).unwrap_or((0.0, 0.0));
-        let (a_y, b_y) = term(y, here.gradient.0, h_i).unwrap_or((0.0, 0.0));
-        if a_x == 0.0 && a_y == 0.0 {
-            continue;
-        }
+            let (a_x, b_x) = term(x, here.gradient.1, h_j);
+            let (a_y, b_y) = term(y, here.gradient.0, h_i);
+            if a_x == 0.0 && a_y == 0.0 {
+                continue;
+            }
 
-        let quadratic = a_x * a_x + a_y * a_y;
-        let linear = -2.0 * (a_x * b_x + a_y * b_y);
-        let constant = b_x * b_x + b_y * b_y - slowness * slowness;
-        let discriminant = linear * linear - 4.0 * quadratic * constant;
-        if discriminant < 0.0 {
-            continue;
-        }
-        let arrival = here.time_s * (-linear + discriminant.sqrt()) / (2.0 * quadratic);
-        // `partial_cmp` rather than `!(arrival > 0.0)`: the root can be NaN when the
-        // quadratic degenerates, and a negated comparison would silently accept it.
-        if !matches!(arrival.partial_cmp(&0.0), Some(std::cmp::Ordering::Greater)) {
-            continue;
-        }
+            let quadratic = a_x * a_x + a_y * a_y;
+            let linear = -2.0 * (a_x * b_x + a_y * b_y);
+            let constant = b_x * b_x + b_y * b_y - slowness * slowness;
+            let discriminant = linear * linear - 4.0 * quadratic * constant;
+            if discriminant < 0.0 {
+                continue;
+            }
+            let arrival = here.time_s * (-linear + discriminant.sqrt()) / (2.0 * quadratic);
+            // `partial_cmp` rather than `!(arrival > 0.0)`: the root can be NaN when the
+            // quadratic degenerates, and a negated comparison would silently accept it.
+            if !matches!(arrival.partial_cmp(&0.0), Some(std::cmp::Ordering::Greater)) {
+                continue;
+            }
 
-        // Fomel et al.'s causality condition.
-        let causal = |side: Option<&(f64, f64, f64)>| {
-            side.is_none_or(|&(neighbour, _, _)| !neighbour.is_finite() || arrival >= neighbour)
-        };
-        if causal(x) && causal(y) {
-            best = best.min(arrival);
+            // Fomel et al.'s causality condition.
+            let causal =
+                |side: Option<Side>| side.is_none_or(|(neighbour, _, _)| arrival >= neighbour);
+            if causal(x) && causal(y) {
+                best = best.min(arrival);
+            }
         }
     }
 
@@ -487,13 +495,12 @@ fn update(
     // the factorisation exists to remove. Measured at 1.03e-02 against 1.75e-03 on
     // the constant-gradient case.
     for (arrival, spacing) in along_j
-        .iter()
+        .into_iter()
+        .flatten()
         .map(|side| (side.0, h_j))
-        .chain(along_i.iter().map(|side| (side.0, h_i)))
+        .chain(along_i.into_iter().flatten().map(|side| (side.0, h_i)))
     {
-        if arrival.is_finite() {
-            best = best.min(arrival + spacing * slowness);
-        }
+        best = best.min(arrival + spacing * slowness);
     }
 
     best

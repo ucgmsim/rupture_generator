@@ -1,21 +1,13 @@
 """What the rock is like at each subfault, and how it gets onto a chart.
 
-Sampling materials is a stage: it takes a fault system and puts fields on its charts.
-What reads them afterwards is not this module's concern, and no depth profile is
-compiled into anything downstream, so *any* depth dependence -- a slower front near the
-surface, longer pulses in the shallow crust -- is prescribed here, per cell, where it
-can be inspected and plotted before a rupture is drawn.
+No depth profile is compiled into anything downstream, so *any* depth dependence -- a
+slower front near the surface, longer pulses in the shallow crust -- is prescribed
+here, per cell, where it can be inspected and plotted before a rupture is drawn.
 
-A :data:`Sampler` is the whole interface: given the positions of a chart's cell
+A :data:`CellSampler` is the whole interface: given the positions of a chart's cell
 centres, return one value per cell. Nothing here knows what a fault is, so a sampler is
 a pure function of position and testable on its own. The functions below build one by
-closing over a model -- a partial application, spelled as a closure -- and
-:func:`sample_materials` is what runs them over a fault system.
-
-Nothing here knows what a field will be called, or which of them some later stage
-insists on. A sampler produces values and the caller names them, so this module sits on
-its own: the field vocabulary stays with the code that reads it, and the order of the
-stages lives in the command line rather than in an import.
+closing over a model, and :func:`sample_materials` runs them over a chart.
 
 Units follow the field names. Shear speed is kilometres per second and density grams
 per cubic centimetre, which is how a 1-D velocity model is written down; rigidity comes
@@ -23,14 +15,14 @@ out in pascals, and the single ``1e9`` in :func:`rigidity_pa` is the whole conve
 """
 
 import dataclasses
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
 import numpy as np
 
+from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry, NodeArray
-from rupture_generator.rupture.realisation import Realisation
 
-type Sampler = Callable[[NodeArray], CellArray]
+type CellSampler = Callable[[NodeArray], CellArray]
 """Given cell centres, ``(n_i, n_j, 3)``, one value per cell, ``(n_i, n_j)``.
 
 Positions are the chart's own: east, north and depth in kilometres, depth positive
@@ -44,8 +36,79 @@ PA_PER_KM_S_SQUARED_G_CM3 = 1.0e9
 """``(1e3 m/s)^2 x (1e3 kg/m^3)``: what carries a velocity model's own units to SI."""
 
 
-class MaterialError(ValueError):
-    """A material model no rock answers to."""
+@dataclasses.dataclass(frozen=True, eq=False)
+class Materials:
+    """What one chart's rupture reads off the rock, one value per cell.
+
+    Attributes
+    ----------
+    shear_speed_km_s : CellArray
+        What the front's speed is a fraction of.
+    rigidity_pa : CellArray
+        What the moment is counted in.
+    rise_time_factor : CellArray or float
+        The relative rise time, 1 where it is unmodified: any depth dependence of the
+        pulse length is prescribed here.
+    rise_time_slip_weight : CellArray or float
+        How much of rise time's correlation with slip is the configured value (1)
+        rather than exact (0). At 0 the rise-time latent is slip's own, so the two
+        fields share their rank order -- the shallow treatment of Graves & Pitarka,
+        where the pulse length tracks the slip in the velocity-strengthening crust.
+    """
+
+    shear_speed_km_s: CellArray
+    rigidity_pa: CellArray
+    rise_time_factor: CellArray | float = 1.0
+    rise_time_slip_weight: CellArray | float = 1.0
+
+    def __post_init__(self) -> None:
+        """Refuse a slip weight outside ``[0, 1]``."""
+        weight = np.asarray(self.rise_time_slip_weight)
+        if not np.all((weight >= 0.0) & (weight <= 1.0)):
+            raise RuptureGeneratorError(
+                f"the rise-time slip weight runs {float(weight.min()):.3g} to "
+                f"{float(weight.max()):.3g}; a weight lies in [0, 1]"
+            )
+
+
+def sample_materials(
+    geometry: Geometry,
+    *,
+    shear_speed_km_s: CellSampler,
+    rigidity_pa: CellSampler,
+    rise_time_factor: CellSampler | None = None,
+    rise_time_slip_weight: CellSampler | None = None,
+) -> Materials:
+    """Run each sampler over a chart's cell centres.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a sampler returns the wrong shape for the chart.
+    """
+    centres_km = geometry.centres
+
+    def sample(name: str, cell_sampler: CellSampler) -> CellArray:
+        values = cell_sampler(centres_km)
+        if values.shape != geometry.cells:
+            raise RuptureGeneratorError(
+                f"{name} is shaped {values.shape} and the chart has {geometry.cells} cells"
+            )
+        return values
+
+    optional = {
+        name: sample(name, cell_sampler)
+        for name, cell_sampler in (
+            ("rise_time_factor", rise_time_factor),
+            ("rise_time_slip_weight", rise_time_slip_weight),
+        )
+        if cell_sampler is not None
+    }
+    return Materials(
+        shear_speed_km_s=sample("shear_speed_km_s", shear_speed_km_s),
+        rigidity_pa=sample("rigidity_pa", rigidity_pa),
+        **optional,
+    )
 
 
 def rigidity_pa(
@@ -63,17 +126,32 @@ def rigidity_pa(
     )
 
 
-def constant_sampler(value: float) -> Sampler:
-    """The same value at every subfault.
-
-    A uniform half-space, and the thing to reach for when a field is a placeholder or
-    a study is holding one property fixed on purpose.
-    """
+def constant_sampler(value: float) -> CellSampler:
+    """The same value at every subfault."""
 
     def sample(centres_km: NodeArray) -> CellArray:
         return np.full(np.shape(centres_km)[:-1], float(value), dtype=np.float64)
 
     return sample
+
+
+def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
+    """Depths as a non-empty, strictly increasing 1-D array.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        Otherwise: which interval a depth falls in, or what lies between two points, is
+        ambiguous in any other order.
+    """
+    depths = np.asarray(depth_km, dtype=np.float64)
+    if depths.ndim != 1 or depths.size == 0:
+        raise RuptureGeneratorError(
+            f"the {what} are shaped {depths.shape}; they want a non-empty list of depths"
+        )
+    if np.any(np.diff(depths) <= 0.0):
+        raise RuptureGeneratorError(f"the {what} {depths.tolist()} do not increase")
+    return depths
 
 
 @dataclasses.dataclass(frozen=True)
@@ -93,23 +171,12 @@ class Layers:
 
     def __post_init__(self) -> None:
         """Refuse boundaries that are not a stack of layers."""
-        bottoms = np.asarray(self.bottom_depth_km, dtype=np.float64)
-        if bottoms.ndim != 1 or bottoms.size == 0:
-            raise MaterialError(
-                f"the layer boundaries are shaped {bottoms.shape}; a 1-D model wants a "
-                "non-empty list of depths"
-            )
-        if np.any(np.diff(bottoms) <= 0.0):
-            raise MaterialError(
-                f"the layer boundaries {bottoms.tolist()} do not increase, so it is "
-                "ambiguous which layer a depth falls in"
-            )
+        bottoms = _increasing_depths(self.bottom_depth_km, "layer boundaries")
         if bottoms[0] <= 0.0:
-            raise MaterialError(
+            raise RuptureGeneratorError(
                 f"the shallowest layer reaches {bottoms[0]} km, which is not below the "
                 "surface"
             )
-        object.__setattr__(self, "bottom_depth_km", bottoms)
 
     def __len__(self) -> int:
         """How many layers."""
@@ -118,12 +185,7 @@ class Layers:
     def layer_for(self, depth_km: np.ndarray) -> np.ndarray:
         """Which layer each depth falls in, shaped like ``depth_km``."""
         return np.minimum(
-            np.searchsorted(
-                self.bottom_depth_km,
-                np.asarray(depth_km, dtype=np.float64),
-                side="left",
-            ),
-            len(self) - 1,
+            np.searchsorted(self.bottom_depth_km, depth_km, side="left"), len(self) - 1
         )
 
     def values(self, name: str, per_layer: np.ndarray) -> np.ndarray:
@@ -131,57 +193,39 @@ class Layers:
 
         Raises
         ------
-        MaterialError
+        RuptureGeneratorError
             If there is not exactly one value per layer, or one of them is not positive.
         """
         values = np.asarray(per_layer, dtype=np.float64)
         if values.shape != (len(self),):
-            raise MaterialError(
+            raise RuptureGeneratorError(
                 f"{name} has {values.size} values for {len(self)} layers"
             )
         if np.any(values <= 0.0) or not np.all(np.isfinite(values)):
-            raise MaterialError(
+            raise RuptureGeneratorError(
                 f"{name} runs {values.min()} to {values.max()}; every layer needs a "
                 "positive, finite value"
             )
         return values
 
 
-def layered_1d_sampler(layers: Layers, per_layer: np.ndarray, *, name: str) -> Sampler:
+def layered_1d_sampler(
+    layers: Layers, per_layer: np.ndarray, *, name: str
+) -> CellSampler:
     """A property that depends on depth alone, read off a 1-D model.
 
     Sampled at each subfault's **own** depth rather than once per dip row: one lookup
-    broadcast along strike is exact for a plane and for nothing else, and a curved
-    interface is the case this package exists to handle.
+    broadcast along strike is exact for a plane and for nothing else.
     """
     values = layers.values(name, per_layer)
 
     def sample(centres_km: NodeArray) -> CellArray:
-        return values[layers.layer_for(np.asarray(centres_km)[..., DEPTH])]
+        return values[layers.layer_for(centres_km[..., DEPTH])]
 
     return sample
 
 
-def rigidity_sampler(
-    layers: Layers, shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray
-) -> Sampler:
-    """Rigidity from a 1-D model, in pascals.
-
-    The one material a rupture needs that a velocity model does not list directly. It
-    is here rather than left to the caller because :math:`\\rho v_s^2` and its unit
-    factor are what a hand-rolled version gets wrong.
-    """
-    speed = layers.values("shear_speed_km_s", shear_speed_km_s)
-    density = layers.values("density_g_cm3", density_g_cm3)
-    rigidity = rigidity_pa(speed, density)
-
-    def sample(centres_km: NodeArray) -> CellArray:
-        return rigidity[layers.layer_for(np.asarray(centres_km)[..., DEPTH])]
-
-    return sample
-
-
-def interpolated_sampler(depth_km: np.ndarray, values: np.ndarray) -> Sampler:
+def interpolated_sampler(depth_km: np.ndarray, values: np.ndarray) -> CellSampler:
     """A depth profile, given as points and read linearly between them.
 
     A thin wrapper on :func:`numpy.interp`, which holds the end values outside the
@@ -195,102 +239,55 @@ def interpolated_sampler(depth_km: np.ndarray, values: np.ndarray) -> Sampler:
       exactly 1 through the middle of the fault where the profile has nothing to say;
     - a measured profile is however many points were measured.
 
-    One point is a constant, though :func:`constant_sampler` says that more plainly.
-
     Raises
     ------
-    MaterialError
-        If the depths do not increase, or there is not one value per depth.
+    RuptureGeneratorError
+        If the depths do not increase, or there is not one finite value per depth.
         :func:`numpy.interp` reads unsorted points as a different profile rather than
         as a mistake, so this is the check that matters.
     """
-    depths = np.asarray(depth_km, dtype=np.float64)
+    depths = _increasing_depths(depth_km, "profile depths")
     heights = np.asarray(values, dtype=np.float64)
-    if depths.ndim != 1 or depths.size == 0:
-        raise MaterialError(
-            f"the profile depths are shaped {depths.shape}; a profile wants a "
-            "non-empty list of depths"
-        )
     if heights.shape != depths.shape:
-        raise MaterialError(
+        raise RuptureGeneratorError(
             f"the profile has {heights.size} values for {depths.size} depths"
         )
-    if np.any(np.diff(depths) <= 0.0):
-        raise MaterialError(
-            f"the profile depths {depths.tolist()} do not increase, and interpolating "
-            "between them in that order describes a different profile"
-        )
     if not np.all(np.isfinite(heights)):
-        raise MaterialError("a profile value is not finite")
+        raise RuptureGeneratorError("a profile value is not finite")
 
     def sample(centres_km: NodeArray) -> CellArray:
-        return np.interp(np.asarray(centres_km)[..., DEPTH], depths, heights)
+        return np.interp(centres_km[..., DEPTH], depths, heights)
 
     return sample
 
 
 def velocity_model(
     layers: Layers, shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray
-) -> tuple[Sampler, Sampler]:
+) -> tuple[CellSampler, CellSampler]:
     """Shear speed and rigidity from one 1-D model, in that order.
 
-    A convenience over :func:`layered_1d_sampler` and :func:`rigidity_sampler` so that
-    the common case is one call and the two cannot disagree about which model they came
-    from. Returned unnamed, because what a chart calls them is the caller's business::
+    One call, so the two cannot disagree about which model they came from::
 
         speed, rigidity = velocity_model(layers, shear_speed_km_s, density_g_cm3)
-        realisation = sample_materials(
-            realisation, {Field.SHEAR_SPEED: speed, Field.RIGIDITY: rigidity}
-        )
+        materials = sample_materials(chart, shear_speed_km_s=speed, rigidity_pa=rigidity)
     """
+    speed = layers.values("shear_speed_km_s", shear_speed_km_s)
+    density = layers.values("density_g_cm3", density_g_cm3)
     return (
-        layered_1d_sampler(layers, shear_speed_km_s, name="shear_speed_km_s"),
-        rigidity_sampler(layers, shear_speed_km_s, density_g_cm3),
+        layered_1d_sampler(layers, speed, name="shear_speed_km_s"),
+        layered_1d_sampler(layers, rigidity_pa(speed, density), name="rigidity_pa"),
     )
-
-
-def sample_materials(
-    realisation: Realisation, samplers: Mapping[str, Sampler]
-) -> Realisation:
-    """Run every sampler over every segment and attach what comes back.
-
-    One set of samplers for the whole system, since a velocity model is regional and a
-    fault system sits inside it. A segment that needs its own takes a second call, or
-    :meth:`~rupture_generator.rupture.realisation.Realisation.replace` by hand.
-
-    Whatever the samplers are keyed by becomes a field name, and nothing here checks
-    that against what a rupture will later want: the module that reads a field is the
-    one that should say it is missing.
-
-    Returns the realisation with the sampled fields on every chart. Existing fields of
-    the same name are replaced, so re-sampling is how a model is corrected.
-
-    Raises
-    ------
-    GeometryError
-        If a sampler returns the wrong shape for the chart it was given.
-    """
-    sampled: dict[str, Geometry] = {}
-    for name, chart in realisation.items():
-        # Once per chart, not once per field: on a production-resolution interface the
-        # centres are the expensive part and every sampler reads the same ones.
-        centres_km = chart.centres()
-        sampled[name] = chart.with_fields(
-            **{field: sampler(centres_km) for field, sampler in samplers.items()}
-        )
-    return realisation.replace(**sampled)
 
 
 __all__ = [
     "DEPTH",
+    "CellSampler",
     "Layers",
-    "MaterialError",
-    "Sampler",
+    "Materials",
     "constant_sampler",
     "interpolated_sampler",
     "layered_1d_sampler",
     "rigidity_pa",
-    "rigidity_sampler",
     "sample_materials",
     "velocity_model",
 ]
