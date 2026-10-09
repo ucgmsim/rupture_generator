@@ -20,9 +20,10 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use std::error;
 use std::fs::File;
-use std::io::{BufWriter, Error, Write};
+use std::io::{BufWriter, Error, ErrorKind, Write};
 
 use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
+use crate::srf_writer::{PointStream, StreamError};
 use crate::types::{
     CsrMatrixView, SrfFileView, SrfMetadataV2View, SrfMetadataVersioned, SrfMetadataView, SrfPlane,
 };
@@ -30,7 +31,32 @@ use crate::types::{
 const WRITE_BUFFER_CAPACITY: usize = 1 << 20;
 
 fn marshall_os_error<T>(e: Error) -> PyResult<T> {
+    // `InvalidInput` is the writer saying the points don't fit the planes, which is
+    // the caller's mistake rather than the file system's.
+    if e.kind() == ErrorKind::InvalidInput {
+        return Err(PyErr::new::<PyValueError, _>(e.to_string()));
+    }
     Err(PyErr::new::<PyOSError, _>(e.to_string()))
+}
+
+fn marshall_stream_error<T>(e: StreamError) -> PyResult<T> {
+    marshall_os_error(e.into())
+}
+
+/// Readonly borrows of a `PySrfMetadata`'s base columns, as a `SrfMetadataView`.
+///
+/// No large copy between Python and Rust. The guards must stay in scope as long as
+/// the slices taken from them. The macro binds them as named locals in the caller,
+/// not as temporaries inside the struct literal. The view's name, the metadata and
+/// `py` are arguments because a `let` or a name inside a macro is hygienic, and the
+/// other side couldn't see it otherwise.
+macro_rules! borrow_columns {
+    ($py:ident, $metadata:ident, $view:ident = $($column:ident),* $(,)?) => {
+        $(let $column = $metadata.$column.bind($py).readonly();)*
+        let $view: SrfMetadataView = SrfMetadataView {
+            $($column: $column.as_slice()?,)*
+        };
+    };
 }
 
 fn marshall_value_error<T, U: error::Error>(e: U) -> PyResult<T> {
@@ -74,23 +100,8 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
 
     let planes: Vec<SrfPlane> = srf.planes.iter().map(|plane| *plane.borrow(py)).collect();
 
-    // Readonly borrows of the numpy buffers, and no large copy between Python and
-    // Rust. The guards must stay in scope as long as the slices taken from them.
-    // Named locals here, rather than temporaries inside the struct literal, keep them
-    // in scope.
-    //
-    // The view's name is an argument because a `let` introduced inside a macro is
-    // hygienic and would not be visible here.
-    macro_rules! borrow_columns {
-        ($view:ident = $($column:ident),* $(,)?) => {
-            $(let $column = metadata.$column.bind(py).readonly();)*
-            let $view: SrfMetadataView = SrfMetadataView {
-                $($column: $column.as_slice()?,)*
-            };
-        };
-    }
     borrow_columns! {
-        base = lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise
+        py, metadata, base = lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise
     }
 
     let vs = metadata.vs.as_ref().map(|arr| arr.bind(py).readonly());
@@ -141,6 +152,130 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     })
 }
 
+/// A version 2 SRF written as its points arrive, so no caller has to hold them all.
+///
+/// The header goes out when the writer opens: the version line and every plane,
+/// whose point counts fix how many points the file takes. `write` then takes them
+/// in chunks of any size, in file order, and each plane's `POINTS` line goes where
+/// its first point lands. `close` checks the count came out right. Used as a
+/// context manager, an exception inside the block leaves the file unfinished
+/// rather than closing it as if it were whole.
+#[pyclass(name = "SrfWriter")]
+pub struct PySrfWriter {
+    writer: Option<BufWriter<File>>,
+    stream: PointStream,
+}
+
+#[pymethods]
+impl PySrfWriter {
+    /// # Errors
+    ///
+    /// If creating or writing the file fails.
+    #[new]
+    fn new(py: Python<'_>, file_path: &str, planes: Vec<SrfPlane>) -> PyResult<Self> {
+        let writer = py.detach(|| {
+            let file = File::create(file_path).or_else(marshall_os_error)?;
+            let mut writer = BufWriter::with_capacity(WRITE_BUFFER_CAPACITY, file);
+            srf_writer::write_header_v2(&mut writer, &planes).or_else(marshall_os_error)?;
+            Ok::<_, PyErr>(writer)
+        })?;
+        Ok(Self {
+            writer: Some(writer),
+            stream: PointStream::new(&planes),
+        })
+    }
+
+    /// # Errors
+    ///
+    /// If the writer has closed, the metadata has no `vs` or `density`, the rows and
+    /// the points disagree in number, the points run past what the planes declare,
+    /// or writing fails.
+    fn write(
+        &mut self,
+        py: Python<'_>,
+        metadata: PyRef<'_, PySrfMetadata>,
+        slipt1: PyRef<'_, PyCsrMatrix>,
+    ) -> PyResult<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(PyValueError::new_err("the SRF writer is closed"));
+        };
+        borrow_columns! {
+            py, metadata, base = lon, lat, dep, stk, dip, area, tinit, dt, rake, slip1, rise
+        }
+        let (Some(vs), Some(density)) = (&metadata.vs, &metadata.density) else {
+            return Err(PyValueError::new_err(
+                "a streamed SRF is version 2, so every point needs vs and density",
+            ));
+        };
+        let vs = vs.bind(py).readonly();
+        let density = density.bind(py).readonly();
+        let row_ptr = slipt1.row_ptr.bind(py).readonly();
+        let data = slipt1.data.bind(py).readonly();
+        let points = base.lon.len();
+        if row_ptr.len()? != points + 1 {
+            return Err(PyValueError::new_err(format!(
+                "{points} points want {} row offsets, and there are {}",
+                points + 1,
+                row_ptr.len()?
+            )));
+        }
+        let metadata_view = SrfMetadataV2View {
+            base,
+            vs: vs.as_slice()?,
+            density: density.as_slice()?,
+        };
+        let slipt1_view = CsrMatrixView {
+            row_ptr: row_ptr.as_slice()?,
+            data: data.as_slice()?,
+            indices: &[],
+        };
+        let stream = &mut self.stream;
+        py.detach(|| {
+            stream
+                .write(writer, &metadata_view, &slipt1_view)
+                .or_else(marshall_stream_error)
+        })
+    }
+
+    /// # Errors
+    ///
+    /// If the stream wrote fewer points than the planes declare, or flushing fails.
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        let Some(mut writer) = self.writer.take() else {
+            return Ok(());
+        };
+        let stream = &mut self.stream;
+        py.detach(|| {
+            stream.finish(&mut writer).or_else(marshall_stream_error)?;
+            writer.flush().or_else(marshall_os_error)
+        })
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// # Errors
+    ///
+    /// As `close`, when the block ended without an exception.
+    fn __exit__(
+        &mut self,
+        py: Python<'_>,
+        exc_type: Option<&Bound<'_, PyAny>>,
+        _exc_value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        if exc_type.is_some() {
+            // Drop the handle without finishing. The file ends where the last write
+            // left it, and the exception says why.
+            self.writer = None;
+        } else {
+            self.close(py)?;
+        }
+        Ok(false)
+    }
+}
+
 #[pymodule]
 #[pyo3(name = "srf_parser")]
 fn srf_utils(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -148,6 +283,7 @@ fn srf_utils(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCsrMatrix>()?;
     m.add_class::<PySrfMetadata>()?;
     m.add_class::<PySrfFile>()?;
+    m.add_class::<PySrfWriter>()?;
     m.add_function(wrap_pyfunction!(write_srf, m)?)?;
     m.add_function(wrap_pyfunction!(parse_srf, m)?)?;
 

@@ -1,9 +1,10 @@
 use crate::types::{
     CsrMatrix, Point, SrfFile, SrfMetadata, SrfMetadataV2, SrfMetadataVersioned, SrfPlane,
 };
-use std::io::{Result, Write};
+use std::io::{self, Result, Write};
 
 use lexical_core::{BUFFER_SIZE, ToLexical};
+use thiserror::Error;
 
 fn lexical_write<W: Write, T: ToLexical>(
     writer: &mut W,
@@ -85,20 +86,76 @@ fn write_srf_points_v1<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f
     Ok(())
 }
 
-fn write_srf_points_v2<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
-    writer: &mut W,
-    planes: &[SrfPlane],
-    metadata: &SrfMetadataV2<S>,
-    slipt1: &CsrMatrix<R, D>,
-) -> Result<()> {
-    let mut buffer = [0u8; BUFFER_SIZE];
-    let mut point_iter = metadata.iter().zip(slipt1.rows());
-    for plane in planes {
-        writer.write_all(POINTS)?;
-        let plane_point_count = plane.points();
-        lexical_write(writer, plane_point_count, &mut buffer)?;
-        writer.write_all(b"\n")?;
-        for (point, slip) in point_iter.by_ref().take(plane_point_count) {
+/// Why a stream of points doesn't fit the planes its header declared.
+#[derive(Debug, Error)]
+pub enum StreamError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("the planes declare {expected} points, and more than that were written")]
+    TooMany { expected: usize },
+    #[error("the planes declare {expected} points, and {written} were written")]
+    TooFew { written: usize, expected: usize },
+}
+
+/// The points of a version 2 SRF, written as they arrive.
+///
+/// The header declares every plane's point count up front, so a writer that has it
+/// can take the points in chunks of any size: each plane's `POINTS` line goes out
+/// where that plane's first point lands, and a chunk may end mid-plane or span
+/// several. The counts are the only state. A caller can then write a rupture one
+/// plane at a time, with only that plane in memory.
+pub struct PointStream {
+    counts: Vec<usize>,
+    plane: usize,
+    left: usize,
+    written: usize,
+}
+
+impl PointStream {
+    #[must_use]
+    pub fn new(planes: &[SrfPlane]) -> Self {
+        Self {
+            counts: planes.iter().map(SrfPlane::points).collect(),
+            plane: 0,
+            left: 0,
+            written: 0,
+        }
+    }
+
+    /// The `POINTS` lines of every plane that has none left to wait for, up to and
+    /// including the next plane with points in it.
+    fn open_plane<W: Write>(&mut self, writer: &mut W, buffer: &mut [u8]) -> Result<bool> {
+        while self.left == 0 {
+            let Some(&count) = self.counts.get(self.plane) else {
+                return Ok(false);
+            };
+            writer.write_all(POINTS)?;
+            lexical_write(writer, count, buffer)?;
+            writer.write_all(b"\n")?;
+            self.plane += 1;
+            self.left = count;
+        }
+        Ok(true)
+    }
+
+    /// Write the next points.
+    ///
+    /// # Errors
+    ///
+    /// If writing fails, or the points run past the last plane's count.
+    pub fn write<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
+        &mut self,
+        writer: &mut W,
+        metadata: &SrfMetadataV2<S>,
+        slipt1: &CsrMatrix<R, D>,
+    ) -> std::result::Result<(), StreamError> {
+        let mut buffer = [0u8; BUFFER_SIZE];
+        for (point, slip) in metadata.iter().zip(slipt1.rows()) {
+            if !self.open_plane(writer, &mut buffer)? {
+                return Err(StreamError::TooMany {
+                    expected: self.counts.iter().sum(),
+                });
+            }
             write_point(writer, &point.base, &mut buffer)?;
             writer.write_all(b" ")?;
             lexical_write(writer, point.vs, &mut buffer)?;
@@ -107,10 +164,62 @@ fn write_srf_points_v2<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f
             writer.write_all(b"\n")?;
             write_slip_row(writer, &point.base, slip, &mut buffer)?;
             writer.write_all(b"\n")?;
+            self.left -= 1;
+            self.written += 1;
         }
+        Ok(())
     }
 
+    /// Close the stream: the `POINTS` lines of any trailing planes with no points.
+    ///
+    /// # Errors
+    ///
+    /// If writing fails, or fewer points arrived than the planes declare.
+    pub fn finish<W: Write>(&mut self, writer: &mut W) -> std::result::Result<(), StreamError> {
+        let mut buffer = [0u8; BUFFER_SIZE];
+        self.open_plane(writer, &mut buffer)?;
+        let expected = self.counts.iter().sum();
+        if self.written == expected {
+            Ok(())
+        } else {
+            Err(StreamError::TooFew {
+                written: self.written,
+                expected,
+            })
+        }
+    }
+}
+
+impl From<StreamError> for io::Error {
+    fn from(error: StreamError) -> Self {
+        match error {
+            StreamError::Io(error) => error,
+            other => io::Error::new(io::ErrorKind::InvalidInput, other),
+        }
+    }
+}
+
+fn write_srf_points_v2<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
+    writer: &mut W,
+    planes: &[SrfPlane],
+    metadata: &SrfMetadataV2<S>,
+    slipt1: &CsrMatrix<R, D>,
+) -> Result<()> {
+    let mut stream = PointStream::new(planes);
+    stream.write(writer, metadata, slipt1)?;
+    stream.finish(writer)?;
     Ok(())
+}
+
+/// The version line and the plane header of a version 2 SRF: everything that
+/// comes before the first point.
+///
+/// # Errors
+///
+/// If writing fails.
+pub fn write_header_v2<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> Result<()> {
+    writer.write_all(VERSION_2)?;
+    write_plane_header(writer, planes)
 }
 
 fn write_plane_header<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> Result<()> {
@@ -274,6 +383,94 @@ POINTS 1\n\
         };
 
         assert_eq!(write_to_vec(&view), write_to_vec(&srf));
+    }
+
+    /// Borrowed columns for a run of points, with the run's rows re-based to zero.
+    type Chunk<'a> = (SrfMetadataV2<&'a [f32]>, CsrMatrix<Vec<usize>, &'a [f32]>);
+
+    /// The points of `SRF_V2_TWO_PLANES`, from `start` to `stop`, as borrowed views.
+    fn chunk<'a>(
+        metadata: &'a SrfMetadataV2,
+        slipt1: &'a CsrMatrix,
+        start: usize,
+        stop: usize,
+    ) -> Chunk<'a> {
+        let base = &metadata.base;
+        let rows = &slipt1.row_ptr[start..=stop];
+        let view = SrfMetadataV2 {
+            base: SrfMetadata {
+                lon: &base.lon[start..stop],
+                lat: &base.lat[start..stop],
+                dep: &base.dep[start..stop],
+                stk: &base.stk[start..stop],
+                dip: &base.dip[start..stop],
+                area: &base.area[start..stop],
+                tinit: &base.tinit[start..stop],
+                dt: &base.dt[start..stop],
+                rake: &base.rake[start..stop],
+                slip1: &base.slip1[start..stop],
+                rise: &base.rise[start..stop],
+            },
+            vs: &metadata.vs[start..stop],
+            density: &metadata.density[start..stop],
+        };
+        let csr = CsrMatrix {
+            row_ptr: rows.iter().map(|offset| offset - rows[0]).collect(),
+            indices: Vec::new(),
+            data: &slipt1.data[rows[0]..rows[stop - start]],
+        };
+        (view, csr)
+    }
+
+    fn v2(srf: &SrfFile) -> &SrfMetadataV2 {
+        match &srf.metadata {
+            SrfMetadataVersioned::V2(metadata) => metadata,
+            SrfMetadataVersioned::V1(_) => panic!("expected V2 metadata"),
+        }
+    }
+
+    #[test]
+    fn a_stream_in_chunks_writes_the_whole_file() {
+        let srf = parse(SRF_V2_TWO_PLANES);
+        let metadata = v2(&srf);
+        let mut streamed = Vec::new();
+        write_header_v2(&mut streamed, &srf.planes).unwrap();
+        let mut stream = PointStream::new(&srf.planes);
+        // An empty chunk, then one point, then the other: the plane boundary falls
+        // between chunks rather than inside one.
+        for (start, stop) in [(0, 0), (0, 1), (1, 2)] {
+            let (view, csr) = chunk(metadata, &srf.slipt1, start, stop);
+            stream.write(&mut streamed, &view, &csr).unwrap();
+        }
+        stream.finish(&mut streamed).unwrap();
+        assert_eq!(streamed, write_to_vec(&srf));
+    }
+
+    #[test]
+    fn a_stream_refuses_points_the_planes_do_not_declare() {
+        let srf = parse(SRF_V2_TWO_PLANES);
+        let metadata = v2(&srf);
+        let (view, csr) = chunk(metadata, &srf.slipt1, 0, 2);
+        let mut stream = PointStream::new(&srf.planes[..1]);
+        let error = stream.write(&mut Vec::new(), &view, &csr).unwrap_err();
+        assert!(matches!(error, StreamError::TooMany { expected: 1 }));
+    }
+
+    #[test]
+    fn a_stream_refuses_to_finish_short() {
+        let srf = parse(SRF_V2_TWO_PLANES);
+        let metadata = v2(&srf);
+        let (view, csr) = chunk(metadata, &srf.slipt1, 0, 1);
+        let mut stream = PointStream::new(&srf.planes);
+        stream.write(&mut Vec::new(), &view, &csr).unwrap();
+        let error = stream.finish(&mut Vec::new()).unwrap_err();
+        assert!(matches!(
+            error,
+            StreamError::TooFew {
+                written: 1,
+                expected: 2
+            }
+        ));
     }
 
     #[test]
