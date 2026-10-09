@@ -20,6 +20,28 @@ class Hypocentre:
     strike_km: float
     dip_km: float
 
+    @classmethod
+    def from_fractions(
+        cls, segment: str, geometry: Geometry, strike: float, dip: float
+    ) -> Hypocentre:
+        """A hypocentre at fractions of a chart's extent along strike and down dip.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If either fraction lies outside ``[0, 1]``.
+        """
+        if not (0.0 <= strike <= 1.0 and 0.0 <= dip <= 1.0):
+            raise RuptureGeneratorError(
+                f"a hypocentre at fractions ({strike}, {dip}) is off the fault; "
+                "fractions lie in [0, 1]"
+            )
+        return cls(
+            segment,
+            strike * float(geometry.strike_arc_km[-1]),
+            dip * float(geometry.dip_arc_km[-1]),
+        )
+
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Realisation(Mapping[str, Geometry]):

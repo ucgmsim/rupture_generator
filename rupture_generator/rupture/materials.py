@@ -56,20 +56,30 @@ class Materials:
         rather than exact (0). At 0 the rise-time latent is slip's own, so the two
         fields share their rank order -- the shallow treatment of Graves & Pitarka,
         where the pulse length tracks the slip in the velocity-strengthening crust.
+    rupture_speed_factor : CellArray or float
+        What the front's speed is multiplied by, 1 where it is unmodified: a slower
+        front near the surface or at depth is prescribed here.
     """
 
     shear_speed_km_s: CellArray
     density_g_cm3: CellArray
     rise_time_factor: CellArray | float = 1.0
     rise_time_slip_weight: CellArray | float = 1.0
+    rupture_speed_factor: CellArray | float = 1.0
 
     def __post_init__(self) -> None:
-        """Refuse a slip weight outside ``[0, 1]``."""
+        """Refuse a slip weight outside ``[0, 1]``, or a speed factor that stops the
+        front."""
         weight = np.asarray(self.rise_time_slip_weight)
         if not np.all((weight >= 0.0) & (weight <= 1.0)):
             raise RuptureGeneratorError(
                 f"the rise-time slip weight runs {float(weight.min()):.3g} to "
                 f"{float(weight.max()):.3g}; a weight lies in [0, 1]"
+            )
+        if not np.all(np.asarray(self.rupture_speed_factor) > 0.0):
+            raise RuptureGeneratorError(
+                "the rupture speed factor has to be positive, or the front never "
+                "arrives"
             )
 
     @functools.cached_property
@@ -89,6 +99,7 @@ def sample_materials(
     density_g_cm3: CellSampler,
     rise_time_factor: CellSampler | None = None,
     rise_time_slip_weight: CellSampler | None = None,
+    rupture_speed_factor: CellSampler | None = None,
 ) -> Materials:
     """Run each sampler over a chart's cell centres.
 
@@ -112,6 +123,7 @@ def sample_materials(
         for name, cell_sampler in (
             ("rise_time_factor", rise_time_factor),
             ("rise_time_slip_weight", rise_time_slip_weight),
+            ("rupture_speed_factor", rupture_speed_factor),
         )
         if cell_sampler is not None
     }
@@ -257,6 +269,25 @@ def interpolated_sampler(depth_km: np.ndarray, values: np.ndarray) -> CellSample
     return sample
 
 
+def ramp_sampler(
+    centre_km: float, half_width_km: float, shallow: float, deep: float
+) -> CellSampler:
+    """``shallow`` above the ramp, ``deep`` below it, and linear across
+    ``centre_km +- half_width_km``.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the ramp has no width.
+    """
+    if not half_width_km > 0.0:
+        raise RuptureGeneratorError(f"a ramp {half_width_km} km wide is a step")
+    return interpolated_sampler(
+        np.array([centre_km - half_width_km, centre_km + half_width_km]),
+        np.array([shallow, deep]),
+    )
+
+
 def velocity_model(
     layers: Layers, shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray
 ) -> tuple[CellSampler, CellSampler]:
@@ -281,6 +312,7 @@ __all__ = [
     "constant_sampler",
     "interpolated_sampler",
     "layered_1d_sampler",
+    "ramp_sampler",
     "sample_materials",
     "velocity_model",
 ]
