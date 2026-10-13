@@ -87,7 +87,7 @@ A tie-break, not a modelling choice: it keeps the seed the strict earliest cell.
 
 
 @dataclasses.dataclass(frozen=True)
-class Seed:
+class JumpSeed:
     """The cell the rupture front leaves from, and when.
 
     Attributes
@@ -498,7 +498,9 @@ def _speed_field(
     return speed
 
 
-def _travel_times(geometry: Geometry, speed_km_s: CellArray, seed: Seed) -> CellArray:
+def _travel_times(
+    geometry: Geometry, speed_km_s: CellArray, seed: JumpSeed
+) -> CellArray:
     """First arrivals on ``(i, j)`` in seconds: the coherent front from the seed.
 
     The solve is ``|grad T| = 1/v`` over the smooth speed field. The seed's arrival is
@@ -520,7 +522,7 @@ def _blend_onset(
     travel_s: CellArray,
     displacement_s: CellArray,
     scale_s: float,
-    seed: Seed,
+    seed: JumpSeed,
     blend_sigma: float,
 ) -> CellArray:
     """Displace the solved front, blending in from smooth at the seed.
@@ -583,7 +585,7 @@ def generate_segment(
     source: SegmentSource,
     settings: RuptureSettings,
     *,
-    seed: Seed,
+    seed: JumpSeed,
     rng: np.random.Generator,
 ) -> SegmentRupture:
     """Draw one segment's slip, rise time, rake and onset.
@@ -604,7 +606,7 @@ def generate_segment(
         The segment's moment, rake and slip covariance.
     settings : RuptureSettings
         How to draw each field.
-    seed : Seed
+    seed : JumpSeed
         Where and when the front starts on this segment.
     rng : numpy.random.Generator
         The segment's own generator.
@@ -746,7 +748,7 @@ def _segment_rng(seed: int, segment: str) -> np.random.Generator:
 
 
 type JumpRule = Callable[
-    [SegmentRupture, Geometry, Medium, JumpModel, np.random.Generator], Seed
+    [SegmentRupture, Geometry, Medium, JumpModel, np.random.Generator], JumpSeed
 ]
 """Where and when the front crosses from a drawn parent onto a child.
 
@@ -760,7 +762,7 @@ def jump_seed(
     medium: Medium,
     model: JumpModel,
     rng: np.random.Generator,
-) -> Seed:
+) -> JumpSeed:
     """Find where and when the front crosses from a drawn parent onto a child.
 
     The search runs from the child's side. Each of the child's edge cells pairs with
@@ -813,7 +815,7 @@ def jump_seed(
     )
     arrival_s = np.where(gap_km <= reach_km, arrival_s, np.inf)
     first = int(np.argmin(arrival_s))
-    return Seed(
+    return JumpSeed(
         cell=(int(landings[0][first]), int(landings[1][first])),
         time_s=float(arrival_s[first]),
     )
@@ -875,7 +877,9 @@ def generate(
             hypocentre = realisation.hypocentre
             # `in_causal_order` refuses a realisation without one.
             assert hypocentre is not None
-            start = Seed(geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0)
+            start = JumpSeed(
+                geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0
+            )
         else:
             start = jump(
                 drawn[parent],
