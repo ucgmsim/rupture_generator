@@ -1,11 +1,6 @@
-# rupture-generator
-
-Kinematic rupture models for ground-motion simulation. Given a fault system and its
-magnitudes, the generator draws a slip distribution and works out when each subfault
-starts and how long it slips for. The result is an SRF, or a smaller file of the
-fields that makes the same SRF later.
-
-A port and rework of `genslip` v5.6.2.
+<!-- vale Google.Headings = NO -->
+# Rupture Generator
+<!-- vale Google.Headings = YES -->
 
 ![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
 
@@ -14,6 +9,21 @@ seven-fault source model has it, gridded at 0.1 km and seen from the south at tr
 scale. Darker is more slip. The rupture starts on the Charing Cross fault and
 triggers the other six in a fixed order, each drawing its own slip field and scaling it
 to its own magnitude.*
+
+Kinematic rupture models for ground-motion simulation. Given a fault system and its
+magnitudes, the generator draws a slip distribution and works out when each subfault
+starts and how long it slips for. The result is an SRF, or a smaller file of the
+fields that makes the same SRF later.
+
+<!-- vale Google.Parens = NO -->
+<!-- vale Google.Acronyms = NO -->
+Built on the Graves and Pitarka generator
+([2010](https://doi.org/10.1785/0120100057),
+[2015](https://doi.org/10.1785/0220140101),
+[2016](https://doi.org/10.1785/0120160088)), loosely based on the
+[SCEC BBP platform](https://github.com/SCECcode/bbp).
+<!-- vale Google.Parens = YES -->
+<!-- vale Google.Acronyms = YES -->
 
 ---
 
