@@ -47,6 +47,7 @@ from rupture_generator.sampling import (
     Covariance,
     Grid,
     Marginal,
+    MarginalFamily,
     PreCorrected,
     latent_correlation,
     mix,
@@ -108,16 +109,31 @@ def _correlation(value: float) -> None:
         raise RuptureGeneratorError(f"a correlation lies in [-1, 1], got {value}")
 
 
+def _positive_marginal(
+    what: str, family: MarginalFamily, spread: float, maximum: float
+) -> Marginal:
+    if family == "normal":
+        raise RuptureGeneratorError(
+            f"{what} values are positive, so they cannot follow a normal marginal"
+        )
+    return Marginal(family, spread, maximum)
+
+
 @dataclasses.dataclass(frozen=True)
 class SlipSettings:
     """What shapes every segment's slip field.
 
     Attributes
     ----------
+    family : MarginalFamily
+        The unit-mean distribution slip values follow. By default the truncated
+        exponential Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose spread also
+        fixes the largest slip on the fault: 0.90 puts it at 4.3 mean slips.
     coefficient_of_variation : float
-        The spread of the truncated exponential Thingbaijam & Mai (2016) fitted to
-        SRCMOD slip. It also fixes the largest slip on the fault: 0.90 puts it at 4.3
-        mean slips.
+        The spread of ``family``.
+    maximum : float
+        The largest slip on the fault in mean slips, for a ``doubly_truncated_normal``
+        alone. Infinite otherwise.
     side_taper : float
         The fraction of the fault's length from each end over which slip ramps to zero.
     top_taper : float
@@ -128,7 +144,9 @@ class SlipSettings:
         zero.
     """
 
+    family: MarginalFamily = "truncated_exponential"
     coefficient_of_variation: float = 0.90
+    maximum: float = np.inf
     side_taper: float = 0.02
     top_taper: float = 0.0
     bottom_taper: float = 0.0
@@ -145,8 +163,10 @@ class SlipSettings:
 
     @property
     def marginal(self) -> Marginal:
-        """Marginal: The unit-mean truncated exponential that slip values follow."""
-        return Marginal("truncated_exponential", self.coefficient_of_variation)
+        """Marginal: The unit-mean distribution that slip values follow."""
+        return _positive_marginal(
+            "slip", self.family, self.coefficient_of_variation, self.maximum
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -167,16 +187,22 @@ class RiseSettings:
     slip_exponent : float
         The power of slip that rise time follows. At 0.5, rise time goes as the square
         root of slip.
+    family : MarginalFamily
+        The unit-mean distribution rise time values follow, a gamma by default.
     coefficient_of_variation : float
-        The spread of the unit-mean gamma that rise time values follow. Below unit
-        spread the gamma's mode is away from zero. No subfault then has a zero rise
-        time.
+        The spread of ``family``. Below unit spread the gamma's mode is away from zero.
+        No subfault then has a zero rise time.
+    maximum : float
+        The longest rise time in mean rise times, for a ``doubly_truncated_normal``
+        alone. Infinite otherwise.
     """
 
     coefficient: float = 1.6
     correlation: float = 0.9
     slip_exponent: float = 0.5
+    family: MarginalFamily = "gamma"
     coefficient_of_variation: float = 0.75
+    maximum: float = np.inf
 
     def __post_init__(self) -> None:
         """Refuse a rise time the power law can't produce."""
@@ -190,8 +216,10 @@ class RiseSettings:
 
     @property
     def marginal(self) -> Marginal:
-        """Marginal: The unit-mean gamma that rise time values follow."""
-        return Marginal("gamma", self.coefficient_of_variation)
+        """Marginal: The unit-mean distribution that rise time values follow."""
+        return _positive_marginal(
+            "rise time", self.family, self.coefficient_of_variation, self.maximum
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -800,7 +828,7 @@ def jump_seed(
 
     Returns
     -------
-    Seed
+    JumpSeed
         The child's starting cell and time.
 
     Raises
@@ -904,10 +932,10 @@ __all__ = [
     "UNMODIFIED",
     "FaultProfiles",
     "JumpRule",
+    "JumpSeed",
     "RakeSettings",
     "RiseSettings",
     "RuptureSettings",
-    "Seed",
     "SegmentRupture",
     "SlipSettings",
     "TimingSettings",

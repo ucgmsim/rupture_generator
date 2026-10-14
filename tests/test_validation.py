@@ -15,6 +15,7 @@ from rupture_generator import (
     Realisation,
     RiseSettings,
     RuptureGeneratorError,
+    SlipSettings,
     TimingSettings,
     geometry_from_geojson,
     interpolated_field,
@@ -80,16 +81,25 @@ def test_settings_out_of_range_are_refused(build, message):
 
 
 @pytest.mark.parametrize(
-    ("family", "cov", "message"),
+    ("family", "cov", "maximum", "message"),
     [
-        ("gamma", 0.0, "positive coefficient of variation"),
-        ("truncated_normal", 5.0, "truncated normal cannot"),
-        ("truncated_exponential", 5.0, "truncated exponential cannot"),
+        ("gamma", 0.0, np.inf, "positive coefficient of variation"),
+        ("truncated_normal", 5.0, np.inf, "truncated normal cannot"),
+        ("truncated_exponential", 5.0, np.inf, "truncated exponential cannot"),
+        ("gamma", 0.75, 4.0, "only a doubly_truncated_normal"),
+        ("doubly_truncated_normal", 0.5, np.inf, "needs a finite maximum"),
+        ("doubly_truncated_normal", 0.5, 1.0, "needs a finite maximum"),
+        ("doubly_truncated_normal", 0.9, 4.3, "all but becomes the truncated"),
     ],
 )
-def test_a_marginal_its_family_cannot_have_is_refused(family, cov, message):
+def test_a_marginal_its_family_cannot_have_is_refused(family, cov, maximum, message):
     with pytest.raises(RuptureGeneratorError, match=message):
-        Marginal(family, cov)
+        Marginal(family, cov, maximum)
+
+
+def test_slip_cannot_follow_a_normal():
+    with pytest.raises(RuptureGeneratorError, match="slip values are positive"):
+        SlipSettings(family="normal")
 
 
 # ------------------------------------------------------------------- geometry

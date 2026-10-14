@@ -114,3 +114,20 @@ def test_the_cli_reports_a_bad_file(tmp_path, capsys):
 def test_every_example_builds(example):
     scenario = rupture_config.build(rupture_config.load(EXAMPLE.parent / example))
     assert set(scenario.sources) == set(scenario.realisation)
+
+
+def test_slip_can_follow_a_doubly_truncated_normal(tmp_path):
+    path = tmp_path / "doubly.toml"
+    path.write_text(
+        BASE.replace(
+            "[slip]\n",
+            '[slip]\nfamily = "doubly_truncated_normal"\n'
+            "coefficient_of_variation = 0.6\nmaximum = 4.0\n",
+        )
+    )
+    loaded = rupture_config.load(path)
+    assert loaded.slip.marginal.family == "doubly_truncated_normal"
+    assert loaded.slip.marginal.maximum == 4.0
+    again = tmp_path / "again.toml"
+    again.write_text(rupture_config.dump(loaded))
+    assert rupture_config.load(again) == loaded

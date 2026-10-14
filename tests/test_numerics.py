@@ -124,7 +124,12 @@ def test_moment_magnitude_is_hanks_kanamori_equation_7():
 
 
 @pytest.mark.parametrize(
-    "marginal", [Marginal("truncated_exponential", 0.9), Marginal("gamma", 0.75)]
+    "marginal",
+    [
+        Marginal("truncated_exponential", 0.9),
+        Marginal("gamma", 0.75),
+        Marginal("doubly_truncated_normal", 0.6, 4.3),
+    ],
 )
 def test_the_tabulated_transform_matches_the_quantile(marginal):
     from rupture_generator.sampling.norta import NORTA_TAIL, _distribution
@@ -134,3 +139,31 @@ def test_the_tabulated_transform_matches_the_quantile(marginal):
         np.clip(sp.stats.norm.cdf(latent), NORTA_TAIL, 1 - NORTA_TAIL)
     )
     np.testing.assert_allclose(marginal.apply(latent), exact, rtol=2e-6)
+
+
+@pytest.mark.parametrize("maximum", [1.5, 2.0, 4.3, 10.0])
+@pytest.mark.parametrize("fraction", [0.05, 0.5, 0.99])
+def test_a_doubly_truncated_normal_hits_its_mean_spread_and_maximum(maximum, fraction):
+    from rupture_generator.sampling.norta import (
+        _distribution,
+        _doubly_truncated_normal_ceiling,
+    )
+
+    spread = fraction * _doubly_truncated_normal_ceiling(maximum)
+    fitted = _distribution(Marginal("doubly_truncated_normal", spread, maximum))
+    assert fitted.mean() == pytest.approx(1.0, abs=1e-9)
+    assert fitted.std() == pytest.approx(spread, abs=1e-7)
+    assert fitted.support() == pytest.approx((0.0, maximum), abs=1e-9)
+
+
+def test_the_doubly_truncated_normal_approaches_the_truncated_exponential():
+    from rupture_generator.sampling.norta import (
+        _distribution,
+        _doubly_truncated_normal_ceiling,
+    )
+
+    # 0.90 puts the truncated exponential's largest slip at about 4.3 mean slips.
+    exponential = _distribution(Marginal("truncated_exponential", 0.9))
+    maximum = float(exponential.support()[1])
+    # The fit stops widening its parent short of the limit, so it falls just below.
+    assert 0.0 < 0.9 - _doubly_truncated_normal_ceiling(maximum) < 5e-4
