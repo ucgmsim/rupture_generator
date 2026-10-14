@@ -289,8 +289,14 @@ class Geometry:
         )
         return (i, j), sp.spatial.cKDTree(centres)
 
+    @functools.cached_property
+    def _fault(self) -> tuple[CellSelection, sp.spatial.cKDTree]:
+        """tuple[CellSelection, sp.spatial.cKDTree]: Fault cells, a tree over them."""
+        i, j = np.nonzero(self.occupied)
+        return (i, j), sp.spatial.cKDTree(self.centres[i, j])
+
     def nearest_cells_to(
-        self, other: Geometry
+        self, other: Geometry, *, interior: bool = False
     ) -> tuple[CellSelection, CellSelection, np.ndarray]:
         """Pair each of this chart's edge cells with the closest edge cell of another.
 
@@ -298,12 +304,15 @@ class Geometry:
         ----------
         other : Geometry
             The chart to search.
+        interior : bool
+            Pair every fault cell on both charts, not only edge cells. Intersecting
+            faults meet away from their edges.
 
         Returns
         -------
         tuple[CellSelection, CellSelection, np.ndarray]
-            This chart's edge cells, the edge cell of ``other`` nearest each, and the
-            straight-line distance between each pair in kilometres, as parallel
+            This chart's edge (or fault) cells, the cell of ``other`` nearest each, and
+            the straight-line distance between each pair in kilometres, as parallel
             arrays.
 
         Raises
@@ -311,7 +320,9 @@ class Geometry:
         RuptureGeneratorError
             If either chart has no fault cells.
         """
-        (here, mine), (there, theirs) = self._edge, other._edge
+        (here, mine), (there, theirs) = (
+            (self._fault, other._fault) if interior else (self._edge, other._edge)
+        )
         if here[0].size == 0 or there[0].size == 0:
             raise RuptureGeneratorError(
                 "a distance between charts needs fault on both sides, and one of these "

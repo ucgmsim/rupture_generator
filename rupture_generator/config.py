@@ -7,6 +7,12 @@ that restates no field makes each one strict about unknown keys, so the library
 defines every default once. A small class here builds whatever the file describes
 declaratively and the library takes as a function: a depth profile, or a medium.
 
+A ``[segments.<name>]`` table overrides the global settings on one segment. Its
+``slip``, ``rise``, ``rake``, ``timing`` and ``profiles`` tables, and its
+``correlation`` table for the source's, each start from the global table and replace
+the keys they give. A profile replaces the global profile whole. :func:`load` does
+this merge. A loaded config stores each segment's tables in full.
+
 :func:`load` reads and checks a file, and :func:`build` turns it into a
 :class:`Scenario`. :func:`dump` writes a loaded config back out with every default
 filled in, which records what a run used.
@@ -15,10 +21,11 @@ filled in, which records what a run used.
 import dataclasses
 import tomllib
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import numpy as np
-from mashumaro.codecs.toml import TOMLDecoder, TOMLEncoder
+from mashumaro.codecs import BasicDecoder
+from mashumaro.codecs.toml import TOMLEncoder
 from mashumaro.config import BaseConfig
 from mashumaro.exceptions import (
     ExtraKeysError,
@@ -26,6 +33,7 @@ from mashumaro.exceptions import (
     MissingField,
     SuitableVariantNotFoundError,
 )
+from mashumaro.mixins.toml import TOMLDialect
 from mashumaro.types import Discriminator
 
 from rupture_generator.errors import RuptureGeneratorError
@@ -503,6 +511,38 @@ type PropagationConfig = Annotated[
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class SegmentConfig:
+    """``[segments.<name>]``: one segment's settings, where they differ.
+
+    A table left out is the global one. :func:`load` fills each table given in from
+    the global one.
+
+    Parameters
+    ----------
+    slip : Slip, optional
+        ``[segments.<name>.slip]``.
+    rise : Rise, optional
+        ``[segments.<name>.rise]``.
+    rake : Rake, optional
+        ``[segments.<name>.rake]``.
+    timing : Timing, optional
+        ``[segments.<name>.timing]``.
+    profiles : ProfilesConfig, optional
+        ``[segments.<name>.profiles]``.
+    correlation : Correlation, optional
+        ``[segments.<name>.correlation]``, over the source's.
+    """
+
+    slip: Slip | None = None
+    rise: Rise | None = None
+    rake: Rake | None = None
+    timing: Timing | None = None
+    profiles: ProfilesConfig | None = None
+    correlation: Correlation | None = None
+    Config = _Strict
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class RuptureConfig:
     """A whole rupture file.
@@ -533,6 +573,8 @@ class RuptureConfig:
         ``[timing]``.
     pulse : PulseConfig
         ``[pulse]``.
+    segments : dict of str to SegmentConfig
+        ``[segments.<name>]``, each segment's own settings by name.
     """
 
     seed: int = dataclasses.field(metadata={"deserialize": check_seed})
@@ -547,23 +589,26 @@ class RuptureConfig:
     rake: Rake = dataclasses.field(default_factory=Rake)
     timing: Timing = dataclasses.field(default_factory=Timing)
     pulse: PulseConfig = dataclasses.field(default_factory=PulseConfig)
+    segments: dict[str, SegmentConfig] = dataclasses.field(default_factory=dict)
     Config = _Strict
 
 
-_DECODER = TOMLDecoder(RuptureConfig)
+_DECODER = BasicDecoder(RuptureConfig, default_dialect=TOMLDialect)
+_SEGMENT_DECODER = BasicDecoder(SegmentConfig, default_dialect=TOMLDialect)
 _ENCODER = TOMLEncoder(RuptureConfig)
 
 
 # ------------------------------------------------------------------ the boundary
 
 
-def _describe(error: Exception) -> RuptureGeneratorError:
+def _describe(error: Exception, within: str | None = None) -> RuptureGeneratorError:
     """Build one error that states the key at fault, from mashumaro's chain of them.
 
     Mashumaro wraps each level of nesting in its own exception, so the key path is the
-    chain's field names, and the reason is at its far end.
+    chain's field names, and the reason is at its far end. ``within`` prefixes the
+    path.
     """
-    path: list[str] = []
+    path: list[str] = [] if within is None else [within]
     reason = str(error)
     link: BaseException | None = error
     while link is not None:
@@ -591,6 +636,56 @@ def _describe(error: Exception) -> RuptureGeneratorError:
     return RuptureGeneratorError(f"{'.'.join(path) or 'the file'}: {reason}")
 
 
+def _table(table: object) -> dict[str, Any]:
+    return table if isinstance(table, dict) else {}
+
+
+def _merged(document: dict[str, Any], overrides: object) -> dict[str, Any]:
+    """Fill one ``[segments.<name>]`` table in from the global tables it overrides.
+
+    Each of its tables replaces the keys it gives, so a profile, which is one key of
+    ``profiles``, replaces the global profile whole.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the segment's entry isn't a table.
+    """
+    if not isinstance(overrides, dict):
+        raise RuptureGeneratorError(f"{overrides!r} is not a table")
+    shared = {key: _table(document.get(key)) for key in overrides}
+    shared["correlation"] = _table(_table(document.get("source")).get("correlation"))
+    return {
+        key: {**shared[key], **table} if isinstance(table, dict) else table
+        for key, table in overrides.items()
+    }
+
+
+def _segments(document: dict[str, Any]) -> dict[str, SegmentConfig]:
+    """Decode the ``[segments]`` tables, each filled in from the global ones.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a segment's table isn't one, or has a key or value its setting refuses.
+    """
+    tables = document.get("segments", {})
+    if not isinstance(tables, dict):
+        raise RuptureGeneratorError(f"segments: {tables!r} is not a table")
+    segments = {}
+    for name, overrides in tables.items():
+        try:
+            segments[name] = _SEGMENT_DECODER.decode(_merged(document, overrides))
+        except (
+            RuptureGeneratorError,
+            InvalidFieldValue,
+            MissingField,
+            ExtraKeysError,
+        ) as error:
+            raise _describe(error, f"segments.{name}") from error
+    return segments
+
+
 def load(path: str | Path) -> RuptureConfig:
     """Read and check a rupture file.
 
@@ -614,15 +709,17 @@ def load(path: str | Path) -> RuptureConfig:
     """
     path = Path(path)
     try:
-        config = _DECODER.decode(path.read_text())
+        document = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as error:
         raise RuptureGeneratorError(f"{path} is not TOML: {error}") from None
+    try:
+        config = _DECODER.decode({**document, "segments": {}})
     except (InvalidFieldValue, MissingField, ExtraKeysError) as error:
         raise _describe(error) from None
     geometry = dataclasses.replace(
         config.geometry, path=(path.parent / config.geometry.path).resolve()
     )
-    return dataclasses.replace(config, geometry=geometry)
+    return dataclasses.replace(config, geometry=geometry, segments=_segments(document))
 
 
 def dump(config: RuptureConfig) -> str:
@@ -656,8 +753,9 @@ class Scenario:
         The rock.
     sources : dict of str to SegmentSource
         Each segment's source, by name.
-    settings : RuptureSettings
-        What every segment shares.
+    settings : RuptureSettings or dict of str to RuptureSettings
+        How to draw each field: one for every segment, or one per segment by name
+        when the config has ``[segments]`` tables.
     jump_model : JumpModel
         How far each jump can cover.
     seed : int
@@ -667,7 +765,7 @@ class Scenario:
     realisation: Realisation[Geometry]
     medium: Medium
     sources: dict[str, SegmentSource]
-    settings: RuptureSettings
+    settings: RuptureSettings | dict[str, RuptureSettings]
     jump_model: JumpModel
     seed: int
 
@@ -676,8 +774,14 @@ def _sources(
     source: PerFault | Finite,
     realisation: Realisation[Geometry],
     medium: Medium,
+    segments: dict[str, SegmentConfig],
 ) -> dict[str, SegmentSource]:
     names = set(realisation)
+    correlation = {name: source.correlation for name in realisation} | {
+        name: segment.correlation
+        for name, segment in segments.items()
+        if segment.correlation is not None
+    }
     match source:
         case PerFault():
             for what, given in (
@@ -691,7 +795,7 @@ def _sources(
                     )
             return {
                 name: segment_source(
-                    source.magnitudes[name], source.rakes[name], source.correlation
+                    source.magnitudes[name], source.rakes[name], correlation[name]
                 )
                 for name in realisation
             }
@@ -703,7 +807,7 @@ def _sources(
                 name: segment_source(
                     magnitude_from_moment(moment_nm),
                     source.rake_deg,
-                    source.correlation,
+                    correlation[name],
                 )
                 for name, moment_nm in shares.items()
             }
@@ -738,6 +842,39 @@ def _propagated(
             )
         case Likeliest():
             return likeliest_path(realisation, hypocentre, model=propagation.model)
+
+
+def _settings(
+    config: RuptureConfig, realisation: Realisation[Geometry]
+) -> RuptureSettings | dict[str, RuptureSettings]:
+    unknown = sorted(set(config.segments) - set(realisation))
+    if unknown:
+        raise RuptureGeneratorError(f"segments: {unknown} are not segments")
+    shared = RuptureSettings(
+        slip=config.slip,
+        rise=config.rise,
+        rake=config.rake,
+        timing=config.timing,
+        profiles=config.profiles.profiles(),
+        pulse=PulseSettings(
+            dt_s=config.pulse.dt_s,
+            beta=None if config.pulse.beta is None else config.pulse.beta.field(),
+        ),
+    )
+    if not config.segments:
+        return shared
+    settings = {}
+    for name in realisation:
+        segment = config.segments.get(name, SegmentConfig())
+        given = {
+            key: value
+            for key in ("slip", "rise", "rake", "timing")
+            if (value := getattr(segment, key)) is not None
+        }
+        if segment.profiles is not None:
+            given["profiles"] = segment.profiles.profiles()
+        settings[name] = dataclasses.replace(shared, **given)
+    return settings
 
 
 def build(config: RuptureConfig) -> Scenario:
@@ -795,18 +932,8 @@ def build(config: RuptureConfig) -> Scenario:
             config.propagation, realisation, hypocentre, config.seed
         ),
         medium=medium,
-        sources=_sources(config.source, realisation, medium),
-        settings=RuptureSettings(
-            slip=config.slip,
-            rise=config.rise,
-            rake=config.rake,
-            timing=config.timing,
-            profiles=config.profiles.profiles(),
-            pulse=PulseSettings(
-                dt_s=config.pulse.dt_s,
-                beta=None if config.pulse.beta is None else config.pulse.beta.field(),
-            ),
-        ),
+        sources=_sources(config.source, realisation, medium, config.segments),
+        settings=_settings(config, realisation),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,
     )

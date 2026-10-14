@@ -28,6 +28,7 @@ from rupture_generator.geometry import Geometry, Segment, geometry_from_geojson
 from rupture_generator.rupture.generator import (
     FaultProfiles,
     JumpRule,
+    JumpSeed,
     PulseSettings,
     RakeSettings,
     RiseSettings,
@@ -72,6 +73,7 @@ __all__ = [
     "Hypocentre",
     "JumpModel",
     "JumpRule",
+    "JumpSeed",
     "Layers",
     "Medium",
     "PulseSettings",

@@ -56,6 +56,13 @@ class JumpModel:
     :func:`_sampling_weights` diverges as the probability approaches one. A gap that
     certain belongs inside one segment.
 
+    ``interior`` measures each gap from anywhere on either fault, not only from their
+    edges, for faults that intersect, such as a splay rooted in a subduction
+    interface. The tree's distances and the generator's first arrival both use it.
+    The front then crosses at the nearest pair of cells, edge or interior. Between
+    faults that are close but don't intersect, it can cut through the wedge of rock
+    between them rather than leave at an edge.
+
     Attributes
     ----------
     d0_km : float
@@ -67,12 +74,15 @@ class JumpModel:
         The widest gap a rupture can jump, in kilometres.
     probability_cap : float
         The largest probability an edge may have, in ``(0, 1)``.
+    interior : bool
+        Measure gaps between any cells of two faults, not only their edge cells.
     """
 
     d0_km: float = 3.0
     delta_km: float = 1.0
     max_jump_km: float = 15.0
     probability_cap: float = 0.99
+    interior: bool = False
 
     def __post_init__(self) -> None:
         """Refuse parameters that make the model meaningless."""
@@ -187,13 +197,15 @@ def _jump_graph(
     """Measure the jump probability between every pair of segments.
 
     The distance is between the faults' edges, where a front can leave one fault and
-    start the other.
+    start the other, or between any of their cells if ``model.interior``.
     """
     faults = tuple(realisation)
     weights = np.zeros((len(faults), len(faults)), dtype=np.float64)
     for (u, near), (v, far) in itertools.combinations(enumerate(faults), 2):
         distance_km = float(
-            realisation[near].nearest_cells_to(realisation[far])[2].min()
+            realisation[near]
+            .nearest_cells_to(realisation[far], interior=model.interior)[2]
+            .min()
         )
         weights[u, v] = weights[v, u] = model.probability(distance_km)
     return JumpGraph(faults, weights)

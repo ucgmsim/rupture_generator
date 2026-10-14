@@ -3,13 +3,18 @@ import pytest
 
 from rupture_generator import (
     Geometry,
+    Hypocentre,
     JumpModel,
     Realisation,
     RuptureGeneratorError,
+    RuptureSettings,
+    first_arrival,
+    generate,
     likeliest_path,
     sample_path,
+    segment_source,
 )
-from rupture_generator.rupture.propagator import _root_tree
+from rupture_generator.rupture.propagator import _jump_graph, _root_tree
 
 
 @pytest.fixture
@@ -105,3 +110,62 @@ def test_a_tree_roots_only_at_one_of_its_faults():
         _root_tree(("a", "b"), [(0, 1)], "c")
     with pytest.raises(RuptureGeneratorError, match="cannot be reached"):
         _root_tree(("a", "b"), [], "a")
+
+
+def _grid(east, north, depth):
+    """A chart from node coordinates broadcast to ``(rows + 1, columns + 1)``."""
+    nodes = np.stack(np.broadcast_arrays(east, north, depth), axis=-1).astype(float)
+    cells = (nodes.shape[0] - 1, nodes.shape[1] - 1)
+    return Geometry(nodes, np.ones(cells, bool), (cells[1],))
+
+
+@pytest.fixture
+def splayed(scenario):
+    """A gently dipping interface, and a vertical splay rooted mid-way across it."""
+    i, j = np.mgrid[0:21, 0:21]
+    interface = _grid(j, i, 10.0 + 0.1 * i)
+    i, j = np.mgrid[0:10, 0:11]
+    splay = _grid(5.0 + j, 10.0, 2.0 + i)
+    return Realisation(
+        {"interface": interface, "splay": splay},
+        scenario.realisation.crs,
+        hypocentre=Hypocentre("interface", 10.0, 2.0),
+    )
+
+
+def test_an_interior_jump_measures_the_gap_between_intersecting_faults(splayed):
+    interface, splay = splayed["interface"], splayed["splay"]
+    edge_km = splay.nearest_cells_to(interface)[2].min()
+    interior_km = splay.nearest_cells_to(interface, interior=True)[2].min()
+    assert interior_km < 1.0 < edge_km
+
+    edge = _jump_graph(splayed, JumpModel())
+    interior = _jump_graph(splayed, JumpModel(interior=True))
+    assert interior.weights[0, 1] == JumpModel().probability_cap
+    assert edge.weights[0, 1] < interior.weights[0, 1]
+
+
+def test_an_interior_jump_starts_the_splay_where_it_meets_the_interface(
+    scenario, splayed
+):
+    sources = {name: segment_source(6.5, 90.0) for name in splayed}
+    alone = Realisation(
+        {"interface": splayed["interface"]},
+        splayed.crs,
+        hypocentre=splayed.hypocentre,
+    )
+    parent = generate(alone, scenario.medium, sources, RuptureSettings(), seed=1)
+    parent = parent["interface"]
+    seeds = {
+        interior: first_arrival(
+            parent,
+            splayed["splay"],
+            scenario.medium,
+            JumpModel(d0_km=1e-12, delta_km=0.0, interior=interior),
+            np.random.default_rng(0),
+        )
+        for interior in (False, True)
+    }
+    # The splay's bottom row lies on the interface.
+    assert seeds[True].cell[0] == splayed["splay"].cells[0] - 1
+    assert seeds[True].time_s < seeds[False].time_s

@@ -152,3 +152,105 @@ def test_slip_can_follow_a_doubly_truncated_normal(tmp_path):
     again = tmp_path / "again.toml"
     again.write_text(rupture_config.dump(loaded))
     assert rupture_config.load(again) == loaded
+
+
+SEGMENTS = EXAMPLE.with_name("two_faults_segments.toml")
+
+
+def test_a_segment_table_overrides_the_global_one():
+    loaded = rupture_config.load(SEGMENTS)
+    scenario = rupture_config.build(loaded)
+    assert isinstance(scenario.settings, dict)
+    bent, following = scenario.settings["bent"], scenario.settings["next"]
+    assert bent.slip == loaded.slip and bent.timing == loaded.timing
+    assert following.slip.coefficient_of_variation == 0.6
+    # The keys the segment's table leaves out are the global table's.
+    assert following.slip.bottom_taper == loaded.slip.bottom_taper == 0.02
+    assert following.timing.velocity_fraction == 0.7
+    assert following.timing.correlation == loaded.timing.correlation
+    assert following.rise == bent.rise
+
+    default = rupture_config.build(rupture_config.load(EXAMPLE))
+    assert scenario.sources["bent"] == default.sources["bent"]
+    assert (
+        scenario.sources["next"].covariance.lengths_km[1]
+        > default.sources["next"].covariance.lengths_km[1]
+    )
+
+
+def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):
+    path = tmp_path / "profiles.toml"
+    path.write_text(
+        BASE.replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        + "\n[segments.next.profiles.rise_time_slip_weight]\n"
+        'type = "constant"\nvalue = 0.5\n'
+    )
+    loaded = rupture_config.load(path)
+    profiles = loaded.segments["next"].profiles
+    assert profiles is not None
+    assert profiles.rise_time_slip_weight == rupture_config.Constant(value=0.5)
+    assert profiles.rupture_speed_factor == loaded.profiles.rupture_speed_factor
+
+
+def test_segment_tables_survive_the_record(tmp_path):
+    from rupture_generator.cli import main
+
+    loaded = rupture_config.load(SEGMENTS)
+    again = tmp_path / "again.toml"
+    again.write_text(rupture_config.dump(loaded))
+    assert rupture_config.load(again) == loaded
+    assert "[segments.next.slip]" in again.read_text()
+
+    small = tmp_path / "small.toml"
+    small.write_text(
+        SEGMENTS.read_text()
+        .replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        .replace("spacing_km = 0.1", "spacing_km = 0.5")
+    )
+    output = tmp_path / "out.srf"
+    assert main([str(small), str(output)]) == 0
+    assert rupture_config.load(output.with_name("out.srf.toml")) == rupture_config.load(
+        small
+    )
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "velocity_fraction = 0.7",
+            "velocity_fractio = 0.7",
+            "segments.next.timing: has unknown keys ['velocity_fractio']",
+        ),
+        (
+            "[segments.next.timing]",
+            "[segments.next.timin]",
+            "segments.next: has unknown keys ['timin']",
+        ),
+        (
+            "velocity_fraction = 0.7",
+            "velocity_fraction = 7.0",
+            "segments.next.timing: a velocity fraction lies in",
+        ),
+    ],
+)
+def test_a_bad_segment_table_names_the_segment(tmp_path, old, new, message):
+    base = SEGMENTS.read_text()
+    assert old in base
+    path = tmp_path / "bad.toml"
+    path.write_text(base.replace(old, new))
+    with pytest.raises(
+        RuptureGeneratorError, match=message.replace("[", r"\[").replace("(", r"\(")
+    ):
+        rupture_config.load(path)
+
+
+def test_a_segment_table_for_no_segment_is_refused(tmp_path):
+    path = tmp_path / "unknown.toml"
+    path.write_text(
+        SEGMENTS.read_text()
+        .replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        .replace("[segments.next.timing]", "[segments.nxt.timing]")
+    )
+    with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
+        rupture_config.build(rupture_config.load(path))

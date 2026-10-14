@@ -854,7 +854,8 @@ def first_arrival(
     medium : Medium
         The rock between the two, which sets the crossing time.
     model : JumpModel
-        How far a jump can land.
+        How far a jump can land, and whether it pairs interior cells as well as edge
+        cells.
     rng : numpy.random.Generator
         The jump's own generator.
 
@@ -868,7 +869,9 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    landings, departures, gap_km = child.nearest_cells_to(parent.geometry)
+    landings, departures, gap_km = child.nearest_cells_to(
+        parent.geometry, interior=model.interior
+    )
     reach_km = model.reach_km(float(gap_km.min()), rng)
     arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
         parent.geometry.centres[departures], child.centres[landings]
@@ -885,7 +888,7 @@ def generate(
     realisation: Realisation[Geometry],
     medium: Medium,
     sources: Mapping[str, SegmentSource],
-    settings: RuptureSettings,
+    settings: RuptureSettings | Mapping[str, RuptureSettings],
     *,
     seed: int,
     jump_rule: JumpRule = first_arrival,
@@ -905,8 +908,8 @@ def generate(
         The rock.
     sources : Mapping of str to SegmentSource
         Each segment's source, by name.
-    settings : RuptureSettings
-        How to draw each field.
+    settings : RuptureSettings or Mapping of str to RuptureSettings
+        How to draw each field: one for every segment, or one per segment by name.
     seed : int
         The seed every segment's generator derives from.
     jump_rule : JumpRule
@@ -922,13 +925,23 @@ def generate(
     Raises
     ------
     RuptureGeneratorError
-        If the seed isn't a non-negative integer, a segment has no source, or the
+        If the seed isn't a non-negative integer, a segment has no source or
+        settings, the settings cover a segment the realisation lacks, or the
         realisation has no hypocentre or no tree to walk.
     """
     seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
     if missing:
         raise RuptureGeneratorError(f"{missing} have no source")
+    if not isinstance(settings, RuptureSettings):
+        missing = sorted(set(realisation) - set(settings))
+        if missing:
+            raise RuptureGeneratorError(f"{missing} have no settings")
+        unknown = sorted(set(settings) - set(realisation))
+        if unknown:
+            raise RuptureGeneratorError(
+                f"settings name {unknown}, which are not segments of the realisation"
+            )
 
     drawn: dict[str, SegmentRupture] = {}
     for name, parent, geometry in realisation.in_causal_order():
@@ -951,7 +964,7 @@ def generate(
             geometry,
             medium,
             sources[name],
-            settings,
+            settings if isinstance(settings, RuptureSettings) else settings[name],
             seed=start,
             rng=_segment_rng(seed, FIELDS_STREAM, name),
         )

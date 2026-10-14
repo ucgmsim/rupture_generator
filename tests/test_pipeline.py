@@ -1,9 +1,12 @@
+import dataclasses
+
 import numpy as np
 import pytest
 import scipy as sp
 
 from rupture_generator import (
     Hypocentre,
+    RakeSettings,
     Realisation,
     RuptureGeneratorError,
     RuptureSettings,
@@ -152,6 +155,69 @@ def test_how_a_front_jumps_never_moves_the_fields(scenario, ruptures):
     for name, rupture in ruptures.items():
         assert np.array_equal(rupture.slip_m, elsewhere[name].slip_m)
         assert np.array_equal(rupture.rake_deg, elsewhere[name].rake_deg)
+
+
+FIELDS = ("slip_m", "rise_time_s", "rake_deg", "onset_s", "speed_km_s")
+
+
+def test_the_same_settings_by_name_draw_the_same_rupture(scenario, ruptures):
+    by_name = generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        dict.fromkeys(scenario.realisation, scenario.settings),
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+    )
+    for name, rupture in ruptures.items():
+        for field in FIELDS:
+            assert np.array_equal(
+                getattr(rupture, field), getattr(by_name[name], field)
+            )
+
+
+def test_settings_on_one_segment_leave_the_others_alone(scenario, ruptures):
+    root = scenario.realisation.hypocentre.segment
+    other = next(name for name in scenario.realisation if name != root)
+    settings = dict.fromkeys(scenario.realisation, scenario.settings)
+    settings[other] = dataclasses.replace(
+        scenario.settings, rake=RakeSettings(sigma_deg=0.0)
+    )
+    drawn = generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        settings,
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+    )
+    for field in FIELDS:
+        assert np.array_equal(
+            getattr(ruptures[root], field), getattr(drawn[root], field)
+        )
+    assert np.all(drawn[other].rake_deg == scenario.sources[other].rake_deg)
+    assert np.array_equal(drawn[other].slip_m, ruptures[other].slip_m)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda settings, name: settings.pop(name), "have no settings"),
+        (lambda settings, _: settings.update(nope=RuptureSettings()), "not segments"),
+    ],
+    ids=["missing", "unknown"],
+)
+def test_settings_by_name_cover_exactly_the_segments(scenario, change, message):
+    settings = dict.fromkeys(scenario.realisation, scenario.settings)
+    change(settings, next(iter(settings)))
+    with pytest.raises(RuptureGeneratorError, match=message):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            settings,
+            seed=scenario.seed,
+        )
 
 
 @pytest.mark.parametrize("nearest_km", [0.0, 0.5, 4.0, 40.0])
