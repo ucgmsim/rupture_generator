@@ -63,7 +63,11 @@ def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.n
 
 @dataclasses.dataclass(frozen=True)
 class Medium:
-    """Shear speed and density of the rock, defined everywhere.
+    """Shear speed and density of the rock, defined everywhere on the fault.
+
+    For coupled field where shear speed and density are derived together, you
+    should introduce a caching layer to ensure that repeated sampling of shear
+    speed and density in the same locations is cheap.
 
     Attributes
     ----------
