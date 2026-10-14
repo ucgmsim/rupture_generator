@@ -131,7 +131,7 @@ def _labels(
         along = _on_screen(plotter, near)[:, :2]
         along -= along.mean(axis=0)
         direction = np.linalg.svd(along, full_matrices=False)[2][0]
-        # Screen rows run down, so the angle's sign flips. Text stays upright.
+        # Screen rows run down, which flips the angle's sign. Text stays upright.
         angle = float(np.degrees(np.arctan2(-direction[1], direction[0])))
         angle = (angle + 90.0) % 180.0 - 90.0
         labels.append((f"{level:g} s", float(column), float(row), angle))

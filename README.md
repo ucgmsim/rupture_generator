@@ -140,7 +140,7 @@ charts = {
 }
 # Sample a rupture path from the realisation. Realisation is an abstract
 # description of a rupture at this point without sampled fields.
-realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng) 
+realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
 # Define a medium, which defines the functions that are called to sample Vs and density.
 medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
 # Sample all rupture fields on the realisation using the default

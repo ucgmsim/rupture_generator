@@ -60,6 +60,11 @@ find = { where = [
   "crates",
 ] }
 
+# docs/ holds the README picture's script, which needs pyvista and matplotlib that
+# the package doesn't, so the type checker leaves it out as deptry does.
+[tool.ty.src]
+exclude = ["docs"]
+
 [tool.deptry]
 optional_dependencies_dev_groups = ["test", "bench"]
 # Like tests/, which deptry leaves out by default: development code, not the package.
