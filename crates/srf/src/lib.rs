@@ -19,10 +19,10 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use std::error;
 use std::fs::File;
-use std::io::{BufWriter, Error, ErrorKind, Write};
+use std::io::{BufWriter, Error, Write};
 
 use crate::pytypes::{PyCsrMatrix, PySrfFile, PySrfMetadata};
-use crate::srf_writer::{PointStream, StreamError};
+use crate::srf_writer::{PointStream, WriteError};
 use crate::types::{
     CsrMatrixView, SrfFileView, SrfMetadataV2View, SrfMetadataVersioned, SrfMetadataView, SrfPlane,
 };
@@ -30,16 +30,14 @@ use crate::types::{
 const WRITE_BUFFER_CAPACITY: usize = 1 << 20;
 
 fn marshall_os_error<T>(e: Error) -> PyResult<T> {
-    // `InvalidInput` is the writer saying the points don't fit the planes, which is
-    // the caller's mistake rather than the file system's.
-    if e.kind() == ErrorKind::InvalidInput {
-        return Err(PyErr::new::<PyValueError, _>(e.to_string()));
-    }
     Err(PyErr::new::<PyOSError, _>(e.to_string()))
 }
 
-fn marshall_stream_error<T>(e: StreamError) -> PyResult<T> {
-    marshall_os_error(e.into())
+fn marshall_write_error<T>(e: WriteError) -> PyResult<T> {
+    match e {
+        WriteError::Io(e) => marshall_os_error(e),
+        e => marshall_value_error(e),
+    }
 }
 
 /// Readonly borrows of a `PySrfMetadata`'s base columns, as a `SrfMetadataView`.
@@ -98,8 +96,8 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     let density = metadata.density.as_ref().map(|arr| arr.bind(py).readonly());
     let row_ptr = slipt1.row_ptr.bind(py).readonly();
     let data = slipt1.data.bind(py).readonly();
-    // Absent unless a caller went out of its way to supply it, and the writer doesn't
-    // read it either way: `srf_writer` walks `row_ptr` and `data`. See `PyCsrMatrix`.
+    // Absent for a matrix whose rows are already dense; honoured when given. See
+    // `PyCsrMatrix`.
     let indices = slipt1
         .indices
         .as_ref()
@@ -137,7 +135,7 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     py.detach(|| {
         let file = File::create(file_path).or_else(marshall_os_error)?;
         let mut writer = BufWriter::with_capacity(WRITE_BUFFER_CAPACITY, file);
-        srf_writer::write_srf(&mut writer, &srf_view).or_else(marshall_os_error)?;
+        srf_writer::write_srf(&mut writer, &srf_view).or_else(marshall_write_error)?;
         writer.flush().or_else(marshall_os_error)
     })
 }
@@ -194,13 +192,10 @@ impl PySrfWriter {
         let density = density.bind(py).readonly();
         let row_ptr = slipt1.row_ptr.bind(py).readonly();
         let data = slipt1.data.bind(py).readonly();
-        let points = base.lon.len();
-        if row_ptr.len()? != points + 1 {
-            return Err(PyValueError::new_err(format!(
-                "Points declared in sparse matrix ({}) do not match point metadata length ({points})",
-                row_ptr.len()?.saturating_sub(1)
-            )));
-        }
+        let indices = slipt1
+            .indices
+            .as_ref()
+            .map(|array| array.bind(py).readonly());
         let metadata_view = SrfMetadataV2View {
             base,
             vs: vs.as_slice()?,
@@ -209,13 +204,16 @@ impl PySrfWriter {
         let slipt1_view = CsrMatrixView {
             row_ptr: row_ptr.as_slice()?,
             data: data.as_slice()?,
-            indices: &[],
+            indices: match &indices {
+                Some(indices) => indices.as_slice()?,
+                None => &[],
+            },
         };
         let stream = &mut self.stream;
         py.detach(|| {
             stream
                 .write(writer, &metadata_view, &slipt1_view)
-                .or_else(marshall_stream_error)
+                .or_else(marshall_write_error)
         })
     }
 
@@ -228,7 +226,7 @@ impl PySrfWriter {
         };
         let stream = &mut self.stream;
         py.detach(|| {
-            stream.finish(&mut writer).or_else(marshall_stream_error)?;
+            stream.finish(&mut writer).or_else(marshall_write_error)?;
             writer.flush().or_else(marshall_os_error)
         })
     }

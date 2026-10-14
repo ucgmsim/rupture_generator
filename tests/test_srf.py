@@ -214,7 +214,7 @@ def test_a_stream_needs_the_rows_to_match_the_points(srf, tmp_path):
     metadata, _ = _chunk(parsed, 0, 3)
     _, rows = _chunk(parsed, 0, 2)
     writer = SrfWriter(str(tmp_path / "rows.srf"), parsed.planes)
-    with pytest.raises(ValueError, match="do not match point metadata length"):
+    with pytest.raises(ValueError, match="slipt1 has 2 rows but the metadata has 3 points"):
         writer.write(metadata, rows)
     writer.write(*_chunk(parsed, 0, len(parsed.metadata.lon)))
     writer.close()

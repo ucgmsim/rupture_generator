@@ -1,10 +1,95 @@
 use crate::types::{
     CsrMatrix, Point, SrfFile, SrfMetadata, SrfMetadataV2, SrfMetadataVersioned, SrfPlane,
 };
-use std::io::{self, Result, Write};
+use std::io::{self, Write};
 
 use lexical_core::{BUFFER_SIZE, ToLexical};
 use thiserror::Error;
+
+/// Why an SRF wasn't written: the output failed, or the input isn't an SRF.
+#[derive(Debug, Error)]
+pub enum WriteError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("the point metadata columns disagree on how many points there are")]
+    RaggedMetadata,
+    #[error("PLANE headers expect {expected} total points but the metadata has {points}")]
+    PlanePoints { expected: usize, points: usize },
+    #[error("slipt1 has {rows} rows but the metadata has {points} points")]
+    SlipRows { rows: usize, points: usize },
+    #[error("slipt1 is not a CSR matrix: {0}")]
+    SlipShape(&'static str),
+    #[error("slipt1 row {point} has column indices that don't strictly increase")]
+    SlipColumns { point: usize },
+    #[error("Points written exceed the {expected} declared by the plane headers")]
+    TooMany { expected: usize },
+    #[error("Points written ({written}) do not match the {expected} declared by the plane headers")]
+    TooFew { written: usize, expected: usize },
+}
+
+type Result<T> = std::result::Result<T, WriteError>;
+
+/// Refuse a slip-rate matrix that doesn't have one well-formed row per point.
+///
+/// [`CsrMatrix::rows`] relies on this, so a malformed matrix from Python is a
+/// `ValueError` and not a panic.
+fn check_slip<R: AsRef<[usize]>, D: AsRef<[f32]>>(
+    slipt1: &CsrMatrix<R, D>,
+    points: usize,
+) -> Result<()> {
+    let (row_ptr, data, indices) = (
+        slipt1.row_ptr.as_ref(),
+        slipt1.data.as_ref(),
+        slipt1.indices.as_ref(),
+    );
+    let rows = row_ptr.len().saturating_sub(1);
+    if rows != points {
+        return Err(WriteError::SlipRows { rows, points });
+    }
+    if row_ptr.first().is_some_and(|&first| first != 0)
+        || !row_ptr.is_sorted()
+        || row_ptr.last().copied().unwrap_or(0) != data.len()
+    {
+        return Err(WriteError::SlipShape(
+            "row_ptr must start at 0, never decrease, and end at the number of values",
+        ));
+    }
+    if !indices.is_empty() && indices.len() != data.len() {
+        return Err(WriteError::SlipShape(
+            "indices must be empty or hold one column per value",
+        ));
+    }
+    Ok(())
+}
+
+/// The samples an SRF stores for one pulse: one per column from zero to its last
+/// stored column, with the columns the row skips written as zeros.
+///
+/// An SRF records only where a pulse starts, so a skipped column must be written out
+/// or every later sample shifts earlier on re-read. A row without columns is dense.
+fn pulse<'a>(
+    point: usize,
+    values: &'a [f32],
+    columns: Option<&'a [usize]>,
+) -> Result<impl ExactSizeIterator<Item = f32> + 'a> {
+    let column = move |stored: usize| columns.map_or(stored, |columns| columns[stored]);
+    if columns.is_some_and(|columns| !columns.is_sorted_by(|a, b| a < b)) {
+        return Err(WriteError::SlipColumns { point });
+    }
+    let length = values
+        .len()
+        .checked_sub(1)
+        .map_or(0, |last| column(last) + 1);
+    let mut stored = 0;
+    Ok((0..length).map(move |at| {
+        if stored < values.len() && column(stored) == at {
+            stored += 1;
+            values[stored - 1]
+        } else {
+            0.0
+        }
+    }))
+}
 
 fn lexical_write<W: Write, T: ToLexical>(
     writer: &mut W,
@@ -49,19 +134,19 @@ fn write_point<W: Write>(writer: &mut W, point: &Point, buffer: &mut [u8]) -> Re
 fn write_slip_row<W: Write>(
     writer: &mut W,
     point: &Point,
-    slip: &[f32],
+    samples: impl ExactSizeIterator<Item = f32>,
     buffer: &mut [u8],
 ) -> Result<()> {
     lexical_write(writer, point.rake, buffer)?;
     writer.write_all(b" ")?;
     lexical_write(writer, point.slip1, buffer)?;
     writer.write_all(b" ")?;
-    lexical_write(writer, slip.len(), buffer)?;
+    lexical_write(writer, samples.len(), buffer)?;
     writer.write_all(EMPTY_SLIP_TAIL)?;
 
-    for (i, v) in slip.iter().enumerate() {
+    for (i, value) in samples.enumerate() {
         writer.write_all(if i == 0 { b"\n" } else { b" " })?;
-        lexical_write(writer, *v, buffer)?;
+        lexical_write(writer, value, buffer)?;
     }
     Ok(())
 }
@@ -76,25 +161,15 @@ fn write_srf_points_v1<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f
     lexical_write(writer, metadata.iter().len(), &mut buffer)?;
     writer.write_all(b"\n")?;
 
-    for (point, slip) in metadata.iter().zip(slipt1.rows()) {
+    for (index, (point, (values, columns))) in metadata.iter().zip(slipt1.rows()).enumerate() {
+        let samples = pulse(index, values, columns)?;
         write_point(writer, &point, &mut buffer)?;
         writer.write_all(b"\n")?;
-        write_slip_row(writer, &point, slip, &mut buffer)?;
+        write_slip_row(writer, &point, samples, &mut buffer)?;
         writer.write_all(b"\n")?;
     }
 
     Ok(())
-}
-
-/// A stream of points that doesn't match the plane headers.
-#[derive(Debug, Error)]
-pub enum StreamError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error("Points written exceed the {expected} declared by the plane headers")]
-    TooMany { expected: usize },
-    #[error("Points written ({written}) do not match the {expected} declared by the plane headers")]
-    TooFew { written: usize, expected: usize },
 }
 
 /// Writes the points of a version 2 SRF in chunks of any size.
@@ -135,18 +210,22 @@ impl PointStream {
     ///
     /// # Errors
     ///
-    /// If writing fails, or the points exceed those the plane headers declare.
+    /// If the metadata is ragged, the matrix doesn't have one well-formed row per
+    /// point, the points exceed those the plane headers declare, or writing fails.
     pub fn write<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
         &mut self,
         writer: &mut W,
         metadata: &SrfMetadataV2<S>,
         slipt1: &CsrMatrix<R, D>,
-    ) -> std::result::Result<(), StreamError> {
+    ) -> Result<()> {
+        let points = metadata.points().ok_or(WriteError::RaggedMetadata)?;
+        check_slip(slipt1, points)?;
         let mut buffer = [0u8; BUFFER_SIZE];
-        for (point, slip) in metadata.iter().zip(slipt1.rows()) {
+        for (point, (values, columns)) in metadata.iter().zip(slipt1.rows()) {
+            let samples = pulse(self.written, values, columns)?;
             while self.left == 0 {
                 if self.plane == self.counts.len() {
-                    return Err(StreamError::TooMany {
+                    return Err(WriteError::TooMany {
                         expected: self.expected(),
                     });
                 }
@@ -158,7 +237,7 @@ impl PointStream {
             writer.write_all(b" ")?;
             lexical_write(writer, point.density, &mut buffer)?;
             writer.write_all(b"\n")?;
-            write_slip_row(writer, &point.base, slip, &mut buffer)?;
+            write_slip_row(writer, &point.base, samples, &mut buffer)?;
             writer.write_all(b"\n")?;
             self.left -= 1;
             self.written += 1;
@@ -173,10 +252,10 @@ impl PointStream {
     ///
     /// If the stream wrote fewer points than the plane headers declare, or writing
     /// fails.
-    pub fn finish<W: Write>(&mut self, writer: &mut W) -> std::result::Result<(), StreamError> {
+    pub fn finish<W: Write>(&mut self, writer: &mut W) -> Result<()> {
         let expected = self.expected();
         if self.written != expected {
-            return Err(StreamError::TooFew {
+            return Err(WriteError::TooFew {
                 written: self.written,
                 expected,
             });
@@ -186,15 +265,6 @@ impl PointStream {
             self.open_plane(writer, &mut buffer)?;
         }
         Ok(())
-    }
-}
-
-impl From<StreamError> for io::Error {
-    fn from(error: StreamError) -> Self {
-        match error {
-            StreamError::Io(error) => error,
-            other => io::Error::new(io::ErrorKind::InvalidInput, other),
-        }
     }
 }
 
@@ -216,12 +286,12 @@ fn write_srf_points_v2<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f
 /// # Errors
 ///
 /// If writing fails.
-pub fn write_header_v2<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> Result<()> {
+pub fn write_header_v2<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> io::Result<()> {
     writer.write_all(VERSION_2)?;
     write_plane_header(writer, planes)
 }
 
-fn write_plane_header<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> Result<()> {
+fn write_plane_header<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> io::Result<()> {
     writeln!(writer, "PLANE {}", planes.len())?;
     for plane in planes {
         writeln!(
@@ -241,17 +311,36 @@ fn write_plane_header<W: Write>(writer: &mut W, planes: &[SrfPlane]) -> Result<(
 const VERSION_1: &[u8] = b"1.0\n";
 const VERSION_2: &[u8] = b"2.0\n";
 
-fn write_version<W: Write, S>(writer: &mut W, metadata: &SrfMetadataVersioned<S>) -> Result<()> {
+fn write_version<W: Write, S>(
+    writer: &mut W,
+    metadata: &SrfMetadataVersioned<S>,
+) -> io::Result<()> {
     writer.write_all(match metadata {
         SrfMetadataVersioned::V1(_) => VERSION_1,
         SrfMetadataVersioned::V2(_) => VERSION_2,
     })
 }
 
+/// Write a whole SRF, refusing one that isn't consistent before writing a byte.
+///
+/// # Errors
+///
+/// If the metadata is ragged, the plane headers declare a different number of points,
+/// the matrix doesn't have one well-formed row per point, or writing fails.
 pub fn write_srf<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>>(
     writer: &mut W,
     srf_file: &SrfFile<S, R>,
 ) -> Result<()> {
+    let points = match &srf_file.metadata {
+        SrfMetadataVersioned::V1(metadata) => metadata.points(),
+        SrfMetadataVersioned::V2(metadata) => metadata.points(),
+    }
+    .ok_or(WriteError::RaggedMetadata)?;
+    let expected = srf_file.planes.iter().map(SrfPlane::points).sum();
+    if expected != points {
+        return Err(WriteError::PlanePoints { expected, points });
+    }
+    check_slip(&srf_file.slipt1, points)?;
     write_version(writer, &srf_file.metadata)?;
     write_plane_header(writer, &srf_file.planes)?;
     match &srf_file.metadata {
@@ -450,7 +539,7 @@ POINTS 1\n\
         let (view, csr) = chunk(metadata, &srf.slipt1, 0, 2);
         let mut stream = PointStream::new(&srf.planes[..1]);
         let error = stream.write(&mut Vec::new(), &view, &csr).unwrap_err();
-        assert!(matches!(error, StreamError::TooMany { expected: 1 }));
+        assert!(matches!(error, WriteError::TooMany { expected: 1 }));
     }
 
     #[test]
@@ -464,12 +553,93 @@ POINTS 1\n\
         let error = stream.finish(&mut tail).unwrap_err();
         assert!(matches!(
             error,
-            StreamError::TooFew {
+            WriteError::TooFew {
                 written: 1,
                 expected: 2
             }
         ));
         assert_eq!(tail, Vec::<u8>::new());
+    }
+
+    /// A single point, whose pulse is whatever `indices` and `data` make it.
+    fn one_point(indices: Vec<usize>, data: Vec<f32>) -> SrfFile {
+        let mut srf = parse(
+            b"1.0\n\
+PLANE 1\n\
+0.0 0.0 1 1 4.0 2.0\n\
+90.0 45.0 0.0 0.0 1.0\n\
+POINTS 1\n\
+0.1 -43.0 5.0 90.0 45.0 1.0e10 0.5 0.1\n\
+30.0 1.5 0 0.0 0 0.0 0\n",
+        );
+        srf.slipt1 = CsrMatrix {
+            row_ptr: vec![0, data.len()],
+            indices,
+            data,
+        };
+        srf
+    }
+
+    /// The bug this guards, from `source_modelling`: the writer dropped the column
+    /// indices, so a row without its zeros stored (what `scipy.sparse` leaves) came
+    /// back shorter, with every later sample moved earlier.
+    #[test]
+    fn skipped_columns_are_written_as_zeros() {
+        let srf = one_point(vec![1, 3], vec![1.0, 2.0]);
+        let reparsed = parse(&write_to_vec(&srf));
+        assert_eq!(reparsed.slipt1.data, vec![0.0, 1.0, 0.0, 2.0]);
+        assert_eq!(reparsed.slipt1.indices, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_row_without_columns_is_dense() {
+        let srf = one_point(Vec::new(), vec![1.0, 2.0]);
+        let reparsed = parse(&write_to_vec(&srf));
+        assert_eq!(reparsed.slipt1.data, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn unsorted_or_repeated_columns_are_refused() {
+        for columns in [vec![3, 1], vec![2, 2]] {
+            let error = write_srf(&mut Vec::new(), &one_point(columns, vec![1.0, 2.0]));
+            assert!(matches!(error, Err(WriteError::SlipColumns { point: 0 })));
+        }
+    }
+
+    #[test]
+    fn a_malformed_matrix_is_refused_not_a_panic() {
+        let mut srf = one_point(Vec::new(), vec![1.0, 2.0]);
+        srf.slipt1.row_ptr = vec![0, 5];
+        let error = write_srf(&mut Vec::new(), &srf);
+        assert!(matches!(error, Err(WriteError::SlipShape(_))));
+        let mut srf = one_point(vec![0], vec![1.0, 2.0]);
+        srf.slipt1.indices = vec![0];
+        let error = write_srf(&mut Vec::new(), &srf);
+        assert!(matches!(error, Err(WriteError::SlipShape(_))));
+    }
+
+    #[test]
+    fn inconsistent_metadata_is_refused_before_a_byte_is_written() {
+        let mut srf = parse(SRF_V1);
+        if let SrfMetadataVersioned::V1(metadata) = &mut srf.metadata {
+            metadata.rake.pop();
+        }
+        let mut out = Vec::new();
+        assert!(matches!(
+            write_srf(&mut out, &srf),
+            Err(WriteError::RaggedMetadata)
+        ));
+        assert!(out.is_empty());
+
+        let mut srf = parse(SRF_V1);
+        srf.planes[0].nstk = 3;
+        assert!(matches!(
+            write_srf(&mut Vec::new(), &srf),
+            Err(WriteError::PlanePoints {
+                expected: 3,
+                points: 2
+            })
+        ));
     }
 
     #[test]

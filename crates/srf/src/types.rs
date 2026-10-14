@@ -132,42 +132,23 @@ impl CsrMatrix {
 }
 
 impl<R: AsRef<[usize]>, D: AsRef<[f32]>> CsrMatrix<R, D> {
-    pub fn rows(&self) -> CsrRowIter<'_> {
-        CsrRowIter {
-            row_ptr: self.row_ptr.as_ref(),
-            data: self.data.as_ref(),
-            index: 0,
-        }
+    /// Each row's values, and its columns if the matrix stores any.
+    ///
+    /// # Panics
+    ///
+    /// If `row_ptr` doesn't index into `data`, or `indices` is neither empty nor as
+    /// long as `data`. The writer checks both before it reads a row.
+    pub fn rows(&self) -> impl ExactSizeIterator<Item = (&[f32], Option<&[usize]>)> {
+        let (data, indices) = (self.data.as_ref(), self.indices.as_ref());
+        self.row_ptr.as_ref().windows(2).map(move |bounds| {
+            let row = bounds[0]..bounds[1];
+            (
+                &data[row.clone()],
+                (!indices.is_empty()).then(|| &indices[row]),
+            )
+        })
     }
 }
-
-pub struct CsrRowIter<'a> {
-    row_ptr: &'a [usize],
-    data: &'a [f32],
-    index: usize,
-}
-
-impl<'a> Iterator for CsrRowIter<'a> {
-    type Item = &'a [f32];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let i = self.index;
-        // n+1 row_ptr entries describe n rows. The last valid row index is
-        // row_ptr.len() - 2.
-        if i + 1 >= self.row_ptr.len() {
-            return None;
-        }
-        self.index += 1;
-        Some(&self.data[self.row_ptr[i]..self.row_ptr[i + 1]])
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.row_ptr.len().saturating_sub(self.index + 1);
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for CsrRowIter<'_> {}
 
 #[cfg(test)]
 mod csr_tests {
@@ -194,7 +175,7 @@ mod csr_tests {
     fn empty_matrix_has_zero_rows() {
         let matrix = build(&[]);
         assert_indptr_invariant(&matrix, 0);
-        assert_eq!(matrix.rows().count(), 0);
+        assert_eq!(matrix.rows().len(), 0);
     }
 
     #[test]
@@ -226,8 +207,13 @@ mod csr_tests {
     #[test]
     fn rows_yields_exactly_the_added_rows() {
         let matrix = build(&[&[1.0, 2.0], &[], &[3.0]]);
-        let rows: Vec<&[f32]> = matrix.rows().collect();
+        let rows: Vec<&[f32]> = matrix.rows().map(|(values, _)| values).collect();
         assert_eq!(rows, vec![&[1.0f32, 2.0][..], &[][..], &[3.0][..]]);
+        let columns: Vec<_> = matrix.rows().map(|(_, columns)| columns).collect();
+        assert_eq!(
+            columns,
+            vec![Some(&[0, 1][..]), Some(&[][..]), Some(&[0][..])]
+        );
     }
 
     // This guards against a trailing empty phantom row, which iterating a finalised
@@ -235,10 +221,10 @@ mod csr_tests {
     #[test]
     fn finalise_does_not_change_the_rows() {
         let mut matrix = build(&[&[1.0, 2.0], &[3.0]]);
-        let before: Vec<Vec<f32>> = matrix.rows().map(<[f32]>::to_vec).collect();
+        let before: Vec<Vec<f32>> = matrix.rows().map(|(values, _)| values.to_vec()).collect();
         let row_ptr_before = matrix.row_ptr.clone();
         matrix.finalise();
-        let after: Vec<Vec<f32>> = matrix.rows().map(<[f32]>::to_vec).collect();
+        let after: Vec<Vec<f32>> = matrix.rows().map(|(values, _)| values.to_vec()).collect();
         assert_eq!(before, after);
         assert_eq!(matrix.row_ptr, row_ptr_before);
     }
@@ -249,7 +235,6 @@ mod csr_tests {
         let mut iter = matrix.rows();
         for expected in (0..=3).rev() {
             assert_eq!(iter.len(), expected);
-            assert_eq!(iter.size_hint(), (expected, Some(expected)));
             if iter.next().is_none() {
                 break;
             }
@@ -300,6 +285,12 @@ macro_rules! point_columns {
         }
 
         impl<S: AsRef<[f32]>> SrfMetadata<S> {
+            /// How many points the columns hold, or `None` if they disagree.
+            pub fn points(&self) -> Option<usize> {
+                let points = self.$first.as_ref().len();
+                ($(self.$rest.as_ref().len() == points &&)* true).then_some(points)
+            }
+
             pub fn iter(&self) -> PointIter<'_> {
                 PointIter {
                     $first: self.$first.as_ref(),
@@ -398,6 +389,14 @@ impl SrfMetadataV2 {
 }
 
 impl<S: AsRef<[f32]>> SrfMetadataV2<S> {
+    /// How many points the columns hold, or `None` if they disagree.
+    pub fn points(&self) -> Option<usize> {
+        self.base
+            .points()
+            .filter(|&points| self.vs.as_ref().len() == points)
+            .filter(|&points| self.density.as_ref().len() == points)
+    }
+
     pub fn iter(&self) -> PointV2Iter<'_> {
         PointV2Iter {
             points: self.base.iter(),

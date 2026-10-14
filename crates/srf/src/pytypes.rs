@@ -60,15 +60,18 @@ macro_rules! py_record {
 py_record! {
     /// The slip-rate matrix, as compressed sparse rows.
     ///
-    /// `indices` is optional, and the writer has no use for it. Every pulse in an SRF
-    /// starts at column zero and runs contiguously. A sample's column is then
-    /// `arange(n) - repeat(row_ptr[:-1], diff(row_ptr))`, a function of `row_ptr`
-    /// alone with no information of its own. `srf_writer` walks `row_ptr` and `data`
-    /// and never looks at it.
+    /// A column is a sample of the pulse, counted from its onset at zero, and the onset
+    /// itself is the point's `tinit`.
+    ///
+    /// `indices` is optional. Without it every row is dense from column zero, which is
+    /// how an SRF stores a pulse. With it, the writer honours it: the columns a row
+    /// skips are written as zeros, because an SRF records only where a pulse starts,
+    /// and a pulse written without them would shift its later samples earlier.
+    /// `scipy.sparse` drops stored zeros, so a matrix that went through it needs its
+    /// indices.
     ///
     /// It has one `usize` per *sample*. On a twenty-fault rupture, materialising it to
-    /// hand over took 7.6 GB, and the widening cast that produced it was the largest
-    /// allocation on the path to writing a file that doesn't contain it. Give the
+    /// hand over took 7.6 GB, so a caller whose rows are already dense should give the
     /// writer `None`. The parser still fills it in, for a caller that wants to hand
     /// the result to `scipy.sparse`.
     #[pyclass]
