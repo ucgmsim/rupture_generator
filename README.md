@@ -65,13 +65,9 @@ match the observations of its earthquake.
 | `landers.toml`     | 1992 Mw 7.28 Landers earthquake          | [Wald and Heaton (1994)](https://doi.org/10.1785/BSSA0840030668), SRCMOD s1992LANDER01WALD                                                                               |
 | `northridge.toml`  | 1994 Mw 6.8 Northridge earthquake        | [Wald, Heaton and Hudnut (1996)](https://doi.org/10.1785/BSSA08601BS49), SRCMOD s1994NORTHR01WALD                                                                       |
 | `beavan.toml`      | 2010 Mw 7.1 Darfield earthquake          | [Beavan et al. (2012)](https://doi.org/10.1080/00288306.2012.697472)                                                                                                     |
-| `colombia.toml`    | 2026 Mw 7.4 San José del Palmar, Colombia, earthquake, intermediate depth | USGS finite-fault model [us6000tjl2](https://earthquake.usgs.gov/earthquakes/eventpage/us6000tjl2/finite-fault), trimmed as [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) trim one, down to the hypocentre |
-| `venezuela.toml`   | 2026 Mw 7.5 Catia La Mar, Venezuela, earthquake | USGS finite-fault model [us6000t7zp](https://earthquake.usgs.gov/earthquakes/eventpage/us6000t7zp/finite-fault), its two segments trimmed as [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) trim one |
+| `colombia.toml`    | 2026 Mw 7.4 San José del Palmar, Colombia, earthquake, intermediate depth | USGS finite-fault model [us6000tjl2](https://earthquake.usgs.gov/earthquakes/eventpage/us6000tjl2/finite-fault), trimmed with [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
+| `venezuela.toml`   | 2026 Mw 7.5 Catia La Mar, Venezuela, earthquake | USGS finite-fault model [us6000t7zp](https://earthquake.usgs.gov/earthquakes/eventpage/us6000t7zp/finite-fault), trimmed with  [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
 | `alpine_hope.toml` | Alpine-Hope Mw 8.31 scenario, rupture 71072 of the 2022 NZ NSHM | [Gerstenberger et al. (2024)](https://doi.org/10.1785/0120230165), on the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
-
-A finite-fault model's inversion grid reaches well past where the earthquake slipped,
-so the Colombia and Venezuela planes keep only the part Somerville et al.'s rule
-keeps: edge rows and columns go while their mean slip is under 30% of the rest's.
 
 `crustal.toml` is a scenario Mw 6.2 on the Hope fault, and `two_faults.toml` and
 `two_faults_segments.toml` are small made-up systems for testing.
@@ -90,9 +86,9 @@ keeps: edge rows and columns go while their mean slip is under 30% of the rest's
 | `rupture-view out.srf`                    | Watch the rupture in Rerun, with the `vis` extra  |
 | `rupture-view out.srf --save out.rrd`     | Save a Rerun recording instead                    |
 
-A fields file is a fraction of the SRF's size, because the slip-rate series follow from
-slip, rise time, and the pulse's rising fraction. Its SRF has the same points, byte
-for byte, as one written straight from the draw.
+A fields file is a fraction of the SRF's size because it doesn't contain full
+slip time functions and instead describes the functional form of the slip time
+function at each point.
 
 The rupture viewer can be used to see an interactive 3D visualisation of a generated rupture.
 
@@ -232,6 +228,9 @@ pull request against the base branch and posts the comparison.
 - The sampler refuses a grid whose circulant embedding exceeds
   `sampling.field.MAXIMUM_EMBEDDING_CELLS`, 134 million padded cells.
 - Jumps cross along a straight line. A shear wave in a layered medium bends, and
-  can arrive sooner along a fast layer than along the chord.
-- The wavefront sweeps the chart's index grid, so on a curved or tapered chart the
-  travel paths follow the grid's own metric rather than the fault's real geometry.
+  can arrive sooner along a fast layer than along the chord. Ray traced jumps
+  are a planned addition.
+- The plumbing for curved rupture exists but is as-yet unimplemented. This will
+  arrive in an upcoming release.
+- Aspects of the Graves and Pitarka method are not yet implemented. The main
+  holdout is roughness which will be implemented in an upcoming release.

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -810,7 +810,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=5" },
     { name = "rerun-sdk", marker = "extra == 'vis'", specifier = ">=0.26" },
     { name = "scipy", specifier = ">=1.13" },
-    { name = "ucgmsim-srf", git = "https://github.com/ucgmsim/srf?rev=67909d87f4722960f221a9cc455ae47ca524c0af" },
+    { name = "ucgmsim-srf", specifier = ">=2026.10.2" },
     { name = "xarray", specifier = ">=2026.9.0" },
 ]
 provides-extras = ["test", "bench", "vis"]
@@ -1045,10 +1045,29 @@ wheels = [
 
 [[package]]
 name = "ucgmsim-srf"
-version = "2026.10.2.dev4+g67909d87f"
-source = { git = "https://github.com/ucgmsim/srf?rev=67909d87f4722960f221a9cc455ae47ca524c0af#67909d87f4722960f221a9cc455ae47ca524c0af" }
+version = "2026.10.2"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8d/4f/146076a7a25a9ed5c6660eb60de5759dacf53b758223262e24d18b14726b/ucgmsim_srf-2026.10.2.tar.gz", hash = "sha256:90fdcf33d6db8bf026f35135b5c465e72af65036c150e6af163a3243208bb768", size = 7115565, upload-time = "2026-10-14T20:27:39.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/01/3accbebc338c83161f9df6dd556e0b92e4813d7fd8e737ee053e20c90c93/ucgmsim_srf-2026.10.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:99d495508c05ff8e618bc29f1251e687ede10b617d04d589f9727cf1470ab08c", size = 351946, upload-time = "2026-10-14T20:27:14.704Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/09/c892ed26d85a3d2ce385a3bc8c620e98e3a96f4976edee161f7b635666a0/ucgmsim_srf-2026.10.2-cp314-cp314-macosx_11_0_x86_64.whl", hash = "sha256:e938eb5860f67a601aeeb275542f51ee9672382c2df490b673f46992ce96e7b0", size = 360210, upload-time = "2026-10-14T20:27:16.319Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/45/a2c8fc6a4fbe8f28a4d1c02f9b0cfece9848b2b744c35406e10757f203ca/ucgmsim_srf-2026.10.2-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:70b1cbd3af72ec1bcd1c7ab3b60e1ba5144b92f7944d026df4de9812ea8964a7", size = 397334, upload-time = "2026-10-14T20:27:17.823Z" },
+    { url = "https://files.pythonhosted.org/packages/77/ac/efeb007e6b6290a892c1bd7206f2e1fa26c3935f2bf364f04209a387b062/ucgmsim_srf-2026.10.2-cp314-cp314-win_amd64.whl", hash = "sha256:003bb26251fdbae0ba96fb3f98e18c3cc8472c741deeb05f25454b0c8be34e73", size = 255552, upload-time = "2026-10-14T20:27:19.573Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/d7/64d5aabf08936cf11e5257733a4298e78753a42c0c560162a558b3c657b7/ucgmsim_srf-2026.10.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:0fd8c27c1416dff75fbc919b5fc9be00ba47e3cd9328394d66c010d5024b8837", size = 349487, upload-time = "2026-10-14T20:27:21.092Z" },
+    { url = "https://files.pythonhosted.org/packages/56/80/587e0877c5b7b4c00d3703f10a030d3ad0ad49c474ed83f546db1b876605/ucgmsim_srf-2026.10.2-cp314-cp314t-macosx_11_0_x86_64.whl", hash = "sha256:90b00cf0add973355f96c0074a4af78bdfc1fd7fa470fe1a4c509bca4325629c", size = 357748, upload-time = "2026-10-14T20:27:22.657Z" },
+    { url = "https://files.pythonhosted.org/packages/48/e6/480205613adcfe5966863582dd84ac8ea1036b3cb828ef1672600d956cab/ucgmsim_srf-2026.10.2-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:3a74cd2388627ff41e98785c28d77540102a33f3fc150934b868972f39e3dca2", size = 396645, upload-time = "2026-10-14T20:27:24.12Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/85/22745879916c8c0740aea9cba4c9f95cb71e5a9d3fb6449d8a89de29b0ae/ucgmsim_srf-2026.10.2-cp314-cp314t-win_amd64.whl", hash = "sha256:88df96375a1be41c37ae640e65d12813a443f95e9efbccb9ef67eb8bfb57b7d7", size = 253934, upload-time = "2026-10-14T20:27:25.394Z" },
+    { url = "https://files.pythonhosted.org/packages/54/4a/6761c15dd61a2af5a73554e1b4a0f803ae117e8647d935ee5437cf35271f/ucgmsim_srf-2026.10.2-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:da62b69fb137f68bad68c11df0361dc097fe1532a20d5ee06cb2f76d774f91d6", size = 352080, upload-time = "2026-10-14T20:27:26.986Z" },
+    { url = "https://files.pythonhosted.org/packages/25/01/488c4adbf05bf4a1d486539f52dd8fe7a1f43ad48b6ac464d651743e3af9/ucgmsim_srf-2026.10.2-cp315-cp315-macosx_11_0_x86_64.whl", hash = "sha256:fe4541cd358d03509e5f86fce9e454c973fecfb5732c305b0e730d12fc6c90dd", size = 360769, upload-time = "2026-10-14T20:27:28.543Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/8d/c44835f1d71070e89bb91c6058c89b5fc7655b6e6ffe0fb3ebe632e4e010/ucgmsim_srf-2026.10.2-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:dbece2a8af129b90038f1a7899cc71702a427e5d21e1d4f5698b3a81190db7d9", size = 397500, upload-time = "2026-10-14T20:27:30Z" },
+    { url = "https://files.pythonhosted.org/packages/33/12/f68f992672344d4bfdba32c35f18ae986b7c146dba34cddb7c76b57d886e/ucgmsim_srf-2026.10.2-cp315-cp315-win_amd64.whl", hash = "sha256:80b43d68a6e37403868a3cda828d612f369d64d15d46b0d273f30346c98df6d1", size = 255774, upload-time = "2026-10-14T20:27:31.552Z" },
+    { url = "https://files.pythonhosted.org/packages/39/08/e616e35252fc97093a3f714b0c6b77716dfbac6cdc70c667e28abb5ebb04/ucgmsim_srf-2026.10.2-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:31e3c96a7b6d45239b3bad272a15a0fc9a21ebed0c09d6642b63ad6b81be4dd6", size = 349734, upload-time = "2026-10-14T20:27:33.097Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/ac/0b46b5a10a93c2e0cd17833ae37b096ca0ae216eed629781d562cdc4179a/ucgmsim_srf-2026.10.2-cp315-cp315t-macosx_11_0_x86_64.whl", hash = "sha256:1c76e3ba2a456d94b64027a25d71cc8d49f552f2d1947d3904bb53a4dc7ecd5e", size = 358041, upload-time = "2026-10-14T20:27:34.5Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/2a/eb1dad6090fc4cfbf143132b9f72b15381b92ff1780e6056e1811d2e5f6c/ucgmsim_srf-2026.10.2-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:10308099a97047c66b1eaeb466040fe01a6697755acfdf950484e1ec4255d3a8", size = 397067, upload-time = "2026-10-14T20:27:36.134Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/83/d3c25b118506c1656a101993ba4e3ce9df9e20120cf675d610836d8fe736/ucgmsim_srf-2026.10.2-cp315-cp315t-win_amd64.whl", hash = "sha256:62f7d832d6dac7d67fdff278f69b3d6cb087f37233e457fb00111f80226035d1", size = 254190, upload-time = "2026-10-14T20:27:37.624Z" },
 ]
 
 [[package]]
