@@ -164,6 +164,11 @@ Fault_Near_Hororata = "Greendale_NW_SE"
 Greendale_East = "Greendale_central"
 Fault_NE = "Greendale_East"
 
+# The faults cross one another, so each jump starts where the child meets its parent,
+# not only at their edges.
+[propagation.model]
+interior = true
+
 [slip]
 coefficient_of_variation = 0.9
 side_taper = 0.02
