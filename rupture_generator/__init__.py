@@ -9,6 +9,10 @@ The library is plain data and plain functions, and the usual run is five calls::
     drawn = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
     write_rupture(path, drawn, dt_s=0.005)
 
+:func:`write_fields` stores the drawn fields instead, a fraction of the SRF's size,
+and :func:`~rupture_generator.formats.fields.fields_to_srf` makes the SRF from them
+later.
+
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
 command line runs that file. :func:`rupture_generator.sampling.sampler` keeps the
 last 64 covariance embeddings, two per segment, so drawing a fault system of up to
@@ -16,6 +20,7 @@ last 64 covariance embeddings, two per segment, so drawing a fault system of up 
 """
 
 from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.formats.fields import read_fields, write_fields
 from rupture_generator.formats.srf import write_rupture
 from rupture_generator.geometry import Geometry, Segment, geometry_from_geojson
 from rupture_generator.rupture.generator import (
@@ -86,8 +91,10 @@ __all__ = [
     "magnitude_from_moment",
     "moment_from_magnitude",
     "ramp_field",
+    "read_fields",
     "sample_path",
     "segment_source",
     "split_moment",
+    "write_fields",
     "write_rupture",
 ]
