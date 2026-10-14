@@ -5,6 +5,7 @@ import pytest
 import scipy as sp
 
 from rupture_generator import (
+    FaultProfiles,
     Hypocentre,
     RakeSettings,
     Realisation,
@@ -13,6 +14,7 @@ from rupture_generator import (
     generate,
 )
 from rupture_generator.rupture.generator import (
+    CUBE_ROOT_DYNE_CM,
     FIELDS_STREAM,
     JUMP_STREAM,
     JumpSeed,
@@ -313,3 +315,110 @@ def test_a_second_draw_reuses_every_embedding(scenario):
         )
     assert sampler.cache_info().hits == 2 * len(scenario.realisation)
     assert SAMPLER_CACHE_SIZE >= 2 * 20
+
+
+# ------------------------------------------------------------------ given slip
+
+
+def _with_slips(scenario, slips, settings=None):
+    return generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        scenario.settings if settings is None else settings,
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+        slips=slips,
+    )
+
+
+def _moment(rupture, slip_m):
+    return float(
+        np.sum(rupture.rigidity_pa * rupture.geometry.areas_km2 * 1e6 * slip_m)
+    )
+
+
+@pytest.fixture(scope="module")
+def flipped(ruptures):
+    """Each drawn slip reversed along strike: a slip the seed would never draw."""
+    return {
+        name: np.fliplr(rupture.slip_m).copy() for name, rupture in ruptures.items()
+    }
+
+
+def test_a_given_slip_is_kept_and_the_kinematics_drawn_around_it(
+    scenario, ruptures, flipped
+):
+    given = _with_slips(scenario, flipped)
+    for name, rupture in given.items():
+        assert rupture.slip_m.tobytes() == flipped[name].tobytes()
+        # Rake draws after slip's latent and ignores it.
+        assert np.array_equal(rupture.rake_deg, ruptures[name].rake_deg)
+        assert not np.array_equal(rupture.rise_time_s, ruptures[name].rise_time_s)
+        assert not np.array_equal(rupture.onset_s, ruptures[name].onset_s)
+        # Rise time follows the given slip's ranks, not the drawn slip's.
+        occupied = rupture.geometry.occupied
+        assert (
+            sp.stats.spearmanr(
+                rupture.slip_m[occupied], rupture.rise_time_s[occupied]
+            ).statistic
+            > 0.5
+        )
+        assert rupture.rise_time_s[occupied].mean() == pytest.approx(
+            rupture.rise_time_mean_s
+        )
+
+
+def test_a_given_slip_sets_the_moment_the_kinematics_follow(scenario, flipped):
+    once = _with_slips(scenario, flipped)
+    # A tenth more moment lies within the magnitude tolerance.
+    larger = _with_slips(scenario, {name: 1.1 * slip for name, slip in flipped.items()})
+    for name, rupture in once.items():
+        coefficient = scenario.settings.rise.coefficient * CUBE_ROOT_DYNE_CM
+        assert rupture.rise_time_mean_s == pytest.approx(
+            coefficient * np.cbrt(_moment(rupture, flipped[name])) * rupture.alpha_t
+        )
+        # Normal scores ignore scale, so only the mean moves.
+        np.testing.assert_allclose(
+            larger[name].rise_time_s, rupture.rise_time_s * np.cbrt(1.1), rtol=1e-12
+        )
+
+
+def test_a_given_slip_leaves_the_independent_fields_as_drawn(scenario, ruptures):
+    # With no correlation to slip, rise time and onset are their independent latents.
+    settings = dataclasses.replace(
+        scenario.settings,
+        rise=dataclasses.replace(scenario.settings.rise, correlation=0.0),
+        timing=dataclasses.replace(scenario.settings.timing, correlation=0.0),
+        profiles=FaultProfiles(),
+    )
+    drawn = _with_slips(scenario, None, settings)
+    given = _with_slips(
+        scenario, {name: rupture.slip_m for name, rupture in drawn.items()}, settings
+    )
+    for name, rupture in drawn.items():
+        assert np.array_equal(given[name].rake_deg, rupture.rake_deg)
+        np.testing.assert_allclose(given[name].rise_time_s, rupture.rise_time_s)
+        np.testing.assert_allclose(given[name].onset_s, rupture.onset_s)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda slip: slip[:-1], "shaped"),
+        (lambda slip: np.where(slip == slip.max(), -1.0, slip), "negative or not"),
+        (lambda slip: np.where(slip == slip.max(), np.nan, slip), "negative or not"),
+        (lambda slip: 0.0 * slip, "zero moment"),
+        (lambda slip: 2.0 * slip, "moment magnitude is"),
+    ],
+    ids=["shape", "negative", "nan", "zero", "moment"],
+)
+def test_a_given_slip_that_does_not_fit_is_refused(scenario, ruptures, change, message):
+    name = scenario.realisation.hypocentre.segment
+    with pytest.raises(RuptureGeneratorError, match=message):
+        _with_slips(scenario, {name: change(ruptures[name].slip_m)})
+
+
+def test_a_slip_for_no_segment_is_refused(scenario, ruptures):
+    with pytest.raises(RuptureGeneratorError, match="not segments"):
+        _with_slips(scenario, {"nope": next(iter(ruptures.values())).slip_m})

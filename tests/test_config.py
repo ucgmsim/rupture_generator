@@ -1,6 +1,7 @@
 import dataclasses
 import tomllib
 
+import numpy as np
 import pytest
 
 from rupture_generator import RuptureGeneratorError
@@ -256,4 +257,38 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
         .replace("[segments.next.timing]", "[segments.nxt.timing]")
     )
     with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
+        rupture_config.build(rupture_config.load(path))
+
+
+def _coarse(tmp_path, extra=""):
+    path = tmp_path / "coarse.toml"
+    path.write_text(
+        BASE.replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        .replace("spacing_km = 0.1", "spacing_km = 0.5")
+        .replace("[slip]\n", f"{extra}\n[slip]\n")
+    )
+    return path
+
+
+def test_a_slip_file_keeps_its_slip_on_its_segment(tmp_path, ruptures):
+    from rupture_generator.cli import main
+
+    slip_m = ruptures["next"].slip_m[:, ::-1]
+    np.save(tmp_path / "next.npy", slip_m)
+    path = _coarse(tmp_path, '[segments.next]\nslip_path = "next.npy"\n')
+    loaded = rupture_config.load(path)
+    assert loaded.segments["next"].slip_path == tmp_path / "next.npy"
+    slips = rupture_config.build(loaded).slips
+    assert set(slips) == {"next"}
+    assert np.array_equal(slips["next"], slip_m)
+
+    output = tmp_path / "out.srf"
+    assert main([str(path), str(output)]) == 0
+    assert rupture_config.load(output.with_name("out.srf.toml")) == loaded
+
+
+def test_a_slip_file_is_read_as_data_alone(tmp_path):
+    np.save(tmp_path / "next.npy", np.array([{"a": 1}], dtype=object))
+    path = _coarse(tmp_path, '[segments.next]\nslip_path = "next.npy"\n')
+    with pytest.raises(RuptureGeneratorError, match="not a .npy array"):
         rupture_config.build(rupture_config.load(path))

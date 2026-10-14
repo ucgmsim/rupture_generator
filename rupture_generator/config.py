@@ -39,6 +39,7 @@ from mashumaro.types import Discriminator
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
+    CellArray,
     Geometry,
     geometry_from_geojson,
     projected_crs,
@@ -532,6 +533,11 @@ class SegmentConfig:
         ``[segments.<name>.profiles]``.
     correlation : Correlation, optional
         ``[segments.<name>.correlation]``, over the source's.
+    slip_path : Path, optional
+        A ``.npy`` file of slip to keep on this segment, in metres, shaped like its
+        cells after subdivision. A relative path is relative to the config file.
+        :func:`~rupture_generator.rupture.generator.generate_segment` states what a
+        given slip changes.
     """
 
     slip: Slip | None = None
@@ -540,6 +546,7 @@ class SegmentConfig:
     timing: Timing | None = None
     profiles: ProfilesConfig | None = None
     correlation: Correlation | None = None
+    slip_path: Path | None = None
     Config = _Strict
 
 
@@ -719,7 +726,15 @@ def load(path: str | Path) -> RuptureConfig:
     geometry = dataclasses.replace(
         config.geometry, path=(path.parent / config.geometry.path).resolve()
     )
-    return dataclasses.replace(config, geometry=geometry, segments=_segments(document))
+    segments = {
+        name: segment
+        if segment.slip_path is None
+        else dataclasses.replace(
+            segment, slip_path=(path.parent / segment.slip_path).resolve()
+        )
+        for name, segment in _segments(document).items()
+    }
+    return dataclasses.replace(config, geometry=geometry, segments=segments)
 
 
 def dump(config: RuptureConfig) -> str:
@@ -760,6 +775,8 @@ class Scenario:
         How far each jump can cover.
     seed : int
         The seed every random draw derives from.
+    slips : dict of str to CellArray
+        Slip read from each segment's ``slip_path``, in metres.
     """
 
     realisation: Realisation[Geometry]
@@ -768,6 +785,7 @@ class Scenario:
     settings: RuptureSettings | dict[str, RuptureSettings]
     jump_model: JumpModel
     seed: int
+    slips: dict[str, CellArray] = dataclasses.field(default_factory=dict)
 
 
 def _sources(
@@ -877,6 +895,25 @@ def _settings(
     return settings
 
 
+def _slip(path: Path) -> CellArray:
+    """Read a slip from a ``.npy`` file, as data alone.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the file isn't a plain array of numbers.
+    OSError
+        If reading the file fails.
+    """
+    try:
+        slip_m = np.load(path, allow_pickle=False)
+    except ValueError as error:
+        raise RuptureGeneratorError(f"{path} is not a .npy array: {error}") from error
+    if not isinstance(slip_m, np.ndarray) or not np.issubdtype(slip_m.dtype, np.number):
+        raise RuptureGeneratorError(f"{path} is not a .npy array of numbers")
+    return slip_m.astype(np.float64)
+
+
 def build(config: RuptureConfig) -> Scenario:
     """Read the geometry a config names, and build every input a rupture needs.
 
@@ -936,6 +973,11 @@ def build(config: RuptureConfig) -> Scenario:
         settings=_settings(config, realisation),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,
+        slips={
+            name: _slip(segment.slip_path)
+            for name, segment in config.segments.items()
+            if segment.slip_path is not None
+        },
     )
 
 

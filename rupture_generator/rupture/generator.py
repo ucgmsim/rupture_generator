@@ -16,7 +16,8 @@ variable and never leaves this module.
 
 Every quantity that follows the moment, such as the mean rise time and the onset
 spread, comes from the segment's own target moment. A fault system with a magnitude
-per segment gets a rise time and a spread per segment.
+per segment gets a rise time and a spread per segment. A segment can keep a given slip
+in place of a drawn one, and then its moment is the given slip's.
 
 :func:`generate` walks a whole fault system. The caller has already chosen the tree
 and the moment on each segment. The crossings are still open: :func:`first_arrival` finds
@@ -29,6 +30,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 
 import numpy as np
+import scipy as sp
 
 from rupture_generator._kernels import eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
@@ -41,7 +43,7 @@ from rupture_generator.rupture.medium import (
 )
 from rupture_generator.rupture.propagator import DEFAULT_JUMP_MODEL, JumpModel
 from rupture_generator.rupture.realisation import Realisation
-from rupture_generator.rupture.source import SegmentSource
+from rupture_generator.rupture.source import SegmentSource, magnitude_from_moment
 from rupture_generator.sampling import (
     NORMAL,
     Covariance,
@@ -83,6 +85,10 @@ part of the rectangle that is not fault."""
 CAUSAL_MARGIN = 1.05
 """How much room the causal clamp leaves past the weight that would tie with the seed.
 A tie-break, not a modelling choice: it keeps the seed the strict earliest cell."""
+
+GIVEN_SLIP_MAGNITUDE_TOLERANCE = 0.05
+"""How far a given slip's moment magnitude may lie from its source's: the rounding of a
+magnitude stated to one decimal place."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -510,6 +516,59 @@ def _scale_to_moment(
     return (moment_nm / total) * pattern
 
 
+def _normal_scores(slip_m: CellArray, occupied: CellMask) -> CellArray:
+    """A given slip's latent: ``Phi^-1`` of its mid-ranks over the fault cells.
+
+    Tied values share their mean rank, so a patch of equal slip shares one latent.
+    Off-fault cells get zero.
+    """
+    values = slip_m[occupied]
+    ranks = sp.stats.rankdata(values, method="average")
+    latent = np.zeros(slip_m.shape, dtype=np.float64)
+    latent[occupied] = sp.stats.norm.ppf((ranks - 0.5) / values.size)
+    return latent
+
+
+def _given_slip(
+    geometry: Geometry, slip_m: CellArray, rigidity: CellArray, source: SegmentSource
+) -> tuple[CellArray, float]:
+    """Check a given slip against its chart and source, and return it with its moment.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the slip's shape isn't the chart's, a fault cell's slip is negative or not
+        finite, the slip's moment is zero, or its magnitude lies more than
+        :data:`GIVEN_SLIP_MAGNITUDE_TOLERANCE` from the source's.
+    """
+    slip_m = np.asarray(slip_m, dtype=np.float64)
+    if slip_m.shape != geometry.cells:
+        raise RuptureGeneratorError(
+            f"the given slip is shaped {slip_m.shape} and the chart has "
+            f"{geometry.cells} cells"
+        )
+    on_fault = slip_m[geometry.occupied]
+    if not np.all(np.isfinite(on_fault) & (on_fault >= 0.0)):
+        raise RuptureGeneratorError(
+            "the given slip is negative or not finite on some fault cells"
+        )
+    slip_m = np.where(geometry.occupied, slip_m, 0.0)
+    moment_nm = float(np.sum(rigidity * geometry.areas_km2 * M2_PER_KM2 * slip_m))
+    if not moment_nm > 0.0:
+        raise RuptureGeneratorError("the given slip has zero moment")
+    given, stated = (
+        magnitude_from_moment(moment_nm),
+        magnitude_from_moment(source.moment_nm),
+    )
+    if abs(given - stated) > GIVEN_SLIP_MAGNITUDE_TOLERANCE:
+        raise RuptureGeneratorError(
+            f"the given slip's moment magnitude is {given:.3f} and the source's is "
+            f"{stated:.3f}; they differ by more than "
+            f"{GIVEN_SLIP_MAGNITUDE_TOLERANCE}"
+        )
+    return slip_m, moment_nm
+
+
 # --------------------------------------------------------------------- the front
 
 
@@ -620,6 +679,7 @@ def generate_segment(
     *,
     seed: JumpSeed,
     rng: np.random.Generator,
+    slip_m: CellArray | None = None,
 ) -> SegmentRupture:
     """Draw one segment's slip, rise time, rake and onset.
 
@@ -628,6 +688,16 @@ def generate_segment(
     Slip, rise and the displacement share one embedding, pre-corrected for slip's
     marginal, because this function mixes them in slip's latent space. Rake has its
     own embedding, uncorrected, because its marginal is normal.
+
+    With ``slip_m``, the segment keeps that slip and draws the rest. Its normal scores
+    over the fault cells replace slip's latent. The configured rise-time and
+    onset correlations then apply to the latents directly, as Gaussian-copula
+    correlations with those scores, since the given slip need not follow the
+    configured slip marginal. The moment that scales the mean rise time and the onset
+    spread is the given slip's in this medium, which has to lie within
+    :data:`GIVEN_SLIP_MAGNITUDE_TOLERANCE` magnitude units of ``source.moment_nm``.
+    The draws from ``rng`` are the same either way, so rake and the independent
+    latents match those of a drawn-slip run with the same generator.
 
     Parameters
     ----------
@@ -643,6 +713,9 @@ def generate_segment(
         Where and when the front starts on this segment.
     rng : numpy.random.Generator
         The segment's own generator.
+    slip_m : CellArray, optional
+        A slip to keep, in metres, on the chart's cells. Off-fault cells come out
+        zero.
 
     Returns
     -------
@@ -654,7 +727,8 @@ def generate_segment(
     RuptureGeneratorError
         If the medium or a profile reads out of range on this chart, the pattern has
         zero moment, the speed field isn't positive, or the covariance doesn't embed on
-        this chart.
+        this chart. With ``slip_m``, also if its shape isn't the chart's, it's negative
+        or not finite on a fault cell, or its moment disagrees with the source's.
     """
     slip, rise, timing = settings.slip, settings.rise, settings.timing
     profiles = settings.profiles
@@ -714,23 +788,29 @@ def generate_segment(
     # Latent sampler draws a complex field and returns both independent
     # components instead of throwing away a field.
     slip_latent, rise_independent = latent.draw(rng)
-    pattern = _taper_edges(slip.marginal.apply(slip_latent), geometry.occupied, slip)
-    slip_m = _scale_to_moment(
-        pattern,
-        rigidity_pa(shear_speed_km_s, density_g_cm3),
-        geometry.areas_km2,
-        moment_nm,
-    )
+    rigidity = rigidity_pa(shear_speed_km_s, density_g_cm3)
+    if slip_m is None:
+        pattern = _taper_edges(
+            slip.marginal.apply(slip_latent), geometry.occupied, slip
+        )
+        slip_m = _scale_to_moment(pattern, rigidity, geometry.areas_km2, moment_nm)
+        rise_rho = float(
+            latent_correlation(slip.marginal, rise.marginal, np.array(rise.correlation))
+        )
+        onset_rho = float(
+            latent_correlation(slip.marginal, NORMAL, np.array(timing.correlation))
+        )
+    else:
+        slip_m, moment_nm = _given_slip(geometry, slip_m, rigidity, source)
+        slip_latent = _normal_scores(slip_m, geometry.occupied)
+        rise_rho, onset_rho = rise.correlation, timing.correlation
 
     mean_rise_s = _cube_root_scaling(rise.coefficient, moment_nm) * correction
-    rho = float(
-        latent_correlation(slip.marginal, rise.marginal, np.array(rise.correlation))
-    )
 
     weight = rise_time_slip_weight
     rise_latent = mix(
-        (weight * rho + (1.0 - weight), slip_latent),
-        (weight * np.sqrt(1.0 - rho * rho), rise_independent),
+        (weight * rise_rho + (1.0 - weight), slip_latent),
+        (weight * np.sqrt(1.0 - rise_rho * rise_rho), rise_independent),
     )
     rise_pattern = (
         rise.marginal.apply(rise_latent) ** rise.slip_exponent * rise_time_factor
@@ -748,11 +828,13 @@ def generate_segment(
     travel_s = _travel_times(geometry, speed_km_s, seed)
     scale_s = timing.offset_s + _cube_root_scaling(timing.coefficient, moment_nm)
     onset_independent, _ = latent.draw(rng)
-    rho = float(latent_correlation(slip.marginal, NORMAL, np.array(timing.correlation)))
     # genslip's tsfac is negative and this package reads it as a magnitude, so the
     # displacement subtracts: with a positive correlation, high slip ruptures early.
     displacement_s = -scale_s * standardise(
-        mix((rho, slip_latent), (np.sqrt(1.0 - rho * rho), onset_independent))
+        mix(
+            (onset_rho, slip_latent),
+            (np.sqrt(1.0 - onset_rho * onset_rho), onset_independent),
+        )
     )
 
     return SegmentRupture(
@@ -893,6 +975,7 @@ def generate(
     seed: int,
     jump_rule: JumpRule = first_arrival,
     jump_propagation_model: JumpModel = DEFAULT_JUMP_MODEL,
+    slips: Mapping[str, CellArray] | None = None,
 ) -> Realisation[SegmentRupture]:
     """Draw every segment of a fault system, parents before children.
 
@@ -916,6 +999,9 @@ def generate(
         How to find a child's seed from its parent.
     jump_propagation_model : JumpModel
         How far a jump can land.
+    slips : Mapping of str to CellArray, optional
+        Slip to keep, in metres, by segment name. A segment without one draws its
+        own. :func:`generate_segment` states what a given slip changes.
 
     Returns
     -------
@@ -926,8 +1012,9 @@ def generate(
     ------
     RuptureGeneratorError
         If the seed isn't a non-negative integer, a segment has no source or
-        settings, the settings cover a segment the realisation lacks, or the
-        realisation has no hypocentre or no tree to walk.
+        settings, the settings cover a segment the realisation lacks, ``slips`` cover a
+        segment the realisation lacks or give a slip :func:`generate_segment` refuses,
+        or the realisation has no hypocentre or no tree to walk.
     """
     seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
@@ -942,6 +1029,12 @@ def generate(
             raise RuptureGeneratorError(
                 f"settings name {unknown}, which are not segments of the realisation"
             )
+    slips = {} if slips is None else slips
+    unknown = sorted(set(slips) - set(realisation))
+    if unknown:
+        raise RuptureGeneratorError(
+            f"slips name {unknown}, which are not segments of the realisation"
+        )
 
     drawn: dict[str, SegmentRupture] = {}
     for name, parent, geometry in realisation.in_causal_order():
@@ -967,6 +1060,7 @@ def generate(
             settings if isinstance(settings, RuptureSettings) else settings[name],
             seed=start,
             rng=_segment_rng(seed, FIELDS_STREAM, name),
+            slip_m=slips.get(name),
         )
     return realisation.with_segments(drawn)
 

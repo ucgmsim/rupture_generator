@@ -44,6 +44,7 @@ def _draw(source: Path, output: Path) -> None:
         scenario.settings,
         seed=scenario.seed,
         jump_propagation_model=scenario.jump_model,
+        slips=scenario.slips,
     )
     if output.suffix == ".srf":
         write_rupture(str(output), drawn, comments=record.splitlines())
