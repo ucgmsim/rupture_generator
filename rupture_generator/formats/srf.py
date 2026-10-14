@@ -14,6 +14,7 @@ edge, so the projection's grid convergence never reaches the file.
 
 import dataclasses
 import itertools
+import secrets
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -169,7 +170,7 @@ def _plane_points(
 
 
 def write_rupture(
-    path: str,
+    path: str | Path,
     realisation: Realisation[SegmentRupture],
     *,
     dt_s: float,
@@ -177,9 +178,12 @@ def write_rupture(
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
 
+    The file goes to a hidden sibling of ``path`` first and replaces ``path`` only once
+    it's whole. A failed write leaves ``path`` as it was.
+
     Parameters
     ----------
-    path : str
+    path : str or Path
         Where to write the file.
     realisation : Realisation of SegmentRupture
         The drawn fault system, written in its segments' order. Its projection and
@@ -193,9 +197,12 @@ def write_rupture(
     Raises
     ------
     RuptureGeneratorError
-        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, or a
-        ``beta`` outside ``(0, 0.5]``.
+        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, a
+        ``beta`` outside ``(0, 0.5]``, or points the SRF writer refuses.
+    OSError
+        If writing the file fails.
     """
+    path = Path(path)
     transformer = pyproj.Transformer.from_crs(
         realisation.crs, "EPSG:4326", always_xy=True
     )
@@ -207,8 +214,9 @@ def write_rupture(
         headers, strikes[name] = _planes(rupture.geometry, on_segment, transformer)
         planes.extend(headers)
 
+    partial = path.with_name(f".{path.name}.{secrets.token_hex(4)}.partial")
     try:
-        with srf.Writer(path, planes) as writer:
+        with srf.Writer(partial, planes) as writer:
             for name, rupture in realisation.items():
                 segment_beta = None if beta is None else beta.get(name)
                 for columns, strike_deg in zip(
@@ -225,9 +233,11 @@ def write_rupture(
                             beta=segment_beta,
                         )
                     )
-    except BaseException:
-        Path(path).unlink(missing_ok=True)
-        raise
+        partial.replace(path)
+    except srf.SrfError as error:
+        raise RuptureGeneratorError(f"{path}: {error}") from error
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

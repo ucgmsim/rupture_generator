@@ -140,7 +140,30 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
             beta=beta,
         )
     # The writer had already put the header out. The failure removed the partial file.
-    assert not (tmp_path / "bad.srf").exists()
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_failed_write_leaves_the_existing_file(tmp_path, scenario, ruptures):
+    path = tmp_path / "kept.srf"
+    path.write_text("an earlier rupture")
+    beta = {name: np.full(r.geometry.cells, 0.7) for name, r in ruptures.items()}
+    with pytest.raises(RuptureGeneratorError):
+        write_rupture(path, ruptures, dt_s=scenario.dt_s, beta=beta)
+    assert path.read_text() == "an earlier rupture"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_points_the_writer_refuses_are_a_rupture_error(
+    tmp_path, scenario, ruptures, monkeypatch
+):
+    def refuse(self, points, slip_rate):
+        raise srf_format.SrfError("The points run past what the planes declare")
+
+    monkeypatch.setattr(srf_format.Writer, "write", refuse)
+    path = tmp_path / "refused.srf"
+    with pytest.raises(RuptureGeneratorError, match=f"^{path}: The points"):
+        write_rupture(path, ruptures, dt_s=scenario.dt_s)
+    assert not list(tmp_path.iterdir())
 
 
 def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
