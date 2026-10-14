@@ -18,7 +18,6 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-import xarray as xr
 from mashumaro.codecs import BasicDecoder
 from mashumaro.codecs.toml import TOMLEncoder
 from mashumaro.mixins.toml import TOMLDialect
@@ -239,6 +238,8 @@ def read_record(
     OSError
         If reading the file fails.
     """
+    import xarray as xr
+
     path = Path(path)
     if path.suffix in SUFFIXES:
         with xr.open_datatree(path, engine="h5netcdf") as tree:
