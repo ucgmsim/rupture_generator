@@ -2,42 +2,101 @@
 
 Kinematic rupture models for ground-motion simulation. Given a fault system and its
 magnitudes, the generator draws a slip distribution and works out when each subfault
-starts and how long it slips for. The result is an SRF.
+starts and how long it slips for. The result is an SRF, or a smaller file of the
+fields that makes the same SRF later.
 
 A port and rework of `genslip` v5.6.2.
 
-## Install
+![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
+
+*One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake as Beavan's
+seven-fault source model has it, gridded at 0.1 km and seen from the south at true
+scale. Darker is more slip. The rupture starts on the Charing Cross fault and
+triggers the other six in a fixed order, each drawing its own slip field and scaling it
+to its own magnitude.*
+
+---
+
+## Build
+
+The hot kernels are a Rust extension, built with
+[setuptools-rust](https://github.com/PyO3/setuptools-rust). Requires Python 3.14 or
+newer and a stable Rust toolchain.
 
 ```sh
-uv sync                 # builds the Rust kernels as part of the install
-uv sync --extra vis     # adds the 3-D viewer
+uv sync                 # creates a venv and builds the Rust extension
+uv sync --all-extras    # everything below too
 ```
 
-The build needs a Rust toolchain. `setuptools-rust` drives `cargo` from
-`pyproject.toml`.
+| Extra   | Installs                      | Needed for              |
+|---------|-------------------------------|-------------------------|
+| `vis`   | rerun-sdk                     | `rupture-view`          |
+| `test`  | pytest, hypothesis            | the test suite          |
+| `bench` | pytest-benchmark              | `just bench`            |
 
-## Use
+---
 
-A rupture is one TOML file next to a GeoJSON fault system.
+## Quick start
 
 ```sh
-# A rupture file in, an SRF out. The SRF's header comments record the run: the
-# config, every default included, and the software and inputs it ran with.
-rupture-generator examples/alpine_hope.toml alpine_hope.srf
-
-# Watch it happen (needs the `vis` extra), or save a Rerun recording instead.
-rupture-view alpine_hope.srf
-rupture-view alpine_hope.srf --save alpine_hope.rrd
+uv run rupture-generator examples/alpine_hope.toml alpine_hope.srf
+uv run rupture-view alpine_hope.srf
 ```
 
-The examples under `examples/` include the Landers, Northridge, and Colombia
-earthquakes, the Beavan and Alpine-Hope workflow realisations, and two small systems
-for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to generate
-in about ten seconds. At 0.1 km it takes about a minute and writes an SRF of
-8.9 GB. `examples/from_realisation.py` converts a workflow
-`realisation.json` into the same pair of files.
+A rupture is one TOML file next to a GeoJSON fault system. The SRF's header comments
+record the run: the config with every default written out, and the software and
+inputs it ran with.
 
-From Python, the usual run is five calls:
+`examples/` holds the Landers, Northridge and Colombia earthquakes, the Beavan and
+Alpine-Hope workflow realisations, and two small systems for testing. All run at
+0.1 km except Alpine-Hope, which runs at 0.25 km to generate in about ten seconds. At
+0.1 km it takes about a minute and writes an SRF of 8.9 GB.
+`examples/from_realisation.py` converts a workflow `realisation.json` into the same
+pair of files.
+
+---
+
+## Command line
+
+| Command                                   | Effect                                            |
+|-------------------------------------------|---------------------------------------------------|
+| `rupture-generator rupture.toml out.srf`  | Draw a rupture and write its SRF                  |
+| `rupture-generator rupture.toml out.h5`   | Draw a rupture and write its fields, `.h5` or `.nc` |
+| `rupture-generator fields.h5 out.srf`     | Write the SRF of a stored draw                     |
+| `rupture-view out.srf`                    | Watch the rupture in Rerun, with the `vis` extra  |
+| `rupture-view out.srf --save out.rrd`     | Save a Rerun recording instead                    |
+
+A fields file is a fraction of the SRF's size, because the slip-rate series follow from
+slip, rise time, and the pulse's rising fraction. Its SRF has the same points, byte
+for byte, as one written straight from the draw.
+
+---
+
+## Configuration
+
+`examples/two_faults.toml` is the smallest complete file. Every table but
+`[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optional.
+
+| Table                 | Sets                                                              |
+|-----------------------|-------------------------------------------------------------------|
+| `seed`                | The seed every draw derives from                                  |
+| `[geometry]`          | The GeoJSON, its projected CRS, and the grid spacing              |
+| `[hypocentre]`        | Its segment, and where on it in kilometres or as fractions        |
+| `[medium]`            | A 1-D velocity model: layer bottoms, shear speed, density         |
+| `[source]`            | `per_fault` magnitudes and rakes, or one `finite` magnitude split |
+| `[propagation]`       | Which fault triggers which: `predetermined`, `sampled`, `likeliest` |
+| `[slip]`, `[rise]`, `[rake]`, `[speed]`, `[perturbation]` | Each field model's settings |
+| `[pulse]`             | The slip-rate sample interval and rising fraction `beta`          |
+| `[segments.<name>]`   | Any of the model tables, for one segment                          |
+
+Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
+or `profile` tables.
+
+---
+
+## Python API
+
+The usual run is five calls:
 
 ```python
 charts = {
@@ -52,7 +111,7 @@ write_rupture(path, ruptures)
 
 `rupture_generator.config` builds the same inputs from a TOML file.
 
-## Extending
+### Extending
 
 A `RuptureModel` is five models, one per field: `slip`, `rise`, `rake`, `speed` and
 `perturbation`, the onset's displacement off the coherent front. Each is any callable
@@ -103,6 +162,8 @@ models = {name: RuptureModel() for name in realisation}
 models["alpine"] = RuptureModel(slip=GivenSlip(inverted_slip_m))
 ruptures = generate(realisation, medium, sources, models, seed=seed)
 ```
+
+---
 
 ## Design
 
@@ -206,33 +267,9 @@ geometry, and file handling are Python too. The SRF codec is a separate library,
 `RuptureGeneratorError`. The command line reports that as a message and lets anything
 else raise, so a bug in the generator never looks like a mistake in your file.
 
-```
-rupture_generator/
-  cli.py              rupture-generator: a rupture file in, an SRF out
-  config.py           The TOML schema, and building the library's inputs from it
-  errors.py           What this package raises
-  view.py             rupture-view: the rupture in Rerun
-  geometry/
-    geometry.py       Geometry: the chart, its cells and distances between charts
-    geojson.py        GeoJSON sections into charts
-  rupture/
-    generator.py      One segment's draw, the front, and the jump rule
-    models.py         The five models' protocols, and Graves & Pitarka's defaults
-    medium.py         Medium, SpatialField and the 1-D velocity model
-    propagator.py     The jump model, and which fault triggers which
-    realisation.py    A fault system: charts, CRS, hypocentre and tree
-    source.py         Magnitude, moment, rake and correlation lengths per segment
-  sampling/
-    field.py          Gaussian fields by circulant embedding
-    norta.py          Exact marginals, and the latent correlation behind them
-    von_karman.py     The von Kármán correlation function
-  formats/
-    srf.py            SRF 2.0 written and read, over ucgmsim/srf
-crates/
-  kernels/            eikonal_solve, synthesise_pulses, circulant_draw
-```
+---
 
-## Development
+## Testing
 
 ```sh
 just test     # pytest, doctests, and the Rust suites
@@ -240,13 +277,12 @@ just lint     # ty, ruff, clippy, numpydoc
 just bench    # the kernels, and every example end to end with its peak RSS
 ```
 
-The benchmarks use pytest-benchmark. CI runs them on every pull request, against
-the base branch's own suite when it has one, and posts the comparison to the pull
-request.
-
 Tests state properties wherever one exists to state, with Hypothesis on the Python
 side and `proptest` on the Rust side. Numbers quoted in docstrings are measurements,
-and tests assert the ones that constrain behaviour.
+and tests assert the ones that constrain behaviour. CI runs the benchmarks on every
+pull request against the base branch and posts the comparison.
+
+---
 
 ## Known limits
 
