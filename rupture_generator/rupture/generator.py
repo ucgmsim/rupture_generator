@@ -755,13 +755,21 @@ def check_seed(seed: object) -> int:
     return int(seed)
 
 
-def _segment_rng(seed: int, segment: str) -> np.random.Generator:
-    """The generator one segment draws from, keyed by its **name**.
+FIELDS_STREAM = 0
+"""The spawn key's first element for a segment's fields."""
+
+JUMP_STREAM = 1
+"""The spawn key's first element for the jump onto a segment."""
+
+
+def _segment_rng(seed: int, stream: int, segment: str) -> np.random.Generator:
+    """The generator one segment draws ``stream`` from, keyed by the segment's **name**.
 
     Keying by name and not by position makes a fault system's segments independent of
     each other's presence. Adding or dropping a segment, or reordering the file, leaves
     every other segment's fields bit-identical. Without that, two realisations of a
-    system wouldn't be comparable at all.
+    system wouldn't be comparable at all. The stream comes first in the spawn key, so
+    no segment name can collide with another stream's key.
 
     The key is a BLAKE2b hash of the name. Python's :func:`hash` salts string hashes
     per interpreter, so it reproduces nothing between runs.
@@ -769,7 +777,9 @@ def _segment_rng(seed: int, segment: str) -> np.random.Generator:
     key = int.from_bytes(
         hashlib.blake2b(segment.encode(), digest_size=8).digest(), "big"
     )
-    return np.random.default_rng(np.random.SeedSequence(entropy=seed, spawn_key=(key,)))
+    return np.random.default_rng(
+        np.random.SeedSequence(entropy=seed, spawn_key=(stream, key))
+    )
 
 
 type JumpRule = Callable[
@@ -890,7 +900,7 @@ def generate(
                 geometry,
                 medium,
                 jump_propagation_model,
-                _segment_rng(seed, f"jump:{name}"),
+                _segment_rng(seed, JUMP_STREAM, name),
             )
         drawn[name] = generate_segment(
             geometry,
@@ -898,7 +908,7 @@ def generate(
             sources[name],
             settings,
             seed=start,
-            rng=_segment_rng(seed, name),
+            rng=_segment_rng(seed, FIELDS_STREAM, name),
         )
     return realisation.with_segments(drawn)
 

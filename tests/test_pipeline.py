@@ -9,7 +9,14 @@ from rupture_generator import (
     RuptureSettings,
     generate,
 )
-from rupture_generator.rupture.generator import JumpSeed, _travel_times, first_arrival
+from rupture_generator.rupture.generator import (
+    FIELDS_STREAM,
+    JUMP_STREAM,
+    JumpSeed,
+    _segment_rng,
+    _travel_times,
+    first_arrival,
+)
 from rupture_generator.rupture.propagator import JumpModel
 
 
@@ -214,3 +221,13 @@ def test_a_seed_that_is_not_a_non_negative_integer_is_refused(scenario, seed):
             scenario.settings,
             seed=seed,
         )
+
+
+def test_a_jump_draws_apart_from_any_segments_fields(scenario):
+    # A segment named like the old jump key must not share the jump's stream.
+    name = next(iter(scenario.realisation))
+    jump = _segment_rng(scenario.seed, JUMP_STREAM, name).random(4)
+    fields = _segment_rng(scenario.seed, FIELDS_STREAM, f"jump:{name}").random(4)
+    same = _segment_rng(scenario.seed, FIELDS_STREAM, name).random(4)
+    assert not np.array_equal(jump, fields)
+    assert not np.array_equal(jump, same)
