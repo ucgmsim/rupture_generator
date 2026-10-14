@@ -94,7 +94,7 @@ class Marginal:
     and ``gamma`` lie on the positive half-line, and ``truncated_exponential`` is the
     family Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose cut also fixes the
     largest value on the fault. ``doubly_truncated_normal`` lies on
-    ``[0, maximum]``, so its largest value is set apart from its spread. Every
+    ``[0, maximum]``, so it takes its largest value separately from its spread. Every
     expensive function in this module caches its results by marginal, so instances
     are immutable and hashable.
 
@@ -269,7 +269,7 @@ def _doubly_truncated_normal_widest(maximum: float) -> float:
 
 @functools.lru_cache(maxsize=16)
 def _doubly_truncated_normal_ceiling(maximum: float) -> float:
-    """The largest spread the fit reaches for ``maximum``, at the widest parent."""
+    """The largest spread the fit can give ``maximum``, at the widest parent."""
     return _doubly_truncated_normal_spread(
         _doubly_truncated_normal_widest(maximum), maximum
     )
@@ -279,13 +279,12 @@ def _doubly_truncated_normal_ceiling(maximum: float) -> float:
 def _distribution(marginal: Marginal) -> Any:
     """Map from marginal distribution to scipy distribution class.
 
-    Distribution are shaped to have the target coefficient of variation
+    Each distribution's shape gives the target coefficient of variation.
     """
     spread = marginal.coefficient_of_variation
-    # Marginal distributions are parameterised as mean + coefficient of
-    # variation. For the gamma distribution we can invert in closed form for the
-    # shape parameter scipy requires. For truncated exponential and truncated
-    # normal we apply an optimisation process to invert.
+    # A marginal's parameters are its mean and coefficient of variation. The gamma
+    # distribution's shape parameter, which scipy requires, inverts in closed form.
+    # The truncated exponential and truncated normal invert by optimisation.
     match marginal.family:
         case "normal":
             return norm(0.0, 1.0)  # TODO: Should this not be also a function of spread?
@@ -372,12 +371,12 @@ def _hermite_expansion(marginal: Marginal) -> HermiteExpansion:
     Instead expand h in the probabilists' Hermite polynomials He_k, truncated at
     NORTA_ORDER terms. By Mehler's formula,
 
-        E[He_j(Z_1) He_k(Z_2)] = delta_jk * k! * rho^k,
+        E[He_j(Z_1) He_k(Z_2)] = delta_jk * factorial(k) * rho^k,
 
     so in cov(h_1(Z_1), h_2(Z_2)) the cross terms vanish, the k = 0 term (the
-    product of the means) cancels, and g collapses to a power series in rho:
+    product of the means) cancels, and g reduces to a power series in rho:
 
-        g(rho) = sum_{k>=1} a_k b_k k! rho^k / (sigma_1 sigma_2),
+        g(rho) = sum_{k>=1} a_k b_k factorial(k) rho^k / (sigma_1 sigma_2),
 
     with a_k, b_k the coefficients of h_1, h_2 and sigma the standard deviations of
     h_1(Z_1), h_2(Z_2). See Grigoriu (1995), Applied Non-Gaussian Processes.
@@ -402,9 +401,10 @@ def _correlation_series(first: Marginal, second: Marginal) -> np.ndarray:
     With h_1 the transform of ``first`` and h_2 of ``second``, and a_k, b_k and
     sigma_1, sigma_2 their :class:`HermiteExpansion` coefficients and spreads,
 
-        g(rho) = sum_{k>=1} a_k b_k k! rho^k / (sigma_1 sigma_2).
+        g(rho) = sum_{k>=1} a_k b_k factorial(k) rho^k / (sigma_1 sigma_2).
 
-    Entry i of the result is the coefficient of rho^(i+1); there is no constant term.
+    Entry k - 1 of the result is the coefficient of rho^k. The series has no constant
+    term.
     """
     left = _hermite_expansion(first)
     right = _hermite_expansion(second)
@@ -421,9 +421,9 @@ def latent_correlation(
 ) -> np.ndarray:
     """Compute the latent correlation that gives ``target`` as the marginal correlation.
 
-    This is g^-1, for g the power series from :func:`_correlation_series`. g is
-    tabulated on :data:`NORTA_INVERSE_POINTS` latent correlations in [-1, 1] and read
-    backwards, so it must be increasing there.
+    This is g^-1, for g the power series from :func:`_correlation_series`. The
+    function tabulates g on :data:`NORTA_INVERSE_POINTS` latent correlations in
+    [-1, 1] and reads the table backwards, so g must be increasing there.
 
     Parameters
     ----------
@@ -432,7 +432,7 @@ def latent_correlation(
     second : Marginal
         The second field's marginal.
     target : np.ndarray
-        The marginal correlations wanted between the two fields, of any shape.
+        The target marginal correlations between the two fields, of any shape.
 
     Returns
     -------
@@ -442,7 +442,7 @@ def latent_correlation(
     Raises
     ------
     RuptureGeneratorError
-        If g is not increasing on [-1, 1], or if ``target`` lies outside
+        If g isn't increasing on [-1, 1], or if ``target`` lies outside
         [g(-1), g(1)], the marginal correlations the two marginals can share under a
         Gaussian copula, by more than :data:`NORTA_CORRELATION_SLACK`.
     """
@@ -454,11 +454,10 @@ def latent_correlation(
     # g has no constant term, so a latent correlation of 0 gives a marginal one of 0.
     delivered = np.polynomial.polynomial.polyval(grid, np.r_[0.0, coefficients])
 
-    # In order for there to be a single latent correlation such that the
-    # marginals have ``target`` marginal correlation, g must be one-to-one on
-    # the interval [-1, 1]. This implies g is strictly monotonic. It suffices to
-    # check strictly increasing because Price's theorem guarantees g is
-    # non-decreasing. This is also a requirement of np.interp.
+    # For one latent correlation alone to give the marginals ``target`` marginal
+    # correlation, g must be one-to-one on [-1, 1], and so strictly monotonic.
+    # Checking that it strictly increases suffices, because by Price's theorem g is
+    # non-decreasing. np.interp needs it too.
     if not np.all(np.diff(delivered) > 0.0):
         raise RuptureGeneratorError(
             f"the correlation map between a {first.family} and a {second.family} "

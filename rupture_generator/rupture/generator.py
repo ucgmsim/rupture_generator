@@ -246,7 +246,7 @@ class RakeSettings:
 
 @dataclasses.dataclass(frozen=True)
 class TimingSettings:
-    """Settings for adjusting how the time field is solved and correlated on a segment.
+    """Settings for how the generator solves and correlates a segment's time field.
 
     The front moves at ``velocity_fraction / alpha_T`` of the chart's shear speed, held
     to the sub-Rayleigh or supershear branch, times the chart's rupture speed factor.

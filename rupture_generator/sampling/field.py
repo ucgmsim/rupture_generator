@@ -37,8 +37,8 @@ MAXIMUM_EMBEDDING_DOUBLINGS = 3
 """How many times the margin is doubled before the embedding is refused."""
 
 # TODO: Make this a keyword argument of `sampler` if an HPC run hits it. It's a
-# resource limit that depends on the machine, unlike the accuracy tolerances above,
-# which stay fixed so every run's fields are equally accurate.
+# resource limit that depends on the machine, unlike the accuracy tolerances before
+# it, which are constants so that every run's fields are equally accurate.
 MAXIMUM_EMBEDDING_CELLS = 1 << 27
 """The largest padded grid to transform. """
 
@@ -106,7 +106,7 @@ def _padded_extent(
 ) -> int:
     """The smallest fast, **even** transform length holding the grid and its margin.
 
-    We require an even transform length to apply the DCT optimisation. In
+    The DCT optimisation needs an even transform length. In
     practice the extra padding is more than made up for by the DCT savings over
     naive FFT2.
     """

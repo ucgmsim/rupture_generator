@@ -71,15 +71,15 @@ class Hypocentre:
 class Realisation[S](Mapping[str, S]):
     """A fault system's segments, with its hypocentre and triggering tree.
 
-    ``S`` is what each segment holds. Before the fields are drawn it's the segment's
-    :class:`~rupture_generator.geometry.Geometry`, and
-    :func:`~rupture_generator.rupture.generator.generate` turns a
+    ``S`` is the type of each segment's value. Until
+    :func:`~rupture_generator.rupture.generator.generate` draws the fields it's the
+    segment's :class:`~rupture_generator.geometry.Geometry`, and ``generate`` turns a
     ``Realisation[Geometry]`` into a ``Realisation[SegmentRupture]``.
 
     Attributes
     ----------
     segments : Mapping of str to S
-        What each segment holds, by name.
+        Each segment's value, by name.
     crs : pyproj.CRS
         The projected frame every chart's positions are in.
     hypocentre : Hypocentre or None
@@ -140,7 +140,7 @@ class Realisation[S](Mapping[str, S]):
     # ------------------------------------------------------------ the mapping
 
     def __getitem__(self, name: str) -> S:
-        """What a segment holds."""
+        """The value of the segment called ``name``."""
         return self.segments[name]
 
     def __iter__(self) -> Iterator[str]:
@@ -177,12 +177,12 @@ class Realisation[S](Mapping[str, S]):
         return dataclasses.replace(self, tree=tree, hypocentre=hypocentre)
 
     def with_segments[T](self, segments: Mapping[str, T]) -> Realisation[T]:
-        """Swap what every segment holds, keeping the frame, hypocentre and tree.
+        """Replace every segment's value, with the same frame, hypocentre and tree.
 
         Parameters
         ----------
         segments : Mapping of str to T
-            What each segment now holds, over the same names.
+            Each segment's new value, over the same names.
 
         Returns
         -------

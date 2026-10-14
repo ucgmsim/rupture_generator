@@ -60,13 +60,13 @@ macro_rules! py_record {
 py_record! {
     /// The slip-rate matrix, as compressed sparse rows.
     ///
-    /// A column is a sample of the pulse, counted from its onset at zero, and the onset
-    /// itself is the point's `tinit`.
+    /// A column is a sample of the pulse, counted from its onset at zero. Each point's
+    /// `tinit` holds that onset.
     ///
     /// `indices` is optional. Without it every row is dense from column zero, which is
-    /// how an SRF stores a pulse. With it, the writer honours it: the columns a row
-    /// skips are written as zeros, because an SRF records only where a pulse starts,
-    /// and a pulse written without them would shift its later samples earlier.
+    /// how an SRF stores a pulse. With it, the writer fills the columns a row skips
+    /// with zeros. An SRF records only where a pulse starts, so without those zeros
+    /// every later sample would shift earlier.
     /// `scipy.sparse` drops stored zeros, so a matrix that went through it needs its
     /// indices.
     ///

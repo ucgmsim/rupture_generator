@@ -156,11 +156,11 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
         axis=-1,
     )
     along, down = along * half_length, down * half_width
-    # A plane may be sheared toward its dip direction, which no header records. Its
-    # points are its geometry, so a cell's half-steps come from its neighbours,
-    # falling back to the header only along an axis one point wide. Single-precision
-    # longitudes quantise to a metre or so, so the steps fix each cell's shape and the
-    # file's exact area fixes its size.
+    # A plane may lean toward its dip direction, which no header records. Its points
+    # are its geometry. A cell's half-steps come from its neighbours, and from the
+    # header only along an axis one point wide. Single-precision longitudes quantise
+    # to a metre or so. The steps fix each cell's shape, and the file's exact area
+    # fixes its size.
     start = 0
     for plane, count in zip(planes, counts, strict=True):
         grid = centres[start : start + count].reshape(plane.ndip, plane.nstk, 3)
@@ -282,7 +282,7 @@ def _slip_directions(rupture: SrfRupture, corners: np.ndarray) -> np.ndarray:
     ``sin(rake)`` up dip, read off the cells :func:`_positions_m` draws.
 
     Up dip is square to strike in the cell's plane. A sheared cell's side leans along
-    strike, so its strike component comes off first.
+    strike. Its strike component comes off first.
     """
     along = corners[:, 1] - corners[:, 0]
     along /= np.linalg.norm(along, axis=-1, keepdims=True)
