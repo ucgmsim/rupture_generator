@@ -43,7 +43,7 @@ demo:
     uv run rupture-generator examples/alpine_hope.toml /tmp/alpine_hope.srf
 
 # The README's picture: one draw of the Beavan example, its slip and rupture-time
-# contours. `uv run --with` fetches pyvista for this alone.
+# contours. `uv run --with` fetches pyvista and matplotlib for this alone.
 hero:
     uv run rupture-generator examples/beavan.toml /tmp/beavan.h5
-    uv run --with pyvista python docs/hero.py /tmp/beavan.h5 docs/images/beavan_slip.png
+    uv run --with pyvista --with matplotlib python docs/hero.py /tmp/beavan.h5 docs/images/beavan_slip.png
