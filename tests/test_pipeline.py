@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import scipy as sp
 
 from rupture_generator import (
     Hypocentre,
@@ -8,7 +9,7 @@ from rupture_generator import (
     RuptureSettings,
     generate,
 )
-from rupture_generator.rupture.generator import first_arrival
+from rupture_generator.rupture.generator import JumpSeed, _travel_times, first_arrival
 from rupture_generator.rupture.propagator import JumpModel
 
 
@@ -186,3 +187,18 @@ def test_default_settings_are_valid():
 def test_inconsistent_realisations_are_refused(scenario, build):
     with pytest.raises(RuptureGeneratorError):
         build(scenario.realisation)
+
+
+def test_high_slip_ruptures_early(scenario, ruptures):
+    # A positive correlation pulls high-slip patches ahead of the coherent front,
+    # as genslip's negative tsfac does.
+    assert scenario.settings.timing.correlation > 0.0
+    hypocentre = scenario.realisation.hypocentre
+    root = ruptures[hypocentre.segment]
+    seed = JumpSeed(root.geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0)
+    front_s = _travel_times(root.geometry, root.speed_km_s, seed)
+    occupied = root.geometry.occupied
+    rho = sp.stats.spearmanr(
+        root.slip_m[occupied], (root.onset_s - front_s)[occupied]
+    ).statistic
+    assert rho < -0.3

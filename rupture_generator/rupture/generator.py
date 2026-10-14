@@ -706,7 +706,9 @@ def generate_segment(
     scale_s = timing.offset_s + _cube_root_scaling(timing.coefficient, moment_nm)
     onset_independent, _ = latent.draw(rng)
     rho = float(latent_correlation(slip.marginal, NORMAL, np.array(timing.correlation)))
-    displacement_s = scale_s * standardise(
+    # genslip's tsfac is negative and this package reads it as a magnitude, so the
+    # displacement subtracts: with a positive correlation, high slip ruptures early.
+    displacement_s = -scale_s * standardise(
         mix((rho, slip_latent), (np.sqrt(1.0 - rho * rho), onset_independent))
     )
 
