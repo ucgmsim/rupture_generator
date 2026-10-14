@@ -332,7 +332,9 @@ def _hypocentre(plane: srf.Plane, positions: np.ndarray) -> tuple[float, float, 
 def read_rupture(path: str | Path) -> SrfRupture:
     """Read a version 2 SRF, as :func:`write_rupture` writes, into SI.
 
-    Only the ``slip1`` component comes back, the only one this package writes.
+    Only the ``slip1`` component comes back, the only one this package writes. A
+    regular file is memory-mapped. This function reads anything else, such as a pipe,
+    whole.
 
     Parameters
     ----------
@@ -351,10 +353,15 @@ def read_rupture(path: str | Path) -> SrfRupture:
     OSError
         If reading the file fails.
     """
+    path = Path(path)
     try:
-        parsed = srf.read(path)
+        # srf.read memory-maps a path, and refuses a pipe or a terminal as empty.
+        parsed = srf.read(path if path.is_file() else path.read_bytes())
     except srf.SrfError as error:
-        raise RuptureGeneratorError(str(error)) from error
+        message = str(error)
+        if not message.startswith(f"{path}:"):
+            message = f"{path}: {message}"
+        raise RuptureGeneratorError(message) from error
     points = parsed.points
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(

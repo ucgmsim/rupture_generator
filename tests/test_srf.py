@@ -1,3 +1,6 @@
+import os
+import threading
+
 import numpy as np
 import pyproj
 import pytest
@@ -143,8 +146,9 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
 def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
     path = tmp_path / "not.srf"
     path.write_text("garbage")
-    with pytest.raises(RuptureGeneratorError):
+    with pytest.raises(RuptureGeneratorError) as caught:
         read_rupture(path)
+    assert str(caught.value).count(str(path)) == 1
 
 
 def test_the_reader_reports_pulse_duration_not_rise_time(srf_path):
@@ -153,3 +157,27 @@ def test_the_reader_reports_pulse_duration_not_rise_time(srf_path):
         rupture.pulse_duration_s, np.diff(rupture.pulse_offsets) * rupture.dt_s
     )
     assert not hasattr(rupture, "rise_time_s")
+
+
+def test_the_reader_takes_a_pipe(srf_path, tmp_path):
+    fifo = tmp_path / "rupture.fifo"
+    os.mkfifo(fifo)
+    contents = srf_path.read_bytes()
+    feeder = threading.Thread(target=fifo.write_bytes, args=(contents,))
+    feeder.start()
+    try:
+        piped = read_rupture(fifo)
+    finally:
+        feeder.join()
+    np.testing.assert_array_equal(piped.slip_m, read_rupture(srf_path).slip_m)
+
+
+def test_a_record_the_reader_refuses_names_its_file(srf_path, monkeypatch):
+    # srf.read puts the path in a parse error, and leaves it out of an error from the
+    # checks on the records it builds from the parse.
+    def refuse(source):
+        raise srf_format.SrfError("The planes declare 3 points, but there are 2")
+
+    monkeypatch.setattr(srf_format, "read", refuse)
+    with pytest.raises(RuptureGeneratorError, match=f"^{srf_path}: The planes"):
+        read_rupture(srf_path)
