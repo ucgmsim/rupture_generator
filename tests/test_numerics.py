@@ -22,6 +22,8 @@ from rupture_generator.sampling.field import (
     _embed,
 )
 
+TRACE = [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]]
+
 SECTION = {
     "type": "FeatureCollection",
     "features": [
@@ -29,7 +31,7 @@ SECTION = {
             "type": "Feature",
             "geometry": {
                 "type": "LineString",
-                "coordinates": [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]],
+                "coordinates": TRACE,
             },
             "properties": {
                 "name": "bent",
@@ -61,7 +63,7 @@ def test_a_bent_trace_hangs_as_one_translated_sheet():
 
 
 def test_a_plane_off_square_to_the_dip_direction_dips_more_steeply():
-    trace = np.array(SECTION["features"][0]["geometry"]["coordinates"])
+    trace = np.array(TRACE)
     strikes_deg, _, _ = pyproj.Geod(ellps="WGS84").inv(
         trace[:-1, 0], trace[:-1, 1], trace[1:, 0], trace[1:, 1]
     )

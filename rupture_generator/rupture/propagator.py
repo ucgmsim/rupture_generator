@@ -154,8 +154,14 @@ DEFAULT_JUMP_MODEL = JumpModel()
 class JumpGraph:
     """Faults, and how likely the rupture is to jump between each pair.
 
-    ``weights`` is symmetric ``(n, n)`` over ``faults`` in order. Zero means no edge.
-    For a spanning tree, an impossible edge and a missing one are the same thing.
+    Parameters
+    ----------
+    faults : tuple of str
+        The faults' names.
+    weights : FloatArray
+        The jump probability between each pair, symmetric ``(n, n)`` over ``faults``
+        in order. Zero means no edge. For a spanning tree, an impossible edge and a
+        missing one are the same thing.
     """
 
     faults: tuple[str, ...]
