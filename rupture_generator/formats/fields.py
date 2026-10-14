@@ -225,8 +225,7 @@ def _read(path: Path | str) -> tuple[Realisation[SegmentRupture], str | None]:
 def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     """Write the SRF of the rupture stored in a fields file.
 
-    The SRF's header comments keep the fields file's record of the draw, with its
-    paths relative to the SRF.
+    The SRF's header comments keep the fields file's record of the draw.
 
     Parameters
     ----------
@@ -242,16 +241,11 @@ def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     OSError
         If reading or writing a file fails.
     """
-    # The record module reads fields files, so it imports this one.
-    from rupture_generator.record import relocate
-
     realisation, record = _read(source)
     write_rupture(
         str(destination),
         realisation,
-        comments=()
-        if record is None
-        else relocate(record, Path(source), Path(destination)).splitlines(),
+        comments=() if record is None else record.splitlines(),
     )
 
 

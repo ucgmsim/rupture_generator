@@ -8,8 +8,7 @@ the drawn fields, which make an SRF later. A fields file as ``INPUT`` writes its
 Each draw keeps its run record, :mod:`rupture_generator.record`: the config with every
 default written out, the software that ran it and the digests of its inputs. An SRF
 stores it in its header's comment lines, and a fields file in its root attributes. The
-SRF made from a fields file keeps the fields file's record. An SRF as ``INPUT`` reruns
-the draw its record states.
+SRF made from a fields file keeps the fields file's record.
 """
 
 import argparse
@@ -18,23 +17,25 @@ from pathlib import Path
 
 from rupture_generator import config as rupture_config
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.formats.fields import SUFFIXES, fields_to_srf, write_fields
+from rupture_generator.formats.fields import (
+    RECORD_ATTRIBUTE,
+    SUFFIXES,
+    fields_to_srf,
+    write_fields,
+)
 from rupture_generator.formats.srf import write_rupture
-from rupture_generator.record import ATTRIBUTE, read_config, run_record
+from rupture_generator.record import run_record
 from rupture_generator.rupture.generator import generate
 
 
 def _draw(source: Path, output: Path) -> None:
-    """Draw the rupture ``source`` describes, and write it and its record.
-
-    ``source`` is a rupture file, or an SRF whose record states the draw.
-    """
+    """Draw the rupture ``source`` describes, and write it and its record."""
     if output.suffix != ".srf" and output.suffix not in SUFFIXES:
         raise RuptureGeneratorError(
             f"{output} ends in neither .srf nor one of {', '.join(SUFFIXES)}"
         )
-    config = read_config(source)
-    record = run_record(source, config, output)
+    config = rupture_config.load(source)
+    record = run_record(source, config)
     scenario = rupture_config.build(config)
     drawn = generate(
         scenario.realisation,
@@ -47,7 +48,7 @@ def _draw(source: Path, output: Path) -> None:
     if output.suffix == ".srf":
         write_rupture(str(output), drawn, comments=record.splitlines())
     else:
-        write_fields(output, drawn, attrs={ATTRIBUTE: record})
+        write_fields(output, drawn, attrs={RECORD_ATTRIBUTE: record})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,14 +71,10 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Draw a kinematic rupture from a TOML file and write it as an SRF (.srf) "
             f"or as its fields ({', '.join(SUFFIXES)}). Given a fields file, write "
-            "its SRF. Given an SRF, draw again from the record in its header."
+            "its SRF."
         ),
     )
-    parser.add_argument(
-        "input",
-        type=Path,
-        help="the rupture file, a fields file, or an SRF whose recorded draw to rerun",
-    )
+    parser.add_argument("input", type=Path, help="the rupture file, or a fields file")
     parser.add_argument("output", type=Path, help="where to write the SRF or fields")
     args = parser.parse_args(argv)
 

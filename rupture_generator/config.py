@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
-from mashumaro.codecs import BasicDecoder
-from mashumaro.codecs.toml import TOMLEncoder
+from mashumaro.codecs.toml import TOMLDecoder, TOMLEncoder
 from mashumaro.config import BaseConfig
 from mashumaro.exceptions import (
     ExtraKeysError,
@@ -27,7 +26,6 @@ from mashumaro.exceptions import (
     MissingField,
     SuitableVariantNotFoundError,
 )
-from mashumaro.mixins.toml import TOMLDialect
 from mashumaro.types import Discriminator
 
 from rupture_generator.errors import RuptureGeneratorError
@@ -552,11 +550,8 @@ class RuptureConfig:
     Config = _Strict
 
 
-_DECODER = BasicDecoder(RuptureConfig, default_dialect=TOMLDialect)
+_DECODER = TOMLDecoder(RuptureConfig)
 _ENCODER = TOMLEncoder(RuptureConfig)
-
-PROVENANCE = "provenance"
-"""The table a run record adds to a config, which :func:`loads` reads past."""
 
 
 # ------------------------------------------------------------------ the boundary
@@ -596,44 +591,6 @@ def _describe(error: Exception) -> RuptureGeneratorError:
     return RuptureGeneratorError(f"{'.'.join(path) or 'the file'}: {reason}")
 
 
-def loads(text: str, directory: str | Path, *, name: str = "the text") -> RuptureConfig:
-    """Read and check a rupture file's text.
-
-    Parameters
-    ----------
-    text : str
-        The TOML.
-    directory : str or Path
-        The directory a relative geometry path is relative to.
-    name : str, optional
-        What to call the text in an error.
-
-    Returns
-    -------
-    RuptureConfig
-        The config, with the geometry's path resolved against ``directory``. It
-        ignores a run record's ``[provenance]`` table. A record loads as the config
-        it ran.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        If the text isn't TOML, or describes no rupture.
-    """
-    try:
-        document = tomllib.loads(text)
-        document.pop(PROVENANCE, None)
-        config = _DECODER.decode(document)
-    except tomllib.TOMLDecodeError as error:
-        raise RuptureGeneratorError(f"{name} is not TOML: {error}") from None
-    except (InvalidFieldValue, MissingField, ExtraKeysError) as error:
-        raise _describe(error) from None
-    geometry = dataclasses.replace(
-        config.geometry, path=(Path(directory) / config.geometry.path).resolve()
-    )
-    return dataclasses.replace(config, geometry=geometry)
-
-
 def load(path: str | Path) -> RuptureConfig:
     """Read and check a rupture file.
 
@@ -645,7 +602,7 @@ def load(path: str | Path) -> RuptureConfig:
     Returns
     -------
     RuptureConfig
-        The file's contents, read as :func:`loads` reads them, relative to the file's
+        The file's contents, with the geometry's path resolved against the file's
         directory.
 
     Raises
@@ -656,7 +613,16 @@ def load(path: str | Path) -> RuptureConfig:
         If reading the file fails.
     """
     path = Path(path)
-    return loads(path.read_text(), path.parent, name=str(path))
+    try:
+        config = _DECODER.decode(path.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise RuptureGeneratorError(f"{path} is not TOML: {error}") from None
+    except (InvalidFieldValue, MissingField, ExtraKeysError) as error:
+        raise _describe(error) from None
+    geometry = dataclasses.replace(
+        config.geometry, path=(path.parent / config.geometry.path).resolve()
+    )
+    return dataclasses.replace(config, geometry=geometry)
 
 
 def dump(config: RuptureConfig) -> str:
@@ -846,12 +812,4 @@ def build(config: RuptureConfig) -> Scenario:
     )
 
 
-__all__ = [
-    "PROVENANCE",
-    "RuptureConfig",
-    "Scenario",
-    "build",
-    "dump",
-    "load",
-    "loads",
-]
+__all__ = ["RuptureConfig", "Scenario", "build", "dump", "load"]
