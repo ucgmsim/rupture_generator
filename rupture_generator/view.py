@@ -156,6 +156,23 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
         axis=-1,
     )
     along, down = along * half_length, down * half_width
+    # A plane may be sheared toward its dip direction, which no header records. Its
+    # points are its geometry, so a cell's half-steps come from its neighbours,
+    # falling back to the header only along an axis one point wide. Single-precision
+    # longitudes quantise to a metre or so, so the steps fix each cell's shape and the
+    # file's exact area fixes its size.
+    start = 0
+    for plane, count in zip(planes, counts, strict=True):
+        grid = centres[start : start + count].reshape(plane.ndip, plane.nstk, 3)
+        cells = slice(start, start + count)
+        if plane.nstk > 1:
+            along[cells] = 0.5 * np.asarray(np.gradient(grid, axis=1)).reshape(-1, 3)
+        if plane.ndip > 1:
+            down[cells] = 0.5 * np.asarray(np.gradient(grid, axis=0)).reshape(-1, 3)
+        start += count
+    drawn_m2 = 4.0 * np.linalg.norm(np.cross(along, down), axis=-1)
+    scale = np.sqrt(rupture.area_m2 / drawn_m2)[:, None]
+    along, down = along * scale, down * scale
     corners = np.stack(
         [
             centres - along - down,
@@ -262,10 +279,15 @@ def _onset_contours(
 
 def _slip_directions(rupture: SrfRupture, corners: np.ndarray) -> np.ndarray:
     """Unit vectors each point slipped along: ``cos(rake)`` along strike plus
-    ``sin(rake)`` up dip, read off the cells :func:`_positions_m` draws."""
+    ``sin(rake)`` up dip, read off the cells :func:`_positions_m` draws.
+
+    Up dip is square to strike in the cell's plane. A sheared cell's side leans along
+    strike, so its strike component comes off first.
+    """
     along = corners[:, 1] - corners[:, 0]
-    up_dip = corners[:, 0] - corners[:, 3]
     along /= np.linalg.norm(along, axis=-1, keepdims=True)
+    up_dip = corners[:, 0] - corners[:, 3]
+    up_dip -= np.einsum("ij,ij->i", up_dip, along)[:, None] * along
     up_dip /= np.linalg.norm(up_dip, axis=-1, keepdims=True)
     rake = np.radians(rupture.rake_deg)[:, None]
     return along * np.cos(rake) + up_dip * np.sin(rake)

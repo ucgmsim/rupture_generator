@@ -65,15 +65,18 @@ def _planes(
 ) -> tuple[list[PySrfPlane], list[float]]:
     """One header per plane, and each plane's strike for its points.
 
-    An SRF plane is a rectangle, and a plane hung toward a dip direction is a
-    parallelogram sheared along strike. ``wid`` is its width square to strike, so
-    ``len * wid`` is its area. ``hypocentre`` is the realisation's if it lies on this
-    segment. The plane holding it gets a ``shyp`` and ``dhyp``, the hypocentre's
-    position along strike from the plane's top centre and down dip square to strike,
-    which a reader walking the rectangle lands on exactly. Every other plane gets
-    neither.
+    A header describes the plane in its own coordinates, the parallelogram hung toward
+    the dip direction rather than a rectangle: ``len`` runs along its top edge and
+    ``wid`` down its sheared side, and ``dip`` is the true dip its points carry. The
+    points are the geometry. EMOD3D's finite-difference solve reads nothing above
+    ``POINTS``, so no simulation relies on a header being a rectangle.
+
+    ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
+    it gets a ``shyp`` and ``dhyp`` in those same coordinates, along the top edge from
+    its centre and down the sheared side, and every other plane gets neither.
     """
     arc_km = geometry.strike_arc_km
+    width_km = float(geometry.dip_arc_km[-1])
     headers, strikes = [], []
     for columns, plane in zip(
         _plane_slices(geometry), geometry.plane_nodes(), strict=True
@@ -87,30 +90,24 @@ def _planes(
         centre_lon, centre_lat = _to_lon_lat(
             transformer, plane[0, [0, -1], 0].mean(), plane[0, [0, -1], 1].mean()
         )
-        length_km = end_km - start_km
-        dip_deg = float(geometry.dip_deg[:, columns].mean())
-        shyp = dhyp = NO_HYPOCENTRE
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
-        if on_plane:
-            assert hypocentre is not None
-            position = geometry.position_at(hypocentre.strike_km, hypocentre.dip_km)
-            along = plane[0, -1, :2] - plane[0, 0, :2]
-            centre = 0.5 * (plane[0, 0, :2] + plane[0, -1, :2])
-            shyp = float((position[:2] - centre) @ along / np.linalg.norm(along))
-            dhyp = float((position[2] - plane[0, 0, 2]) / np.sin(np.radians(dip_deg)))
         headers.append(
             PySrfPlane(
                 elon=float(centre_lon),
                 elat=float(centre_lat),
                 nstk=columns.stop - columns.start,
                 ndip=geometry.cells[0],
-                len=length_km,
-                wid=float(geometry.areas_km2[:, columns].sum()) / length_km,
+                len=end_km - start_km,
+                wid=width_km,
                 stk=strike_deg,
-                dip=dip_deg,
+                dip=float(geometry.dip_deg[:, columns].mean()),
                 dtop=float(plane[0, 0, 2]),
-                shyp=shyp,
-                dhyp=dhyp,
+                shyp=(
+                    hypocentre.strike_km - 0.5 * (start_km + end_km)
+                    if on_plane
+                    else NO_HYPOCENTRE
+                ),
+                dhyp=hypocentre.dip_km if on_plane else NO_HYPOCENTRE,
             )
         )
         strikes.append(strike_deg)
@@ -304,15 +301,36 @@ class SrfRupture:
         return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
 
 
-def _hypocentre(plane: PySrfPlane) -> tuple[float, float, float]:
-    """The inverse of :func:`_planes`: ``shyp`` along strike from the top centre, then
-    ``dhyp`` down dip."""
-    dip = np.radians(plane.dip)
-    lon, lat, _ = _GEOD.fwd(plane.elon, plane.elat, plane.stk, plane.shyp * M_PER_KM)
-    lon, lat, _ = _GEOD.fwd(
-        lon, lat, plane.stk + 90.0, plane.dhyp * np.cos(dip) * M_PER_KM
-    )
-    return float(lon), float(lat), plane.dtop + plane.dhyp * float(np.sin(dip))
+def _along(index: float, count: int) -> tuple[int, float]:
+    """The point a fractional index starts from, and how far past it, extrapolating."""
+    if count == 1:
+        return 0, 0.0
+    start = min(max(int(np.floor(index)), 0), count - 2)
+    return start, index - start
+
+
+def _hypocentre(plane: PySrfPlane, positions: np.ndarray) -> tuple[float, float, float]:
+    """The inverse of :func:`_planes`, read off the plane's own points.
+
+    ``shyp`` and ``dhyp`` are fractions of ``len`` and ``wid`` along the plane's own
+    edges, and the points are its cell centres, so the hypocentre is a bilinear
+    reading of them. Within half a cell of an edge the reading extrapolates, which is
+    exact on a flat plane.
+
+    Parameters
+    ----------
+    plane : PySrfPlane
+        The header holding the hypocentre.
+    positions : np.ndarray
+        That plane's points, ``(ndip, nstk, 3)``: longitude, latitude and depth.
+    """
+    j, u = _along((plane.shyp / plane.len + 0.5) * plane.nstk - 0.5, plane.nstk)
+    i, v = _along(plane.dhyp / plane.wid * plane.ndip - 0.5, plane.ndip)
+    right, below = min(j + 1, plane.nstk - 1), min(i + 1, plane.ndip - 1)
+    top = (1.0 - u) * positions[i, j] + u * positions[i, right]
+    bottom = (1.0 - u) * positions[below, j] + u * positions[below, right]
+    lon, lat, depth = (1.0 - v) * top + v * bottom
+    return float(lon), float(lat), float(depth)
 
 
 def read_rupture(path: str | Path) -> SrfRupture:
@@ -348,10 +366,18 @@ def read_rupture(path: str | Path) -> SrfRupture:
         )
     pulses = srf.slipt1.data
     pulses /= CM_PER_M
-    located = [plane for plane in srf.planes if plane.shyp != NO_HYPOCENTRE]
+    positions = np.column_stack([points.lon, points.lat, points.dep]).astype(np.float64)
+    hypocentre, start = None, 0
+    for plane in srf.planes:
+        count = plane.nstk * plane.ndip
+        if plane.shyp != NO_HYPOCENTRE:
+            grid = positions[start : start + count].reshape(plane.ndip, plane.nstk, 3)
+            hypocentre = _hypocentre(plane, grid)
+            break
+        start += count
     return SrfRupture(
         planes=list(srf.planes),
-        hypocentre=_hypocentre(located[0]) if located else None,
+        hypocentre=hypocentre,
         lon_deg=points.lon.astype(np.float64),
         lat_deg=points.lat.astype(np.float64),
         depth_km=points.dep.astype(np.float64),

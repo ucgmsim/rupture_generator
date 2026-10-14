@@ -269,38 +269,6 @@ class Geometry:
             plane_cells=tuple(columns),
         )
 
-    def position_at(self, strike_km: float, dip_km: float) -> np.ndarray:
-        """Find where a position on the fault lies in space.
-
-        The position is read bilinearly within the cell :meth:`cell_at` finds, which
-        is exact on a planar cell.
-
-        Parameters
-        ----------
-        strike_km : float
-            Distance along strike from the chart's first top corner, in kilometres.
-        dip_km : float
-            Distance down dip from the top edge, in kilometres.
-
-        Returns
-        -------
-        np.ndarray
-            East, north and depth, ``(3,)``, in kilometres in the projected CRS.
-
-        Raises
-        ------
-        RuptureGeneratorError
-            For a position off the fault, naming the axis and the fault's extent.
-        """
-        i, j = self.cell_at(strike_km, dip_km)
-        strike_arc, dip_arc = self.strike_arc_km, self.dip_arc_km
-        u = (strike_km - strike_arc[j]) / (strike_arc[j + 1] - strike_arc[j])
-        v = (dip_km - dip_arc[i]) / (dip_arc[i + 1] - dip_arc[i])
-        corners = self.nodes[i : i + 2, j : j + 2]
-        top = (1.0 - u) * corners[0, 0] + u * corners[0, 1]
-        bottom = (1.0 - u) * corners[1, 0] + u * corners[1, 1]
-        return (1.0 - v) * top + v * bottom
-
     # -------------------------------------------------------- between two charts
 
     @functools.cached_property
