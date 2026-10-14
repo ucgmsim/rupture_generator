@@ -58,7 +58,7 @@ def _resample(plane: NodeArray, rows: int, columns: int) -> NodeArray:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Geometry:
-    """One chart. The module docstring describes the frames and the plane layout.
+    """A planar geometric description of a discretised fault.
 
     A chart caches each derived quantity on first use, which is safe because a chart
     never changes after construction.

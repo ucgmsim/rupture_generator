@@ -4,10 +4,7 @@
 :class:`~rupture_generator.rupture.medium.Medium`, the segment's
 :class:`~rupture_generator.rupture.source.SegmentSource` and a
 :class:`~rupture_generator.rupture.models.RuptureModel`, and returns a
-:class:`SegmentRupture`. The models draw the fields. This module reads the rock at the
-chart's cell centres, hands each model a generator of its own, checks what each one
-returns, and solves the front. A segment's fields are a pure function of ``(chart,
-medium, source, model, rng state)``.
+:class:`SegmentRupture`. The models draw the fields.
 
 The moment is the drawn slip's in this medium, and it has to lie within
 :data:`MOMENT_MAGNITUDE_TOLERANCE` magnitude units of the source's. Rise time and the
