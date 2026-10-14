@@ -7,7 +7,7 @@ The library is plain data and plain functions, and the usual run is five calls::
     realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
     medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
     drawn = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
-    write_rupture(path, drawn, dt_s=0.005)
+    write_rupture(path, drawn)
 
 :func:`write_fields` stores the drawn fields instead, a fraction of the SRF's size,
 and :func:`~rupture_generator.formats.fields.fields_to_srf` makes the SRF from them
@@ -26,6 +26,7 @@ from rupture_generator.geometry import Geometry, Segment, geometry_from_geojson
 from rupture_generator.rupture.generator import (
     FaultProfiles,
     JumpRule,
+    PulseSettings,
     RakeSettings,
     RiseSettings,
     RuptureSettings,
@@ -68,6 +69,7 @@ __all__ = [
     "JumpRule",
     "Layers",
     "Medium",
+    "PulseSettings",
     "RakeSettings",
     "Realisation",
     "RiseSettings",

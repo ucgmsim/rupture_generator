@@ -35,7 +35,8 @@ def _draw(source: Path, output: Path) -> None:
         jump_propagation_model=scenario.jump_model,
     )
     write = write_rupture if output.suffix == ".srf" else write_fields
-    write(str(output), drawn, dt_s=scenario.dt_s, beta=scenario.beta)
+    write(str(output), drawn)
+    # COMMENT: are we still writing a side-car file here? why?
     output.with_name(output.name + ".toml").write_text(rupture_config.dump(config))
 
 

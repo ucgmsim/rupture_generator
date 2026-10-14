@@ -46,7 +46,7 @@ charts = {
 realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
 medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
 ruptures = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
-write_rupture(path, realisation, ruptures, dt_s=0.005)
+write_rupture(path, ruptures)
 ```
 
 `rupture_generator.config` builds the same inputs from a TOML file.

@@ -15,9 +15,9 @@ from .conftest import EXAMPLE, SPACING_KM
 
 
 @pytest.fixture(scope="module")
-def fields_path(tmp_path_factory, scenario, ruptures):
+def fields_path(tmp_path_factory, ruptures):
     path = tmp_path_factory.mktemp("fields") / "rupture.h5"
-    write_fields(path, ruptures, dt_s=scenario.dt_s, beta=scenario.beta)
+    write_fields(path, ruptures)
     return path
 
 
@@ -38,23 +38,22 @@ def test_the_srf_from_stored_fields_is_the_srf_from_the_draw(
     assert again.read_bytes() == srf_path.read_bytes()
 
 
-def test_the_reader_restores_the_realisation(fields_path, scenario, ruptures):
-    stored = read_fields(fields_path)
-    restored = stored.realisation
+def test_the_reader_restores_the_realisation(fields_path, ruptures):
+    restored = read_fields(fields_path)
     assert list(restored) == list(ruptures)
     assert dict(restored.tree) == dict(ruptures.tree)
     assert restored.hypocentre == ruptures.hypocentre
     assert restored.crs == ruptures.crs
-    assert stored.dt_s == scenario.dt_s
     for name, rupture in ruptures.items():
         back = restored[name]
         np.testing.assert_array_equal(back.geometry.nodes, rupture.geometry.nodes)
         assert back.geometry.plane_cells == rupture.geometry.plane_cells
         np.testing.assert_array_equal(back.slip_m, rupture.slip_m)
         np.testing.assert_array_equal(back.speed_km_s, rupture.speed_km_s)
-        assert stored.beta is not None
-        np.testing.assert_array_equal(stored.beta[name], scenario.beta[name])
+        assert back.beta is not None
+        np.testing.assert_array_equal(back.beta, rupture.beta)
         assert back.alpha_t == rupture.alpha_t
+        assert back.dt_s == rupture.dt_s
 
 
 def test_each_segment_is_a_group_with_units(fields_path, ruptures):
@@ -72,21 +71,20 @@ def test_each_segment_is_a_group_with_units(fields_path, ruptures):
 
 def test_a_lone_segment_without_a_tree_or_pulse_shape_round_trips(tmp_path, ruptures):
     name = ruptures.hypocentre.segment
-    alone = Realisation({name: ruptures[name]}, ruptures.crs, ruptures.hypocentre)
+    impulses = dataclasses.replace(ruptures[name], beta=None)
+    alone = Realisation({name: impulses}, ruptures.crs, ruptures.hypocentre)
     path = tmp_path / "alone.nc"
-    write_fields(path, alone, dt_s=0.01)
+    write_fields(path, alone)
     stored = read_fields(path)
-    assert stored.beta is None
-    assert not stored.realisation.tree
-    np.testing.assert_array_equal(stored.realisation[name].onset_s, alone[name].onset_s)
+    assert stored[name].beta is None
+    assert not stored.tree
+    np.testing.assert_array_equal(stored[name].onset_s, alone[name].onset_s)
 
 
 def test_a_segment_name_with_a_slash_is_refused(tmp_path, ruptures):
     renamed = {f"a/{name}": rupture for name, rupture in ruptures.items()}
     with pytest.raises(RuptureGeneratorError, match="group"):
-        write_fields(
-            tmp_path / "slash.h5", Realisation(renamed, ruptures.crs), dt_s=0.01
-        )
+        write_fields(tmp_path / "slash.h5", Realisation(renamed, ruptures.crs))
 
 
 def test_a_file_without_the_fields_is_a_rupture_error(tmp_path):

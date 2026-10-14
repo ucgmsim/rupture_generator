@@ -296,6 +296,28 @@ class TimingSettings:
         _correlation(self.correlation)
 
 
+@dataclasses.dataclass(frozen=True)
+class PulseSettings:
+    """Settings for the slip-rate pulse each subfault's slip and rise time make.
+
+    Attributes
+    ----------
+    dt_s : float
+        The slip-rate sample interval, in seconds.
+    beta : SpatialField, optional
+        The Liu-Archuleta-Hartzell rising fraction, in ``(0, 0.5]``. Without it, every
+        pulse is a single-sample impulse.
+    """
+
+    dt_s: float = 0.005
+    beta: SpatialField | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a sample interval that samples nothing."""
+        if not self.dt_s > 0.0:
+            raise RuptureGeneratorError(f"a sample interval of {self.dt_s} s is none")
+
+
 UNMODIFIED = constant_field(1.0)
 """Constant profile for unmodified spatial fields."""
 
@@ -340,6 +362,8 @@ class RuptureSettings:
         The onset field's settings.
     profiles : FaultProfiles
         The depth-varying modifiers on rise time and rupture speed.
+    pulse : PulseSettings
+        The slip-rate pulse's sampling and shape.
     """
 
     slip: SlipSettings = dataclasses.field(default_factory=SlipSettings)
@@ -347,6 +371,7 @@ class RuptureSettings:
     rake: RakeSettings = dataclasses.field(default_factory=RakeSettings)
     timing: TimingSettings = dataclasses.field(default_factory=TimingSettings)
     profiles: FaultProfiles = dataclasses.field(default_factory=FaultProfiles)
+    pulse: PulseSettings = dataclasses.field(default_factory=PulseSettings)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -378,6 +403,10 @@ class SegmentRupture:
         The fault-wide mean rise time, in seconds.
     onset_scale_s : float
         The onset displacement's spread, in seconds.
+    dt_s : float
+        The slip-rate sample interval, in seconds.
+    beta : CellArray or None
+        The pulse's rising fraction, or ``None`` for single-sample impulses.
     """
 
     geometry: Geometry
@@ -391,6 +420,8 @@ class SegmentRupture:
     alpha_t: float
     rise_time_mean_s: float
     onset_scale_s: float
+    dt_s: float
+    beta: CellArray | None
 
     @property
     def rigidity_pa(self) -> CellArray:
@@ -616,7 +647,7 @@ def generate_segment(
     Returns
     -------
     SegmentRupture
-        The drawn fields, with the rock they used.
+        The drawn fields and pulse, with the rock they used.
 
     Raises
     ------
@@ -653,6 +684,18 @@ def generate_segment(
         profiles.rupture_speed_factor,
         _positive,
         "positive values, or the front never arrives",
+    )
+
+    beta = (
+        None
+        if settings.pulse.beta is None
+        else _read(
+            geometry,
+            "beta",
+            settings.pulse.beta,
+            lambda beta: (beta > 0.0) & (beta <= 0.5),
+            "rising fractions in (0, 0.5]",
+        )
     )
 
     correction = _alpha_t(
@@ -726,6 +769,8 @@ def generate_segment(
         alpha_t=correction,
         rise_time_mean_s=mean_rise_s,
         onset_scale_s=scale_s,
+        dt_s=settings.pulse.dt_s,
+        beta=beta,
     )
 
 
@@ -919,6 +964,7 @@ __all__ = [
     "FaultProfiles",
     "JumpRule",
     "JumpSeed",
+    "PulseSettings",
     "RakeSettings",
     "RiseSettings",
     "RuptureSettings",
