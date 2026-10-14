@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
-import pyproj
 from mashumaro.codecs.toml import TOMLDecoder, TOMLEncoder
 from mashumaro.config import BaseConfig
 from mashumaro.exceptions import (
@@ -35,6 +34,7 @@ from rupture_generator.geometry import (
     CellArray,
     Geometry,
     geometry_from_geojson,
+    projected_crs,
 )
 from rupture_generator.rupture.generator import (
     FaultProfiles,
@@ -233,7 +233,9 @@ class GeometryConfig:
         The GeoJSON file of fault sections. A relative path is relative to the config
         file.
     crs : str
-        The projected frame to build the charts in, such as ``"EPSG:2193"``.
+        The projected frame to build the charts in, as an EPSG code or anything else
+        :class:`pyproj.CRS` reads. It has no default. It must measure in metres and
+        cover the faults' region, as their UTM zone does.
     spacing_km : float
         The subfault size in kilometres.
     aliases : {"nshm"}, optional
@@ -768,9 +770,12 @@ def build(config: RuptureConfig) -> Scenario:
     OSError
         If reading the geometry file fails.
     """
-    crs = pyproj.CRS(config.geometry.crs)
+    try:
+        crs = projected_crs(config.geometry.crs)
+    except RuptureGeneratorError as error:
+        raise RuptureGeneratorError(f"geometry.crs: {error}") from error
     aliases = NSHM_ALIASES if config.geometry.aliases == "nshm" else None
-    with open(config.geometry.path, encoding="utf-8") as handle:
+    with Path(config.geometry.path).open(encoding="utf-8") as handle:
         coarse = geometry_from_geojson(handle, crs, aliases=aliases)
     charts = {
         name: chart.subdivide(config.geometry.spacing_km)

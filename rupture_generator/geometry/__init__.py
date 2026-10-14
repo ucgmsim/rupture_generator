@@ -1,5 +1,6 @@
 """Fault geometry: one chart type, and the GeoJSON sections that build it."""
 
+from rupture_generator.geometry.crs import check_coverage, projected_crs
 from rupture_generator.geometry.geojson import (
     NSHM_ALIASES,
     Segment,
@@ -21,5 +22,7 @@ __all__ = [
     "Geometry",
     "NodeArray",
     "Segment",
+    "check_coverage",
     "geometry_from_geojson",
+    "projected_crs",
 ]

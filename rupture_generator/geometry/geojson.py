@@ -17,6 +17,7 @@ import numpy as np
 import pyproj
 
 from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.geometry.crs import check_coverage, projected_crs
 from rupture_generator.geometry.geometry import Geometry
 
 type TraceArray = np.ndarray[tuple[int, int], np.dtype[np.float64]]
@@ -226,7 +227,10 @@ def _named(feature: Mapping[str, Any]) -> str:
 
 
 def geometry_from_geojson(
-    handle: TextIO, crs: pyproj.CRS, *, aliases: Mapping[str, str] | None = None
+    handle: TextIO,
+    crs: pyproj.CRS | str,
+    *,
+    aliases: Mapping[str, str] | None = None,
 ) -> dict[str, Geometry]:
     """Read a ``FeatureCollection`` of sections into coarse charts, keyed by name.
 
@@ -234,9 +238,11 @@ def geometry_from_geojson(
     ----------
     handle : TextIO
         The open GeoJSON document.
-    crs : pyproj.CRS
+    crs : pyproj.CRS or str
         The projected frame to build the charts in, which their
-        :class:`~rupture_generator.rupture.realisation.Realisation` then records.
+        :class:`~rupture_generator.rupture.realisation.Realisation` then records. It
+        must measure in metres and cover the sections' region, as
+        :func:`~rupture_generator.geometry.crs.check_coverage` checks.
     aliases : Mapping[str, str] or None
         Property names to rename before reading them, as in
         :meth:`Segment.from_feature`.
@@ -250,9 +256,10 @@ def geometry_from_geojson(
     ------
     RuptureGeneratorError
         Unless the document is JSON, and a collection of ``LineString`` sections with
-        distinct names.
+        distinct names, in the region a projected CRS in metres covers.
     """
-    transformer = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    frame = projected_crs(crs)
+    transformer = pyproj.Transformer.from_crs("EPSG:4326", frame, always_xy=True)
 
     def _hook(obj: dict[str, Any]) -> Any:
         match obj:
@@ -272,13 +279,14 @@ def geometry_from_geojson(
                     raise RuptureGeneratorError(
                         "a FeatureCollection of sections holds only Features"
                     )
-                charts = {
+                traces = {segment.name: segment.trace for segment in segments}
+                if len(traces) != len(segments):
+                    raise RuptureGeneratorError("two sections share a name")
+                check_coverage(frame, traces)
+                return {
                     segment.name: segment.to_geometry(transformer)
                     for segment in segments
                 }
-                if len(charts) != len(segments):
-                    raise RuptureGeneratorError("two sections share a name")
-                return charts
             case _:
                 return obj
 

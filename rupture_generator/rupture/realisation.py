@@ -8,6 +8,7 @@ import pyproj
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import Geometry
+from rupture_generator.geometry.crs import projected_crs
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,7 +82,7 @@ class Realisation[S](Mapping[str, S]):
     segments : Mapping of str to S
         Each segment's value, by name.
     crs : pyproj.CRS
-        The projected frame every chart's positions are in.
+        The projected frame, in metres, every chart's positions are in.
     hypocentre : Hypocentre or None
         Where the rupture nucleates. A system of one segment needs nothing more.
     tree : Mapping of str to str or None
@@ -99,11 +100,9 @@ class Realisation[S](Mapping[str, S]):
         """Check the invariants."""
         if not self.segments:
             raise RuptureGeneratorError("a realisation needs at least one segment")
-        if not self.crs.is_projected:
-            raise RuptureGeneratorError(
-                f"{self.crs.to_string()!r} is not a projected CRS; positions are "
-                "kilometres, so the frame has to be one"
-            )
+        # A realisation holds charts and not traces. geometry_from_geojson checks
+        # coverage on the traces.
+        object.__setattr__(self, "crs", projected_crs(self.crs))
         if self.hypocentre and self.hypocentre.segment not in self.segments:
             raise RuptureGeneratorError(
                 f"the rupture starts on {self.hypocentre.segment!r}, which is not one "
