@@ -28,9 +28,13 @@ from rupture_generator.errors import RuptureGeneratorError
 type SpatialField = Callable[[np.ndarray], np.ndarray]
 """Given positions, ``(..., 3)``, one value per position, ``(...)``.
 
-Positions are a chart's own: east, north and depth in kilometres in the realisation's
-projected CRS, depth positive down. A field that depends only on depth reads
-``positions_km[..., 2]``.
+Positions are a chart's own: east and north in kilometres in the realisation's
+projected CRS, and depth in kilometres below sea level, positive down. A field that
+depends only on depth reads ``positions_km[..., 2]``.
+
+A field doesn't record or check a CRS. The caller builds it in the realisation's CRS:
+a velocity model on another grid has to be reprojected into that CRS first, or it
+reads the rock at the wrong places without any error.
 """
 
 DEPTH = 2
@@ -64,6 +68,10 @@ def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.n
 @dataclasses.dataclass(frozen=True)
 class Medium:
     """Shear speed and density of the rock, defined everywhere on the fault.
+
+    It's up to the caller to build both fields in the realisation's projected CRS,
+    because the medium itself doesn't record or check one. Positions follow
+    :data:`SpatialField`, with depth in kilometres below sea level and positive down.
 
     For a coupled field that derives shear speed and density together, you
     should introduce a caching layer to ensure that repeated sampling of shear
