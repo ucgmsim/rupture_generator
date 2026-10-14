@@ -1,17 +1,22 @@
 """A rupture described in a TOML file, and the inputs :func:`generate` takes built from it.
 
 This module is an adapter over the library and nothing in the library imports it.
-Settings that are already plain data, such as the parts of :class:`RuptureSettings`,
-the correlation relation and the jump model, are the library's own classes. A subclass
-that restates no field makes each one strict about unknown keys, so the library
-defines every default once. A small class here builds whatever the file describes
+The default models of :class:`~rupture_generator.rupture.models.RuptureModel`, the
+correlation relation and the jump model are the library's own classes. A subclass makes
+each one strict about unknown keys, and the library still defines every default once. A
+subclass restates a field only to read a depth profile where the library takes any
+function of position. A small class here builds whatever the file describes
 declaratively and the library takes as a function: a depth profile, or a medium.
 
+The file configures the default models alone. Any other model comes in through the
+library.
+
 A ``[segments.<name>]`` table overrides the global settings on one segment. Its
-``slip``, ``rise``, ``rake``, ``timing`` and ``profiles`` tables, and its
+``slip``, ``rise``, ``rake``, ``speed`` and ``perturbation`` tables, and its
 ``correlation`` table for the source's, each start from the global table and replace
-the keys they give. A profile replaces the global profile whole. :func:`load` does
-this merge. A loaded config stores each segment's tables in full.
+the keys they give. A depth profile, one key of its table, replaces the global profile
+whole. :func:`load` does this merge. A loaded config stores each segment's tables in
+full.
 
 :func:`load` reads and checks a file, and :func:`build` turns it into a
 :class:`Scenario`. :func:`dump` writes a loaded config back out with every default
@@ -39,21 +44,11 @@ from mashumaro.types import Discriminator
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
-    CellArray,
     Geometry,
     geometry_from_geojson,
     projected_crs,
 )
-from rupture_generator.rupture.generator import (
-    FaultProfiles,
-    PulseSettings,
-    RakeSettings,
-    RiseSettings,
-    RuptureSettings,
-    SlipSettings,
-    TimingSettings,
-    check_seed,
-)
+from rupture_generator.rupture.generator import check_seed
 from rupture_generator.rupture.medium import (
     Layers,
     Medium,
@@ -62,6 +57,15 @@ from rupture_generator.rupture.medium import (
     interpolated_field,
     layered_medium,
     ramp_field,
+)
+from rupture_generator.rupture.models import (
+    CorrelatedPerturbation,
+    CorrelatedRise,
+    DrawnSlip,
+    GaussianRake,
+    PulseSettings,
+    RuptureModel,
+    ShearFractionSpeed,
 )
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
@@ -80,34 +84,6 @@ class _Strict(BaseConfig):
 
 
 # ------------------------------------------- the library's own settings, made strict
-
-
-@dataclasses.dataclass(frozen=True)
-class Slip(SlipSettings):
-    """``[slip]``: :class:`~rupture_generator.rupture.generator.SlipSettings`."""
-
-    Config = _Strict
-
-
-@dataclasses.dataclass(frozen=True)
-class Rise(RiseSettings):
-    """``[rise]``: :class:`~rupture_generator.rupture.generator.RiseSettings`."""
-
-    Config = _Strict
-
-
-@dataclasses.dataclass(frozen=True)
-class Rake(RakeSettings):
-    """``[rake]``: :class:`~rupture_generator.rupture.generator.RakeSettings`."""
-
-    Config = _Strict
-
-
-@dataclasses.dataclass(frozen=True)
-class Timing(TimingSettings):
-    """``[timing]``: :class:`~rupture_generator.rupture.generator.TimingSettings`."""
-
-    Config = _Strict
 
 
 @dataclasses.dataclass(frozen=True)
@@ -157,6 +133,21 @@ class Constant:
         """
         return constant_field(self.value)
 
+    def __call__(self, positions: np.ndarray) -> np.ndarray:
+        """Read the profile at positions, as a :data:`SpatialField` does.
+
+        Parameters
+        ----------
+        positions : numpy.ndarray
+            Positions ``(..., 3)``, depth last in kilometres.
+
+        Returns
+        -------
+        numpy.ndarray
+            The value at each position ``(...)``.
+        """
+        return self.field()(positions)
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Profile:
@@ -186,6 +177,21 @@ class Profile:
             The values interpolated at each position's depth.
         """
         return interpolated_field(np.array(self.depth_km), np.array(self.values))
+
+    def __call__(self, positions: np.ndarray) -> np.ndarray:
+        """Read the profile at positions, as a :data:`SpatialField` does.
+
+        Parameters
+        ----------
+        positions : numpy.ndarray
+            Positions ``(..., 3)``, depth last in kilometres.
+
+        Returns
+        -------
+        numpy.ndarray
+            The values interpolated at each position's depth ``(...)``.
+        """
+        return self.field()(positions)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -223,10 +229,84 @@ class Ramp:
         """
         return ramp_field(self.centre_km, self.half_width_km, self.shallow, self.deep)
 
+    def __call__(self, positions: np.ndarray) -> np.ndarray:
+        """Read the profile at positions, as a :data:`SpatialField` does.
+
+        Parameters
+        ----------
+        positions : numpy.ndarray
+            Positions ``(..., 3)``, depth last in kilometres.
+
+        Returns
+        -------
+        numpy.ndarray
+            The ramp at each position's depth ``(...)``.
+        """
+        return self.field()(positions)
+
 
 type DepthProfile = Annotated[
     Constant | Profile | Ramp, Discriminator(field="type", include_supertypes=True)
 ]
+
+UNMODIFIED = Constant(value=1.0)
+"""The profile that leaves what it scales unmodified."""
+
+
+# ----------------------------------------------------------- the default models
+
+
+@dataclasses.dataclass(frozen=True)
+class Slip(DrawnSlip):
+    """``[slip]``: :class:`~rupture_generator.rupture.models.DrawnSlip`."""
+
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Rise(CorrelatedRise):
+    """``[rise]``: :class:`~rupture_generator.rupture.models.CorrelatedRise`.
+
+    Parameters
+    ----------
+    factor : DepthProfile
+        ``[rise.factor]``, the relative rise time.
+    slip_weight : DepthProfile
+        ``[rise.slip_weight]``, how much of rise time's correlation with slip is the
+        configured value.
+    """
+
+    factor: DepthProfile = UNMODIFIED
+    slip_weight: DepthProfile = UNMODIFIED
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Rake(GaussianRake):
+    """``[rake]``: :class:`~rupture_generator.rupture.models.GaussianRake`."""
+
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Speed(ShearFractionSpeed):
+    """``[speed]``: :class:`~rupture_generator.rupture.models.ShearFractionSpeed`.
+
+    Parameters
+    ----------
+    factor : DepthProfile
+        ``[speed.factor]``, the factor on the front's speed.
+    """
+
+    factor: DepthProfile = UNMODIFIED
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Perturbation(CorrelatedPerturbation):
+    """``[perturbation]``: :class:`~rupture_generator.rupture.models.CorrelatedPerturbation`."""
+
+    Config = _Strict
 
 
 # ----------------------------------------------------------------------- tables
@@ -331,46 +411,6 @@ class MediumConfig:
             Layers(np.array(self.bottom_depth_km)),
             np.array(self.shear_speed_km_s),
             np.array(self.density_g_cm3),
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class ProfilesConfig:
-    """``[profiles]``: the fault profiles, each a depth profile.
-
-    Each one maps to a field of
-    :class:`~rupture_generator.rupture.generator.FaultProfiles`, and leaving it out
-    leaves that setting unmodified.
-
-    Parameters
-    ----------
-    rise_time_factor : DepthProfile, optional
-        The relative rise time.
-    rise_time_slip_weight : DepthProfile, optional
-        How much of rise time's correlation with slip is the configured value.
-    rupture_speed_factor : DepthProfile, optional
-        The factor on the front's speed.
-    """
-
-    rise_time_factor: DepthProfile | None = None
-    rise_time_slip_weight: DepthProfile | None = None
-    rupture_speed_factor: DepthProfile | None = None
-    Config = _Strict
-
-    def profiles(self) -> FaultProfiles:
-        """Build the fault profiles the table gives.
-
-        Returns
-        -------
-        FaultProfiles
-            The profiles given, as functions of position, and the rest unmodified.
-        """
-        return FaultProfiles(
-            **{
-                field.name: profile.field()
-                for field in dataclasses.fields(self)
-                if (profile := getattr(self, field.name)) is not None
-            }
         )
 
 
@@ -527,26 +567,20 @@ class SegmentConfig:
         ``[segments.<name>.rise]``.
     rake : Rake, optional
         ``[segments.<name>.rake]``.
-    timing : Timing, optional
-        ``[segments.<name>.timing]``.
-    profiles : ProfilesConfig, optional
-        ``[segments.<name>.profiles]``.
+    speed : Speed, optional
+        ``[segments.<name>.speed]``.
+    perturbation : Perturbation, optional
+        ``[segments.<name>.perturbation]``.
     correlation : Correlation, optional
         ``[segments.<name>.correlation]``, over the source's.
-    slip_path : Path, optional
-        A ``.npy`` file of slip to keep on this segment, in metres, shaped like its
-        cells after subdivision. A relative path is relative to the config file.
-        :func:`~rupture_generator.rupture.generator.generate_segment` states what a
-        given slip changes.
     """
 
     slip: Slip | None = None
     rise: Rise | None = None
     rake: Rake | None = None
-    timing: Timing | None = None
-    profiles: ProfilesConfig | None = None
+    speed: Speed | None = None
+    perturbation: Perturbation | None = None
     correlation: Correlation | None = None
-    slip_path: Path | None = None
     Config = _Strict
 
 
@@ -568,16 +602,16 @@ class RuptureConfig:
         ``[source]``.
     propagation : Predetermined or Sampled or Likeliest, optional
         ``[propagation]``, which a single-segment rupture can leave out.
-    profiles : ProfilesConfig
-        ``[profiles]``.
     slip : Slip
         ``[slip]``.
     rise : Rise
         ``[rise]``.
     rake : Rake
         ``[rake]``.
-    timing : Timing
-        ``[timing]``.
+    speed : Speed
+        ``[speed]``.
+    perturbation : Perturbation
+        ``[perturbation]``.
     pulse : PulseConfig
         ``[pulse]``.
     segments : dict of str to SegmentConfig
@@ -590,11 +624,11 @@ class RuptureConfig:
     medium: MediumConfig
     source: SourceConfig
     propagation: PropagationConfig | None = None
-    profiles: ProfilesConfig = dataclasses.field(default_factory=ProfilesConfig)
     slip: Slip = dataclasses.field(default_factory=Slip)
     rise: Rise = dataclasses.field(default_factory=Rise)
     rake: Rake = dataclasses.field(default_factory=Rake)
-    timing: Timing = dataclasses.field(default_factory=Timing)
+    speed: Speed = dataclasses.field(default_factory=Speed)
+    perturbation: Perturbation = dataclasses.field(default_factory=Perturbation)
     pulse: PulseConfig = dataclasses.field(default_factory=PulseConfig)
     segments: dict[str, SegmentConfig] = dataclasses.field(default_factory=dict)
     Config = _Strict
@@ -650,8 +684,8 @@ def _table(table: object) -> dict[str, Any]:
 def _merged(document: dict[str, Any], overrides: object) -> dict[str, Any]:
     """Fill one ``[segments.<name>]`` table in from the global tables it overrides.
 
-    Each of its tables replaces the keys it gives, so a profile, which is one key of
-    ``profiles``, replaces the global profile whole.
+    Each of its tables replaces the keys it gives, so a depth profile, which is one key
+    of its table, replaces the global profile whole.
 
     Raises
     ------
@@ -726,15 +760,7 @@ def load(path: str | Path) -> RuptureConfig:
     geometry = dataclasses.replace(
         config.geometry, path=(path.parent / config.geometry.path).resolve()
     )
-    segments = {
-        name: segment
-        if segment.slip_path is None
-        else dataclasses.replace(
-            segment, slip_path=(path.parent / segment.slip_path).resolve()
-        )
-        for name, segment in _segments(document).items()
-    }
-    return dataclasses.replace(config, geometry=geometry, segments=segments)
+    return dataclasses.replace(config, geometry=geometry, segments=_segments(document))
 
 
 def dump(config: RuptureConfig) -> str:
@@ -768,24 +794,21 @@ class Scenario:
         The rock.
     sources : dict of str to SegmentSource
         Each segment's source, by name.
-    settings : RuptureSettings or dict of str to RuptureSettings
+    model : RuptureModel or dict of str to RuptureModel
         How to draw each field: one for every segment, or one per segment by name
         when the config has ``[segments]`` tables.
     jump_model : JumpModel
         How far each jump can cover.
     seed : int
         The seed every random draw derives from.
-    slips : dict of str to CellArray
-        Slip read from each segment's ``slip_path``, in metres.
     """
 
     realisation: Realisation[Geometry]
     medium: Medium
     sources: dict[str, SegmentSource]
-    settings: RuptureSettings | dict[str, RuptureSettings]
+    model: RuptureModel | dict[str, RuptureModel]
     jump_model: JumpModel
     seed: int
-    slips: dict[str, CellArray] = dataclasses.field(default_factory=dict)
 
 
 def _sources(
@@ -862,18 +885,15 @@ def _propagated(
             return likeliest_path(realisation, hypocentre, model=propagation.model)
 
 
-def _settings(
+def _models(
     config: RuptureConfig, realisation: Realisation[Geometry]
-) -> RuptureSettings | dict[str, RuptureSettings]:
+) -> RuptureModel | dict[str, RuptureModel]:
     unknown = sorted(set(config.segments) - set(realisation))
     if unknown:
         raise RuptureGeneratorError(f"segments: {unknown} are not segments")
-    shared = RuptureSettings(
-        slip=config.slip,
-        rise=config.rise,
-        rake=config.rake,
-        timing=config.timing,
-        profiles=config.profiles.profiles(),
+    keys = ("slip", "rise", "rake", "speed", "perturbation")
+    shared = RuptureModel(
+        **{key: getattr(config, key) for key in keys},
         pulse=PulseSettings(
             dt_s=config.pulse.dt_s,
             beta=None if config.pulse.beta is None else config.pulse.beta.field(),
@@ -881,37 +901,14 @@ def _settings(
     )
     if not config.segments:
         return shared
-    settings = {}
+    models = {}
     for name in realisation:
         segment = config.segments.get(name, SegmentConfig())
         given = {
-            key: value
-            for key in ("slip", "rise", "rake", "timing")
-            if (value := getattr(segment, key)) is not None
+            key: value for key in keys if (value := getattr(segment, key)) is not None
         }
-        if segment.profiles is not None:
-            given["profiles"] = segment.profiles.profiles()
-        settings[name] = dataclasses.replace(shared, **given)
-    return settings
-
-
-def _slip(path: Path) -> CellArray:
-    """Read a slip from a ``.npy`` file, as data alone.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        If the file isn't a plain array of numbers.
-    OSError
-        If reading the file fails.
-    """
-    try:
-        slip_m = np.load(path, allow_pickle=False)
-    except ValueError as error:
-        raise RuptureGeneratorError(f"{path} is not a .npy array: {error}") from error
-    if not isinstance(slip_m, np.ndarray) or not np.issubdtype(slip_m.dtype, np.number):
-        raise RuptureGeneratorError(f"{path} is not a .npy array of numbers")
-    return slip_m.astype(np.float64)
+        models[name] = dataclasses.replace(shared, **given)
+    return models
 
 
 def build(config: RuptureConfig) -> Scenario:
@@ -970,14 +967,9 @@ def build(config: RuptureConfig) -> Scenario:
         ),
         medium=medium,
         sources=_sources(config.source, realisation, medium, config.segments),
-        settings=_settings(config, realisation),
+        model=_models(config, realisation),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,
-        slips={
-            name: _slip(segment.slip_path)
-            for name, segment in config.segments.items()
-            if segment.slip_path is not None
-        },
     )
 
 

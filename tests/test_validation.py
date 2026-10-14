@@ -8,15 +8,16 @@ import pyproj
 import pytest
 
 from rupture_generator import (
+    CorrelatedPerturbation,
+    CorrelatedRise,
+    DrawnSlip,
+    GaussianRake,
     Geometry,
     Hypocentre,
     Layers,
-    RakeSettings,
     Realisation,
-    RiseSettings,
     RuptureGeneratorError,
-    SlipSettings,
-    TimingSettings,
+    ShearFractionSpeed,
     geometry_from_geojson,
     interpolated_field,
     layered_field,
@@ -68,12 +69,13 @@ def _read(*features, document=None):
 @pytest.mark.parametrize(
     ("build", "message"),
     [
-        (lambda: RiseSettings(slip_exponent=0.05), "slip exponent"),
-        (lambda: RiseSettings(correlation=1.5), "correlation lies in"),
-        (lambda: RakeSettings(sigma_deg=-1.0), "no sign"),
-        (lambda: TimingSettings(velocity_fraction=0.0), "velocity fraction"),
-        (lambda: TimingSettings(offset_s=-0.1), "magnitudes"),
-        (lambda: TimingSettings(blend_sigma=0.0), "no width"),
+        (lambda: CorrelatedRise(slip_exponent=0.05), "slip exponent"),
+        (lambda: CorrelatedRise(correlation=1.5), "correlation lies in"),
+        (lambda: GaussianRake(sigma_deg=-1.0), "no sign"),
+        (lambda: ShearFractionSpeed(velocity_fraction=0.0), "velocity fraction"),
+        (lambda: CorrelatedPerturbation(offset_s=-0.1), "magnitudes"),
+        (lambda: CorrelatedPerturbation(blend_sigma=0.0), "no width"),
+        (lambda: CorrelatedPerturbation(correlation=-1.5), "correlation lies in"),
     ],
 )
 def test_settings_out_of_range_are_refused(build, message):
@@ -100,7 +102,7 @@ def test_a_marginal_its_family_cannot_have_is_refused(family, cov, maximum, mess
 
 def test_slip_cannot_follow_a_normal():
     with pytest.raises(RuptureGeneratorError, match="slip values are positive"):
-        SlipSettings(family="normal")
+        DrawnSlip(family="normal")
 
 
 # ------------------------------------------------------------------- geometry

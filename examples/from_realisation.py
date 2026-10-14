@@ -52,13 +52,12 @@ from rupture_generator.config import (
     PerFault,
     Predetermined,
     Profile,
-    ProfilesConfig,
     PulseConfig,
     Ramp,
     Rise,
     RuptureConfig,
     Slip,
-    Timing,
+    Speed,
 )
 from rupture_generator.rupture.source import moment_from_magnitude
 
@@ -189,24 +188,24 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
         propagation=Predetermined(
             parents={child: parent for child, parent in tree.items() if parent}
         ),
-        profiles=ProfilesConfig(
-            rise_time_factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
-            rise_time_slip_weight=Ramp(
-                centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0
-            ),
-            rupture_speed_factor=Profile(
-                depth_km=transitions,
-                values=[velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]],
-            ),
-        ),
         slip=Slip(
             coefficient_of_variation=srf["slip_sigma"],
             side_taper=srf["side_taper"],
             top_taper=srf["top_taper"],
             bottom_taper=srf["bot_taper"],
         ),
-        rise=Rise(coefficient=srf["risetime_coef"]),
-        timing=Timing(velocity_fraction=velocity["rvfrac"]),
+        rise=Rise(
+            coefficient=srf["risetime_coef"],
+            factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
+            slip_weight=Ramp(centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0),
+        ),
+        speed=Speed(
+            velocity_fraction=velocity["rvfrac"],
+            factor=Profile(
+                depth_km=transitions,
+                values=[velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]],
+            ),
+        ),
         pulse=PulseConfig(
             beta=Ramp(centre_km=2.0, half_width_km=1.0, shallow=0.5, deep=0.13)
         ),

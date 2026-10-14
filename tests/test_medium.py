@@ -4,10 +4,11 @@ import numpy as np
 import pytest
 
 from rupture_generator import (
-    FaultProfiles,
+    CorrelatedRise,
     Layers,
     Medium,
     RuptureGeneratorError,
+    ShearFractionSpeed,
     constant_field,
     generate,
     layered_medium,
@@ -38,24 +39,23 @@ def test_fields_take_any_leading_shape():
 
 
 @pytest.mark.parametrize(
-    ("profile", "value", "message"),
+    ("model", "profile", "value", "message"),
     [
-        ("rise_time_slip_weight", 1.5, "slip weight"),
-        ("rupture_speed_factor", 0.0, "rupture speed factor"),
-        ("rise_time_factor", -1.0, "rise-time factor"),
+        ("rise", "slip_weight", 1.5, "slip weight"),
+        ("speed", "factor", 0.0, "rupture speed factor"),
+        ("rise", "factor", -1.0, "rise-time factor"),
     ],
 )
-def test_a_profile_out_of_range_is_refused(scenario, profile, value, message):
-    profiles = dataclasses.replace(
-        scenario.settings.profiles, **{profile: constant_field(value)}
+def test_a_profile_out_of_range_is_refused(scenario, model, profile, value, message):
+    changed = dataclasses.replace(
+        getattr(scenario.model, model), **{profile: constant_field(value)}
     )
-    settings = dataclasses.replace(scenario.settings, profiles=profiles)
     with pytest.raises(RuptureGeneratorError, match=message):
         generate(
             scenario.realisation,
             scenario.medium,
             scenario.sources,
-            settings,
+            dataclasses.replace(scenario.model, **{model: changed}),
             seed=scenario.seed,
         )
 
@@ -67,16 +67,16 @@ def test_a_medium_that_is_not_rock_is_refused(scenario):
             scenario.realisation,
             medium,
             scenario.sources,
-            scenario.settings,
+            scenario.model,
             seed=scenario.seed,
         )
 
 
 def test_profiles_default_to_unmodified():
-    profiles = FaultProfiles()
+    rise = CorrelatedRise()
     positions = np.zeros((3, 3))
-    for field in dataclasses.fields(profiles):
-        np.testing.assert_array_equal(getattr(profiles, field.name)(positions), 1.0)
+    for profile in (rise.factor, rise.slip_weight, ShearFractionSpeed().factor):
+        np.testing.assert_array_equal(profile(positions), 1.0)
 
 
 def test_a_crossing_through_no_rock_is_refused():

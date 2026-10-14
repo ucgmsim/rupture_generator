@@ -1,8 +1,8 @@
 """Each segment's moment, rake and slip-patch size, derived from its magnitude.
 
 A :class:`SegmentSource` is the part of a rupture that differs from segment to segment.
-Everything the segments share is
-:class:`~rupture_generator.rupture.generator.RuptureSettings`. The functions here
+A :class:`~rupture_generator.rupture.models.RuptureModel` draws the fields from
+it. The functions here
 derive sources from magnitudes, which is how a hazard model states them.
 
 References

@@ -35,7 +35,7 @@ def ruptures(scenario: config.Scenario) -> Realisation[SegmentRupture]:
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
         jump_propagation_model=scenario.jump_model,
     )

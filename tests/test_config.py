@@ -20,14 +20,40 @@ def test_dump_round_trips(tmp_path):
 
 
 def test_defaults_are_the_librarys():
-    from rupture_generator import RuptureSettings
+    from rupture_generator import (
+        CorrelatedPerturbation,
+        CorrelatedRise,
+        DrawnSlip,
+        GaussianRake,
+        RuptureModel,
+        ShearFractionSpeed,
+    )
 
     loaded = rupture_config.load(EXAMPLE)
-    library = RuptureSettings()
-    # The config's classes are subclasses, so compare values rather than objects.
-    assert dataclasses.astuple(loaded.rise) == dataclasses.astuple(library.rise)
-    assert dataclasses.astuple(loaded.timing) == dataclasses.astuple(library.timing)
-    assert loaded.slip.side_taper == library.slip.side_taper
+    library = RuptureModel()
+    assert library == RuptureModel(
+        DrawnSlip(),
+        CorrelatedRise(),
+        GaussianRake(),
+        ShearFractionSpeed(),
+        CorrelatedPerturbation(),
+    )
+    # The config's classes are subclasses, so compare values rather than objects. The
+    # example gives its own depth profiles, and the file's profiles are tables where
+    # the library's are functions.
+    for name in ("rise", "rake", "speed", "perturbation"):
+        theirs = getattr(library, name)
+        for field in dataclasses.fields(theirs):
+            if field.name not in {"factor", "slip_weight"}:
+                assert getattr(getattr(loaded, name), field.name) == getattr(
+                    theirs, field.name
+                )
+    assert loaded.slip.side_taper == DrawnSlip().side_taper
+    positions = np.zeros((2, 3))
+    for profile in (rupture_config.Rise().factor, rupture_config.Speed().factor):
+        np.testing.assert_array_equal(
+            profile(positions), CorrelatedRise().factor(positions)
+        )
 
 
 @pytest.mark.parametrize(
@@ -50,7 +76,7 @@ def test_defaults_are_the_librarys():
         (
             "centre_km = 2.0",
             'centre_km = "two"',
-            "profiles.rise_time_slip_weight.centre_km:",
+            "rise.slip_weight.centre_km:",
         ),
         (
             "dip_fraction = 0.5\n",
@@ -161,15 +187,18 @@ SEGMENTS = EXAMPLE.with_name("two_faults_segments.toml")
 def test_a_segment_table_overrides_the_global_one():
     loaded = rupture_config.load(SEGMENTS)
     scenario = rupture_config.build(loaded)
-    assert isinstance(scenario.settings, dict)
-    bent, following = scenario.settings["bent"], scenario.settings["next"]
-    assert bent.slip == loaded.slip and bent.timing == loaded.timing
+    assert isinstance(scenario.model, dict)
+    bent, following = scenario.model["bent"], scenario.model["next"]
+    assert bent.slip == loaded.slip and bent.speed == loaded.speed
+    assert isinstance(following.slip, rupture_config.Slip)
+    assert isinstance(following.speed, rupture_config.Speed)
     assert following.slip.coefficient_of_variation == 0.6
     # The keys the segment's table leaves out are the global table's.
     assert following.slip.bottom_taper == loaded.slip.bottom_taper == 0.02
-    assert following.timing.velocity_fraction == 0.7
-    assert following.timing.correlation == loaded.timing.correlation
+    assert following.speed.velocity_fraction == 0.7
+    assert following.speed.factor == loaded.speed.factor
     assert following.rise == bent.rise
+    assert following.perturbation == bent.perturbation
 
     default = rupture_config.build(rupture_config.load(EXAMPLE))
     assert scenario.sources["bent"] == default.sources["bent"]
@@ -183,14 +212,15 @@ def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):
     path = tmp_path / "profiles.toml"
     path.write_text(
         BASE.replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
-        + "\n[segments.next.profiles.rise_time_slip_weight]\n"
+        + "\n[segments.next.rise.slip_weight]\n"
         'type = "constant"\nvalue = 0.5\n'
     )
     loaded = rupture_config.load(path)
-    profiles = loaded.segments["next"].profiles
-    assert profiles is not None
-    assert profiles.rise_time_slip_weight == rupture_config.Constant(value=0.5)
-    assert profiles.rupture_speed_factor == loaded.profiles.rupture_speed_factor
+    rise = loaded.segments["next"].rise
+    assert rise is not None
+    assert rise.slip_weight == rupture_config.Constant(value=0.5)
+    assert rise.factor == loaded.rise.factor
+    assert rise.coefficient == loaded.rise.coefficient
 
 
 def test_segment_tables_survive_the_record(tmp_path):
@@ -224,17 +254,17 @@ def test_segment_tables_survive_the_record(tmp_path):
         (
             "velocity_fraction = 0.7",
             "velocity_fractio = 0.7",
-            "segments.next.timing: has unknown keys ['velocity_fractio']",
+            "segments.next.speed: has unknown keys ['velocity_fractio']",
         ),
         (
-            "[segments.next.timing]",
-            "[segments.next.timin]",
-            "segments.next: has unknown keys ['timin']",
+            "[segments.next.speed]",
+            "[segments.next.sped]",
+            "segments.next: has unknown keys ['sped']",
         ),
         (
             "velocity_fraction = 0.7",
             "velocity_fraction = 7.0",
-            "segments.next.timing: a velocity fraction lies in",
+            "segments.next.speed: a velocity fraction lies in",
         ),
     ],
 )
@@ -254,41 +284,7 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
     path.write_text(
         SEGMENTS.read_text()
         .replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
-        .replace("[segments.next.timing]", "[segments.nxt.timing]")
+        .replace("[segments.next.speed]", "[segments.nxt.speed]")
     )
     with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
-        rupture_config.build(rupture_config.load(path))
-
-
-def _coarse(tmp_path, extra=""):
-    path = tmp_path / "coarse.toml"
-    path.write_text(
-        BASE.replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
-        .replace("spacing_km = 0.1", "spacing_km = 0.5")
-        .replace("[slip]\n", f"{extra}\n[slip]\n")
-    )
-    return path
-
-
-def test_a_slip_file_keeps_its_slip_on_its_segment(tmp_path, ruptures):
-    from rupture_generator.cli import main
-
-    slip_m = ruptures["next"].slip_m[:, ::-1]
-    np.save(tmp_path / "next.npy", slip_m)
-    path = _coarse(tmp_path, '[segments.next]\nslip_path = "next.npy"\n')
-    loaded = rupture_config.load(path)
-    assert loaded.segments["next"].slip_path == tmp_path / "next.npy"
-    slips = rupture_config.build(loaded).slips
-    assert set(slips) == {"next"}
-    assert np.array_equal(slips["next"], slip_m)
-
-    output = tmp_path / "out.srf"
-    assert main([str(path), str(output)]) == 0
-    assert rupture_config.load(output.with_name("out.srf.toml")) == loaded
-
-
-def test_a_slip_file_is_read_as_data_alone(tmp_path):
-    np.save(tmp_path / "next.npy", np.array([{"a": 1}], dtype=object))
-    path = _coarse(tmp_path, '[segments.next]\nslip_path = "next.npy"\n')
-    with pytest.raises(RuptureGeneratorError, match="not a .npy array"):
         rupture_config.build(rupture_config.load(path))

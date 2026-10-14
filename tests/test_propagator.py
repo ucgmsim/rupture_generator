@@ -7,7 +7,7 @@ from rupture_generator import (
     JumpModel,
     Realisation,
     RuptureGeneratorError,
-    RuptureSettings,
+    RuptureModel,
     first_arrival,
     generate,
     likeliest_path,
@@ -154,7 +154,7 @@ def test_an_interior_jump_starts_the_splay_where_it_meets_the_interface(
         splayed.crs,
         hypocentre=splayed.hypocentre,
     )
-    parent = generate(alone, scenario.medium, sources, RuptureSettings(), seed=1)
+    parent = generate(alone, scenario.medium, sources, RuptureModel(), seed=1)
     parent = parent["interface"]
     seeds = {
         interior: first_arrival(

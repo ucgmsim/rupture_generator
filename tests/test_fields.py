@@ -42,7 +42,7 @@ def test_the_reader_restores_the_realisation(fields_path, ruptures):
         np.testing.assert_array_equal(back.speed_km_s, rupture.speed_km_s)
         assert back.beta is not None
         np.testing.assert_array_equal(back.beta, rupture.beta)
-        assert back.alpha_t == rupture.alpha_t
+        assert back.statistics == rupture.statistics
         assert back.dt_s == rupture.dt_s
 
 

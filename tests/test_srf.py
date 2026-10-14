@@ -87,7 +87,7 @@ def test_pulses_integrate_to_slip(srf, scenario):
     rows = np.diff(row_ptr)
     integral = (
         np.add.reduceat(parsed.slip_rate.values.astype(float), row_ptr[:-1][rows > 0])
-        * scenario.settings.pulse.dt_s
+        * scenario.model.pulse.dt_s
     )
     np.testing.assert_allclose(integral, parsed.points.slip1[rows > 0], rtol=1e-5)
 

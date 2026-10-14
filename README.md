@@ -46,11 +46,63 @@ charts = {
 }
 realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
 medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
-ruptures = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
+ruptures = generate(realisation, medium, sources, RuptureModel(), seed=seed)
 write_rupture(path, ruptures)
 ```
 
 `rupture_generator.config` builds the same inputs from a TOML file.
+
+## Extending
+
+A `RuptureModel` is five models, one per field: `slip`, `rise`, `rake`, `speed` and
+`perturbation`, the onset's displacement off the coherent front. Each is any callable
+with the arguments its protocol in `rupture_generator.rupture.models` states. The
+defaults are the Graves & Pitarka model, which the TOML file configures. Any other
+model comes in through the library. Its `pulse` holds the slip-rate sample
+interval and the pulse's rising fraction, which every segment's SRF rows follow.
+
+The generator hands each model a `SegmentContext`, the chart, source and rock, and
+a generator of its own. Replacing one model never changes the draws of any other.
+The generator checks what each model returns and computes the moment from the slip.
+It also solves the front and blends the displacement in. It refuses a slip whose
+moment magnitude lies more than 0.05 from the source's.
+
+Slip's latent field is the one link between models. Rise time and the displacement
+mix their own draws into it, at a Gaussian-copula correlation. Any slip gets such a
+latent from `gaussian_anamorphosis`, so a slip from elsewhere, such as an inversion,
+keeps its values, and the other models draw rise time, rake and onset around it:
+
+```python
+import dataclasses
+
+import numpy as np
+
+from rupture_generator import SegmentContext, SlipField, gaussian_anamorphosis
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class GivenSlip:
+    """A slip from elsewhere, in metres, on the segment's cells."""
+
+    slip_m: np.ndarray
+
+    def __call__(self, context: SegmentContext, rng: np.random.Generator) -> SlipField:
+        return SlipField(
+            slip_m=self.slip_m,
+            latent=gaussian_anamorphosis(self.slip_m, context.geometry.occupied),
+            # The scores have no covariance of their own; the source's is the
+            # nearest, and it is what the other models' draws use.
+            latent_covariance=context.source.covariance,
+        )
+```
+
+One model serves every segment, or a mapping gives each segment its own:
+
+```python
+models = {name: RuptureModel() for name in realisation}
+models["alpine"] = RuptureModel(slip=GivenSlip(inverted_slip_m))
+ruptures = generate(realisation, medium, sources, models, seed=seed)
+```
 
 ## Design
 
@@ -71,9 +123,9 @@ file loads directly and opens in QGIS.
 A segment reads the medium at its cell centres, and a jump reads it along the line it
 crosses. A 1-D velocity model is `layered_medium`, and a caller can pass any other
 field, a 3D model or a random medium realised up front. The settings the rupture
-itself varies with depth, such as rise-time and rupture-speed factors, are separate
-`FaultProfiles` inside `RuptureSettings`. In TOML these are the `[medium]` and
-`[profiles]` tables.
+itself varies with depth, such as rise-time and rupture-speed factors, belong to the
+model that uses them. In TOML these are the `[medium]` table, and the `factor` and
+`slip_weight` profiles of the `[rise]` and `[speed]` tables.
 
 **One field sampler.** Slip, rise time, rake and the onset displacement all come from
 one circulant-embedding sampler over a von Kármán covariance, as in Mai & Beroza 2002.
@@ -82,7 +134,8 @@ pre-corrects the covariance so that the configured correlation length applies to
 written field rather than to the latent one. genslip's `1 + cov * Z` clipped at zero
 is a normal with a point mass at zero, and matches neither the mean nor the spread its
 configuration asks for. Rise time and the onset displacement correlate with slip because
-they share its latent field.
+they share its latent field. Their correlations are between the latent fields, a Gaussian
+copula, so they mean the same thing whatever slip's marginal is.
 
 **A coherent front first, roughness after.** A factored fast-sweeping
 eikonal solve gives first arrivals over the rupture speed field, `|grad T| = 1/v`,
@@ -136,6 +189,8 @@ nearest gap. The earliest trigger time within that range is the child's seed.
 **Each segment draws from its own stream.** A segment's random generator derives from
 the event seed and the segment's name. Adding, removing, or reordering segments leaves
 every other segment's fields bit-identical, and so does changing how fronts jump.
+Within a segment, each model draws from a stream of its own, so replacing one
+model leaves every field that doesn't read it bit-identical.
 
 **SI throughout.** The package works in metres for slip, newton-metres for moment
 and square metres for area. The SRF format's centimetres appear only in
@@ -161,7 +216,8 @@ rupture_generator/
     geometry.py       Geometry: the chart, its cells and distances between charts
     geojson.py        GeoJSON sections into charts
   rupture/
-    generator.py      Slip, rise time, rake, onset, and the jump rule
+    generator.py      One segment's draw, the front, and the jump rule
+    models.py         The five models' protocols, and Graves & Pitarka's defaults
     medium.py         Medium, SpatialField and the 1-D velocity model
     propagator.py     The jump model, and which fault triggers which
     realisation.py    A fault system: charts, CRS, hypocentre and tree

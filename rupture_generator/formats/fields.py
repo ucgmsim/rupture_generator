@@ -12,8 +12,8 @@ The root group stores the projection as WKT in ``crs``, the hypocentre in
 them in, and ``parent`` names the segment that triggered each one, empty for the
 hypocentre's. Each segment is a group of its own name. Its cell fields are on
 ``(dip, strike)`` with their units in ``units``, its chart's nodes on ``(node_dip,
-node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its three
-statistics and its pulse's ``dt_s`` in attributes.
+node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its pulse's
+``dt_s`` and the statistics its models reported in attributes.
 """
 
 from collections.abc import Mapping
@@ -48,8 +48,6 @@ _FIELDS = {
     "density_g_cm3": "g cm-3",
 }
 """Each cell field of :class:`SegmentRupture`, with its units."""
-_SCALARS = ("alpha_t", "rise_time_mean_s", "onset_scale_s", "dt_s")
-"""Each scalar of :class:`SegmentRupture`, kept as an attribute."""
 _COMPRESSION = {"zlib": True, "complevel": 4}
 
 RECORD_ATTRIBUTE = "run_record"
@@ -78,7 +76,7 @@ def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
     dataset = xr.Dataset(
         variables,
         coords={"axis": _AXIS},
-        attrs={name: getattr(rupture, name) for name in _SCALARS},
+        attrs={"dt_s": rupture.dt_s, **rupture.statistics},
     )
     encoding = {
         str(name): _COMPRESSION
@@ -189,9 +187,14 @@ def _read(path: Path | str) -> tuple[Realisation[SegmentRupture], str | None]:
                     plane_cells=tuple(int(n) for n in group["plane_cells"].values),
                 )
                 values: dict[str, Any] = {f: group[f].values for f in _FIELDS}
-                values |= {s: float(group.attrs[s]) for s in _SCALARS}
-                values["beta"] = group["beta"].values if "beta" in group else None
-                segments[name] = SegmentRupture(geometry=geometry, **values)
+                attrs = {k: float(v) for k, v in group.attrs.items()}
+                segments[name] = SegmentRupture(
+                    geometry=geometry,
+                    **values,
+                    dt_s=attrs.pop("dt_s"),
+                    beta=group["beta"].values if "beta" in group else None,
+                    statistics=attrs,
+                )
             parents = (
                 {
                     name: str(parent) or None

@@ -36,7 +36,7 @@ bottom_taper = 0.02
 [segments.next.slip]
 coefficient_of_variation = 0.6
 
-[segments.next.timing]
+[segments.next.speed]
 velocity_fraction = 0.7
 
 [segments.next.correlation]
