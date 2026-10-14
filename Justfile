@@ -37,7 +37,7 @@ deptry:
 budget:
     @find rupture_generator -name '*.py' ! -name view.py | xargs wc -l | sort -rn
 
-# A rupture on the shipped crustal example, end to end.
+# A rupture on the shipped Alpine-Hope example, end to end.
+# Writes /tmp/alpine_hope.srf, and the config it ran as /tmp/alpine_hope.srf.toml.
 demo:
-    uv run rupture-generator mesh examples/alpine_hope.geometry.toml /tmp/alpine_hope.h5
-    uv run rupture-generator generate examples/crustal.toml /tmp/alpine_hope.h5 /tmp/rupture.srf
+    uv run rupture-generator examples/alpine_hope.toml /tmp/alpine_hope.srf
