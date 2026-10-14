@@ -7,26 +7,14 @@ import pytest
 import xarray as xr
 
 from rupture_generator import Realisation, RuptureGeneratorError
-from rupture_generator import config as rupture_config
 from rupture_generator.cli import main
 from rupture_generator.formats.fields import fields_to_srf, read_fields, write_fields
-
-from .conftest import EXAMPLE, SPACING_KM
 
 
 @pytest.fixture(scope="module")
 def fields_path(tmp_path_factory, ruptures):
     path = tmp_path_factory.mktemp("fields") / "rupture.h5"
     write_fields(path, ruptures)
-    return path
-
-
-@pytest.fixture
-def coarse_example(tmp_path):
-    loaded = rupture_config.load(EXAMPLE)
-    geometry = dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM)
-    path = tmp_path / "coarse.toml"
-    path.write_text(rupture_config.dump(dataclasses.replace(loaded, geometry=geometry)))
     return path
 
 
@@ -98,7 +86,8 @@ def test_the_cli_writes_fields_that_make_its_srf(tmp_path, coarse_example):
     direct, fields, made = (tmp_path / name for name in ("a.srf", "a.h5", "b.srf"))
     assert main([str(coarse_example), str(direct)]) == 0
     assert main([str(coarse_example), str(fields)]) == 0
-    assert fields.with_name("a.h5.toml").exists()
+    # The fields file keeps its record in its root attributes, not beside it.
+    assert not fields.with_name("a.h5.toml").exists()
     assert main([str(fields), str(made)]) == 0
     assert made.read_bytes() == direct.read_bytes()
 

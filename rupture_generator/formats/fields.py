@@ -16,6 +16,7 @@ group of its own name. Its cell fields are on ``(dip, strike)`` with their units
 attributes.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -87,6 +88,8 @@ def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
 def write_fields(
     path: Path | str,
     realisation: Realisation[SegmentRupture],
+    *,
+    attrs: Mapping[str, str | int | float] | None = None,
 ) -> None:
     """Write drawn segments, and what an SRF of them needs, as a DataTree in HDF5.
 
@@ -96,6 +99,8 @@ def write_fields(
         Where to write the file.
     realisation : Realisation of SegmentRupture
         The drawn fault system.
+    attrs : Mapping of str to str, int or float, optional
+        More attributes for the root, such as the run's record.
 
     Raises
     ------
@@ -113,9 +118,12 @@ def write_fields(
         raise RuptureGeneratorError(
             f"{awkward} contain '/', which separates the groups of {path}"
         )
-    attrs: dict[str, str | float] = {"crs": realisation.crs.to_wkt()}
+    root_attrs: dict[str, str | int | float] = {
+        **(attrs or {}),
+        "crs": realisation.crs.to_wkt(),
+    }
     if (hypocentre := realisation.hypocentre) is not None:
-        attrs |= {
+        root_attrs |= {
             "hypocentre_segment": hypocentre.segment,
             "hypocentre_strike_km": hypocentre.strike_km,
             "hypocentre_dip_km": hypocentre.dip_km,
@@ -126,7 +134,7 @@ def write_fields(
             "segment",
             [realisation.tree[name] or "" for name in names],
         )
-    groups: dict[str, xr.Dataset] = {"/": xr.Dataset(variables, attrs=attrs)}
+    groups: dict[str, xr.Dataset] = {"/": xr.Dataset(variables, attrs=root_attrs)}
     encoding: dict[str, dict[str, dict]] = {}
     for name, rupture in realisation.items():
         groups[name], encoding[f"/{name}"] = _segment(rupture)

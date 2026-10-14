@@ -19,6 +19,16 @@ def scenario() -> config.Scenario:
     return config.build(dataclasses.replace(loaded, geometry=geometry))
 
 
+@pytest.fixture
+def coarse_example(tmp_path):
+    """The example as a rupture file at the fixture's resolution."""
+    loaded = config.load(EXAMPLE)
+    geometry = dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM)
+    path = tmp_path / "coarse.toml"
+    path.write_text(config.dump(dataclasses.replace(loaded, geometry=geometry)))
+    return path
+
+
 @pytest.fixture(scope="session")
 def ruptures(scenario: config.Scenario) -> Realisation[SegmentRupture]:
     return generate(
