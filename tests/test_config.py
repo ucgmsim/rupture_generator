@@ -193,8 +193,9 @@ def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):
 
 
 def test_segment_tables_survive_the_record(tmp_path):
+    import srf
+
     from rupture_generator.cli import main
-    from rupture_generator.record import read_record
 
     loaded = rupture_config.load(SEGMENTS)
     again = tmp_path / "again.toml"
@@ -210,7 +211,10 @@ def test_segment_tables_survive_the_record(tmp_path):
     )
     output = tmp_path / "out.srf"
     assert main([str(small), str(output)]) == 0
-    assert read_record(output)[0] == rupture_config.load(small)
+    record = tomllib.loads("\n".join(srf.read_comments(output)))
+    del record["provenance"]
+    assert record == tomllib.loads(rupture_config.dump(rupture_config.load(small)))
+    assert "next" in record["segments"]
 
 
 @pytest.mark.parametrize(
