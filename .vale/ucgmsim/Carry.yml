@@ -7,10 +7,11 @@ nonword: true
 # `ai-tells.FigurativeCarries` gates on a head-noun list or on a
 # determiner-fronted subject, and by its own account leaves the bare plural
 # subject out because arithmetic prose puts the carry noun in that slot. Four
-# uses in this repo went straight through it:
+# forms go straight through it:
 #
-#   Accelerations carry the 'g0' unit        bare plural subject, no determiner
-#   ... a real DataArray carries             subject and verb split by a newline
+#   Points carry the geometry                bare plural subject, no determiner
+#   ... the header                           subject and verb split by a newline
+#       carries
 #   ... holds column indices and carries     coordinated verb, no subject
 #   ... the benchmark doesn't carry          bare infinitive after an auxiliary
 #
@@ -22,7 +23,7 @@ nonword: true
 # The one sense left alone is the other word spelt the same way: the carry of
 # an adder and the carrier of a modulated signal, both of which name a
 # specific object rather than standing in for "contains". Neither appears in
-# the Python today, but the crate under src-rust/ is numerics and the FFT code
+# the Python, but the crate under crates/kernels/ is numerics and its FFT code
 # is signal processing, so the exemption is cheap insurance against a docstring
 # that has to say "carry bit".
 tokens:
