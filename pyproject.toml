@@ -12,13 +12,13 @@ license-files = ["LICENSE"]
 authors = [{ name = "ucgmsim" }]
 requires-python = ">=3.14"
 dependencies = [
-    "h5netcdf[h5py]>=1.8.1",
-    "mashumaro[toml]>=3.22",
-    "numpy>=2",
-    "pyproj>=3.6",
-    "scipy>=1.13",
-    "ucgmsim-srf>=2026.10.1",
-    "xarray>=2026.9.0",
+  "h5netcdf[h5py]>=1.8.1",
+  "mashumaro[toml]>=3.22",
+  "numpy>=2",
+  "pyproj>=3.6",
+  "scipy>=1.13",
+  "ucgmsim-srf>=2026.10.2",
+  "xarray>=2026.9.0",
 ]
 
 [project.scripts]
@@ -52,7 +52,7 @@ fallback_version = "0.0.0"
 
 [tool.setuptools.packages]
 find = { where = [
-  "."
+  ".",
 ], include = [
   "rupture_generator*",
 ], exclude = [
@@ -104,9 +104,7 @@ extend-select = [
 convention = "numpy"
 
 [tool.ruff.lint.isort]
-known-first-party = [
-  "rupture_generator",
-]
+known-first-party = ["rupture_generator"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["D104"]
@@ -152,8 +150,3 @@ cache-keys = [
   { file = "Cargo.toml" },
   { file = "crates/**/*.rs" },
 ]
-
-[tool.uv.sources]
-# Header comments, which the run record goes in, are not in a release of
-# ucgmsim/srf yet. Back to the release once they are.
-ucgmsim-srf = { git = "https://github.com/ucgmsim/srf", rev = "67909d87f4722960f221a9cc455ae47ca524c0af" }
