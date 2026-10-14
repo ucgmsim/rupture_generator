@@ -450,8 +450,8 @@ def _taper_edges(field: CellArray, occupied: CellMask, slip: SlipSettings) -> Ce
     """Ramp a field to zero at the fault's edges, and zero the unoccupied cells.
 
     The taper is separable, a product of one ramp per edge in whole cells. The edges are
-    the fault's and not the chart's. An interface tapers into its own outline, not into
-    the corner of its bounding rectangle.
+    the fault's and not the chart's. Where the ``occupied`` mask is partial, the ramps
+    follow the outline of the occupied cells rather than the chart's rectangle.
     """
     ramp = np.ones(field.shape, dtype=np.float64)
     for fraction, axis, reverse in (

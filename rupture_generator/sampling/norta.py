@@ -31,8 +31,9 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.sampling.field import Correlation
 
 NORTA_ORDER = 20
-"""Hermite terms in a marginal's expansion; both production marginals sum to
-1.000000 here, so truncation is not what limits the accuracy."""
+"""Hermite terms in a marginal's expansion; for the default slip and rise-time
+marginals the truncated series recovers the variance to six digits, so truncation is
+not what limits the accuracy."""
 
 NORTA_FACTORIALS = np.asarray(factorial(np.arange(NORTA_ORDER + 1)), np.float64)
 """``k!`` for ``k = 0, ..., NORTA_ORDER``, the squared norm of each ``He_k``."""
@@ -169,8 +170,8 @@ class Marginal:
 
         The transform is ``F^-1(Phi(latent))``, read off a table rather than through
         the quantile function, which for a gamma costs seconds per million cells.
-        Beyond the tails the table clamps, as clipping ``Phi`` to :data:`NORTA_TAIL`
-        did.
+        Beyond the tails the table clamps, which is the same as clipping ``Phi`` to
+        :data:`NORTA_TAIL`.
 
         Parameters
         ----------
