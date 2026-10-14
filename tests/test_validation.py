@@ -211,6 +211,35 @@ def test_a_section_is_a_line():
         _read(section)
 
 
+def test_a_section_without_a_geometry_is_refused():
+    with pytest.raises(RuptureGeneratorError, match="^a: a section is a LineString"):
+        _read(_section(geometry=None))
+
+
+@pytest.mark.parametrize(
+    ("properties", "message"),
+    [
+        ({"dip_deg": "steep"}, "a: dip_deg is 'steep', which is not a number"),
+        ({"lower_depth_km": None}, "a: lower_depth_km is None, which is not a number"),
+    ],
+)
+def test_a_property_that_is_not_a_number_is_refused(properties, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        _read(_section(properties=properties))
+
+
+def test_a_trace_that_is_not_coordinates_is_refused():
+    section = _section()
+    section["geometry"]["coordinates"] = [["east", "north"], [172.0, -41.9]]
+    with pytest.raises(RuptureGeneratorError, match="a: the trace's coordinates"):
+        _read(section)
+
+
+def test_a_document_that_is_not_json_is_refused():
+    with pytest.raises(RuptureGeneratorError, match="is not JSON"):
+        geometry_from_geojson(io.StringIO('{"type": "FeatureCollection",'), NZTM)
+
+
 def test_sections_have_their_own_names():
     with pytest.raises(RuptureGeneratorError, match="share a name"):
         _read(_section(), _section())
