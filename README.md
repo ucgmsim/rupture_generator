@@ -5,8 +5,7 @@
 ![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
 
 *One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake on the seven
-faults of
-[Beavan et al.'s 2012 geodetic model](https://doi.org/10.1080/00288306.2012.697472),
+faults of [Beavan et al. (2012)](https://doi.org/10.1080/00288306.2012.697472),
 gridded at 0.1 km and seen from the south at true scale. Darker is more slip, and the
 black lines are the rupture front every five seconds. The rupture starts on the
 Charing Cross fault and triggers the other six in a fixed order, each drawing its own
@@ -17,14 +16,12 @@ magnitudes, the generator draws a slip distribution and works out when each subf
 starts and how long it slips for. The result is an SRF, or a smaller file of the
 fields that makes the same SRF later.
 
-<!-- vale Google.Parens = NO -->
 <!-- vale Google.Acronyms = NO -->
 Built on the Graves and Pitarka generator
 ([2010](https://doi.org/10.1785/0120100057),
 [2015](https://doi.org/10.1785/0220140101),
 [2016](https://doi.org/10.1785/0120160088)), loosely based on the
 [SCEC BBP platform](https://github.com/SCECcode/bbp).
-<!-- vale Google.Parens = YES -->
 <!-- vale Google.Acronyms = YES -->
 
 ---
