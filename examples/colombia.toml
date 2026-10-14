@@ -1,8 +1,6 @@
 # Colombia Mw 7.4, a single intermediate-depth plane (97-109 km). The correlation
-# relation is Mai & Beroza's, spelled out. The deep ramp sits at 200 km, below the
-# fault, so only the shallow profiles could act and the fault is deeper than all of
-# them. The previous format's `rupture_time_scale = -0.35` had no meaning in its last
-# schema and is not carried.
+# relation is Mai & Beroza's, spelled out. The depth profiles' shallow ramps end at
+# 8 km and their deep ramps start at 197.5 km, so they are flat across the fault.
 #
 # Gridded at 0.1 km, as the workflow runs it; about five seconds to generate.
 

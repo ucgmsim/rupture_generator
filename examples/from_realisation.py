@@ -7,9 +7,9 @@ GeoJSON fault system and a rupture config.
 
 Run it as::
 
-    python examples/from_realisation.py path/to/realisation.json examples/hope
+    python examples/from_realisation.py path/to/realisation.json path/to/rupture
 
-which writes ``examples/hope.geojson`` and ``examples/hope.toml``.
+which writes ``path/to/rupture.geojson`` and ``path/to/rupture.toml``.
 
 # What the conversion keeps, and what it drops
 
