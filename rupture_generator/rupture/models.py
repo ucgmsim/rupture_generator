@@ -10,11 +10,6 @@ segment's fields, in a fixed order:
 5. A :class:`PerturbationModel` gives the onset displacement, from slip's latent and
    the moment, and how far from the seed it takes to grow in.
 
-Each model is any callable of the stated arguments, and each draws from a generator
-of its own, so replacing one model never changes another's draws. The generator owns
-everything outside the models: the rock read at the cell centres, the checks on what
-each model returns, the moment, the eikonal front and the causal blend.
-
 Slip's latent is the one dependency between models. A model that correlates with slip
 mixes its own draw into :attr:`SlipField.latent`. Its draw comes from
 :attr:`SlipField.latent_covariance`. The mixed field then has the latent's covariance.
