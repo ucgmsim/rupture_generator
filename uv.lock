@@ -763,7 +763,6 @@ wheels = [
 
 [[package]]
 name = "rupture-generator"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "h5netcdf", extra = ["h5py"] },

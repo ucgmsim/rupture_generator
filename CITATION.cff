@@ -1,0 +1,24 @@
+# No version or date here: a release is its git tag, which sets the package version
+# through setuptools-scm, and Zenodo records both. Add the DOI under `identifiers`
+# with the first Zenodo release.
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "rupture_generator: kinematic earthquake rupture generation"
+abstract: >-
+  Generates kinematic earthquake rupture models on multi-segment fault systems
+  described in GeoJSON, and writes them as Standard Rupture Format files.
+  A port and extension of genslip v5.6.2.
+authors:
+  - name: ucgmsim
+  - family-names: Faulkner
+    given-names: Jake
+    affiliation: University of Canterbury
+repository-code: "https://github.com/ucgmsim/rupture_generator"
+url: "https://github.com/ucgmsim/rupture_generator"
+license: MIT
+keywords:
+  - earthquake
+  - kinematic rupture
+  - ground motion simulation
+  - standard rupture format

@@ -19,6 +19,8 @@ last 64 covariance embeddings, two per segment, so drawing a fault system of up 
 32 segments again reuses every one. ``sampler.cache_clear()`` releases them.
 """
 
+from importlib.metadata import version
+
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.fields import read_fields, write_fields
 from rupture_generator.formats.srf import write_rupture
@@ -58,6 +60,9 @@ from rupture_generator.rupture.source import (
     segment_source,
     split_moment,
 )
+
+__version__ = version("rupture-generator")
+"""The installed version, from the latest git tag when it was built."""
 
 __all__ = [
     "MAI_BEROZA",
