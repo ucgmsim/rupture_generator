@@ -149,6 +149,10 @@ def _plane_points(
     def single(values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32)
 
+    # The kernel leaves the pulse empty where slip is too small to resolve. The file
+    # records that point as not slipping.
+    slip_m = np.where(np.diff(row_offsets) > 0, slip_m, 0.0)
+
     points = srf.Points(
         lon=single(lon),
         lat=single(lat),

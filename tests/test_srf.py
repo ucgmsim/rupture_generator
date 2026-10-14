@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import threading
 
@@ -204,3 +205,19 @@ def test_a_record_the_reader_refuses_names_its_file(srf_path, monkeypatch):
     monkeypatch.setattr(srf_format, "read", refuse)
     with pytest.raises(RuptureGeneratorError, match=f"^{srf_path}: The planes"):
         read_rupture(srf_path)
+
+
+def test_a_point_without_a_pulse_records_no_slip(tmp_path, scenario, ruptures):
+    # The kernel leaves the pulse empty below its slip floor. slip1 must agree.
+    faint = {}
+    for name, rupture in ruptures.items():
+        slip_m = rupture.slip_m.copy()
+        slip_m[0, :] = 5e-5
+        faint[name] = dataclasses.replace(rupture, slip_m=slip_m)
+    path = tmp_path / "faint.srf"
+    write_rupture(path, ruptures.with_segments(faint), dt_s=scenario.dt_s)
+    parsed = srf_format.read(path)
+    empty = np.diff(parsed.slip_rate.offsets) == 0
+    assert empty.any()
+    assert np.all(parsed.points.slip1[empty] == 0.0)
+    assert np.all(parsed.points.slip1[~empty] > 0.0)
