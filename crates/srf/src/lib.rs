@@ -96,7 +96,7 @@ pub fn write_srf(py: Python<'_>, py_srf_file: Py<PySrfFile>, file_path: &str) ->
     let density = metadata.density.as_ref().map(|arr| arr.bind(py).readonly());
     let row_ptr = slipt1.row_ptr.bind(py).readonly();
     let data = slipt1.data.bind(py).readonly();
-    // Absent for a matrix whose rows are already dense; honoured when given. See
+    // Absent for a matrix whose rows are already dense, and honoured when given. See
     // `PyCsrMatrix`.
     let indices = slipt1
         .indices

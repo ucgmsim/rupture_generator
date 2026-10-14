@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use lexical_core::{BUFFER_SIZE, ToLexical};
 use thiserror::Error;
 
-/// Why an SRF wasn't written: the output failed, or the input isn't an SRF.
+/// The output failed, or the input isn't an SRF.
 #[derive(Debug, Error)]
 pub enum WriteError {
     #[error(transparent)]
@@ -65,8 +65,9 @@ fn check_slip<R: AsRef<[usize]>, D: AsRef<[f32]>>(
 /// The samples an SRF stores for one pulse: one per column from zero to its last
 /// stored column, with the columns the row skips written as zeros.
 ///
-/// An SRF records only where a pulse starts, so a skipped column must be written out
-/// or every later sample shifts earlier on re-read. A row without columns is dense.
+/// An SRF records only where a pulse starts, so the writer has to fill a skipped
+/// column or every later sample shifts earlier on re-read. Without columns, a row is
+/// dense.
 fn pulse<'a>(
     point: usize,
     values: &'a [f32],
@@ -210,7 +211,7 @@ impl PointStream {
     ///
     /// # Errors
     ///
-    /// If the metadata is ragged, the matrix doesn't have one well-formed row per
+    /// If the metadata columns differ in length, the matrix doesn't have one well-formed row per
     /// point, the points exceed those the plane headers declare, or writing fails.
     pub fn write<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>, D: AsRef<[f32]>>(
         &mut self,
@@ -325,8 +326,9 @@ fn write_version<W: Write, S>(
 ///
 /// # Errors
 ///
-/// If the metadata is ragged, the plane headers declare a different number of points,
-/// the matrix doesn't have one well-formed row per point, or writing fails.
+/// If the metadata columns differ in length, the plane headers declare a different
+/// number of points, the matrix doesn't have one well-formed row per point, or writing
+/// fails.
 pub fn write_srf<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>>(
     writer: &mut W,
     srf_file: &SrfFile<S, R>,
@@ -561,7 +563,7 @@ POINTS 1\n\
         assert_eq!(tail, Vec::<u8>::new());
     }
 
-    /// A single point, whose pulse is whatever `indices` and `data` make it.
+    /// One point, whose pulse is whatever `indices` and `data` make it.
     fn one_point(indices: Vec<usize>, data: Vec<f32>) -> SrfFile {
         let mut srf = parse(
             b"1.0\n\

@@ -67,9 +67,9 @@ def _planes(
 
     A header describes the plane in its own coordinates, the parallelogram hung toward
     the dip direction rather than a rectangle: ``len`` runs along its top edge and
-    ``wid`` down its sheared side, and ``dip`` is the true dip its points carry. The
-    points are the geometry. EMOD3D's finite-difference solve reads nothing above
-    ``POINTS``, so no simulation relies on a header being a rectangle.
+    ``wid`` down its sheared side, and ``dip`` is the true dip its points record. The
+    points are the geometry. EMOD3D's finite-difference solve doesn't read anything
+    before ``POINTS``, so no simulation relies on a header being a rectangle.
 
     ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
     it gets a ``shyp`` and ``dhyp`` in those same coordinates, along the top edge from

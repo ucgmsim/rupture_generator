@@ -177,7 +177,7 @@ class Segment:
         trace_km = np.column_stack([east_m, north_m]) / 1000.0
 
         # The dip direction is a true azimuth. Step 1 km along it from the trace's
-        # middle and project, so the projection's grid convergence is accounted for.
+        # middle and project, which accounts for the projection's grid convergence.
         lon, lat = self.trace[len(self.trace) // 2]
         ahead_lon, ahead_lat, _ = _GEOD.fwd(lon, lat, self.dip_direction_deg, 1000.0)
         (x0, x1), (y0, y1) = transformer.transform([lon, ahead_lon], [lat, ahead_lat])

@@ -189,17 +189,17 @@ fn samples(duration_s: f64, dt_s: f64) -> usize {
     (duration_s / dt_s).round() as usize
 }
 
-/// Subfaults per parallel task: enough that an impulse's three samples aren't
-/// swamped by scheduling, few enough that work stealing evens out the long pulses.
+/// Subfaults per parallel task: enough that scheduling takes less time than the
+/// pulses' samples, few enough that work stealing evens out the long pulses.
 const SUBFAULTS_PER_TASK: usize = 64;
 
 /// Fill every pulse into its own slice of `out`, in parallel.
 ///
 /// The offsets cut `out` into one disjoint `&mut [f64]` per run of
-/// [`SUBFAULTS_PER_TASK`] subfaults, so the tasks share only immutable inputs and
-/// need no locks. Rise time varies by an order of magnitude across a fault, and
-/// rayon's work stealing evens out the uneven runs. A failure is reported at the
-/// lowest failing subfault, however the work was scheduled.
+/// [`SUBFAULTS_PER_TASK`] subfaults. The tasks share only immutable inputs and
+/// don't need locks. Rise time varies by an order of magnitude across a fault, and
+/// rayon's work stealing evens out the uneven runs. The error reports the lowest
+/// failing subfault, whatever order the tasks ran in.
 fn fill(job: Job<'_>, out: &mut [f64]) -> Result<(), Error> {
     let subfaults = job.slip_m.len();
     let mut tasks = Vec::with_capacity(subfaults.div_ceil(SUBFAULTS_PER_TASK));
@@ -275,7 +275,7 @@ fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) -> Result<(), Error> 
 ///
 /// # Errors
 ///
-/// [`Error::UnrepresentableRiseTime`] at `subfault` if the shape can't be normalised.
+/// [`Error::UnrepresentableRiseTime`] at `subfault` if normalising the shape fails.
 ///
 /// (orig. `gen_OliuP_stf`, `gslip_sliprate_subs.c`)
 fn oliu_p_into(

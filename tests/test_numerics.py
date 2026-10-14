@@ -67,7 +67,7 @@ def test_a_plane_off_square_to_the_dip_direction_dips_more_steeply():
     )
     across = np.abs(np.sin(np.radians(300.0 - strikes_deg)))
     expected = np.degrees(np.arctan(np.tan(np.radians(60.0)) / across))
-    # The trace dips to the left, so the section reverses it: its planes run backwards.
+    # The trace dips to the left. The section reverses it, and its planes run backwards.
     # The 0.05 degrees is the projection's grid convergence, which the geodesic
     # strikes here don't see.
     np.testing.assert_allclose(_bent().dip_deg[0], expected[::-1], atol=0.05)

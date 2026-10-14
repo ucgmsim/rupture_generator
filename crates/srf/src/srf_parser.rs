@@ -1,8 +1,8 @@
 //! The SRF grammar, as nom parsers over the file's bytes.
 //!
 //! Numbers go through [`number`], which hands the stream straight to
-//! `lexical_core::parse_partial`: it recognises and converts in one pass, where nom's
-//! `float` recognises, checks UTF-8 and then parses again through `str::parse`. On
+//! `lexical_core::parse_partial`: it recognises and converts in one pass. With nom's
+//! `float`, `str::parse` reads each number a second time after a UTF-8 check. On
 //! 6.9 million numbers that was 0.113 s against 0.268 s, and number conversion is most
 //! of a parse.
 //!
@@ -56,8 +56,8 @@ pub enum SrfParseError {
     UnsupportedSlipArray(usize),
 }
 
-/// Why a parser stopped: the bytes it stopped at and what it wanted there, or a file
-/// that is well formed but breaks the format's rules.
+/// The bytes a parser stopped at and what it wanted there, or a well-formed file that
+/// breaks the format's rules.
 #[derive(Debug)]
 enum Fault<'a> {
     Syntax {
@@ -69,7 +69,7 @@ enum Fault<'a> {
 }
 
 impl<'a> ParseError<&'a [u8]> for Fault<'a> {
-    /// Every leaf parser names what it wanted through `context`, so this is only the
+    /// Every leaf parser states what it wanted through `context`, so this is only the
     /// fallback for one that doesn't.
     fn from_error_kind(at: &'a [u8], _: ErrorKind) -> Self {
         Fault::Syntax {
@@ -634,7 +634,7 @@ POINTS 2\n\
 
     #[test]
     fn a_syntax_error_names_its_line_column_and_token() {
-        // The second point's latitude, on line 9 after the 4 characters of "0.2 ".
+        // Line 9 holds point 2's latitude, after the 4 characters of "0.2 ".
         let data = replace_once(SRF_V1, b"0.2 -43.1", b"0.2 abc");
         let err = read_srf(&data).unwrap_err();
         assert!(
@@ -654,7 +654,7 @@ POINTS 2\n\
     #[test]
     fn a_short_pulse_is_a_syntax_error() {
         // The first pulse promises three samples and the line holds two, so the third
-        // read lands on the next point's header and the counts no longer line up.
+        // read takes the next point's header and the counts no longer line up.
         let data = replace_once(SRF_V1, b"0.1 0.2 0.3\n", b"0.1 0.2\n");
         assert!(matches!(
             read_srf(&data).unwrap_err(),
