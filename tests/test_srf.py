@@ -145,3 +145,11 @@ def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
     path.write_text("garbage")
     with pytest.raises(RuptureGeneratorError):
         read_rupture(path)
+
+
+def test_the_reader_reports_pulse_duration_not_rise_time(srf_path):
+    rupture = read_rupture(srf_path)
+    np.testing.assert_allclose(
+        rupture.pulse_duration_s, np.diff(rupture.pulse_offsets) * rupture.dt_s
+    )
+    assert not hasattr(rupture, "rise_time_s")

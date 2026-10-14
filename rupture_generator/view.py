@@ -7,7 +7,7 @@ dip, in metres east, north and **up** from the rupture's centre. Up, because a
 viewer's vertical axis points up.
 
 The slip view accumulates on ``hot``, integrating each point's pulse from its own
-onset. Onset and rise time appear whole on viridis, and rake as arrows along each
+onset. Onset and pulse duration appear whole on viridis, and rake as arrows along each
 point's slip, coloured by slip. The moment comes from the same integration, and each
 field's distribution sits beside the fault, with slip's growing as the rupture runs.
 """
@@ -67,8 +67,8 @@ VIRIDIS = _packed(
         for k in range(3)
     )
 )
-"""Viridis in 256 shades, packed RGBA as Rerun takes colours: for onset and rise
-time, which have no meaningful zero."""
+"""Viridis in 256 shades, packed RGBA as Rerun takes colours: for onset and pulse
+duration, which have no meaningful zero."""
 
 HOT = _packed(
     *(
@@ -96,7 +96,12 @@ UI_POINTS = -1.0
 """Rerun reads a negative radius as a width in screen points rather than metres, so a
 contour stays visible however far the camera is zoomed out."""
 
-TABS = {"slip": "slip", "onset": "onset", "rise_time": "rise time", "rake": "rake"}
+TABS = {
+    "slip": "slip",
+    "onset": "onset",
+    "pulse_duration": "pulse duration",
+    "rake": "rake",
+}
 
 BINS = 40
 """Histogram bins per field."""
@@ -325,8 +330,9 @@ def _statistics(rupture: SrfRupture) -> str:
                 f"max {rupture.slip_m.max():.2f} m"
             ),
             (
-                f"- rise time: mean {rupture.rise_time_s[slipping].mean():.2f} s, "
-                f"max {rupture.rise_time_s.max():.2f} s"
+                "- pulse duration: mean "
+                f"{rupture.pulse_duration_s[slipping].mean():.2f} s, "
+                f"max {rupture.pulse_duration_s.max():.2f} s"
             ),
             f"- onset: last subfault at {rupture.onset_s.max():.1f} s",
             f"- rake: {rupture.rake_deg.mean():.0f} ± {rupture.rake_deg.std():.0f} deg",
@@ -402,7 +408,7 @@ def _log(rupture: SrfRupture, step_s: float) -> None:
     )
     for key, values in (
         ("onset", rupture.onset_s),
-        ("rise_time", rupture.rise_time_s),
+        ("pulse_duration", rupture.pulse_duration_s),
         ("rake", rupture.rake_deg),
     ):
         low, high = float(values.min()), float(values.max())
