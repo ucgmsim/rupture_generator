@@ -29,11 +29,10 @@ NSHM_ALIASES: Mapping[str, str] = {
     "UpDepth": "upper_depth_km",
     "LowDepth": "lower_depth_km",
 }
-"""The New Zealand hazard model's property names, mapped onto this module's own."""
+"""The New Zealand hazard model's property names mapped to module convention."""
 
 PARALLEL_TOLERANCE_DEG = 5.0
-"""How close to a plane's strike a dip direction may point before it picks no side:
-within a few degrees the side is whichever way rounding went."""
+"""How close to a plane's strike a dip direction may point before it is not diagnostic for strike ordering."""
 
 _GEOD = pyproj.Geod(ellps="WGS84")
 
@@ -119,7 +118,7 @@ class Segment:
                 f"{name}: the trace is shaped {trace.shape}; it wants at least two "
                 "longitude, latitude pairs"
             )
-        # Each plane's strike on the ellipsoid. The dip direction only picks a side.
+
         strikes_deg, _, _ = _GEOD.inv(
             trace[:-1, 0], trace[:-1, 1], trace[1:, 0], trace[1:, 1]
         )
