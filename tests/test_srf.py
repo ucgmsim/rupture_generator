@@ -137,7 +137,6 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
     with pytest.raises(RuptureGeneratorError, match="beta"):
         write_rupture(
             str(tmp_path / "bad.srf"),
-            scenario.realisation,
             ruptures,
             dt_s=scenario.dt_s,
             beta=beta,

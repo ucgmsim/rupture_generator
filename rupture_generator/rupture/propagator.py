@@ -35,6 +35,7 @@ import numpy as np
 import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.geometry import Geometry
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 
 type FloatArray = np.ndarray[tuple[int, ...], np.dtype[np.float64]]
@@ -150,7 +151,7 @@ DEFAULT_JUMP_MODEL = JumpModel()
 
 
 @dataclasses.dataclass(frozen=True)
-class _JumpGraph:
+class JumpGraph:
     """Faults, and how likely the rupture is to jump between each pair.
 
     ``weights`` is symmetric ``(n, n)`` over ``faults`` in order. Zero means no edge.
@@ -175,8 +176,8 @@ class _JumpGraph:
 
 
 def _jump_graph(
-    realisation: Realisation, model: JumpModel = DEFAULT_JUMP_MODEL
-) -> _JumpGraph:
+    realisation: Realisation[Geometry], model: JumpModel = DEFAULT_JUMP_MODEL
+) -> JumpGraph:
     """Measure the jump probability between every pair of segments.
 
     The distance is between the faults' edges, where a front can leave one fault and
@@ -189,14 +190,14 @@ def _jump_graph(
             realisation[near].nearest_cells_to(realisation[far])[2].min()
         )
         weights[u, v] = weights[v, u] = model.probability(distance_km)
-    return _JumpGraph(faults, weights)
+    return JumpGraph(faults, weights)
 
 
 def _log_odds(probability: FloatArray) -> FloatArray:
     return np.log(probability) - np.log1p(-probability)
 
 
-def _sampling_weights(graph: _JumpGraph) -> FloatArray:
+def _sampling_weights(graph: JumpGraph) -> FloatArray:
     """Turn jump probabilities into the weights a spanning-tree sampler needs.
 
     The target distribution treats each gap as an independent trial, conditioned on the
@@ -214,7 +215,7 @@ def _sampling_weights(graph: _JumpGraph) -> FloatArray:
     return weights
 
 
-def _disconnected(graph: _JumpGraph) -> RuptureGeneratorError:
+def _disconnected(graph: JumpGraph) -> RuptureGeneratorError:
     return RuptureGeneratorError(
         f"{', '.join(graph.faults)} do not form a connected system: at least one is "
         "beyond reach of every other, so no single rupture gets to it. Drop it, widen "
@@ -222,7 +223,7 @@ def _disconnected(graph: _JumpGraph) -> RuptureGeneratorError:
     )
 
 
-def _sample_tree(graph: _JumpGraph, rng: np.random.Generator) -> list[tuple[int, int]]:
+def _sample_tree(graph: JumpGraph, rng: np.random.Generator) -> list[tuple[int, int]]:
     """Draw a spanning tree, each tree as likely as the model says.
 
     This is Wilson's algorithm. From a vertex outside the tree, walk at random, stepping
@@ -285,7 +286,7 @@ def _sample_tree(graph: _JumpGraph, rng: np.random.Generator) -> list[tuple[int,
     return [(vertex, int(onward[vertex])) for vertex in range(1, count)]
 
 
-def _maximum_likelihood_tree(graph: _JumpGraph) -> list[tuple[int, int]]:
+def _maximum_likelihood_tree(graph: JumpGraph) -> list[tuple[int, int]]:
     """Find the likeliest tree.
 
     Maximising :math:`\\prod w / (1 - w)` over trees is maximising the sum of
@@ -343,12 +344,12 @@ def _root_tree(
 
 
 def sample_path(
-    realisation: Realisation,
+    realisation: Realisation[Geometry],
     hypocentre: Hypocentre,
     *,
     rng: np.random.Generator,
     model: JumpModel = DEFAULT_JUMP_MODEL,
-) -> Realisation:
+) -> Realisation[Geometry]:
     """Draw one rupture path through a fault system from the model.
 
     The jump probabilities come from the segments' separations. A tree drawn by
@@ -356,7 +357,7 @@ def sample_path(
 
     Parameters
     ----------
-    realisation : Realisation
+    realisation : Realisation of Geometry
         The fault system.
     hypocentre : Hypocentre
         Where the rupture nucleates.
@@ -367,7 +368,7 @@ def sample_path(
 
     Returns
     -------
-    Realisation
+    Realisation of Geometry
         The realisation with its hypocentre and tree recorded, ready for the generator.
 
     Raises
@@ -382,11 +383,11 @@ def sample_path(
 
 
 def likeliest_path(
-    realisation: Realisation,
+    realisation: Realisation[Geometry],
     hypocentre: Hypocentre,
     *,
     model: JumpModel = DEFAULT_JUMP_MODEL,
-) -> Realisation:
+) -> Realisation[Geometry]:
     """Find the likeliest rupture path through a fault system.
 
     This is the counterpart of :func:`sample_path`: the same graph, with the tree
@@ -396,7 +397,7 @@ def likeliest_path(
 
     Parameters
     ----------
-    realisation : Realisation
+    realisation : Realisation of Geometry
         The fault system.
     hypocentre : Hypocentre
         Where the rupture nucleates.
@@ -405,7 +406,7 @@ def likeliest_path(
 
     Returns
     -------
-    Realisation
+    Realisation of Geometry
         The realisation with its hypocentre and tree recorded, ready for the generator.
 
     Raises

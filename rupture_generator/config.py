@@ -30,7 +30,12 @@ from mashumaro.exceptions import (
 from mashumaro.types import Discriminator
 
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import NSHM_ALIASES, CellArray, geometry_from_geojson
+from rupture_generator.geometry import (
+    NSHM_ALIASES,
+    CellArray,
+    Geometry,
+    geometry_from_geojson,
+)
 from rupture_generator.rupture.generator import (
     FaultProfiles,
     RakeSettings,
@@ -644,7 +649,7 @@ class Scenario:
 
     Parameters
     ----------
-    realisation : Realisation
+    realisation : Realisation of Geometry
         The fault system, its hypocentre and its triggering tree.
     medium : Medium
         The rock.
@@ -663,7 +668,7 @@ class Scenario:
         single-sample impulses.
     """
 
-    realisation: Realisation
+    realisation: Realisation[Geometry]
     medium: Medium
     sources: dict[str, SegmentSource]
     settings: RuptureSettings
@@ -675,7 +680,7 @@ class Scenario:
 
 def _sources(
     source: PerFault | Finite,
-    realisation: Realisation,
+    realisation: Realisation[Geometry],
     medium: Medium,
 ) -> dict[str, SegmentSource]:
     names = set(realisation)
@@ -712,10 +717,10 @@ def _sources(
 
 def _propagated(
     propagation: Predetermined | Sampled | Likeliest | None,
-    realisation: Realisation,
+    realisation: Realisation[Geometry],
     hypocentre: Hypocentre,
     seed: int,
-) -> Realisation:
+) -> Realisation[Geometry]:
     match propagation:
         case None:
             if len(realisation) > 1:

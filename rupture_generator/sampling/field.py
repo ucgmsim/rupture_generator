@@ -27,44 +27,23 @@ WRAP_TOLERANCE = 1.0e-2
 
 The embedding is periodic, so cells at opposite ends of the grid are also neighbours
 across the wrap. The margin is sized so the correlation function has decayed to this
-by the time it wraps, which is what the embedding delivers as spurious correlation
-between the fault's far edges.
-
-A percent, not round-off, because the correlation lengths it protects are an
-empirical regression's, and they scatter far more than that. Measured on a 25 x 60
-km fault at 0.1 km, the delivered covariance's own best-fit lengths stay within
-0.01% of the target's at Mw 6.5 and 7.5, and the largest error at any lag is 1e-2.
-The padding is what this buys back: at Mw 7.5 the embedding shrinks from 13.7
-million cells to 1.2 million and takes a tenth of the time.
+by the time it wraps. This prevents correlated slip on opposite edges of a segment.
 """
 
 MAXIMUM_VARIANCE_DEFICIT = 1.0e-2
-"""How much of a covariance's variance may sit in unsamplable directions.
-
-An embedding is sampled through the square roots of its eigenvalues. A negative one
-is clipped to zero, and the variance it held is dropped. This is the ratio of what
-was dropped to what was kept. Past it, the covariance is not positive definite
-enough on this grid, and a larger margin is the cure.
-
-It moves with :data:`WRAP_TOLERANCE`. Held at round-off, it forces a doubled margin
-on nearly every embedding a looser wrap allows, and then costs more than the wrap
-saves. At a percent each, the first margin passes, and the clipped variance is a
-few parts in a thousand on the faults above.
-"""
+"""How much of a covariance's variance may sit in unsamplable directions. """
 
 MAXIMUM_EMBEDDING_DOUBLINGS = 3
 """How many times the margin is doubled before the embedding is refused."""
 
+# TODO: Make this a keyword argument of `sampler` if an HPC run hits it. It's a
+# resource limit that depends on the machine, unlike the accuracy tolerances above,
+# which stay fixed so every run's fields are equally accurate.
 MAXIMUM_EMBEDDING_CELLS = 1 << 27
-"""The largest padded grid to transform.
-
-A draw holds the padded grid as ``complex128``, 2 GB at 2^27 cells; the embedding
-itself keeps a quarter of it as ``float64``.
-"""
+"""The largest padded grid to transform. """
 
 SAMPLER_CACHE_SIZE = 4
-"""Embeddings kept between segments: a segment uses two, and a realisation of the
-same chart asks for the same two again."""
+"""Cache capacity for remembering successful embedding sizes."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -127,8 +106,9 @@ def _padded_extent(
 ) -> int:
     """The smallest fast, **even** transform length holding the grid and its margin.
 
-    Even, because then the wrapped covariance's spectrum is exactly the DCT-I of its
-    first half, which is what :func:`_embed` computes.
+    We require an even transform length to apply the DCT optimisation. In
+    practice the extra padding is more than made up for by the DCT savings over
+    naive FFT2.
     """
     padded = sp.fft.next_fast_len(
         extent + math.ceil(margin * length_km / resolution_km)
@@ -147,12 +127,6 @@ def _mirror_weights(extent: int) -> np.ndarray:
 
 def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, int]]:
     """The square-rooted eigenvalues of a circulant embedding, and the padded shape.
-
-    The embedding periodises the covariance onto a padded torus, whose eigenvalues are
-    the transform of its first row. That row is real and even along both axes, and so
-    is its transform. With an even padded length, the non-redundant quarter of the
-    transform is the type-I DCT of the quarter of the row this function evaluates. The
-    function keeps only that quarter, and :func:`circulant_draw` mirrors it.
 
     The margin starts at the correlation's decay length and doubles until the variance
     the clipped negative eigenvalues drop is within :data:`MAXIMUM_VARIANCE_DEFICIT`.
@@ -182,7 +156,7 @@ def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, i
             )
         ]
         quadrant = covariance.correlation(np.hypot(lags[0][:, None], lags[1][None, :]))
-        spectrum = sp.fft.dctn(quadrant, type=1, workers=-1)
+        spectrum = sp.fft.dctn(quadrant, type=1)
 
         weights = np.outer(*(_mirror_weights(extent) for extent in padded))
         total = float(np.sum(weights * spectrum))

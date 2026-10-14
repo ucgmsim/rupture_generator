@@ -171,8 +171,7 @@ def _plane_points(
 
 def write_rupture(
     path: str,
-    realisation: Realisation,
-    ruptures: Mapping[str, SegmentRupture],
+    realisation: Realisation[SegmentRupture],
     *,
     dt_s: float,
     beta: Mapping[str, CellArray] | None = None,
@@ -183,10 +182,9 @@ def write_rupture(
     ----------
     path : str
         Where to write the file.
-    realisation : Realisation
-        The fault system, for its projection and its hypocentre.
-    ruptures : Mapping of str to SegmentRupture
-        The drawn segments by name, written in the mapping's order.
+    realisation : Realisation of SegmentRupture
+        The drawn fault system, written in its segments' order. Its projection and
+        hypocentre locate the planes.
     dt_s : float
         The slip-rate sample interval in seconds.
     beta : Mapping of str to CellArray, optional
@@ -205,14 +203,14 @@ def write_rupture(
     hypocentre = realisation.hypocentre
     planes: list[PySrfPlane] = []
     strikes: dict[str, list[float]] = {}
-    for name, rupture in ruptures.items():
+    for name, rupture in realisation.items():
         on_segment = hypocentre if hypocentre and hypocentre.segment == name else None
         headers, strikes[name] = _planes(rupture.geometry, on_segment, transformer)
         planes.extend(headers)
 
     try:
         with SrfWriter(path, planes) as writer:
-            for name, rupture in ruptures.items():
+            for name, rupture in realisation.items():
                 segment_beta = None if beta is None else beta.get(name)
                 for columns, strike_deg in zip(
                     _plane_slices(rupture.geometry), strikes[name], strict=True

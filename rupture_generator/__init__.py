@@ -6,8 +6,8 @@ The library is plain data and plain functions, and the usual run is five calls::
               geometry_from_geojson(handle, crs).items()}
     realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
     medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
-    ruptures = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
-    write_rupture(path, realisation, ruptures, dt_s=0.005)
+    drawn = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
+    write_rupture(path, drawn, dt_s=0.005)
 
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
 command line runs that file. :func:`rupture_generator.sampling.sampler` caches the
@@ -27,9 +27,9 @@ from rupture_generator.rupture.generator import (
     SegmentRupture,
     SlipSettings,
     TimingSettings,
+    first_arrival,
     generate,
     generate_segment,
-    jump_seed,
 )
 from rupture_generator.rupture.medium import (
     Layers,
@@ -75,11 +75,11 @@ __all__ = [
     "SpatialField",
     "TimingSettings",
     "constant_field",
+    "first_arrival",
     "generate",
     "generate_segment",
     "geometry_from_geojson",
     "interpolated_field",
-    "jump_seed",
     "layered_field",
     "layered_medium",
     "likeliest_path",

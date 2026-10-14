@@ -19,6 +19,7 @@ import dataclasses
 import numpy as np
 
 from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.geometry import Geometry
 from rupture_generator.rupture.medium import Medium
 from rupture_generator.rupture.realisation import Realisation
 from rupture_generator.sampling import Correlation, Covariance, VonKarman
@@ -171,7 +172,7 @@ def segment_source(
 
 
 def split_moment(
-    moment_nm: float, realisation: Realisation, medium: Medium
+    moment_nm: float, realisation: Realisation[Geometry], medium: Medium
 ) -> dict[str, float]:
     """Share one event's moment between its segments.
 
@@ -182,7 +183,7 @@ def split_moment(
     ----------
     moment_nm : float
         The event's seismic moment in newton-metres.
-    realisation : Realisation
+    realisation : Realisation of Geometry
         The segments to share it between.
     medium : Medium
         The rock, which sets each cell's rigidity.

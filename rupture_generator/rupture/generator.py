@@ -19,7 +19,7 @@ spread, comes from the segment's own target moment. A fault system with a magnit
 per segment gets a rise time and a spread per segment.
 
 :func:`generate` walks a whole fault system. The caller has already chosen the tree
-and the moment on each segment. The crossings are still open: :func:`jump_seed` finds
+and the moment on each segment. The crossings are still open: :func:`first_arrival` finds
 each child's seed from its parent's solved onsets, so drawing parents first is a real
 dependency and not a reporting order.
 """
@@ -58,11 +58,10 @@ from rupture_generator.sampling import (
 M2_PER_KM2 = 1.0e6
 
 CUBE_ROOT_DYNE_CM = 1.0e-9 * (1.0e7 ** (1.0 / 3.0))
-"""``1e-9`` per cube-root dyne-centimetre, as the published coefficients are stated,
-carried to newton-metres. About 215.44; the easy factor to get wrong."""
+"""``1e-9`` per cube-root dyne-centimetre."""
 
 ALPHA_COEFFICIENT = 0.1
-"""How much the dip-and-rake correction can move things: at most a tenth."""
+"""How much the dip-and-rake correction can move things, proportion (0, 1)."""
 
 DIP_PLATEAU_DEG = 45.0
 """Below this dip the correction is at full strength, falling to nothing at vertical."""
@@ -79,8 +78,7 @@ MAXIMUM_VELOCITY_FRACTION = np.sqrt(2.0)
 
 OFF_FAULT_SLOWNESS_FACTOR = 10.0
 """What an unoccupied cell's slowness is multiplied by, so the front does not cross the
-part of the rectangle that is not fault. Arrivals are bit-identical from x10 upward on
-both CFM subduction interfaces."""
+part of the rectangle that is not fault."""
 
 CAUSAL_MARGIN = 1.05
 """How much room the causal clamp leaves past the weight that would tie with the seed.
@@ -89,7 +87,7 @@ A tie-break, not a modelling choice: it keeps the seed the strict earliest cell.
 
 @dataclasses.dataclass(frozen=True)
 class JumpSeed:
-    """The cell the rupture front leaves from, and when.
+    """Records the location and time a rupture jumps from a segment.
 
     Attributes
     ----------
@@ -121,14 +119,12 @@ def _positive_marginal(
 
 @dataclasses.dataclass(frozen=True)
 class SlipSettings:
-    """What shapes every segment's slip field.
+    """Slip field generation settings.
 
     Attributes
     ----------
     family : MarginalFamily
-        The unit-mean distribution slip values follow. By default the truncated
-        exponential Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose spread also
-        fixes the largest slip on the fault: 0.90 puts it at 4.3 mean slips.
+        The unit-mean distribution slip values follow.
     coefficient_of_variation : float
         The spread of ``family``.
     maximum : float
@@ -159,6 +155,8 @@ class SlipSettings:
                     f"{name} is a fraction of the fault's extent from one edge, so it "
                     f"lies in [0, 0.5]; got {getattr(self, name)}"
                 )
+        # _positive_marginal has validation logic, so invoking the property that
+        # calls it triggers this validation.
         _ = self.marginal
 
     @property
@@ -248,7 +246,7 @@ class RakeSettings:
 
 @dataclasses.dataclass(frozen=True)
 class TimingSettings:
-    """When each subfault starts: a coherent front, then a displacement blended in.
+    """Settings for adjusting how the time field is solved and correlated on a segment.
 
     The front moves at ``velocity_fraction / alpha_T`` of the chart's shear speed, held
     to the sub-Rayleigh or supershear branch, times the chart's rupture speed factor.
@@ -299,18 +297,12 @@ class TimingSettings:
 
 
 UNMODIFIED = constant_field(1.0)
-"""A profile that changes nothing: 1 everywhere."""
+"""Constant profile for unmodified spatial fields."""
 
 
 @dataclasses.dataclass(frozen=True)
 class FaultProfiles:
-    """Where the rupture differs by prescription, as functions of position.
-
-    These are the rupture's own settings varied over the fault, with 1 meaning
-    unmodified. The rock itself is the
-    :class:`~rupture_generator.rupture.medium.Medium`. Any depth dependence of the pulse
-    length or of the front's speed belongs here, where a user can inspect and plot it
-    before drawing a rupture.
+    """Spatial fields for rupture propagation and rise time.
 
     Attributes
     ----------
@@ -334,7 +326,7 @@ class FaultProfiles:
 
 @dataclasses.dataclass(frozen=True)
 class RuptureSettings:
-    """Hold the settings every segment shares: how to draw its fields, not its size.
+    """Complete set of rupture settings.
 
     Attributes
     ----------
@@ -359,9 +351,7 @@ class RuptureSettings:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class SegmentRupture:
-    """One segment, drawn: its four fields, and the quantities the draw settled on.
-
-    Every array is per cell, shaped like the chart's cells.
+    """Fields and statistics drawn for a rupture segment.
 
     Attributes
     ----------
@@ -446,9 +436,7 @@ def _cube_root_scaling(coefficient: float, moment_nm: float) -> float:
 def _reach(mask: CellMask, axis: int, *, reverse: bool) -> np.ndarray:
     """How many occupied cells run up to each cell along one axis, inclusive.
 
-    One for a cell whose neighbour on that side is off the fault or off the grid, and
-    counting up from there: what makes a taper follow a ragged outline. Zero off the
-    fault.
+    This counts the natural generalisation of rectangular fault based reach tapering.
     """
     ordered = np.flip(mask, axis) if reverse else mask
     index = np.arange(ordered.shape[axis], dtype=np.int32)
@@ -481,13 +469,7 @@ def _taper_edges(field: CellArray, occupied: CellMask, slip: SlipSettings) -> Ce
 def _scale_to_moment(
     pattern: CellArray, rigidity_pa: CellArray, areas_km2: CellArray, moment_nm: float
 ) -> CellArray:
-    """Scale a slip pattern, in metres, so the segment's moment is ``moment_nm``.
-
-    Raises
-    ------
-    RuptureGeneratorError
-         If the pattern has zero moment.
-    """
+    """Scale a slip pattern, in metres, so the segment's moment is ``moment_nm``."""
     total = float(np.sum(rigidity_pa * areas_km2 * M2_PER_KM2 * pattern))
     if not total > 0.0:
         raise RuptureGeneratorError(
@@ -505,13 +487,7 @@ def _speed_field(
     timing: TimingSettings,
     geometric_correction: float,
 ) -> CellArray:
-    """Rupture speed at every subfault, km/s: one fraction of the shear speed field.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        If any speed isn't positive, which leaves a subfault the front never gets to.
-    """
+    """Rupture speed along fault."""
     fraction = timing.velocity_fraction / geometric_correction
     if fraction > RAYLEIGH_VELOCITY_FRACTION:
         fraction += 1.0 - RAYLEIGH_VELOCITY_FRACTION
@@ -531,9 +507,7 @@ def _travel_times(
 ) -> CellArray:
     """First arrivals on ``(i, j)`` in seconds: the coherent front from the seed.
 
-    The solve is ``|grad T| = 1/v`` over the smooth speed field. The seed's arrival is
-    its own seed time, and no subfault precedes it. A high slowness walls off the
-    unoccupied cells without removing them, since the sweep needs a rectangle.
+    The solve is ``|grad T| = 1/v`` over the smooth speed field.
     """
     slowness = np.where(
         geometry.occupied, 1.0 / speed_km_s, OFF_FAULT_SLOWNESS_FACTOR / speed_km_s
@@ -553,7 +527,7 @@ def _blend_onset(
     seed: JumpSeed,
     blend_sigma: float,
 ) -> CellArray:
-    """Displace the solved front, blending in from smooth at the seed.
+    """Blend in rupture propagation perturbation terms preserving causality.
 
     ``t = T + min(tau / (n sigma), tau / (c max(-delta, 0)), 1) * delta`` with ``tau``
     the time since the seed and ``delta`` the displacement with its seed value removed.
@@ -694,7 +668,8 @@ def generate_segment(
             PreCorrected(covariance.correlation, slip.marginal), covariance.lengths_km
         ),
     )
-
+    # Latent sampler draws a complex field and returns both independent
+    # components instead of throwing away a field.
     slip_latent, rise_independent = latent.draw(rng)
     pattern = _taper_edges(slip.marginal.apply(slip_latent), geometry.occupied, slip)
     slip_m = _scale_to_moment(
@@ -708,10 +683,7 @@ def generate_segment(
     rho = float(
         latent_correlation(slip.marginal, rise.marginal, np.array(rise.correlation))
     )
-    # The blend is two loadings whose norm `mix` divides out. The latent remains
-    # standard normal at every cell, as the marginal transform assumes. Loadings, and
-    # not correlations, let the weight go all the way to exact slip: NORTA can't
-    # invert a correlation of 1 between two different marginals.
+
     weight = rise_time_slip_weight
     rise_latent = mix(
         (weight * rho + (1.0 - weight), slip_latent),
@@ -784,7 +756,7 @@ Its arguments are the parent, the child's chart, the medium between them, the ju
 model, and the jump's own generator."""
 
 
-def jump_seed(
+def first_arrival(
     parent: SegmentRupture,
     child: Geometry,
     medium: Medium,
@@ -792,26 +764,6 @@ def jump_seed(
     rng: np.random.Generator,
 ) -> JumpSeed:
     """Find where and when the front crosses from a drawn parent onto a child.
-
-    The search runs from the child's side. Each of the child's edge cells pairs with
-    the one parent cell nearest it,
-    :meth:`~rupture_generator.geometry.Geometry.nearest_cells_to`. Its arrival is when
-    the front gets to that parent cell plus the time a shear wave takes across the gap,
-    :meth:`~rupture_generator.rupture.medium.Medium.crossing_time_s`. The rupture
-    itself doesn't cross. The S wave from the front's near field does. Pairing from the
-    parent's side would let a wave from far back along the parent outrun the front,
-    since the shear speed is faster than the rupture speed along any straight line.
-    Every jump would then leave from as far upstream as the search allowed.
-
-    The jump model sets that limit, drawn once per jump by
-    :meth:`~rupture_generator.rupture.propagator.JumpModel.reach_km`. The tree says
-    the rupture crossed the nearest gap, and the draw takes that crossing as given. Child cells farther than that distance from the parent can't start, and the
-    earliest arrival among the rest is the seed. One draw per jump, and not one trial
-    per cell, keeps the result independent of the mesh.
-
-    One known property remains. The arrival is an ``argmin`` over a field that already
-    includes its onset displacement. It's an order statistic, and it reads early by
-    roughly one onset spread.
 
     Parameters
     ----------
@@ -850,26 +802,24 @@ def jump_seed(
 
 
 def generate(
-    realisation: Realisation,
+    realisation: Realisation[Geometry],
     medium: Medium,
     sources: Mapping[str, SegmentSource],
     settings: RuptureSettings,
     *,
     seed: int,
-    jump: JumpRule = jump_seed,
-    jump_model: JumpModel = DEFAULT_JUMP_MODEL,
-) -> dict[str, SegmentRupture]:
+    jump_rule: JumpRule = first_arrival,
+    jump_propagation_model: JumpModel = DEFAULT_JUMP_MODEL,
+) -> Realisation[SegmentRupture]:
     """Draw every segment of a fault system, parents before children.
 
     This function adds where and when each front starts. The root starts at the
-    hypocentre, and ``jump`` finds every other start from the parent drawn just
-    before. The causal order is a real dependency, and this function walks it in
-    order. Each jump draws from its own generator, keyed by the child, so the
-    way a front crosses never moves any segment's fields.
+    hypocentre, and ``jump_rule`` finds every other start from the parent drawn just
+    before.
 
     Parameters
     ----------
-    realisation : Realisation
+    realisation : Realisation of Geometry
         The fault system, with its hypocentre and tree.
     medium : Medium
         The rock.
@@ -879,15 +829,15 @@ def generate(
         How to draw each field.
     seed : int
         The seed every segment's generator derives from.
-    jump : JumpRule
+    jump_rule : JumpRule
         How to find a child's seed from its parent.
-    jump_model : JumpModel
+    jump_propagation_model : JumpModel
         How far a jump can land.
 
     Returns
     -------
-    dict of str to SegmentRupture
-        The drawn segments, in the order this function drew them.
+    Realisation of SegmentRupture
+        The same realisation with every segment drawn, in causal order.
 
     Raises
     ------
@@ -909,11 +859,11 @@ def generate(
                 geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0
             )
         else:
-            start = jump(
+            start = jump_rule(
                 drawn[parent],
                 geometry,
                 medium,
-                jump_model,
+                jump_propagation_model,
                 _segment_rng(seed, f"jump:{name}"),
             )
         drawn[name] = generate_segment(
@@ -924,7 +874,7 @@ def generate(
             seed=start,
             rng=_segment_rng(seed, name),
         )
-    return drawn
+    return realisation.with_segments(drawn)
 
 
 __all__ = [
@@ -939,7 +889,7 @@ __all__ = [
     "SegmentRupture",
     "SlipSettings",
     "TimingSettings",
+    "first_arrival",
     "generate",
     "generate_segment",
-    "jump_seed",
 ]

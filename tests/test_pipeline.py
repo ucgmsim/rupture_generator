@@ -8,7 +8,7 @@ from rupture_generator import (
     RuptureSettings,
     generate,
 )
-from rupture_generator.rupture.generator import jump_seed
+from rupture_generator.rupture.generator import first_arrival
 from rupture_generator.rupture.propagator import JumpModel
 
 
@@ -84,7 +84,7 @@ def test_the_jump_rule_is_replaceable(scenario):
 
     def recording(parent, child, medium, model, rng):
         calls.append(child)
-        return jump_seed(parent, child, medium, model, rng)
+        return first_arrival(parent, child, medium, model, rng)
 
     generate(
         scenario.realisation,
@@ -92,7 +92,7 @@ def test_the_jump_rule_is_replaceable(scenario):
         scenario.sources,
         scenario.settings,
         seed=scenario.seed,
-        jump=recording,
+        jump_rule=recording,
     )
     assert len(calls) == len(scenario.realisation) - 1
 
@@ -108,7 +108,7 @@ def test_a_jump_crosses_the_nearest_gap_at_the_shear_speed(scenario, ruptures):
     # With a decay length near zero, the jump crosses only the nearest gap.
     drawn, child = _first_jump(scenario, ruptures)
     model = JumpModel(d0_km=1e-12, delta_km=0.0)
-    seed = jump_seed(drawn, child, scenario.medium, model, np.random.default_rng(0))
+    seed = first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(0))
     landings, departures, gap_km = child.nearest_cells_to(drawn.geometry)
     nearest = gap_km <= gap_km.min() + 1e-9
     arrival_s = drawn.onset_s[departures] + scenario.medium.crossing_time_s(
@@ -123,7 +123,7 @@ def test_a_jump_lands_within_its_reach(scenario, ruptures):
     landings, _, gap_km = child.nearest_cells_to(drawn.geometry)
     for draw in range(20):
         reach_km = model.reach_km(float(gap_km.min()), np.random.default_rng(draw))
-        seed = jump_seed(
+        seed = first_arrival(
             drawn, child, scenario.medium, model, np.random.default_rng(draw)
         )
         landed = (landings[0] == seed.cell[0]) & (landings[1] == seed.cell[1])
@@ -137,7 +137,7 @@ def test_how_a_front_jumps_never_moves_the_fields(scenario, ruptures):
         scenario.sources,
         scenario.settings,
         seed=scenario.seed,
-        jump_model=JumpModel(d0_km=10.0),
+        jump_propagation_model=JumpModel(d0_km=10.0),
     )
     for name, rupture in ruptures.items():
         assert np.array_equal(rupture.slip_m, elsewhere[name].slip_m)

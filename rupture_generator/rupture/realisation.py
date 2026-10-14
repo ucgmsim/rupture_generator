@@ -12,10 +12,7 @@ from rupture_generator.geometry import Geometry
 
 @dataclasses.dataclass(frozen=True)
 class Hypocentre:
-    """Where the rupture nucleated: a segment, and two arc lengths on its chart.
-
-    The position is two arc lengths, not two cell indices. Recutting the chart at a
-    different resolution leaves it where it was.
+    """Location of rupture nucleation.
 
     Attributes
     ----------
@@ -35,7 +32,7 @@ class Hypocentre:
     def from_fractions(
         cls, segment: str, geometry: Geometry, strike: float, dip: float
     ) -> Hypocentre:
-        """Place a hypocentre at fractions of a chart's extent.
+        """Convert a hypocentre from fractions of a chart's extent.
 
         Parameters
         ----------
@@ -71,15 +68,18 @@ class Hypocentre:
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
-class Realisation(Mapping[str, Geometry]):
-    """A fault system with its charts, its starting point and its triggering order.
+class Realisation[S](Mapping[str, S]):
+    """A fault system's segments, with its hypocentre and triggering tree.
 
-    It reads as a mapping from segment name to chart, and nothing changes it.
+    ``S`` is what each segment holds. Before the fields are drawn it's the segment's
+    :class:`~rupture_generator.geometry.Geometry`, and
+    :func:`~rupture_generator.rupture.generator.generate` turns a
+    ``Realisation[Geometry]`` into a ``Realisation[SegmentRupture]``.
 
     Attributes
     ----------
-    segments : Mapping of str to Geometry
-        One chart per segment.
+    segments : Mapping of str to S
+        What each segment holds, by name.
     crs : pyproj.CRS
         The projected frame every chart's positions are in.
     hypocentre : Hypocentre or None
@@ -90,7 +90,7 @@ class Realisation(Mapping[str, Geometry]):
         over exactly the segments.
     """
 
-    segments: Mapping[str, Geometry]
+    segments: Mapping[str, S]
     crs: pyproj.CRS
     hypocentre: Hypocentre | None = None
     tree: Mapping[str, str | None] = dataclasses.field(default_factory=dict)
@@ -139,8 +139,8 @@ class Realisation(Mapping[str, Geometry]):
 
     # ------------------------------------------------------------ the mapping
 
-    def __getitem__(self, name: str) -> Geometry:
-        """The chart for a segment."""
+    def __getitem__(self, name: str) -> S:
+        """What a segment holds."""
         return self.segments[name]
 
     def __iter__(self) -> Iterator[str]:
@@ -152,14 +152,14 @@ class Realisation(Mapping[str, Geometry]):
         return len(self.segments)
 
     def __repr__(self) -> str:
-        """The segments, not the charts."""
+        """The segment names, not what they hold."""
         return f"{type(self).__name__}({', '.join(self.segments)})"
 
     # -------------------------------------------------------------- the walk
 
     def propagated(
         self, tree: Mapping[str, str | None], hypocentre: Hypocentre
-    ) -> Realisation:
+    ) -> Realisation[S]:
         """Record where the rupture starts and how it spreads.
 
         Parameters
@@ -176,7 +176,27 @@ class Realisation(Mapping[str, Geometry]):
         """
         return dataclasses.replace(self, tree=tree, hypocentre=hypocentre)
 
-    def in_causal_order(self) -> Iterator[tuple[str, str | None, Geometry]]:
+    def with_segments[T](self, segments: Mapping[str, T]) -> Realisation[T]:
+        """Swap what every segment holds, keeping the frame, hypocentre and tree.
+
+        Parameters
+        ----------
+        segments : Mapping of str to T
+            What each segment now holds, over the same names.
+
+        Returns
+        -------
+        Realisation of T
+            This realisation over ``segments``.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If ``segments`` names different segments than the tree.
+        """
+        return Realisation(segments, self.crs, self.hypocentre, self.tree)
+
+    def in_causal_order(self) -> Iterator[tuple[str, str | None, S]]:
         """Walk the segments parents-first.
 
         Each segment comes after the one that triggered it, so a caller drawing
@@ -184,9 +204,9 @@ class Realisation(Mapping[str, Geometry]):
 
         Yields
         ------
-        tuple of (str, str or None, Geometry)
+        tuple of (str, str or None, S)
             The segment's name, its parent's name (``None`` for the hypocentre's
-            segment) and its chart.
+            segment) and what it holds.
 
         Raises
         ------
