@@ -59,6 +59,7 @@ from rupture_generator.rupture.medium import (
     ramp_field,
 )
 from rupture_generator.rupture.models import (
+    MODELS,
     CorrelatedPerturbation,
     CorrelatedRise,
     DrawnSlip,
@@ -107,8 +108,37 @@ class Jump(JumpModel):
 # ---------------------------------------------------------------- depth profiles
 
 
+class _DepthProfile:
+    """A profile the file describes, read at positions as a :data:`SpatialField`."""
+
+    def field(self) -> SpatialField:
+        """Build the profile as a function of position.
+
+        Returns
+        -------
+        SpatialField
+            The profile at each position.
+        """
+        raise NotImplementedError
+
+    def __call__(self, positions: np.ndarray) -> np.ndarray:
+        """Read the profile at positions, as a :data:`SpatialField` does.
+
+        Parameters
+        ----------
+        positions : numpy.ndarray
+            Positions ``(..., 3)``, depth last in kilometres.
+
+        Returns
+        -------
+        numpy.ndarray
+            The profile at each position ``(...)``.
+        """
+        return self.field()(positions)
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Constant:
+class Constant(_DepthProfile):
     """The same value at every depth.
 
     Parameters
@@ -133,24 +163,9 @@ class Constant:
         """
         return constant_field(self.value)
 
-    def __call__(self, positions: np.ndarray) -> np.ndarray:
-        """Read the profile at positions, as a :data:`SpatialField` does.
-
-        Parameters
-        ----------
-        positions : numpy.ndarray
-            Positions ``(..., 3)``, depth last in kilometres.
-
-        Returns
-        -------
-        numpy.ndarray
-            The value at each position ``(...)``.
-        """
-        return self.field()(positions)
-
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Profile:
+class Profile(_DepthProfile):
     """Values at depths, linear between them and flat beyond.
 
     Parameters
@@ -178,24 +193,9 @@ class Profile:
         """
         return interpolated_field(np.array(self.depth_km), np.array(self.values))
 
-    def __call__(self, positions: np.ndarray) -> np.ndarray:
-        """Read the profile at positions, as a :data:`SpatialField` does.
-
-        Parameters
-        ----------
-        positions : numpy.ndarray
-            Positions ``(..., 3)``, depth last in kilometres.
-
-        Returns
-        -------
-        numpy.ndarray
-            The values interpolated at each position's depth ``(...)``.
-        """
-        return self.field()(positions)
-
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Ramp:
+class Ramp(_DepthProfile):
     """One value at shallow depths and another at deep ones, linear between.
 
     Parameters
@@ -228,21 +228,6 @@ class Ramp:
             The ramp at each position's depth.
         """
         return ramp_field(self.centre_km, self.half_width_km, self.shallow, self.deep)
-
-    def __call__(self, positions: np.ndarray) -> np.ndarray:
-        """Read the profile at positions, as a :data:`SpatialField` does.
-
-        Parameters
-        ----------
-        positions : numpy.ndarray
-            Positions ``(..., 3)``, depth last in kilometres.
-
-        Returns
-        -------
-        numpy.ndarray
-            The ramp at each position's depth ``(...)``.
-        """
-        return self.field()(positions)
 
 
 type DepthProfile = Annotated[
@@ -891,13 +876,9 @@ def _models(
     unknown = sorted(set(config.segments) - set(realisation))
     if unknown:
         raise RuptureGeneratorError(f"segments: {unknown} are not segments")
-    keys = ("slip", "rise", "rake", "speed", "perturbation")
     shared = RuptureModel(
-        **{key: getattr(config, key) for key in keys},
-        pulse=PulseSettings(
-            dt_s=config.pulse.dt_s,
-            beta=None if config.pulse.beta is None else config.pulse.beta.field(),
-        ),
+        **{key: getattr(config, key) for key in MODELS},
+        pulse=PulseSettings(dt_s=config.pulse.dt_s, beta=config.pulse.beta),
     )
     if not config.segments:
         return shared
@@ -905,7 +886,7 @@ def _models(
     for name in realisation:
         segment = config.segments.get(name, SegmentConfig())
         given = {
-            key: value for key in keys if (value := getattr(segment, key)) is not None
+            key: value for key in MODELS if (value := getattr(segment, key)) is not None
         }
         models[name] = dataclasses.replace(shared, **given)
     return models

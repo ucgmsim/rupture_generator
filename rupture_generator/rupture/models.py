@@ -102,6 +102,23 @@ class SegmentContext:
         """CellArray: Rigidity in pascals at the cell centres."""
         return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
 
+    def moment_nm(self, slip_m: CellArray) -> float:
+        """The moment of a slip on this segment's cells, in this rock.
+
+        Parameters
+        ----------
+        slip_m : CellArray
+            Slip, in metres.
+
+        Returns
+        -------
+        float
+            The moment, in newton-metres.
+        """
+        return float(
+            np.sum(self.rigidity_pa * self.geometry.areas_km2 * M2_PER_KM2 * slip_m)
+        )
+
     @property
     def grid(self) -> Grid:
         """Grid: The chart's cells as a sampling grid, spacing down dip first."""
@@ -620,9 +637,7 @@ class DrawnSlip:
         )
         latent, _ = sampler(context.grid, latent_covariance).draw(rng)
         pattern = self._taper(self.marginal.apply(latent), geometry.occupied)
-        total = float(
-            np.sum(context.rigidity_pa * geometry.areas_km2 * M2_PER_KM2 * pattern)
-        )
+        total = context.moment_nm(pattern)
         if not total > 0.0:
             raise RuptureGeneratorError(
                 "the slip pattern has no moment anywhere: every subfault was tapered "
@@ -1010,3 +1025,12 @@ class RuptureModel:
         default_factory=CorrelatedPerturbation
     )
     pulse: PulseSettings = dataclasses.field(default_factory=PulseSettings)
+
+
+MODELS = tuple(
+    field.name for field in dataclasses.fields(RuptureModel) if field.name != "pulse"
+)
+"""The models' names, in the order a segment draws them and spawns their generators.
+
+The pulse shapes the slip rates and draws nothing, so it is no model.
+"""

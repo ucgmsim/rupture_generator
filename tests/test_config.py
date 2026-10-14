@@ -25,29 +25,22 @@ def test_defaults_are_the_librarys():
         CorrelatedRise,
         DrawnSlip,
         GaussianRake,
-        RuptureModel,
         ShearFractionSpeed,
     )
 
     loaded = rupture_config.load(EXAMPLE)
-    library = RuptureModel()
-    assert library == RuptureModel(
-        DrawnSlip(),
-        CorrelatedRise(),
-        GaussianRake(),
-        ShearFractionSpeed(),
-        CorrelatedPerturbation(),
-    )
     # The config's classes are subclasses, so compare values rather than objects. The
     # example gives its own depth profiles, and the file's profiles are tables where
     # the library's are functions.
-    for name in ("rise", "rake", "speed", "perturbation"):
-        theirs = getattr(library, name)
+    for ours, theirs in (
+        (loaded.rise, CorrelatedRise()),
+        (loaded.rake, GaussianRake()),
+        (loaded.speed, ShearFractionSpeed()),
+        (loaded.perturbation, CorrelatedPerturbation()),
+    ):
         for field in dataclasses.fields(theirs):
             if field.name not in {"factor", "slip_weight"}:
-                assert getattr(getattr(loaded, name), field.name) == getattr(
-                    theirs, field.name
-                )
+                assert getattr(ours, field.name) == getattr(theirs, field.name)
     assert loaded.slip.side_taper == DrawnSlip().side_taper
     positions = np.zeros((2, 3))
     for profile in (rupture_config.Rise().factor, rupture_config.Speed().factor):

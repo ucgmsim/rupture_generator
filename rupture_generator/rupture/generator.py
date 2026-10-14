@@ -31,7 +31,7 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.medium import Medium, rigidity_pa
 from rupture_generator.rupture.models import (
-    M2_PER_KM2,
+    MODELS,
     RuptureModel,
     SegmentContext,
     check_cells,
@@ -53,9 +53,6 @@ A tie-break, not a modelling choice: it keeps the seed the strict earliest cell.
 MOMENT_MAGNITUDE_TOLERANCE = 0.05
 """How far a segment's slip may set its moment magnitude from its source's: the rounding
 of a magnitude stated to one decimal place."""
-
-MODEL_STREAMS = ("slip", "rise", "rake", "speed", "perturbation")
-"""The models in the order a segment's generator spawns their own generators."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -201,9 +198,7 @@ def _moment(context: SegmentContext, slip_m: CellArray) -> tuple[CellArray, floa
         "finite, non-negative values on the fault",
     )
     slip_m = np.where(geometry.occupied, slip_m, 0.0)
-    moment_nm = float(
-        np.sum(context.rigidity_pa * geometry.areas_km2 * M2_PER_KM2 * slip_m)
-    )
+    moment_nm = context.moment_nm(slip_m)
     if not moment_nm > 0.0:
         raise RuptureGeneratorError("slip has zero moment")
     drawn = magnitude_from_moment(moment_nm)
@@ -214,10 +209,6 @@ def _moment(context: SegmentContext, slip_m: CellArray) -> tuple[CellArray, floa
             f"{stated:.3f}; they differ by more than {MOMENT_MAGNITUDE_TOLERANCE}"
         )
     return slip_m, moment_nm
-
-
-def _finite(values: CellArray) -> np.ndarray:
-    return np.isfinite(values)
 
 
 def generate_segment(
@@ -293,11 +284,11 @@ def generate_segment(
             "rising fractions in (0, 0.5]",
         )
     )
-    streams = dict(zip(MODEL_STREAMS, rng.spawn(len(MODEL_STREAMS)), strict=True))
+    streams = dict(zip(MODELS, rng.spawn(len(MODELS)), strict=True))
 
     slip = model.slip(context, streams["slip"])
     slip_m, moment_nm = _moment(context, slip.slip_m)
-    check_cells(geometry, "slip's latent", slip.latent, _finite, "finite values")
+    check_cells(geometry, "slip's latent", slip.latent, np.isfinite, "finite values")
     # The other models read the slip the rupture keeps.
     slip = dataclasses.replace(slip, slip_m=slip_m)
     rise = model.rise(context, slip, moment_nm, streams["rise"])
@@ -309,7 +300,7 @@ def generate_segment(
         "finite, non-negative values",
     )
     rake = model.rake(context, streams["rake"])
-    rake_deg = check_cells(geometry, "rake", rake.values, _finite, "finite values")
+    rake_deg = check_cells(geometry, "rake", rake.values, np.isfinite, "finite values")
     speed = model.speed(context, slip, streams["speed"])
     speed_km_s = check_cells(
         geometry,
@@ -323,7 +314,7 @@ def generate_segment(
         geometry,
         "the onset displacement",
         perturbation.displacement_s,
-        _finite,
+        np.isfinite,
         "finite values",
     )
     if not (np.isfinite(perturbation.blend_s) and perturbation.blend_s >= 0.0):
@@ -333,13 +324,7 @@ def generate_segment(
         )
 
     travel_s = _travel_times(geometry, speed_km_s, seed)
-    reports = (
-        ("slip", slip.statistics),
-        ("rise", rise.statistics),
-        ("rake", rake.statistics),
-        ("speed", speed.statistics),
-        ("perturbation", perturbation.statistics),
-    )
+    drawn = (slip, rise, rake, speed, perturbation)
     return SegmentRupture(
         geometry=geometry,
         slip_m=slip_m,
@@ -353,8 +338,8 @@ def generate_segment(
         beta=beta,
         statistics={
             f"{name}.{key}": float(value)
-            for name, statistics in reports
-            for key, value in statistics.items()
+            for name, model in zip(MODELS, drawn, strict=True)
+            for key, value in model.statistics.items()
         },
     )
 

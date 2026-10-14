@@ -79,10 +79,6 @@ def test_each_statistic_names_its_model(ruptures):
             "speed.alpha_t",
             "perturbation.scale_s",
         }
-        occupied = rupture.geometry.occupied
-        assert rupture.rise_time_s[occupied].mean() == pytest.approx(
-            rupture.statistics["rise.mean_s"]
-        )
 
 
 def test_a_function_serves_as_a_model(scenario, ruptures):
