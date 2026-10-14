@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pyproj
+import srf
 
 from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.errors import RuptureGeneratorError
@@ -26,13 +27,6 @@ from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.generator import SegmentRupture
 from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
-from rupture_generator.srf_parser import (
-    PyCsrMatrix,
-    PySrfMetadata,
-    PySrfPlane,
-    SrfWriter,
-    parse_srf,
-)
 
 CM_PER_M = 100.0
 CM_PER_KM = 1.0e5
@@ -62,7 +56,7 @@ def _planes(
     geometry: Geometry,
     hypocentre: Hypocentre | None,
     transformer: pyproj.Transformer,
-) -> tuple[list[PySrfPlane], list[float]]:
+) -> tuple[list[srf.Plane], list[float]]:
     """One header per plane, and each plane's strike for its points.
 
     A header describes the plane in its own coordinates, the parallelogram hung toward
@@ -92,7 +86,7 @@ def _planes(
         )
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
         headers.append(
-            PySrfPlane(
+            srf.Plane(
                 elon=float(centre_lon),
                 elat=float(centre_lat),
                 nstk=columns.stop - columns.start,
@@ -125,7 +119,7 @@ def _plane_points(
     *,
     dt_s: float,
     beta: CellArray | None,
-) -> tuple[PySrfMetadata, PyCsrMatrix]:
+) -> tuple[srf.Points, srf.SlipRate]:
     """One plane's points and slip-rate rows, in SRF order and SRF units.
 
     Raises
@@ -154,7 +148,7 @@ def _plane_points(
     def single(values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32)
 
-    metadata = PySrfMetadata(
+    points = srf.Points(
         lon=single(lon),
         lat=single(lat),
         dep=single(centres[..., 2].ravel()),
@@ -165,14 +159,13 @@ def _plane_points(
         dt=np.full(lon.size, dt_s, dtype=np.float32),
         rake=single(cells(rupture.rake_deg)),
         slip1=single(slip_m * CM_PER_M),
-        rise=single(rise_s),
         vs=single(cells(rupture.shear_speed_km_s) * CM_PER_KM),
         density=single(cells(rupture.density_g_cm3)),
     )
-    slip_rate = PyCsrMatrix(
-        row_ptr=row_offsets.astype(np.uint64), data=single(rates * CM_PER_M)
+    slip_rate = srf.SlipRate(
+        offsets=row_offsets.astype(np.uintp), values=single(rates * CM_PER_M)
     )
-    return metadata, slip_rate
+    return points, slip_rate
 
 
 def write_rupture(
@@ -207,7 +200,7 @@ def write_rupture(
         realisation.crs, "EPSG:4326", always_xy=True
     )
     hypocentre = realisation.hypocentre
-    planes: list[PySrfPlane] = []
+    planes: list[srf.Plane] = []
     strikes: dict[str, list[float]] = {}
     for name, rupture in realisation.items():
         on_segment = hypocentre if hypocentre and hypocentre.segment == name else None
@@ -215,7 +208,7 @@ def write_rupture(
         planes.extend(headers)
 
     try:
-        with SrfWriter(path, planes) as writer:
+        with srf.Writer(path, planes) as writer:
             for name, rupture in realisation.items():
                 segment_beta = None if beta is None else beta.get(name)
                 for columns, strike_deg in zip(
@@ -243,7 +236,7 @@ class SrfRupture:
 
     Parameters
     ----------
-    planes : list of PySrfPlane
+    planes : tuple of srf.Plane
         The plane headers, as the file states them.
     hypocentre : tuple of float or None
         ``(longitude, latitude, depth_km)``, or ``None`` if no plane records one.
@@ -277,7 +270,7 @@ class SrfRupture:
         as the file holds it.
     """
 
-    planes: list[PySrfPlane]
+    planes: tuple[srf.Plane, ...]
     hypocentre: tuple[float, float, float] | None
     lon_deg: np.ndarray
     lat_deg: np.ndarray
@@ -309,7 +302,7 @@ def _along(index: float, count: int) -> tuple[int, float]:
     return start, index - start
 
 
-def _hypocentre(plane: PySrfPlane, positions: np.ndarray) -> tuple[float, float, float]:
+def _hypocentre(plane: srf.Plane, positions: np.ndarray) -> tuple[float, float, float]:
     """The inverse of :func:`_planes`, read off the plane's own points.
 
     ``shyp`` and ``dhyp`` are fractions of ``len`` and ``wid`` along the plane's own
@@ -319,7 +312,7 @@ def _hypocentre(plane: PySrfPlane, positions: np.ndarray) -> tuple[float, float,
 
     Parameters
     ----------
-    plane : PySrfPlane
+    plane : srf.Plane
         The header holding the hypocentre.
     positions : np.ndarray
         That plane's points, ``(ndip, nstk, 3)``: longitude, latitude and depth.
@@ -356,27 +349,24 @@ def read_rupture(path: str | Path) -> SrfRupture:
         If reading the file fails.
     """
     try:
-        srf = parse_srf(Path(path).read_bytes())
-    except ValueError as error:
-        raise RuptureGeneratorError(f"{path}: {error}") from error
-    points = srf.metadata
+        parsed = srf.read(path)
+    except srf.SrfError as error:
+        raise RuptureGeneratorError(str(error)) from error
+    points = parsed.points
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(
             f"{path} is a version 1 SRF, which records no shear speed or density"
         )
-    pulses = srf.slipt1.data
-    pulses /= CM_PER_M
+    pulses = parsed.slip_rate.values / np.float32(CM_PER_M)
     positions = np.column_stack([points.lon, points.lat, points.dep]).astype(np.float64)
-    hypocentre, start = None, 0
-    for plane in srf.planes:
-        count = plane.nstk * plane.ndip
+    hypocentre = None
+    for plane, run in zip(parsed.planes, parsed.plane_points, strict=True):
         if plane.shyp != NO_HYPOCENTRE:
-            grid = positions[start : start + count].reshape(plane.ndip, plane.nstk, 3)
+            grid = positions[run].reshape(plane.ndip, plane.nstk, 3)
             hypocentre = _hypocentre(plane, grid)
             break
-        start += count
     return SrfRupture(
-        planes=list(srf.planes),
+        planes=tuple(parsed.planes),
         hypocentre=hypocentre,
         lon_deg=points.lon.astype(np.float64),
         lat_deg=points.lat.astype(np.float64),
@@ -388,10 +378,10 @@ def read_rupture(path: str | Path) -> SrfRupture:
         dt_s=points.dt.astype(np.float64),
         rake_deg=points.rake.astype(np.float64),
         slip_m=points.slip1.astype(np.float64) / CM_PER_M,
-        rise_time_s=points.rise.astype(np.float64),
+        rise_time_s=parsed.rise,
         shear_speed_km_s=points.vs.astype(np.float64) / CM_PER_KM,
         density_g_cm3=points.density.astype(np.float64),
-        pulse_offsets=srf.slipt1.row_ptr.astype(np.int64),
+        pulse_offsets=parsed.slip_rate.offsets.astype(np.int64),
         pulses_m_s=pulses,
     )
 
