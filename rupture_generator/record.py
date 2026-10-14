@@ -2,8 +2,8 @@
 
 A record is the config as TOML, every default written out, followed by a
 ``[provenance]`` table. In an SRF it's the header's comments, one per line of TOML,
-and in a fields file it's the root's ``run_record`` attribute. It records how a file
-was made. Nothing reads it back.
+and in a fields file it's the root's ``run_record`` attribute. It states how the run
+made the file, and the package writes it without ever reading it back.
 """
 
 import dataclasses
