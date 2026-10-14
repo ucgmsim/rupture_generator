@@ -21,8 +21,10 @@ The build needs a Rust toolchain. `setuptools-rust` drives `cargo` from
 A rupture is one TOML file next to a GeoJSON fault system.
 
 ```sh
-# A rupture file in, an SRF out. OUTPUT.toml records the run, every default included.
+# A rupture file in, an SRF out. The SRF's header comments record the run, every
+# default included. An SRF in reruns the draw its record states.
 rupture-generator examples/alpine_hope.toml alpine_hope.srf
+rupture-generator alpine_hope.srf again.srf
 
 # Watch it happen (needs the `vis` extra), or save a Rerun recording instead.
 rupture-view alpine_hope.srf

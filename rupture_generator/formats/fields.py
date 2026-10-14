@@ -7,16 +7,16 @@ precision, so the SRF written from a file read back is byte-identical to one wri
 from the draw.
 
 The root group stores the projection as WKT in ``crs``, the hypocentre in
-``hypocentre_segment``, ``hypocentre_strike_km`` and ``hypocentre_dip_km``. Its ``segment`` variable names
-the segments in drawing order, the order the SRF writes them in, and ``parent`` names
-the segment that triggered each one, empty for the hypocentre's. Each segment is a
-group of its own name. Its cell fields are on ``(dip, strike)`` with their units in
+``hypocentre_segment``, ``hypocentre_strike_km`` and ``hypocentre_dip_km``. Its
+``segment`` variable names the segments in drawing order, the order the SRF writes
+them in, and ``parent`` names the segment that triggered each one, empty for the
+hypocentre's. Each segment is a group of its own name. Its cell fields are on ``(dip, strike)`` with their units in
 ``units``, its chart's nodes on ``(node_dip, node_strike, axis)``, its cell centres on
 ``(dip, strike, axis)``, and its three statistics and its pulse's ``dt_s`` in
 attributes.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -209,7 +209,9 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
     return Realisation(segments, crs, hypocentre, parents)
 
 
-def fields_to_srf(source: Path | str, destination: Path | str) -> None:
+def fields_to_srf(
+    source: Path | str, destination: Path | str, *, comments: Sequence[str] = ()
+) -> None:
     """Write the SRF of the rupture stored in a fields file.
 
     Parameters
@@ -218,6 +220,8 @@ def fields_to_srf(source: Path | str, destination: Path | str) -> None:
         The fields file :func:`write_fields` wrote.
     destination : Path or str
         Where to write the SRF.
+    comments : sequence of str, optional
+        The SRF header's comment lines, such as the run's record.
 
     Raises
     ------
@@ -226,7 +230,7 @@ def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     OSError
         If reading or writing a file fails.
     """
-    write_rupture(str(destination), read_fields(source))
+    write_rupture(str(destination), read_fields(source), comments=comments)
 
 
 __all__ = ["SUFFIXES", "fields_to_srf", "read_fields", "write_fields"]

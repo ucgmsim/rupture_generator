@@ -6,10 +6,10 @@ the drawn fields, which make an SRF later. A fields file as ``INPUT`` writes its
 ``OUTPUT``.
 
 Each draw keeps its run record, :mod:`rupture_generator.record`: the config with every
-default written out, the software that ran it and the digests of its inputs. A fields
-file stores it in its root attributes. An SRF has no place for it. The record goes
-next to the SRF instead, named for the whole of ``OUTPUT`` plus ``.toml``:
-``rupture.srf.toml`` for ``rupture.srf``. Either reruns the draw: pass the record as ``INPUT``.
+default written out, the software that ran it and the digests of its inputs. An SRF
+stores it in its header's comment lines, and a fields file in its root attributes. The
+SRF made from a fields file keeps the fields file's record. An SRF as ``INPUT`` reruns
+the draw its record states.
 """
 
 import argparse
@@ -20,17 +20,24 @@ from rupture_generator import config as rupture_config
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.fields import SUFFIXES, fields_to_srf, write_fields
 from rupture_generator.formats.srf import write_rupture
-from rupture_generator.record import ATTRIBUTE, run_record
+from rupture_generator.record import ATTRIBUTE, read_record, relocated, run_record
 from rupture_generator.rupture.generator import generate
 
 
 def _draw(source: Path, output: Path) -> None:
-    """Draw the rupture ``source`` describes, and write it and its record."""
+    """Draw the rupture ``source`` describes, and write it and its record.
+
+    ``source`` is a rupture file, or an SRF whose record states the draw.
+    """
     if output.suffix != ".srf" and output.suffix not in SUFFIXES:
         raise RuptureGeneratorError(
             f"{output} ends in neither .srf nor one of {', '.join(SUFFIXES)}"
         )
-    config = rupture_config.load(source)
+    config = (
+        read_record(source)[0]
+        if source.suffix == ".srf"
+        else rupture_config.load(source)
+    )
     record = run_record(source, config, output)
     scenario = rupture_config.build(config)
     drawn = generate(
@@ -42,8 +49,7 @@ def _draw(source: Path, output: Path) -> None:
         jump_propagation_model=scenario.jump_model,
     )
     if output.suffix == ".srf":
-        write_rupture(str(output), drawn)
-        output.with_name(output.name + ".toml").write_text(record)
+        write_rupture(str(output), drawn, comments=record.splitlines())
     else:
         write_fields(output, drawn, attrs={ATTRIBUTE: record})
 
@@ -68,10 +74,14 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Draw a kinematic rupture from a TOML file and write it as an SRF (.srf) "
             f"or as its fields ({', '.join(SUFFIXES)}). Given a fields file, write "
-            "its SRF."
+            "its SRF. Given an SRF, draw again from the record in its header."
         ),
     )
-    parser.add_argument("input", type=Path, help="the rupture file, or a fields file")
+    parser.add_argument(
+        "input",
+        type=Path,
+        help="the rupture file, a fields file, or an SRF whose recorded draw to rerun",
+    )
     parser.add_argument("output", type=Path, help="where to write the SRF or fields")
     args = parser.parse_args(argv)
 
@@ -82,7 +92,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{args.input} is a fields file, which writes an SRF, and "
                     f"{args.output} does not end in .srf"
                 )
-            fields_to_srf(args.input, args.output)
+            record = relocated(args.input, args.output)
+            fields_to_srf(
+                args.input,
+                args.output,
+                comments=() if record is None else record.splitlines(),
+            )
         else:
             _draw(args.input, args.output)
     except (RuptureGeneratorError, OSError) as error:

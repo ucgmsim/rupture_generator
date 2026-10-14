@@ -38,6 +38,6 @@ budget:
     @find rupture_generator -name '*.py' ! -name view.py | xargs wc -l | sort -rn
 
 # A rupture on the shipped Alpine-Hope example, end to end.
-# Writes /tmp/alpine_hope.srf, and the config it ran as /tmp/alpine_hope.srf.toml.
+# Writes /tmp/alpine_hope.srf, with the config it ran in its header comments.
 demo:
     uv run rupture-generator examples/alpine_hope.toml /tmp/alpine_hope.srf

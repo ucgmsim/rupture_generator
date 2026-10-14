@@ -10,6 +10,8 @@ from rupture_generator import Realisation, RuptureGeneratorError
 from rupture_generator.cli import main
 from rupture_generator.formats.fields import fields_to_srf, read_fields, write_fields
 
+from .conftest import srf_body
+
 
 @pytest.fixture(scope="module")
 def fields_path(tmp_path_factory, ruptures):
@@ -86,10 +88,10 @@ def test_the_cli_writes_fields_that_make_its_srf(tmp_path, coarse_example):
     direct, fields, made = (tmp_path / name for name in ("a.srf", "a.h5", "b.srf"))
     assert main([str(coarse_example), str(direct)]) == 0
     assert main([str(coarse_example), str(fields)]) == 0
-    # The fields file keeps its record in its root attributes, not beside it.
-    assert not fields.with_name("a.h5.toml").exists()
     assert main([str(fields), str(made)]) == 0
-    assert made.read_bytes() == direct.read_bytes()
+    assert srf_body(made) == srf_body(direct)
+    # The SRFs and the fields file keep their records inside them, not beside them.
+    assert sorted(tmp_path.iterdir()) == sorted([coarse_example, direct, fields, made])
 
 
 @pytest.mark.parametrize(

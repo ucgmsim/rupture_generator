@@ -14,8 +14,9 @@ from rupture_generator import config as rupture_config
 from rupture_generator import record as run_record
 from rupture_generator.cli import main
 from rupture_generator.formats.fields import write_fields
+from rupture_generator.formats.srf import write_rupture
 
-from .conftest import EXAMPLE
+from .conftest import EXAMPLE, srf_body
 
 
 @pytest.fixture
@@ -76,12 +77,38 @@ def test_outside_a_checkout_there_is_no_commit(monkeypatch):
     assert "commit" not in run_record._ENCODER.encode(run_record._Table(provenance))
 
 
-def test_rerunning_an_srf_record_writes_the_same_srf(tmp_path, coarse_example):
+def test_rerunning_an_srf_writes_the_same_srf(tmp_path, coarse_example):
     first, again = tmp_path / "first.srf", tmp_path / "again.srf"
     assert main([str(coarse_example), str(first)]) == 0
-    record = first.with_name("first.srf.toml")
-    assert main([str(record), str(again)]) == 0
-    assert again.read_bytes() == first.read_bytes()
+    assert main([str(first), str(again)]) == 0
+    assert srf_body(again) == srf_body(first)
+    config, provenance = run_record.read_record(again)
+    assert config == run_record.read_record(first)[0]
+    # The rerun read the first SRF, and states it as its rupture file.
+    assert provenance.inputs[0].path == "first.srf"
+    assert provenance.inputs[0].sha256 == hashlib.sha256(first.read_bytes()).hexdigest()
+
+
+def test_the_srf_of_a_fields_file_keeps_the_draws_record(tmp_path, coarse_example):
+    fields = tmp_path / "fields" / "rupture.h5"
+    fields.parent.mkdir()
+    assert main([str(coarse_example), str(fields)]) == 0
+    made = tmp_path / "srfs" / "rupture.srf"
+    made.parent.mkdir()
+    assert main([str(fields), str(made)]) == 0
+    from_fields, from_srf = run_record.read_record(fields), run_record.read_record(made)
+    assert from_srf == from_fields
+    # The paths moved with the record, so the SRF's still reach the inputs.
+    assert from_srf[1].inputs[0].path == f"../{coarse_example.name}"
+    assert from_srf[0].geometry.path.exists()
+
+
+def test_an_srf_without_comments_has_no_record(tmp_path, ruptures):
+    path = tmp_path / "bare.srf"
+    write_rupture(path, ruptures)
+    with pytest.raises(RuptureGeneratorError, match="no header comments"):
+        run_record.read_record(path)
+    assert run_record.relocated(path, tmp_path / "other.srf") is None
 
 
 def test_rerunning_a_fields_record_draws_the_same_fields(tmp_path, coarse_example):

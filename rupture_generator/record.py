@@ -4,9 +4,9 @@ A record is the config as TOML, every default written out, followed by a
 ``[provenance]`` table. :func:`~rupture_generator.config.load` reads past that table,
 so a record reruns as it stands. The geometry's path, and each input's, is relative to
 the record's own location, so a record moved with its inputs still runs. The record
-gives a path that shares only the filesystem root with it in full. Next to an SRF the
-record is a file of its own, and in a fields file it's the root's ``run_record``
-attribute.
+gives a path that shares only the filesystem root with it in full. In an SRF the
+record is the header's comments, one per line of TOML, and in a fields file it's the
+root's ``run_record`` attribute. Either way it's part of the file it describes.
 """
 
 import dataclasses
@@ -18,6 +18,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import srf
 from mashumaro.codecs import BasicDecoder
 from mashumaro.codecs.toml import TOMLEncoder
 from mashumaro.mixins.toml import TOMLDialect
@@ -175,6 +176,32 @@ def provenance(source: Path, config: rupture_config.RuptureConfig) -> Provenance
     )
 
 
+def _render(
+    config: rupture_config.RuptureConfig,
+    stated: Provenance,
+    origin: Path,
+    location: Path,
+) -> str:
+    """The record as TOML, its paths moved from ``origin``'s directory to ``location``'s.
+
+    The config's geometry path is absolute already. The inputs' paths are relative to
+    ``origin``'s directory, or absolute.
+    """
+    directory = location.parent
+    stated = dataclasses.replace(
+        stated,
+        inputs=[
+            Input(str(_relative(origin.parent / i.path, directory)), i.sha256)
+            for i in stated.inputs
+        ],
+    )
+    geometry = dataclasses.replace(
+        config.geometry, path=_relative(config.geometry.path, directory)
+    )
+    relative = dataclasses.replace(config, geometry=geometry)
+    return f"{rupture_config.dump(relative)}\n{_ENCODER.encode(_Table(stated))}"
+
+
 def run_record(
     source: Path, config: rupture_config.RuptureConfig, location: Path
 ) -> str:
@@ -187,8 +214,8 @@ def run_record(
     config : RuptureConfig
         The loaded config.
     location : Path
-        Where the record goes: the sidecar file, or the fields file holding it. Paths
-        in the record are relative to its directory.
+        The file the record goes in, an SRF or a fields file. Paths in the record are
+        relative to its directory.
 
     Returns
     -------
@@ -200,31 +227,78 @@ def run_record(
     OSError
         If reading an input fails.
     """
-    directory = location.parent
-    stated = provenance(source, config)
-    stated = dataclasses.replace(
-        stated,
-        inputs=[
-            Input(str(_relative(Path(i.path), directory)), i.sha256)
-            for i in stated.inputs
-        ],
-    )
-    geometry = dataclasses.replace(
-        config.geometry, path=_relative(config.geometry.path, directory)
-    )
-    relative = dataclasses.replace(config, geometry=geometry)
-    return f"{rupture_config.dump(relative)}\n{_ENCODER.encode(_Table(stated))}"
+    return _render(config, provenance(source, config), location, location)
+
+
+def relocated(path: Path, location: Path) -> str | None:
+    """Rewrite the record in a file for another file, its paths relative to that.
+
+    The SRF made from a fields file gets the fields file's record this way. It's the
+    record of the draw, with paths that still lead to the inputs from the SRF.
+
+    Parameters
+    ----------
+    path : Path
+        A file holding a record, an SRF or a fields file.
+    location : Path
+        The file the record goes in.
+
+    Returns
+    -------
+    str or None
+        The record as TOML, or ``None`` when ``path`` doesn't contain one.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the record in ``path`` doesn't read as one.
+    OSError
+        If reading the file fails.
+    """
+    path = Path(path)
+    text = _text(path)
+    if text is None:
+        return None
+    config, stated = _parse(text, path)
+    return _render(config, stated, path, location)
+
+
+def _text(path: Path) -> str | None:
+    """The record a file holds as TOML, or ``None`` when it holds none."""
+    import xarray as xr
+
+    if path.suffix == ".srf":
+        try:
+            comments = srf.read_comments(path)
+        except srf.SrfError as error:
+            raise RuptureGeneratorError(str(error)) from error
+        return "\n".join(comments) if comments else None
+    if path.suffix in SUFFIXES:
+        with xr.open_datatree(path, engine="h5netcdf") as tree:
+            return str(tree.attrs[ATTRIBUTE]) if ATTRIBUTE in tree.attrs else None
+    return path.read_text()
+
+
+def _parse(text: str, path: Path) -> tuple[rupture_config.RuptureConfig, Provenance]:
+    config = rupture_config.loads(text, path.parent, name=str(path))
+    try:
+        table = tomllib.loads(text)[rupture_config.PROVENANCE]
+    except KeyError as error:
+        raise RuptureGeneratorError(
+            f"{path} has no [{rupture_config.PROVENANCE}] table"
+        ) from error
+    return config, _DECODER.decode(table)
 
 
 def read_record(
     path: Path,
 ) -> tuple[rupture_config.RuptureConfig, Provenance]:
-    """Read the record of a run, from its sidecar file or the fields file holding it.
+    """Read the record of a run, from the SRF or fields file holding it.
 
     Parameters
     ----------
     path : Path
-        The record, or a fields file.
+        An SRF or a fields file, or a record as a TOML file of its own.
 
     Returns
     -------
@@ -238,24 +312,12 @@ def read_record(
     OSError
         If reading the file fails.
     """
-    import xarray as xr
-
     path = Path(path)
-    if path.suffix in SUFFIXES:
-        with xr.open_datatree(path, engine="h5netcdf") as tree:
-            if ATTRIBUTE not in tree.attrs:
-                raise RuptureGeneratorError(f"{path} has no {ATTRIBUTE} attribute")
-            text = str(tree.attrs[ATTRIBUTE])
-    else:
-        text = path.read_text()
-    config = rupture_config.loads(text, path.parent, name=str(path))
-    try:
-        table = tomllib.loads(text)[rupture_config.PROVENANCE]
-    except KeyError as error:
-        raise RuptureGeneratorError(
-            f"{path} has no [{rupture_config.PROVENANCE}] table"
-        ) from error
-    return config, _DECODER.decode(table)
+    text = _text(path)
+    if text is None:
+        where = "header comments" if path.suffix == ".srf" else f"{ATTRIBUTE} attribute"
+        raise RuptureGeneratorError(f"{path} has no record: it has no {where}")
+    return _parse(text, path)
 
 
 __all__ = [
@@ -265,5 +327,6 @@ __all__ = [
     "Provenance",
     "provenance",
     "read_record",
+    "relocated",
     "run_record",
 ]

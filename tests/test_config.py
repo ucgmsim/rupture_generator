@@ -106,13 +106,13 @@ def test_parts_that_do_not_fit_are_refused_when_built(old, new, message):
 
 def test_the_cli_writes_an_srf_and_its_config(tmp_path):
     from rupture_generator.cli import main
+    from rupture_generator.record import read_record
 
     output = tmp_path / "out.srf"
     assert main([str(EXAMPLE), str(output)]) == 0
-    assert output.read_text().startswith("2.0\n")
-    assert rupture_config.load(output.with_name("out.srf.toml")) == rupture_config.load(
-        EXAMPLE
-    )
+    assert output.read_text().startswith("2.0\n# seed = 7\n")
+    assert read_record(output)[0] == rupture_config.load(EXAMPLE)
+    assert list(tmp_path.iterdir()) == [output]
 
 
 def test_the_cli_reports_a_bad_file(tmp_path, capsys):

@@ -46,3 +46,9 @@ def srf_path(tmp_path_factory, scenario, ruptures):
     path = tmp_path_factory.mktemp("srf") / "rupture.srf"
     write_rupture(str(path), ruptures)
     return path
+
+
+def srf_body(path: Path) -> bytes:
+    """An SRF's bytes without its header comments, which hold the run's record."""
+    with path.open("rb") as handle:
+        return b"".join(line for line in handle if not line.startswith(b"#"))

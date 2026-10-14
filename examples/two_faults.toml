@@ -1,7 +1,7 @@
 # Two faults, the first bent into two planes, ruptured from a hypocentre on the first.
 # Every table but [geometry], [hypocentre], [medium] and [source] is optional;
 # what is left out takes the library's defaults, which `rupture-generator` writes out
-# in full next to the SRF.
+# in full in the SRF's header comments.
 
 seed = 7
 
