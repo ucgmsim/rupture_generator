@@ -19,17 +19,19 @@ three statistics in attributes.
 import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pyproj
-import xarray as xr
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.srf import write_rupture
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.generator import SegmentRupture
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
+
+if TYPE_CHECKING:
+    import xarray as xr
 
 SUFFIXES = (".h5", ".nc")
 """The suffixes of a fields file."""
@@ -74,6 +76,8 @@ def _segment(
     rupture: SegmentRupture, beta: CellArray | None
 ) -> tuple[xr.Dataset, dict[str, dict]]:
     """One segment's group, and the compression for each of its variables."""
+    import xarray as xr
+
     geometry = rupture.geometry
     variables: dict[str, tuple] = {
         name: (_CELL, getattr(rupture, name), {"units": units})
@@ -129,6 +133,8 @@ def write_fields(
     OSError
         If writing the file fails.
     """
+    import xarray as xr
+
     path = Path(path)
     names = list(realisation)
     awkward = [name for name in names if "/" in name]
@@ -184,6 +190,8 @@ def read_fields(path: Path | str) -> StoredRupture:
     OSError
         If reading the file fails.
     """
+    import xarray as xr
+
     path = Path(path)
     with xr.open_datatree(path, engine=_ENGINE) as tree:
         try:

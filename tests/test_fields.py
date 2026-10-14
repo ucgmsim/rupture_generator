@@ -1,4 +1,6 @@
 import dataclasses
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -111,3 +113,25 @@ def test_the_cli_refuses_an_output_it_cannot_write(
 ):
     assert main([str(tmp_path / source), str(tmp_path / output)]) == 2
     assert str(tmp_path / output) in capsys.readouterr().err
+
+
+HEAVY_IMPORTS_PROBE = (
+    "import sys, rupture_generator.cli; "
+    "print(sorted({'xarray', 'pandas', 'h5netcdf'} & set(sys.modules)))"
+)
+
+
+def test_drawing_an_srf_does_not_import_xarray():
+    # xarray and pandas take about a third of a second and 85 MiB to import, and an
+    # SRF run never needs them. Only reading or writing a fields file does.
+    loaded = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            HEAVY_IMPORTS_PROBE,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert loaded == "[]"
