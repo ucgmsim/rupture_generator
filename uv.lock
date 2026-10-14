@@ -810,7 +810,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=5" },
     { name = "rerun-sdk", marker = "extra == 'vis'", specifier = ">=0.26" },
     { name = "scipy", specifier = ">=1.13" },
-    { name = "ucgmsim-srf", git = "https://github.com/ucgmsim/srf?rev=718c78b28d5f556cfc43cba28befb30f845da479" },
+    { name = "ucgmsim-srf", git = "https://github.com/ucgmsim/srf?rev=67909d87f4722960f221a9cc455ae47ca524c0af" },
     { name = "xarray", specifier = ">=2026.9.0" },
 ]
 provides-extras = ["test", "bench", "vis"]
@@ -1045,8 +1045,8 @@ wheels = [
 
 [[package]]
 name = "ucgmsim-srf"
-version = "2026.10.2.dev2+g718c78b28"
-source = { git = "https://github.com/ucgmsim/srf?rev=718c78b28d5f556cfc43cba28befb30f845da479#718c78b28d5f556cfc43cba28befb30f845da479" }
+version = "2026.10.2.dev4+g67909d87f"
+source = { git = "https://github.com/ucgmsim/srf?rev=67909d87f4722960f221a9cc455ae47ca524c0af#67909d87f4722960f221a9cc455ae47ca524c0af" }
 dependencies = [
     { name = "numpy" },
 ]

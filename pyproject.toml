@@ -156,4 +156,4 @@ cache-keys = [
 [tool.uv.sources]
 # Header comments, which the run record goes in, are not in a release of
 # ucgmsim/srf yet. Back to the release once they are.
-ucgmsim-srf = { git = "https://github.com/ucgmsim/srf", rev = "718c78b28d5f556cfc43cba28befb30f845da479" }
+ucgmsim-srf = { git = "https://github.com/ucgmsim/srf", rev = "67909d87f4722960f221a9cc455ae47ca524c0af" }

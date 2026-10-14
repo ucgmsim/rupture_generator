@@ -20,7 +20,7 @@ from rupture_generator import config as rupture_config
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.fields import SUFFIXES, fields_to_srf, write_fields
 from rupture_generator.formats.srf import write_rupture
-from rupture_generator.record import ATTRIBUTE, read_record, relocated, run_record
+from rupture_generator.record import ATTRIBUTE, read_config, run_record
 from rupture_generator.rupture.generator import generate
 
 
@@ -33,11 +33,7 @@ def _draw(source: Path, output: Path) -> None:
         raise RuptureGeneratorError(
             f"{output} ends in neither .srf nor one of {', '.join(SUFFIXES)}"
         )
-    config = (
-        read_record(source)[0]
-        if source.suffix == ".srf"
-        else rupture_config.load(source)
-    )
+    config = read_config(source)
     record = run_record(source, config, output)
     scenario = rupture_config.build(config)
     drawn = generate(
@@ -92,12 +88,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{args.input} is a fields file, which writes an SRF, and "
                     f"{args.output} does not end in .srf"
                 )
-            record = relocated(args.input, args.output)
-            fields_to_srf(
-                args.input,
-                args.output,
-                comments=() if record is None else record.splitlines(),
-            )
+            fields_to_srf(args.input, args.output)
         else:
             _draw(args.input, args.output)
     except (RuptureGeneratorError, OSError) as error:

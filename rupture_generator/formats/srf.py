@@ -15,7 +15,7 @@ edge, so the projection's grid convergence never reaches the file.
 import dataclasses
 import itertools
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -229,6 +229,49 @@ def write_rupture(
         partial.unlink(missing_ok=True)
 
 
+def _read[T](reader: Callable[[Path | bytes], T], path: Path) -> T:
+    """Run an ``srf`` reader over a file, its errors as this package's.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the reader refuses the file, with the file's name.
+    OSError
+        If reading the file fails.
+    """
+    try:
+        # srf memory-maps a path, and refuses a pipe or a terminal as empty.
+        return reader(path if path.is_file() else path.read_bytes())
+    except srf.SrfError as error:
+        message = str(error)
+        if not message.startswith(f"{path}:"):
+            message = f"{path}: {message}"
+        raise RuptureGeneratorError(message) from error
+
+
+def read_comments(path: str | Path) -> tuple[str, ...]:
+    """Read an SRF's header comments, and nothing after them.
+
+    Parameters
+    ----------
+    path : str or Path
+        The SRF.
+
+    Returns
+    -------
+    tuple of str
+        Each comment line's text, without its leading ``# ``.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the file doesn't start with an SRF version line.
+    OSError
+        If reading the file fails.
+    """
+    return _read(srf.read_comments, Path(path))
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class SrfRupture:
     """An SRF read back in SI: one array per point column, in file order.
@@ -352,15 +395,7 @@ def read_rupture(path: str | Path) -> SrfRupture:
     OSError
         If reading the file fails.
     """
-    path = Path(path)
-    try:
-        # srf.read memory-maps a path, and refuses a pipe or a terminal as empty.
-        parsed = srf.read(path if path.is_file() else path.read_bytes())
-    except srf.SrfError as error:
-        message = str(error)
-        if not message.startswith(f"{path}:"):
-            message = f"{path}: {message}"
-        raise RuptureGeneratorError(message) from error
+    parsed = _read(srf.read, Path(path))
     points = parsed.points
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(
@@ -395,4 +430,10 @@ def read_rupture(path: str | Path) -> SrfRupture:
     )
 
 
-__all__ = ["NO_HYPOCENTRE", "SrfRupture", "read_rupture", "write_rupture"]
+__all__ = [
+    "NO_HYPOCENTRE",
+    "SrfRupture",
+    "read_comments",
+    "read_rupture",
+    "write_rupture",
+]

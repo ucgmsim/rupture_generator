@@ -18,7 +18,6 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-import srf
 from mashumaro.codecs import BasicDecoder
 from mashumaro.codecs.toml import TOMLEncoder
 from mashumaro.mixins.toml import TOMLDialect
@@ -26,7 +25,8 @@ from mashumaro.mixins.toml import TOMLDialect
 from rupture_generator import __version__
 from rupture_generator import config as rupture_config
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.formats.fields import SUFFIXES
+from rupture_generator.formats.fields import RECORD_ATTRIBUTE, SUFFIXES
+from rupture_generator.formats.srf import read_comments
 
 DEPENDENCIES = (
     "numpy",
@@ -39,7 +39,7 @@ DEPENDENCIES = (
 )
 """The packages whose versions a record states."""
 
-ATTRIBUTE = "run_record"
+ATTRIBUTE = RECORD_ATTRIBUTE
 """The fields file's root attribute that holds its record."""
 
 
@@ -52,7 +52,9 @@ class Input:
     path : str
         Where it was, relative to the record.
     sha256 : str
-        Its SHA-256 digest, in hexadecimal.
+        Its SHA-256 digest, in hexadecimal. For an SRF a rerun read, the digest of
+        the record its header holds: hashing the whole file would read gigabytes for
+        the few kilobytes the rerun used.
     """
 
     path: str
@@ -113,7 +115,10 @@ def _relative(path: Path, directory: Path) -> Path:
     return path.relative_to(directory, walk_up=True)
 
 
-def _sha256(path: Path) -> str:
+def _digest(path: Path) -> str:
+    """An input's SHA-256: an SRF's record's, any other file's whole contents'."""
+    if path.suffix == ".srf":
+        return hashlib.sha256(_record(path).encode()).hexdigest()
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
@@ -170,7 +175,7 @@ def provenance(source: Path, config: rupture_config.RuptureConfig) -> Provenance
         seed=config.seed,
         created=datetime.datetime.now(datetime.UTC).replace(microsecond=0),
         inputs=[
-            Input(str(path.resolve()), _sha256(path))
+            Input(str(path.resolve()), _digest(path))
             for path in (Path(source), config.geometry.path)
         ],
     )
@@ -179,19 +184,27 @@ def provenance(source: Path, config: rupture_config.RuptureConfig) -> Provenance
 def _render(
     config: rupture_config.RuptureConfig,
     stated: Provenance,
-    origin: Path,
     location: Path,
+    origin: Path | None = None,
 ) -> str:
-    """The record as TOML, its paths moved from ``origin``'s directory to ``location``'s.
+    """The record as TOML, its paths relative to ``location``'s directory.
 
-    The config's geometry path is absolute already. The inputs' paths are relative to
-    ``origin``'s directory, or absolute.
+    The config's geometry path is absolute. The inputs' paths are absolute, or
+    relative to ``origin``'s directory when the record came from another file.
     """
     directory = location.parent
     stated = dataclasses.replace(
         stated,
         inputs=[
-            Input(str(_relative(origin.parent / i.path, directory)), i.sha256)
+            Input(
+                str(
+                    _relative(
+                        Path(i.path) if origin is None else origin.parent / i.path,
+                        directory,
+                    )
+                ),
+                i.sha256,
+            )
             for i in stated.inputs
         ],
     )
@@ -224,59 +237,68 @@ def run_record(
 
     Raises
     ------
+    RuptureGeneratorError
+        If ``source`` is an SRF without a record.
     OSError
         If reading an input fails.
     """
-    return _render(config, provenance(source, config), location, location)
+    return _render(config, provenance(source, config), location)
 
 
-def relocated(path: Path, location: Path) -> str | None:
-    """Rewrite the record in a file for another file, its paths relative to that.
+def relocate(record: str, origin: Path, location: Path) -> str:
+    """Rewrite a record that ``origin`` holds for ``location``, its paths moved there.
 
     The SRF made from a fields file gets the fields file's record this way. It's the
     record of the draw, with paths that still lead to the inputs from the SRF.
 
     Parameters
     ----------
-    path : Path
-        A file holding a record, an SRF or a fields file.
+    record : str
+        The record, as TOML.
+    origin : Path
+        The file that holds it, which its paths are relative to.
     location : Path
-        The file the record goes in.
+        The file it goes in.
 
     Returns
     -------
-    str or None
-        The record as TOML, or ``None`` when ``path`` doesn't contain one.
+    str
+        The record as TOML, its paths relative to ``location``'s directory.
 
     Raises
     ------
     RuptureGeneratorError
-        If the record in ``path`` doesn't read as one.
-    OSError
-        If reading the file fails.
+        If ``record`` doesn't read as one.
     """
-    path = Path(path)
-    text = _text(path)
-    if text is None:
-        return None
-    config, stated = _parse(text, path)
-    return _render(config, stated, path, location)
+    config, stated = _parse(record, origin)
+    return _render(config, stated, location, origin)
 
 
-def _text(path: Path) -> str | None:
-    """The record a file holds as TOML, or ``None`` when it holds none."""
+def _record(path: Path) -> str:
+    """The record a file holds as TOML: an SRF's header, a fields file's attribute,
+    or a TOML file whole.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the SRF or fields file doesn't contain a record.
+    """
     import xarray as xr
 
+    path = Path(path)
     if path.suffix == ".srf":
-        try:
-            comments = srf.read_comments(path)
-        except srf.SrfError as error:
-            raise RuptureGeneratorError(str(error)) from error
-        return "\n".join(comments) if comments else None
-    if path.suffix in SUFFIXES:
+        comments = read_comments(path)
+        if comments:
+            return "\n".join(comments)
+        where = "header comments"
+    elif path.suffix in SUFFIXES:
         with xr.open_datatree(path, engine="h5netcdf") as tree:
-            return str(tree.attrs[ATTRIBUTE]) if ATTRIBUTE in tree.attrs else None
-    return path.read_text()
+            if ATTRIBUTE in tree.attrs:
+                return str(tree.attrs[ATTRIBUTE])
+        where = f"{ATTRIBUTE} attribute"
+    else:
+        return path.read_text()
+    raise RuptureGeneratorError(f"{path} has no record: it has no {where}")
 
 
 def _parse(text: str, path: Path) -> tuple[rupture_config.RuptureConfig, Provenance]:
@@ -288,6 +310,31 @@ def _parse(text: str, path: Path) -> tuple[rupture_config.RuptureConfig, Provena
             f"{path} has no [{rupture_config.PROVENANCE}] table"
         ) from error
     return config, _DECODER.decode(table)
+
+
+def read_config(path: Path) -> rupture_config.RuptureConfig:
+    """Read the config a rupture file states, or the one an SRF's record ran.
+
+    Parameters
+    ----------
+    path : Path
+        A rupture file or a record as TOML, or an SRF or fields file holding a
+        record.
+
+    Returns
+    -------
+    RuptureConfig
+        The config, its geometry path resolved.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the file doesn't contain a record, or describes no rupture.
+    OSError
+        If reading the file fails.
+    """
+    path = Path(path)
+    return rupture_config.loads(_record(path), path.parent, name=str(path))
 
 
 def read_record(
@@ -313,11 +360,7 @@ def read_record(
         If reading the file fails.
     """
     path = Path(path)
-    text = _text(path)
-    if text is None:
-        where = "header comments" if path.suffix == ".srf" else f"{ATTRIBUTE} attribute"
-        raise RuptureGeneratorError(f"{path} has no record: it has no {where}")
-    return _parse(text, path)
+    return _parse(_record(path), path)
 
 
 __all__ = [
@@ -326,7 +369,8 @@ __all__ = [
     "Input",
     "Provenance",
     "provenance",
+    "read_config",
     "read_record",
-    "relocated",
+    "relocate",
     "run_record",
 ]

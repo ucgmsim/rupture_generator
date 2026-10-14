@@ -10,13 +10,13 @@ The root group stores the projection as WKT in ``crs``, the hypocentre in
 ``hypocentre_segment``, ``hypocentre_strike_km`` and ``hypocentre_dip_km``. Its
 ``segment`` variable names the segments in drawing order, the order the SRF writes
 them in, and ``parent`` names the segment that triggered each one, empty for the
-hypocentre's. Each segment is a group of its own name. Its cell fields are on ``(dip, strike)`` with their units in
-``units``, its chart's nodes on ``(node_dip, node_strike, axis)``, its cell centres on
-``(dip, strike, axis)``, and its three statistics and its pulse's ``dt_s`` in
-attributes.
+hypocentre's. Each segment is a group of its own name. Its cell fields are on
+``(dip, strike)`` with their units in ``units``, its chart's nodes on ``(node_dip,
+node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its three
+statistics and its pulse's ``dt_s`` in attributes.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +51,9 @@ _FIELDS = {
 _SCALARS = ("alpha_t", "rise_time_mean_s", "onset_scale_s", "dt_s")
 """Each scalar of :class:`SegmentRupture`, kept as an attribute."""
 _COMPRESSION = {"zlib": True, "complevel": 4}
+
+RECORD_ATTRIBUTE = "run_record"
+"""The root attribute that holds the record of the run that drew the fields."""
 
 
 def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
@@ -165,6 +168,11 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
     OSError
         If reading the file fails.
     """
+    return _read(path)[0]
+
+
+def _read(path: Path | str) -> tuple[Realisation[SegmentRupture], str | None]:
+    """A fields file's drawn system, and its run's record if it has one."""
     import xarray as xr
 
     path = Path(path)
@@ -202,17 +210,23 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
                 else None
             )
             crs = pyproj.CRS.from_wkt(str(root.attrs["crs"]))
+            record = (
+                str(root.attrs[RECORD_ATTRIBUTE])
+                if RECORD_ATTRIBUTE in root.attrs
+                else None
+            )
         except KeyError as error:
             raise RuptureGeneratorError(
                 f"{path} has no {error}; it is not a fields file"
             ) from error
-    return Realisation(segments, crs, hypocentre, parents)
+    return Realisation(segments, crs, hypocentre, parents), record
 
 
-def fields_to_srf(
-    source: Path | str, destination: Path | str, *, comments: Sequence[str] = ()
-) -> None:
+def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     """Write the SRF of the rupture stored in a fields file.
+
+    The SRF's header comments keep the fields file's record of the draw, with its
+    paths relative to the SRF.
 
     Parameters
     ----------
@@ -220,8 +234,6 @@ def fields_to_srf(
         The fields file :func:`write_fields` wrote.
     destination : Path or str
         Where to write the SRF.
-    comments : sequence of str, optional
-        The SRF header's comment lines, such as the run's record.
 
     Raises
     ------
@@ -230,7 +242,23 @@ def fields_to_srf(
     OSError
         If reading or writing a file fails.
     """
-    write_rupture(str(destination), read_fields(source), comments=comments)
+    # The record module reads fields files, so it imports this one.
+    from rupture_generator.record import relocate
+
+    realisation, record = _read(source)
+    write_rupture(
+        str(destination),
+        realisation,
+        comments=()
+        if record is None
+        else relocate(record, Path(source), Path(destination)).splitlines(),
+    )
 
 
-__all__ = ["SUFFIXES", "fields_to_srf", "read_fields", "write_fields"]
+__all__ = [
+    "RECORD_ATTRIBUTE",
+    "SUFFIXES",
+    "fields_to_srf",
+    "read_fields",
+    "write_fields",
+]

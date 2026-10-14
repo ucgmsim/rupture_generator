@@ -7,13 +7,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import srf
 
 import rupture_generator
 from rupture_generator import RuptureGeneratorError, generate, read_fields
 from rupture_generator import config as rupture_config
 from rupture_generator import record as run_record
 from rupture_generator.cli import main
-from rupture_generator.formats.fields import write_fields
+from rupture_generator.formats.fields import fields_to_srf, write_fields
 from rupture_generator.formats.srf import write_rupture
 
 from .conftest import EXAMPLE, srf_body
@@ -84,9 +85,11 @@ def test_rerunning_an_srf_writes_the_same_srf(tmp_path, coarse_example):
     assert srf_body(again) == srf_body(first)
     config, provenance = run_record.read_record(again)
     assert config == run_record.read_record(first)[0]
-    # The rerun read the first SRF, and states it as its rupture file.
+    # The rerun read the first SRF's record, and states its digest: hashing the whole
+    # SRF would read every point to state the few lines the rerun used.
+    record = "\n".join(srf.read_comments(first))
     assert provenance.inputs[0].path == "first.srf"
-    assert provenance.inputs[0].sha256 == hashlib.sha256(first.read_bytes()).hexdigest()
+    assert provenance.inputs[0].sha256 == hashlib.sha256(record.encode()).hexdigest()
 
 
 def test_the_srf_of_a_fields_file_keeps_the_draws_record(tmp_path, coarse_example):
@@ -108,7 +111,11 @@ def test_an_srf_without_comments_has_no_record(tmp_path, ruptures):
     write_rupture(path, ruptures)
     with pytest.raises(RuptureGeneratorError, match="no header comments"):
         run_record.read_record(path)
-    assert run_record.relocated(path, tmp_path / "other.srf") is None
+    # A fields file without a record makes an SRF without one.
+    fields = tmp_path / "bare.h5"
+    write_fields(fields, ruptures)
+    fields_to_srf(fields, path)
+    assert srf.read_comments(path) == ()
 
 
 def test_rerunning_a_fields_record_draws_the_same_fields(tmp_path, coarse_example):
