@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm", "setuptools-rust>=1.1.0"]
+requires = ["setuptools>=77", "setuptools-scm", "setuptools-rust>=1.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "rupture-generator"
 version = "0.1.0"
 description = "Kinematic rupture model generation: a port of genslip v5.6.2"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "ucgmsim" }]
 requires-python = ">=3.14"
 dependencies = [
