@@ -22,10 +22,9 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand_distr::{Distribution, StandardNormal};
 use rand_pcg::Pcg64;
+use rayon::prelude::*;
 use rustfft::num_complex::Complex64;
 use rustfft::{Fft, FftPlanner};
-
-use crate::counts::exact;
 
 /// Rows of noise drawn from one generator.
 ///
@@ -38,46 +37,30 @@ const ROWS_PER_CHUNK: usize = 32;
 const COLUMNS_PER_BLOCK: usize = 16;
 
 /// Error cases for the draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// The padded grid needs at least one cell on each axis.
+    #[error("a {}x{} embedding has no cells", .padded.0, .padded.1)]
     EmptyEmbedding { padded: (usize, usize) },
     /// The amplitudes must be the `(P_i/2 + 1, P_j/2 + 1)` quadrant of the padded grid.
+    #[error(
+        "a {}x{} embedding needs a {}x{} amplitude quadrant, not {}x{}",
+        .padded.0, .padded.1, .padded.0 / 2 + 1, .padded.1 / 2 + 1, .got.0, .got.1
+    )]
     WrongQuadrant {
         padded: (usize, usize),
         got: (usize, usize),
     },
     /// The fault must fit inside the embedding.
+    #[error(
+        "a {}x{} fault does not fit in a {}x{} embedding",
+        .cells.0, .cells.1, .padded.0, .padded.1
+    )]
     FaultTooLarge {
         cells: (usize, usize),
         padded: (usize, usize),
     },
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Self::EmptyEmbedding { padded: (pi, pj) } => {
-                write!(f, "a {pi}x{pj} embedding has no cells")
-            }
-            Self::WrongQuadrant {
-                padded: (pi, pj),
-                got: (gi, gj),
-            } => write!(
-                f,
-                "a {pi}x{pj} embedding needs a {}x{} amplitude quadrant, not {gi}x{gj}",
-                pi / 2 + 1,
-                pj / 2 + 1
-            ),
-            Self::FaultTooLarge {
-                cells: (ci, cj),
-                padded: (pi, pj),
-            } => write!(f, "a {ci}x{cj} fault does not fit in a {pi}x{pj} embedding"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// A pair of independent standard-normal fields from one embedding draw.
 ///
@@ -98,7 +81,7 @@ impl std::error::Error for Error {}
 ///
 /// # Panics
 ///
-/// If `amplitudes` isn't `quadrant.0 * quadrant.1` long, or a worker thread panics.
+/// If `amplitudes` isn't `quadrant.0 * quadrant.1` long.
 pub fn draw(
     amplitudes: &[f64],
     quadrant: (usize, usize),
@@ -148,7 +131,7 @@ pub fn draw(
 
     let cropped = transform(padded, cells, fill);
 
-    let scale = exact(padded_i * padded_j).sqrt().recip();
+    let scale = ((padded_i * padded_j) as f64).sqrt().recip();
     Ok(row_major_parts(&cropped, cells, scale))
 }
 
@@ -171,8 +154,7 @@ fn transform(
     let down_columns: Arc<dyn Fft<f64>> = planner.plan_fft_inverse(padded_i);
 
     let mut row_chunks: Vec<Vec<Complex64>> = vec![Vec::new(); padded_i.div_ceil(ROWS_PER_CHUNK)];
-    spread(
-        row_chunks.iter_mut().enumerate().collect(),
+    row_chunks.par_iter_mut().enumerate().for_each_init(
         || vec![Complex64::default(); along_rows.get_inplace_scratch_len()],
         |scratch, (chunk, rows)| {
             let count = ROWS_PER_CHUNK.min(padded_i - chunk * ROWS_PER_CHUNK);
@@ -193,8 +175,7 @@ fn transform(
     if cells_i == 0 {
         return blocks;
     }
-    spread(
-        blocks.iter_mut().enumerate().collect(),
+    blocks.par_iter_mut().enumerate().for_each_init(
         || {
             (
                 vec![Complex64::default(); COLUMNS_PER_BLOCK * padded_i],
@@ -232,15 +213,10 @@ fn row_major_parts(
     if real.is_empty() {
         return (real, imaginary);
     }
-    let rows: Vec<_> = real
-        .chunks_mut(ROWS_PER_CHUNK * cells_j)
-        .zip(imaginary.chunks_mut(ROWS_PER_CHUNK * cells_j))
+    real.par_chunks_mut(ROWS_PER_CHUNK * cells_j)
+        .zip(imaginary.par_chunks_mut(ROWS_PER_CHUNK * cells_j))
         .enumerate()
-        .collect();
-    spread(
-        rows,
-        || (),
-        |(), (chunk, (real, imaginary))| {
+        .for_each(|(chunk, (real, imaginary))| {
             let first = chunk * ROWS_PER_CHUNK;
             for (offset, (re_row, im_row)) in real
                 .chunks_exact_mut(cells_j)
@@ -255,41 +231,8 @@ fn row_major_parts(
                     *im = value.im * scale;
                 }
             }
-        },
-    );
+        });
     (real, imaginary)
-}
-
-/// Run `work` over `items` on every core, each thread with its own `init()` state.
-///
-/// The threads take items round-robin. Each item is independent, and the result
-/// doesn't depend on how many threads there are.
-fn spread<T: Send, S>(items: Vec<T>, init: impl Fn() -> S + Sync, work: impl Fn(&mut S, T) + Sync) {
-    let threads = std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(items.len());
-    if threads <= 1 {
-        let mut state = init();
-        for item in items {
-            work(&mut state, item);
-        }
-        return;
-    }
-    let mut shares: Vec<Vec<T>> = (0..threads).map(|_| Vec::new()).collect();
-    for (index, item) in items.into_iter().enumerate() {
-        shares[index % threads].push(item);
-    }
-    let (init, work) = (&init, &work);
-    std::thread::scope(|scope| {
-        for share in shares {
-            scope.spawn(move || {
-                let mut state = init();
-                for item in share {
-                    work(&mut state, item);
-                }
-            });
-        }
-    });
 }
 
 #[cfg(test)]
@@ -309,7 +252,7 @@ mod tests {
         let cells = (64, 50);
         let (amplitudes, quadrant) = flat(padded);
         let (real, imaginary) = draw(&amplitudes, quadrant, padded, cells, 7).unwrap();
-        let n = exact(real.len());
+        let n = real.len() as f64;
 
         let mean = |field: &[f64]| field.iter().sum::<f64>() / n;
         let (mean_re, mean_im) = (mean(&real), mean(&imaginary));
@@ -369,7 +312,7 @@ mod tests {
         let (rows, columns) = (40, 37);
         let cells = (25, 20);
         let original: Vec<Complex64> = (0..rows * columns)
-            .map(|k| Complex64::new(exact(k) % 7.0, exact(k) % 3.0))
+            .map(|k| Complex64::new(k as f64 % 7.0, k as f64 % 3.0))
             .collect();
 
         let mut spectrum = original.clone();
@@ -392,7 +335,7 @@ mod tests {
             let end = (start + ROWS_PER_CHUNK * columns).min(spectrum.len());
             chunk_rows.extend_from_slice(&spectrum[start..end]);
         });
-        let n = exact(rows * columns);
+        let n = (rows * columns) as f64;
         for i in 0..cells.0 {
             for j in 0..cells.1 {
                 let round_tripped =

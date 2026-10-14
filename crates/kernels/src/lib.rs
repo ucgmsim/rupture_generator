@@ -13,8 +13,17 @@
     clippy::needless_pass_by_value,
     reason = "PyO3 argument extraction requires owned values"
 )]
+// Every numeric cast here is a grid index, sample index or count to `f64`, or a
+// duration in samples back to `usize`. Indices and counts are many orders below the
+// 2^53 where `as f64` stops being exact, and `f64 as usize` saturates with NaN to 0,
+// which turns a degenerate duration into an empty pulse rather than garbage.
+#![expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "indices and counts are far below 2^53, and float-to-int saturates"
+)]
 
-mod counts;
 pub mod eikonal;
 pub mod field;
 pub mod pulse;

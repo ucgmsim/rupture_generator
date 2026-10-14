@@ -1,7 +1,8 @@
 //! Pulse synthesis for point-sources.
 
-use crate::counts::{exact, samples};
 use std::f64::consts::PI;
+
+use rayon::prelude::*;
 
 /// The slip below which a subfault doesn't get a pulse at all.
 pub const MIN_SLIP_M: f64 = 1.0e-4;
@@ -24,74 +25,45 @@ pub enum Shape<'a> {
 }
 
 /// What pulse synthesis refuses, in its own vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum Error {
     /// The per-subfault arrays must agree on how many subfaults there are.
+    #[error(
+        "{field} has {got} values for {expected} subfaults; the per-subfault arrays must agree"
+    )]
     MismatchedLengths {
         field: &'static str,
         expected: usize,
         got: usize,
     },
     /// A sample interval that isn't a positive, finite time samples nothing.
+    #[error("a sample interval of {dt_s} s samples nothing; dt must be positive and finite")]
     NonPositiveSampleInterval { dt_s: f64 },
     /// Slip must be finite. NaN slip means something failed upstream, and a quiet zero
     /// would hide it.
+    #[error("subfault {subfault} has a slip of {slip_m} m")]
     NonFiniteSlip { subfault: usize, slip_m: f64 },
     /// `beta` must be in `(0, 0.5]`: the sinusoid's second piece spans
     /// `beta·T .. 2·beta·T`, so beyond a half the pieces overrun the duration, and at
     /// zero the rising limb divides by nothing.
+    #[error(
+        "subfault {subfault} has beta = {beta}; the rising limb's fraction must be in (0, 0.5]"
+    )]
     BetaOutOfRange { subfault: usize, beta: f64 },
     /// A slipping subfault whose rise time rounds to zero samples at this interval.
     ///
     /// Refused rather than dropped: the caller can lower `dt_s` or floor the rise
     /// time, but it can't lose the moment.
+    #[error(
+        "subfault {subfault} slips, but its rise time of {rise_time_s} s rounds to zero \
+         samples at dt = {dt_s} s; refusing rather than silently dropping its moment"
+    )]
     UnrepresentableRiseTime {
         subfault: usize,
         rise_time_s: f64,
         dt_s: f64,
     },
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Self::MismatchedLengths {
-                field,
-                expected,
-                got,
-            } => write!(
-                f,
-                "{field} has {got} values for {expected} subfaults; the per-subfault \
-                 arrays must agree"
-            ),
-            Self::NonPositiveSampleInterval { dt_s } => write!(
-                f,
-                "a sample interval of {dt_s} s samples nothing; dt must be positive \
-                 and finite"
-            ),
-            Self::NonFiniteSlip { subfault, slip_m } => {
-                write!(f, "subfault {subfault} has a slip of {slip_m} m")
-            }
-            Self::BetaOutOfRange { subfault, beta } => write!(
-                f,
-                "subfault {subfault} has beta = {beta}; the rising limb's fraction \
-                 must be in (0, 0.5]"
-            ),
-            Self::UnrepresentableRiseTime {
-                subfault,
-                rise_time_s,
-                dt_s,
-            } => write!(
-                f,
-                "subfault {subfault} slips, but its rise time of {rise_time_s} s \
-                 rounds to zero samples at dt = {dt_s} s; refusing rather than \
-                 silently dropping its moment"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// Every subfault's pulse, as compressed sparse rows.
 ///
@@ -191,13 +163,7 @@ pub fn synthesise_pulses(
         shape,
         dt_s,
     };
-    if let Some(subfault) = fill(job, &mut all_samples) {
-        return Err(Error::UnrepresentableRiseTime {
-            subfault,
-            rise_time_s: rise_time_s[subfault],
-            dt_s,
-        });
-    }
+    fill(job, &mut all_samples)?;
     Ok(CsrPulses {
         offsets,
         samples: all_samples,
@@ -214,96 +180,72 @@ struct Job<'a> {
     dt_s: f64,
 }
 
-/// Below this many samples the threads cost more than they save.
-///
-/// Spawning costs tens of microseconds, and a hundred thousand samples is under a
-/// millisecond of work. Small faults (and every test in this crate) take the serial
-/// path, which also stays debuggable.
-const PARALLEL_FROM_SAMPLES: usize = 100_000;
-
 /// The samples in a pulse too short for its shape to mean anything: rise, peak, fall.
 const SPIKE_SAMPLES: usize = 3;
 
-/// Fill every pulse into its own slice of `out`, over as many threads as there are
-/// cores. Returns the lowest subfault whose pulse normalisation failed, if any.
-///
-/// **The split is by sample count, not by subfault count.** Rise time varies by an
-/// order of magnitude across a fault (deep subfaults slip for far longer than
-/// shallow ones), and equal shares of subfaults are unequal shares of work. The
-/// slowest thread sets the time. `offsets` is already the prefix sum of the work, so
-/// the boundary that divides it evenly is one `partition_point` away.
-///
-/// Each thread then writes to its own contiguous, disjoint `&mut [f64]`, handed out
-/// by `split_at_mut`. The threads share only immutable inputs, so the split
-/// is free of locks and atomics.
-fn fill(job: Job<'_>, out: &mut [f64]) -> Option<usize> {
-    let subfaults = job.slip_m.len();
-    let threads = if out.len() < PARALLEL_FROM_SAMPLES {
-        1
-    } else {
-        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
-    };
-
-    let mut bounds = Vec::with_capacity(threads + 1);
-    bounds.push(0);
-    for thread in 1..threads {
-        let target = out.len() * thread / threads;
-        let at = job.offsets.partition_point(|&offset| offset < target);
-        // Monotone and in range whatever `partition_point` says: empty ranges are
-        // fine, overlapping ones would alias the output.
-        bounds.push(at.clamp(bounds[thread - 1], subfaults));
-    }
-    bounds.push(subfaults);
-
-    let mut remaining = out;
-    let mut pieces = Vec::with_capacity(threads);
-    for window in bounds.windows(2) {
-        let (start, end) = (window[0], window[1]);
-        let (mine, rest) = remaining.split_at_mut(job.offsets[end] - job.offsets[start]);
-        pieces.push((start, end, mine));
-        remaining = rest;
-    }
-
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = pieces
-            .into_iter()
-            .map(|(start, end, mine)| scope.spawn(move || fill_range(job, mine, start, end)))
-            .collect();
-        workers
-            .into_iter()
-            .filter_map(|worker| worker.join().expect("a pulse worker panicked"))
-            .min()
-    })
+/// How many samples a duration covers, rounded to nearest. A negative or NaN duration
+/// saturates to zero, an empty pulse.
+fn samples(duration_s: f64, dt_s: f64) -> usize {
+    (duration_s / dt_s).round() as usize
 }
 
-/// One thread's share: subfaults `start..end`, whose samples fill exactly the slice
-/// it receives.
-fn fill_range(job: Job<'_>, mine: &mut [f64], start: usize, end: usize) -> Option<usize> {
+/// Subfaults per parallel task: enough that an impulse's three samples aren't
+/// swamped by scheduling, few enough that work stealing evens out the long pulses.
+const SUBFAULTS_PER_TASK: usize = 64;
+
+/// Fill every pulse into its own slice of `out`, in parallel.
+///
+/// The offsets cut `out` into one disjoint `&mut [f64]` per run of
+/// [`SUBFAULTS_PER_TASK`] subfaults, so the tasks share only immutable inputs and
+/// need no locks. Rise time varies by an order of magnitude across a fault, and
+/// rayon's work stealing evens out the uneven runs. A failure is reported at the
+/// lowest failing subfault, however the work was scheduled.
+fn fill(job: Job<'_>, out: &mut [f64]) -> Result<(), Error> {
+    let subfaults = job.slip_m.len();
+    let mut tasks = Vec::with_capacity(subfaults.div_ceil(SUBFAULTS_PER_TASK));
+    let mut rest = out;
+    for start in (0..subfaults).step_by(SUBFAULTS_PER_TASK) {
+        let end = (start + SUBFAULTS_PER_TASK).min(subfaults);
+        let (run, tail) =
+            std::mem::take(&mut rest).split_at_mut(job.offsets[end] - job.offsets[start]);
+        tasks.push((start, end, run));
+        rest = tail;
+    }
+    tasks
+        .into_par_iter()
+        .find_map_first(|(start, end, run)| fill_run(job, start, end, run).err())
+        .map_or(Ok(()), Err)
+}
+
+/// Subfaults `start..end`, whose samples fill exactly `run`, in order.
+fn fill_run(job: Job<'_>, start: usize, end: usize, run: &mut [f64]) -> Result<(), Error> {
     let base = job.offsets[start];
     for subfault in start..end {
-        let pulse = &mut mine[job.offsets[subfault] - base..job.offsets[subfault + 1] - base];
-        if pulse.is_empty() {
-            continue;
-        }
-        let slip = job.slip_m[subfault];
-        let written = match job.shape {
-            Shape::OliuP { beta } => oliu_p_into(
-                pulse,
-                slip,
-                job.rise_time_s[subfault],
-                beta[subfault],
-                job.dt_s,
-            ),
-            Shape::Delta => {
-                pulse.copy_from_slice(&[0.0, slip / job.dt_s, 0.0]);
-                true
-            }
-        };
-        if !written {
-            return Some(subfault);
+        let pulse = &mut run[job.offsets[subfault] - base..job.offsets[subfault + 1] - base];
+        if !pulse.is_empty() {
+            write(job, subfault, pulse)?;
         }
     }
-    None
+    Ok(())
+}
+
+/// One subfault's pulse, into the slice pass 1 sized for it.
+fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) -> Result<(), Error> {
+    let slip = job.slip_m[subfault];
+    match job.shape {
+        Shape::OliuP { beta } => oliu_p_into(
+            pulse,
+            subfault,
+            slip,
+            job.rise_time_s[subfault],
+            beta[subfault],
+            job.dt_s,
+        ),
+        Shape::Delta => {
+            pulse.copy_from_slice(&[0.0, slip / job.dt_s, 0.0]);
+            Ok(())
+        }
+    }
 }
 
 /// The `OliuP` slip-rate function: a piecewise sinusoid after Liu, Archuleta &
@@ -329,15 +271,26 @@ fn fill_range(job: Job<'_>, mine: &mut [f64], start: usize, end: usize) -> Optio
 /// worked out for this subfault, and already zero. Writing into it rather than
 /// returning a `Vec` limits the whole synthesis to one allocation: a fault of two
 /// million subfaults was two million heap allocations and a copy of every sample out
-/// of each. `false` means normalising the pulse failed.
+/// of each.
+///
+/// # Errors
+///
+/// [`Error::UnrepresentableRiseTime`] at `subfault` if the shape can't be normalised.
 ///
 /// (orig. `gen_OliuP_stf`, `gslip_sliprate_subs.c`)
-fn oliu_p_into(values: &mut [f64], slip: f64, duration_s: f64, beta: f64, dt_s: f64) -> bool {
+fn oliu_p_into(
+    values: &mut [f64],
+    subfault: usize,
+    slip: f64,
+    duration_s: f64,
+    beta: f64,
+    dt_s: f64,
+) -> Result<(), Error> {
     let count = samples(duration_s, dt_s);
     if count == 1 {
         // Too short to resolve: use a fixed spike in place of a computed shape.
         values.copy_from_slice(&[0.0, 1.0, 0.0]);
-        return normalise(values, slip, dt_s);
+        return normalise(values, subfault, slip, duration_s, dt_s);
     }
 
     let rise_end = beta * duration_s;
@@ -347,7 +300,7 @@ fn oliu_p_into(values: &mut [f64], slip: f64, duration_s: f64, beta: f64, dt_s: 
     // One more sample than the duration covers, left at the zero the buffer arrived
     // with. That sample closes the pulse.
     for (index, value) in values.iter_mut().enumerate().take(count).skip(1) {
-        let time = exact(index) * dt_s;
+        let time = index as f64 * dt_s;
         *value = if time < rise_end {
             let arg = PI * time / rise_end;
             0.7 - 0.7 * arg.cos() + 0.6 * (0.5 * arg).sin()
@@ -362,24 +315,36 @@ fn oliu_p_into(values: &mut [f64], slip: f64, duration_s: f64, beta: f64, dt_s: 
             0.0
         };
     }
-    normalise(values, slip, dt_s)
+    normalise(values, subfault, slip, duration_s, dt_s)
 }
 
-/// Scale so `dt · Σ values` is `slip`, or report that no scale can do it.
+/// Scale so `dt · Σ values` is `slip`, or refuse if no scale can do it.
 ///
 /// Shared so that "conserves slip" is one line of code rather than a property each
-/// shape has to remember to have. A non-positive integral means the shape
-/// degenerated at this resolution; `false` here becomes
-/// [`Error::UnrepresentableRiseTime`] at the pulse's subfault, because only the
-/// caller knows that index.
-fn normalise(values: &mut [f64], slip: f64, dt_s: f64) -> bool {
+/// shape has to remember to have.
+///
+/// # Errors
+///
+/// [`Error::UnrepresentableRiseTime`] at `subfault` if the integral isn't positive,
+/// which means the shape degenerated at this resolution.
+fn normalise(
+    values: &mut [f64],
+    subfault: usize,
+    slip: f64,
+    rise_time_s: f64,
+    dt_s: f64,
+) -> Result<(), Error> {
     let integral: f64 = values.iter().map(|value| dt_s * value).sum();
     if !integral.is_finite() || integral <= 0.0 {
-        return false;
+        return Err(Error::UnrepresentableRiseTime {
+            subfault,
+            rise_time_s,
+            dt_s,
+        });
     }
     let scale = slip / integral;
     for value in values {
         *value *= scale;
     }
-    true
+    Ok(())
 }

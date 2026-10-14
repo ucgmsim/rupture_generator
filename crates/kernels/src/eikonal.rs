@@ -22,54 +22,11 @@
 //!     T₀²|∇τ|² + 2T₀τ ∇T₀·∇τ + (τ² − α²)S₀² = 0
 //! ```
 
-use crate::counts::exact;
-
-/// Rounds of four sweeps before the solver refuses.
-///
-/// Termination is at grid convergence, so this is only an upper bound on compute.
-/// Fomel et al. find three sweeps enough in general; rounds grow with the medium's
-/// slowness contrast, not with the grid (`the_sweep_count_does_not_grow_with_the_mesh`).
-/// Measured on the Wellington `Ohariu` segment: 9, 12, 13 and 14 rounds at contrasts
-/// of 3.3x, 6.8x, 12.9x and 26x, roughly one more round per doubling.
-///
-/// The contrast a caller can present has the a priori bound
-///
-/// ```text
-/// (max_fraction * Vs_max) / (min_fraction * Vs_min) * off_fault_factor
-/// ```
-///
-/// which is 41.9x on Wellington (fully occupied, Vs 0.50 to 3.70) and 144.6x on the
-/// Hikurangi interface, where 37% of the chart is off-fault and
-/// `OFF_FAULT_SLOWNESS_FACTOR` multiplies the contrast by ten. The limit of 64 allows
-/// for that 144.6x.
+/// Rounds of four sweeps before the solver fails with a convergence error.
 const MAX_ROUNDS: usize = 64;
 
 /// How much a sweep must improve a cell's arrival for the sweep to count as unsettled,
 /// as a fraction of the shortest single-cell traversal time on the grid.
-///
-/// Gauss-Seidel on the eikonal decreases towards its fixed point and never stops
-/// improving in exact terms: without a tolerance the `changed` flag stays set while
-/// sweeps shave femtoseconds off, and the round limit trips on round-off rather than on
-/// anything about the medium. On the Wellington `Ohariu` segment at a 26x slowness
-/// contrast, the field is physically settled by round 14, where the largest
-/// improvement is 9.7e-9 s, and rounds 15 to 17 move cells by 2e-10, 3.6e-12 and
-/// 2.7e-12 s. The same three-round tail appeared at every contrast from 3.3x to 26x:
-/// the stopping rule causes it, not the problem.
-///
-/// The tolerance is a fraction of `min(spacing) * min(slowness)` rather than an absolute
-/// time or a relative one. An absolute time would go wrong whenever the grid spacing
-/// changed. A time relative to each cell's own arrival would degenerate near a seed at
-/// time zero, and behave differently again for a segment seeded at an absolute jump time of twenty seconds,
-/// which is exactly the case that first hit this.
-///
-/// The solver still *takes* an improvement below the tolerance (it's strictly better),
-/// and the tolerance sets only when to stop, never what the answer is. This keeps the
-/// error far smaller than the tolerance: against the exact fixed point on that same segment, where
-/// the tolerance works out to 1.9e-8 s, the arrival times come out at most 2.4e-10 s late
-/// and 1.7e-13 s late on average. Late and never early, since Gauss-Seidel decreases
-/// towards the fixed point. The loose bound is the tolerance times the path length in
-/// cells, around 1e-5 s over a three-hundred-cell path. The measurement is four orders
-/// inside it, and either way it's far below the 0.005 s sample interval.
 const CONVERGENCE_TOLERANCE: f64 = 1.0e-6;
 
 /// Location and initiation time of hypocentre.
@@ -81,19 +38,28 @@ pub struct Seed {
 }
 
 /// Error cases for the solver.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
 pub enum Error {
     /// A grid with no cells has no wavefront to solve.
+    #[error("a {ni}x{nj} grid has no cells to solve on")]
     EmptyGrid { ni: usize, nj: usize },
     /// Slowness vs solver grid mismatch.
+    #[error("the slowness field has {got} values, but a {ni}x{nj} grid needs {}", .ni * .nj)]
     WrongLength { ni: usize, nj: usize, got: usize },
     /// Grid spacing must be a positive, finite length on both axes.
+    #[error("the {axis} spacing is {value} km; spacing must be positive and finite")]
     NonPositiveSpacing { axis: &'static str, value: f64 },
     /// Slowness must be positive and finite everywhere.
+    #[error(
+        "slowness at ({i}, {j}) is {value} s/km; every cell must be positive and finite, \
+         or the cells behind it are unreachable"
+    )]
     NonPositiveSlowness { i: usize, j: usize, value: f64 },
     /// The solver needs at least one seed.
+    #[error("no seeds: a wavefront needs somewhere to start")]
     NoSeeds,
     /// Every seed must lie inside the domain.
+    #[error("seed {seed} at ({i}, {j}) is outside a {ni}x{nj} grid")]
     SeedOutOfBounds {
         seed: usize,
         i: usize,
@@ -102,52 +68,18 @@ pub enum Error {
         nj: usize,
     },
     /// A seed's initial time must be finite.
+    #[error("seed {seed} starts at t = {t0_s}, which is not a time")]
     NonFiniteSeedTime { seed: usize, t0_s: f64 },
     /// The sweep didn't settle in [`MAX_ROUNDS`] rounds.
+    #[error(
+        "the sweep did not settle in {rounds} rounds over a medium whose slowness spans \
+         {contrast:.1}x. Rounds needed grow with that contrast -- measured 9, 12, 13 and \
+         14 at 3.3x, 6.8x, 12.9x and 26x -- so the first thing to check is the rupture \
+         velocity band: narrowing rupture_velocity_max_fraction or raising \
+         rupture_velocity_min_fraction lowers the contrast directly"
+    )]
     DidNotSettle { rounds: usize, contrast: f64 },
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Self::EmptyGrid { ni, nj } => {
-                write!(f, "a {ni}x{nj} grid has no cells to solve on")
-            }
-            Self::WrongLength { ni, nj, got } => write!(
-                f,
-                "the slowness field has {got} values, but a {ni}x{nj} grid needs {}",
-                ni * nj
-            ),
-            Self::NonPositiveSpacing { axis, value } => write!(
-                f,
-                "the {axis} spacing is {value} km; spacing must be positive and finite"
-            ),
-            Self::NonPositiveSlowness { i, j, value } => write!(
-                f,
-                "slowness at ({i}, {j}) is {value} s/km; every cell must be positive \
-                 and finite, or the cells behind it are unreachable"
-            ),
-            Self::NoSeeds => write!(f, "no seeds: a wavefront needs somewhere to start"),
-            Self::SeedOutOfBounds { seed, i, j, ni, nj } => {
-                write!(f, "seed {seed} at ({i}, {j}) is outside a {ni}x{nj} grid")
-            }
-            Self::NonFiniteSeedTime { seed, t0_s } => {
-                write!(f, "seed {seed} starts at t = {t0_s}, which is not a time")
-            }
-            Self::DidNotSettle { rounds, contrast } => write!(
-                f,
-                "the sweep did not settle in {rounds} rounds over a medium whose \
-                 slowness spans {contrast:.1}x. Rounds needed grow with that \
-                 contrast -- measured 9, 12, 13 and 14 at 3.3x, 6.8x, 12.9x and 26x \
-                 -- so the first thing to check is the rupture velocity band: \
-                 narrowing rupture_velocity_max_fraction or raising \
-                 rupture_velocity_min_fraction lowers the contrast directly"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// First-arrival times from every seed, over the entire grid.
 ///
@@ -167,13 +99,7 @@ pub fn solve(
     solve_with_rounds(slowness_s_per_km, extent, spacing_km, seeds).map(|(times, _)| times)
 }
 
-/// [`solve`], also reporting the most rounds of four sweeps any seed's solve took.
-///
-/// Exposed because the round count is the evidence for the cost claim rather than a
-/// diagnostic. Zhao's alternating orderings exist to make it a property of the
-/// *medium* and not of the mesh. A solver whose rounds grew with the grid would cost
-/// O(N log N) or worse. `tests/eikonal_contract.rs` asserts that a fourfold
-/// refinement leaves the count where it was.
+/// [`solve`], also reporting sweep counts required to converge.
 ///
 /// # Errors
 ///
@@ -257,8 +183,8 @@ fn known_factor(
     spacing_km: (f64, f64),
     source_slowness: f64,
 ) -> Known {
-    let down = (exact(i) - exact(seed.i)) * spacing_km.0;
-    let across = (exact(j) - exact(seed.j)) * spacing_km.1;
+    let down = (i as f64 - seed.i as f64) * spacing_km.0;
+    let across = (j as f64 - seed.j as f64) * spacing_km.1;
     let radius = (down * down + across * across).sqrt();
     if radius == 0.0 {
         return Known {
