@@ -4,12 +4,13 @@
 
 ![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
 
-*One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake as Beavan's
-seven-fault source model has it, gridded at 0.1 km and seen from the south at true
-scale. Darker is more slip, and the black lines are the rupture front every five
-seconds. The rupture starts on the Charing Cross fault and triggers the other six in a
-fixed order, each drawing its own slip field and scaling it to its own magnitude.
-`just hero` draws it again.*
+*One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake on the seven
+faults of
+[Beavan et al.'s 2012 geodetic model](https://doi.org/10.1080/00288306.2012.697472),
+gridded at 0.1 km and seen from the south at true scale. Darker is more slip, and the
+black lines are the rupture front every five seconds. The rupture starts on the
+Charing Cross fault and triggers the other six in a fixed order, each drawing its own
+slip field and scaling it to its own magnitude. `just hero` draws it again.*
 
 Kinematic rupture models for ground-motion simulation. Given a fault system and its
 magnitudes, the generator draws a slip distribution and works out when each subfault
