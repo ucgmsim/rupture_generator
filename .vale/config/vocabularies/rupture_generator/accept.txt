@@ -24,6 +24,8 @@ von
 # People and places in the references and examples
 Beroza
 Dieterich
+Graves
+Pitarka
 Landers
 Northridge
 Beavan

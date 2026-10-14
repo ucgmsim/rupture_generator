@@ -161,43 +161,6 @@ Hanmer = "Hope: Hanmer NW"
 "Te Rapa 2" = "Te Rapa 1"
 "Opouawe - Uruti" = "Te Rapa 2"
 
-[profiles.rise_time_factor]
-type = "profile"
-depth_km = [
-    5.0,
-    8.0,
-    15.0,
-    20.0,
-]
-values = [
-    2.0,
-    1.0,
-    1.0,
-    2.0,
-]
-
-[profiles.rise_time_slip_weight]
-type = "ramp"
-centre_km = 2.0
-half_width_km = 1.0
-shallow = 0.0
-deep = 1.0
-
-[profiles.rupture_speed_factor]
-type = "profile"
-depth_km = [
-    5.0,
-    8.0,
-    15.0,
-    20.0,
-]
-values = [
-    0.6,
-    1.0,
-    1.0,
-    0.6,
-]
-
 [slip]
 coefficient_of_variation = 0.9
 side_taper = 0.02
@@ -210,11 +173,50 @@ correlation = 0.9
 slip_exponent = 0.5
 coefficient_of_variation = 0.75
 
+[rise.factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[rise.slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
 [rake]
 sigma_deg = 15.0
 
-[timing]
+[speed]
 velocity_fraction = 0.8
+
+[speed.factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[perturbation]
 offset_s = 0.1
 coefficient = 0.5
 correlation = 0.8

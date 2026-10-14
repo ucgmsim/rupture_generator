@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rupture-generator"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Kinematic rupture model generation: a port of genslip v5.6.2"
 readme = "README.md"
 license = "MIT"
@@ -12,13 +12,13 @@ license-files = ["LICENSE"]
 authors = [{ name = "ucgmsim" }]
 requires-python = ">=3.14"
 dependencies = [
-    "h5netcdf[h5py]>=1.8.1",
-    "mashumaro[toml]>=3.22",
-    "numpy>=2",
-    "pyproj>=3.6",
-    "scipy>=1.13",
-    "ucgmsim-srf>=2026.10.1",
-    "xarray>=2026.9.0",
+  "h5netcdf[h5py]>=1.8.1",
+  "mashumaro[toml]>=3.22",
+  "numpy>=2",
+  "pyproj>=3.6",
+  "scipy>=1.13",
+  "ucgmsim-srf>=2026.10.2",
+  "xarray>=2026.9.0",
 ]
 
 [project.scripts]
@@ -44,9 +44,15 @@ path = "crates/kernels/Cargo.toml"
 binding = "PyO3"
 debug = false
 
+# The version is the latest git tag, with the commits since it and any local changes
+# appended (0.1.dev3+g1a2b3c4). A source tree without git metadata falls back to
+# 0.0.0 rather than failing to build.
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
+
 [tool.setuptools.packages]
 find = { where = [
-  "."
+  ".",
 ], include = [
   "rupture_generator*",
 ], exclude = [
@@ -98,9 +104,7 @@ extend-select = [
 convention = "numpy"
 
 [tool.ruff.lint.isort]
-known-first-party = [
-  "rupture_generator",
-]
+known-first-party = ["rupture_generator"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["D104"]
@@ -140,6 +144,8 @@ skip = true
 
 [tool.uv]
 cache-keys = [
+  # setuptools-scm reads the version from git, so a new commit or tag rebuilds.
+  { git = { commit = true, tags = true } },
   { file = "pyproject.toml" },
   { file = "Cargo.toml" },
   { file = "crates/**/*.rs" },

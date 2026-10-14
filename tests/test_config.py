@@ -1,5 +1,7 @@
 import dataclasses
+import tomllib
 
+import numpy as np
 import pytest
 
 from rupture_generator import RuptureGeneratorError
@@ -18,14 +20,33 @@ def test_dump_round_trips(tmp_path):
 
 
 def test_defaults_are_the_librarys():
-    from rupture_generator import RuptureSettings
+    from rupture_generator import (
+        CorrelatedPerturbation,
+        CorrelatedRise,
+        DrawnSlip,
+        GaussianRake,
+        ShearFractionSpeed,
+    )
 
     loaded = rupture_config.load(EXAMPLE)
-    library = RuptureSettings()
-    # The config's classes are subclasses, so compare values rather than objects.
-    assert dataclasses.astuple(loaded.rise) == dataclasses.astuple(library.rise)
-    assert dataclasses.astuple(loaded.timing) == dataclasses.astuple(library.timing)
-    assert loaded.slip.side_taper == library.slip.side_taper
+    # The config's classes are subclasses, so compare values rather than objects. The
+    # example gives its own depth profiles, and the file's profiles are tables where
+    # the library's are functions.
+    for ours, theirs in (
+        (loaded.rise, CorrelatedRise()),
+        (loaded.rake, GaussianRake()),
+        (loaded.speed, ShearFractionSpeed()),
+        (loaded.perturbation, CorrelatedPerturbation()),
+    ):
+        for field in dataclasses.fields(theirs):
+            if field.name not in {"factor", "slip_weight"}:
+                assert getattr(ours, field.name) == getattr(theirs, field.name)
+    assert loaded.slip.side_taper == DrawnSlip().side_taper
+    positions = np.zeros((2, 3))
+    for profile in (rupture_config.Rise().factor, rupture_config.Speed().factor):
+        np.testing.assert_array_equal(
+            profile(positions), CorrelatedRise().factor(positions)
+        )
 
 
 @pytest.mark.parametrize(
@@ -48,7 +69,7 @@ def test_defaults_are_the_librarys():
         (
             "centre_km = 2.0",
             'centre_km = "two"',
-            "profiles.rise_time_slip_weight.centre_km:",
+            "rise.slip_weight.centre_km:",
         ),
         (
             "dip_fraction = 0.5\n",
@@ -105,14 +126,17 @@ def test_parts_that_do_not_fit_are_refused_when_built(old, new, message):
 
 
 def test_the_cli_writes_an_srf_and_its_config(tmp_path):
+    import srf
+
     from rupture_generator.cli import main
 
     output = tmp_path / "out.srf"
     assert main([str(EXAMPLE), str(output)]) == 0
-    assert output.read_text().startswith("2.0\n")
-    assert rupture_config.load(output.with_name("out.srf.toml")) == rupture_config.load(
-        EXAMPLE
-    )
+    assert output.read_text().startswith("2.0\n# seed = 7\n")
+    record = tomllib.loads("\n".join(srf.read_comments(output)))
+    del record["provenance"]
+    assert record == tomllib.loads(rupture_config.dump(rupture_config.load(EXAMPLE)))
+    assert list(tmp_path.iterdir()) == [output]
 
 
 def test_the_cli_reports_a_bad_file(tmp_path, capsys):
@@ -148,3 +172,112 @@ def test_slip_can_follow_a_doubly_truncated_normal(tmp_path):
     again = tmp_path / "again.toml"
     again.write_text(rupture_config.dump(loaded))
     assert rupture_config.load(again) == loaded
+
+
+SEGMENTS = EXAMPLE.with_name("two_faults_segments.toml")
+
+
+def test_a_segment_table_overrides_the_global_one():
+    loaded = rupture_config.load(SEGMENTS)
+    scenario = rupture_config.build(loaded)
+    assert isinstance(scenario.model, dict)
+    bent, following = scenario.model["bent"], scenario.model["next"]
+    assert bent.slip == loaded.slip and bent.speed == loaded.speed
+    assert isinstance(following.slip, rupture_config.Slip)
+    assert isinstance(following.speed, rupture_config.Speed)
+    assert following.slip.coefficient_of_variation == 0.6
+    # The keys the segment's table leaves out are the global table's.
+    assert following.slip.bottom_taper == loaded.slip.bottom_taper == 0.02
+    assert following.speed.velocity_fraction == 0.7
+    assert following.speed.factor == loaded.speed.factor
+    assert following.rise == bent.rise
+    assert following.perturbation == bent.perturbation
+
+    default = rupture_config.build(rupture_config.load(EXAMPLE))
+    assert scenario.sources["bent"] == default.sources["bent"]
+    assert (
+        scenario.sources["next"].covariance.lengths_km[1]
+        > default.sources["next"].covariance.lengths_km[1]
+    )
+
+
+def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):
+    path = tmp_path / "profiles.toml"
+    path.write_text(
+        BASE.replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        + "\n[segments.next.rise.slip_weight]\n"
+        'type = "constant"\nvalue = 0.5\n'
+    )
+    loaded = rupture_config.load(path)
+    rise = loaded.segments["next"].rise
+    assert rise is not None
+    assert rise.slip_weight == rupture_config.Constant(value=0.5)
+    assert rise.factor == loaded.rise.factor
+    assert rise.coefficient == loaded.rise.coefficient
+
+
+def test_segment_tables_survive_the_record(tmp_path):
+    import srf
+
+    from rupture_generator.cli import main
+
+    loaded = rupture_config.load(SEGMENTS)
+    again = tmp_path / "again.toml"
+    again.write_text(rupture_config.dump(loaded))
+    assert rupture_config.load(again) == loaded
+    assert "[segments.next.slip]" in again.read_text()
+
+    small = tmp_path / "small.toml"
+    small.write_text(
+        SEGMENTS.read_text()
+        .replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        .replace("spacing_km = 0.1", "spacing_km = 0.5")
+    )
+    output = tmp_path / "out.srf"
+    assert main([str(small), str(output)]) == 0
+    record = tomllib.loads("\n".join(srf.read_comments(output)))
+    del record["provenance"]
+    assert record == tomllib.loads(rupture_config.dump(rupture_config.load(small)))
+    assert "next" in record["segments"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "velocity_fraction = 0.7",
+            "velocity_fractio = 0.7",
+            "segments.next.speed: has unknown keys ['velocity_fractio']",
+        ),
+        (
+            "[segments.next.speed]",
+            "[segments.next.sped]",
+            "segments.next: has unknown keys ['sped']",
+        ),
+        (
+            "velocity_fraction = 0.7",
+            "velocity_fraction = 7.0",
+            "segments.next.speed: a velocity fraction lies in",
+        ),
+    ],
+)
+def test_a_bad_segment_table_names_the_segment(tmp_path, old, new, message):
+    base = SEGMENTS.read_text()
+    assert old in base
+    path = tmp_path / "bad.toml"
+    path.write_text(base.replace(old, new))
+    with pytest.raises(
+        RuptureGeneratorError, match=message.replace("[", r"\[").replace("(", r"\(")
+    ):
+        rupture_config.load(path)
+
+
+def test_a_segment_table_for_no_segment_is_refused(tmp_path):
+    path = tmp_path / "unknown.toml"
+    path.write_text(
+        SEGMENTS.read_text()
+        .replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+        .replace("[segments.next.speed]", "[segments.nxt.speed]")
+    )
+    with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
+        rupture_config.build(rupture_config.load(path))

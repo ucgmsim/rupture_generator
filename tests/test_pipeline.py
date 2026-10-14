@@ -1,12 +1,15 @@
+import dataclasses
+
 import numpy as np
 import pytest
 import scipy as sp
 
 from rupture_generator import (
+    GaussianRake,
     Hypocentre,
     Realisation,
     RuptureGeneratorError,
-    RuptureSettings,
+    RuptureModel,
     generate,
 )
 from rupture_generator.rupture.generator import (
@@ -46,7 +49,7 @@ def test_rise_time_mean_is_the_moments(ruptures):
     for rupture in ruptures.values():
         occupied = rupture.geometry.occupied
         assert rupture.rise_time_s[occupied].mean() == pytest.approx(
-            rupture.rise_time_mean_s
+            rupture.statistics["rise.mean_s"]
         )
 
 
@@ -66,7 +69,7 @@ def test_a_seed_reproduces_and_segments_are_independent(scenario, ruptures):
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
     )
     for name in ruptures:
@@ -83,7 +86,7 @@ def test_a_seed_reproduces_and_segments_are_independent(scenario, ruptures):
         alone,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
     )
     assert np.array_equal(solo[root].slip_m, ruptures[root].slip_m)
@@ -100,7 +103,7 @@ def test_the_jump_rule_is_replaceable(scenario):
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
         jump_rule=recording,
     )
@@ -145,13 +148,81 @@ def test_how_a_front_jumps_never_moves_the_fields(scenario, ruptures):
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
         jump_propagation_model=JumpModel(d0_km=10.0),
     )
     for name, rupture in ruptures.items():
         assert np.array_equal(rupture.slip_m, elsewhere[name].slip_m)
         assert np.array_equal(rupture.rake_deg, elsewhere[name].rake_deg)
+
+
+FIELDS = ("slip_m", "rise_time_s", "rake_deg", "onset_s", "speed_km_s")
+
+
+def test_the_same_settings_by_name_draw_the_same_rupture(scenario, ruptures):
+    by_name = generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        dict.fromkeys(scenario.realisation, scenario.model),
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+    )
+    for name, rupture in ruptures.items():
+        for field in FIELDS:
+            assert np.array_equal(
+                getattr(rupture, field), getattr(by_name[name], field)
+            )
+
+
+def test_settings_on_one_segment_leave_the_others_alone(scenario, ruptures):
+    root = scenario.realisation.hypocentre.segment
+    other = next(name for name in scenario.realisation if name != root)
+    settings = dict.fromkeys(scenario.realisation, scenario.model)
+    settings[other] = dataclasses.replace(
+        scenario.model, rake=GaussianRake(sigma_deg=0.0)
+    )
+    drawn = generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        settings,
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+    )
+    for field in FIELDS:
+        assert np.array_equal(
+            getattr(ruptures[root], field), getattr(drawn[root], field)
+        )
+    assert np.all(drawn[other].rake_deg == scenario.sources[other].rake_deg)
+    # Each model draws from a generator of its own. The other fields never change.
+    for field in FIELDS:
+        if field != "rake_deg":
+            assert np.array_equal(
+                getattr(ruptures[other], field), getattr(drawn[other], field)
+            )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda settings, name: settings.pop(name), "have no model"),
+        (lambda settings, _: settings.update(nope=RuptureModel()), "not segments"),
+    ],
+    ids=["missing", "unknown"],
+)
+def test_settings_by_name_cover_exactly_the_segments(scenario, change, message):
+    settings = dict.fromkeys(scenario.realisation, scenario.model)
+    change(settings, next(iter(settings)))
+    with pytest.raises(RuptureGeneratorError, match=message):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            settings,
+            seed=scenario.seed,
+        )
 
 
 @pytest.mark.parametrize("nearest_km", [0.0, 0.5, 4.0, 40.0])
@@ -178,7 +249,7 @@ def test_each_rupture_keeps_the_rock_it_read(scenario, ruptures):
 
 
 def test_default_settings_are_valid():
-    RuptureSettings()
+    RuptureModel()
 
 
 @pytest.mark.parametrize(
@@ -201,7 +272,7 @@ def test_inconsistent_realisations_are_refused(scenario, build):
 def test_high_slip_ruptures_early(scenario, ruptures):
     # A positive correlation pulls high-slip patches ahead of the coherent front,
     # as genslip's negative tsfac does.
-    assert scenario.settings.timing.correlation > 0.0
+    assert scenario.model.perturbation.correlation > 0.0
     hypocentre = scenario.realisation.hypocentre
     root = ruptures[hypocentre.segment]
     seed = JumpSeed(root.geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0)
@@ -220,7 +291,7 @@ def test_a_seed_that_is_not_a_non_negative_integer_is_refused(scenario, seed):
             scenario.realisation,
             scenario.medium,
             scenario.sources,
-            scenario.settings,
+            scenario.model,
             seed=seed,
         )
 
@@ -237,13 +308,17 @@ def test_a_jump_draws_apart_from_any_segments_fields(scenario):
 
 def test_a_second_draw_reuses_every_embedding(scenario):
     sampler.cache_clear()
+    misses = []
     for _ in range(2):
         generate(
             scenario.realisation,
             scenario.medium,
             scenario.sources,
-            scenario.settings,
+            scenario.model,
             seed=scenario.seed,
         )
-    assert sampler.cache_info().hits == 2 * len(scenario.realisation)
+        misses.append(sampler.cache_info().misses)
+    # Slip's latent and rake each embed once per segment; rise time and the onset
+    # displacement draw from slip's embedding.
+    assert misses == [2 * len(scenario.realisation)] * 2
     assert SAMPLER_CACHE_SIZE >= 2 * 20

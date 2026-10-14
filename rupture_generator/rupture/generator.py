@@ -2,21 +2,14 @@
 
 :func:`generate_segment` is the whole per-segment pipeline. It takes a chart, the
 :class:`~rupture_generator.rupture.medium.Medium`, the segment's
-:class:`~rupture_generator.rupture.source.SegmentSource` and the shared
-:class:`RuptureSettings`, and returns a :class:`SegmentRupture`. Everything stochastic
-happens here, in a fixed draw order, from the one generator the caller passes in, so a
-segment's fields are a pure function of ``(chart, medium, source, settings, rng
-state)``. This module reads the medium and the fault profiles at the chart's cell
-centres once, and the rupture keeps what it read.
+:class:`~rupture_generator.rupture.source.SegmentSource` and a
+:class:`~rupture_generator.rupture.models.RuptureModel`, and returns a
+:class:`SegmentRupture`. The models draw the fields.
 
-Slip, rise time, rake and onset come out together because three of them share slip's
-latent Gaussian. Rise time and the onset displacement both correlate against it, and
-the correlation is only linear before the marginal transforms. The latent is a local
-variable and never leaves this module.
-
-Every quantity that follows the moment, such as the mean rise time and the onset
-spread, comes from the segment's own target moment. A fault system with a magnitude
-per segment gets a rise time and a spread per segment.
+The moment is the drawn slip's in this medium, and it has to lie within
+:data:`MOMENT_MAGNITUDE_TOLERANCE` magnitude units of the source's. Rise time and the
+onset spread follow that moment, so a fault system with a magnitude per segment gets a
+rise time and a spread per segment.
 
 :func:`generate` walks a whole fault system. The caller has already chosen the tree
 and the moment on each segment. The crossings are still open: :func:`first_arrival` finds
@@ -32,49 +25,19 @@ import numpy as np
 
 from rupture_generator._kernels import eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import CellArray, CellMask, Geometry
-from rupture_generator.rupture.medium import (
-    Medium,
-    SpatialField,
-    constant_field,
-    rigidity_pa,
+from rupture_generator.geometry import CellArray, Geometry
+from rupture_generator.rupture.medium import Medium, rigidity_pa
+from rupture_generator.rupture.models import (
+    MODELS,
+    RuptureModel,
+    SegmentContext,
+    check_cells,
+    positive,
+    read_at_centres,
 )
 from rupture_generator.rupture.propagator import DEFAULT_JUMP_MODEL, JumpModel
 from rupture_generator.rupture.realisation import Realisation
-from rupture_generator.rupture.source import SegmentSource
-from rupture_generator.sampling import (
-    NORMAL,
-    Covariance,
-    Grid,
-    Marginal,
-    MarginalFamily,
-    PreCorrected,
-    latent_correlation,
-    mix,
-    sampler,
-    standardise,
-)
-
-M2_PER_KM2 = 1.0e6
-
-CUBE_ROOT_DYNE_CM = 1.0e-9 * (1.0e7 ** (1.0 / 3.0))
-"""``1e-9`` per cube-root dyne-centimetre."""
-
-ALPHA_COEFFICIENT = 0.1
-"""How much the dip-and-rake correction can move things, proportion (0, 1)."""
-
-DIP_PLATEAU_DEG = 45.0
-"""Below this dip the correction is at full strength, falling to nothing at vertical."""
-
-REVERSE_RAKE_DEG = 90.0
-"""Pure reverse slip, where the correction is at full strength."""
-
-MINIMUM_VELOCITY_FRACTION = 0.25
-RAYLEIGH_VELOCITY_FRACTION = 0.9194
-"""The sub-Rayleigh ceiling for a mode-II crack; between it and the shear speed lies
-the forbidden zone."""
-MAXIMUM_VELOCITY_FRACTION = np.sqrt(2.0)
-"""Burridge-Andrews: the fastest a supershear front travels."""
+from rupture_generator.rupture.source import SegmentSource, magnitude_from_moment
 
 OFF_FAULT_SLOWNESS_FACTOR = 10.0
 """What an unoccupied cell's slowness is multiplied by, so the front does not cross the
@@ -83,6 +46,10 @@ part of the rectangle that is not fault."""
 CAUSAL_MARGIN = 1.05
 """How much room the causal clamp leaves past the weight that would tie with the seed.
 A tie-break, not a modelling choice: it keeps the seed the strict earliest cell."""
+
+MOMENT_MAGNITUDE_TOLERANCE = 0.05
+"""How far a segment's slip may set its moment magnitude from its source's: the rounding
+of a magnitude stated to one decimal place."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,278 +67,6 @@ class JumpSeed:
 
     cell: tuple[int, int]
     time_s: float
-
-
-def _correlation(value: float) -> None:
-    if not -1.0 <= value <= 1.0:
-        raise RuptureGeneratorError(f"a correlation lies in [-1, 1], got {value}")
-
-
-def _positive_marginal(
-    what: str, family: MarginalFamily, spread: float, maximum: float
-) -> Marginal:
-    if family == "normal":
-        raise RuptureGeneratorError(
-            f"{what} values are positive, so they cannot follow a normal marginal"
-        )
-    return Marginal(family, spread, maximum)
-
-
-@dataclasses.dataclass(frozen=True)
-class SlipSettings:
-    """Slip field generation settings.
-
-    Attributes
-    ----------
-    family : MarginalFamily
-        The unit-mean distribution slip values follow.
-    coefficient_of_variation : float
-        The spread of ``family``.
-    maximum : float
-        The largest slip on the fault in mean slips, for a ``doubly_truncated_normal``
-        alone. Infinite otherwise.
-    side_taper : float
-        The fraction of the fault's length from each end over which slip ramps to zero.
-    top_taper : float
-        The fraction of the fault's width from the top edge over which slip ramps to
-        zero. At zero, slip at the top edge has full amplitude.
-    bottom_taper : float
-        The fraction of the fault's width from the bottom edge over which slip ramps to
-        zero.
-    """
-
-    family: MarginalFamily = "truncated_exponential"
-    coefficient_of_variation: float = 0.90
-    maximum: float = np.inf
-    side_taper: float = 0.02
-    top_taper: float = 0.0
-    bottom_taper: float = 0.0
-
-    def __post_init__(self) -> None:
-        """Refuse a taper outside ``[0, 0.5]``, or a spread outside the family's range."""
-        for name in ("side_taper", "top_taper", "bottom_taper"):
-            if not 0.0 <= getattr(self, name) <= 0.5:
-                raise RuptureGeneratorError(
-                    f"{name} is a fraction of the fault's extent from one edge, so it "
-                    f"lies in [0, 0.5]; got {getattr(self, name)}"
-                )
-        # _positive_marginal has validation logic, so invoking the property that
-        # calls it triggers this validation.
-        _ = self.marginal
-
-    @property
-    def marginal(self) -> Marginal:
-        """Marginal: The unit-mean distribution that slip values follow."""
-        return _positive_marginal(
-            "slip", self.family, self.coefficient_of_variation, self.maximum
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class RiseSettings:
-    """How long each subfault slips for.
-
-    The fault-wide mean is ``coefficient * M0^(1/3) * alpha_T``. Where rise time is
-    longer or shorter, and where it follows slip more tightly, belongs to the
-    :class:`FaultProfiles`.
-
-    Attributes
-    ----------
-    coefficient : float
-        The mean's coefficient in the published units, per cube-root dyne-centimetre
-        at ``1e-9``. Graves & Pitarka use 1.6.
-    correlation : float
-        The correlation of rise time with slip.
-    slip_exponent : float
-        The power of slip that rise time follows. At 0.5, rise time goes as the square
-        root of slip.
-    family : MarginalFamily
-        The unit-mean distribution rise time values follow, a gamma by default.
-    coefficient_of_variation : float
-        The spread of ``family``. Below unit spread the gamma's mode is away from zero.
-        No subfault then has a zero rise time.
-    maximum : float
-        The longest rise time in mean rise times, for a ``doubly_truncated_normal``
-        alone. Infinite otherwise.
-    """
-
-    coefficient: float = 1.6
-    correlation: float = 0.9
-    slip_exponent: float = 0.5
-    family: MarginalFamily = "gamma"
-    coefficient_of_variation: float = 0.75
-    maximum: float = np.inf
-
-    def __post_init__(self) -> None:
-        """Refuse a rise time the power law can't produce."""
-        if self.slip_exponent <= 0.1:
-            raise RuptureGeneratorError(
-                f"a slip exponent of {self.slip_exponent} abandons the correlated field "
-                "for independent noise, which is a different model; use one above 0.1"
-            )
-        _correlation(self.correlation)
-        _ = self.marginal
-
-    @property
-    def marginal(self) -> Marginal:
-        """Marginal: The unit-mean distribution that rise time values follow."""
-        return _positive_marginal(
-            "rise time", self.family, self.coefficient_of_variation, self.maximum
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class RakeSettings:
-    """How far each subfault's rake strays from its segment's: ``sigma * Z`` degrees.
-
-    By design, rake doesn't depend on slip. A patch with more slip has no reason to
-    move in a different direction. The marginal is normal, so rake is the one field
-    that keeps slip's correlation lengths exactly, with no pre-correction.
-
-    Attributes
-    ----------
-    sigma_deg : float
-        The standard deviation of the rake about the segment's, in degrees.
-    """
-
-    sigma_deg: float = 15.0
-
-    def __post_init__(self) -> None:
-        """Refuse a negative spread."""
-        if self.sigma_deg < 0.0:
-            raise RuptureGeneratorError(
-                f"a spread has no sign, got {self.sigma_deg} degrees"
-            )
-
-
-@dataclasses.dataclass(frozen=True)
-class TimingSettings:
-    """Settings for how the generator solves and correlates a segment's time field.
-
-    The front moves at ``velocity_fraction / alpha_T`` of the chart's shear speed, held
-    to the sub-Rayleigh or supershear branch, times the chart's rupture speed factor.
-    The displacement's spread follows the moment as ``offset_s + coefficient *
-    M0^(1/3)`` in the published units. With both terms zero the front is coherent.
-
-    Attributes
-    ----------
-    velocity_fraction : float
-        The rupture speed as a fraction of the shear speed, before the geometric
-        correction.
-    offset_s : float
-        The constant term of the onset spread, in seconds: genslip's ``tsfac_bzero``,
-        read as a magnitude.
-    coefficient : float
-        The moment term's coefficient in the published units: genslip's
-        ``tsfac_slope``, read as a magnitude.
-    correlation : float
-        The correlation of the displacement with slip. A positive value makes
-        high-slip patches rupture early.
-    blend_sigma : float
-        The width of the zone over which the displacement grows in from the seed, in
-        units of the onset spread.
-    """
-
-    velocity_fraction: float = 0.8
-    offset_s: float = 0.1
-    coefficient: float = 0.5
-    correlation: float = 0.8
-    blend_sigma: float = 4.0
-
-    def __post_init__(self) -> None:
-        """Refuse a speed outside the allowed band, or a negative spread."""
-        if not 0.0 < self.velocity_fraction <= MAXIMUM_VELOCITY_FRACTION:
-            raise RuptureGeneratorError(
-                f"a velocity fraction lies in (0, {MAXIMUM_VELOCITY_FRACTION:.4f}], "
-                f"got {self.velocity_fraction}"
-            )
-        if self.offset_s < 0.0 or self.coefficient < 0.0:
-            raise RuptureGeneratorError(
-                "the onset spread's offset and coefficient are magnitudes"
-            )
-        if self.blend_sigma <= 0.0:
-            raise RuptureGeneratorError(
-                f"the onset blend spans {self.blend_sigma} sigma, which is no width"
-            )
-        _correlation(self.correlation)
-
-
-@dataclasses.dataclass(frozen=True)
-class PulseSettings:
-    """Settings for the slip-rate pulse each subfault's slip and rise time make.
-
-    Attributes
-    ----------
-    dt_s : float
-        The slip-rate sample interval, in seconds.
-    beta : SpatialField, optional
-        The Liu-Archuleta-Hartzell rising fraction, in ``(0, 0.5]``. Without it, every
-        pulse is a single-sample impulse.
-    """
-
-    dt_s: float = 0.005
-    beta: SpatialField | None = None
-
-    def __post_init__(self) -> None:
-        """Refuse a sample interval that samples nothing."""
-        if not self.dt_s > 0.0:
-            raise RuptureGeneratorError(f"a sample interval of {self.dt_s} s is none")
-
-
-UNMODIFIED = constant_field(1.0)
-"""Constant profile for unmodified spatial fields."""
-
-
-@dataclasses.dataclass(frozen=True)
-class FaultProfiles:
-    """Spatial fields for rupture propagation and rise time.
-
-    Attributes
-    ----------
-    rise_time_factor : SpatialField
-        The relative rise time.
-    rise_time_slip_weight : SpatialField
-        How much of rise time's correlation with slip is the configured value (1)
-        and how much is exact (0). At 0 the rise-time latent is slip's own, so the
-        two fields share their rank order. This is the shallow treatment of Graves &
-        Pitarka. There, in the velocity-strengthening crust, the pulse length tracks
-        the slip.
-    rupture_speed_factor : SpatialField
-        The factor on the front's speed, for a slower front near the ground surface or
-        at depth.
-    """
-
-    rise_time_factor: SpatialField = UNMODIFIED
-    rise_time_slip_weight: SpatialField = UNMODIFIED
-    rupture_speed_factor: SpatialField = UNMODIFIED
-
-
-@dataclasses.dataclass(frozen=True)
-class RuptureSettings:
-    """Complete set of rupture settings.
-
-    Attributes
-    ----------
-    slip : SlipSettings
-        The slip field's settings.
-    rise : RiseSettings
-        The rise time field's settings.
-    rake : RakeSettings
-        The rake field's settings.
-    timing : TimingSettings
-        The onset field's settings.
-    profiles : FaultProfiles
-        The depth-varying modifiers on rise time and rupture speed.
-    pulse : PulseSettings
-        The slip-rate pulse's sampling and shape.
-    """
-
-    slip: SlipSettings = dataclasses.field(default_factory=SlipSettings)
-    rise: RiseSettings = dataclasses.field(default_factory=RiseSettings)
-    rake: RakeSettings = dataclasses.field(default_factory=RakeSettings)
-    timing: TimingSettings = dataclasses.field(default_factory=TimingSettings)
-    profiles: FaultProfiles = dataclasses.field(default_factory=FaultProfiles)
-    pulse: PulseSettings = dataclasses.field(default_factory=PulseSettings)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -397,12 +92,9 @@ class SegmentRupture:
     density_g_cm3 : CellArray
         The medium's density at the cell centres, in grams per cubic centimetre.
         With the shear speed, this sets the rigidity of the moment.
-    alpha_t : float
-        Graves & Pitarka's geometric correction for this segment.
-    rise_time_mean_s : float
-        The fault-wide mean rise time, in seconds.
-    onset_scale_s : float
-        The onset displacement's spread, in seconds.
+    statistics : Mapping of str to float
+        The numbers each model reported about its draw. Each key starts with the
+        model's name, as in ``rise.mean_s``.
     dt_s : float
         The slip-rate sample interval, in seconds.
     beta : CellArray or None
@@ -417,11 +109,9 @@ class SegmentRupture:
     speed_km_s: CellArray
     shear_speed_km_s: CellArray
     density_g_cm3: CellArray
-    alpha_t: float
-    rise_time_mean_s: float
-    onset_scale_s: float
     dt_s: float
     beta: CellArray | None
+    statistics: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
     @property
     def rigidity_pa(self) -> CellArray:
@@ -429,108 +119,7 @@ class SegmentRupture:
         return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
 
 
-# ---------------------------------------------------------------- shared readings
-
-
-def _alpha_t(average_dip_deg: float, average_rake_deg: float) -> float:
-    """Graves & Pitarka's geometric correction, in ``[1/1.1, 1]``.
-
-    It's exactly 1 for a vertical strike-slip fault, and it shortens the rise time and
-    raises the rupture speed by the same factor. The averaged rake wraps into
-    ``[-180, 180]`` first. The correction is for reverse geometries, so normal faulting
-    doesn't get one.
-    """
-    if average_dip_deg <= DIP_PLATEAU_DEG:
-        dip_factor = 1.0
-    else:
-        dip_factor = 1.0 - (average_dip_deg - DIP_PLATEAU_DEG) / (
-            90.0 - DIP_PLATEAU_DEG
-        )
-
-    rake_deg = (average_rake_deg + 180.0) % 360.0 - 180.0
-    if 0.0 <= rake_deg <= 180.0:
-        rake_factor = 1.0 - abs(rake_deg - REVERSE_RAKE_DEG) / REVERSE_RAKE_DEG
-    else:
-        rake_factor = 0.0
-
-    return 1.0 / (1.0 + dip_factor * rake_factor * ALPHA_COEFFICIENT)
-
-
-def _cube_root_scaling(coefficient: float, moment_nm: float) -> float:
-    """``coefficient * M0^(1/3)`` with the coefficient in published dyne-cm units."""
-    return coefficient * CUBE_ROOT_DYNE_CM * float(np.cbrt(moment_nm))
-
-
-# ------------------------------------------------------------------------ slip
-
-
-def _reach(mask: CellMask, axis: int, *, reverse: bool) -> np.ndarray:
-    """How many occupied cells run up to each cell along one axis, inclusive.
-
-    This counts the natural generalisation of rectangular fault based reach tapering.
-    """
-    ordered = np.flip(mask, axis) if reverse else mask
-    index = np.arange(ordered.shape[axis], dtype=np.int32)
-    index = index[:, None] if axis == 0 else index
-    last_gap = np.maximum.accumulate(np.where(ordered, np.int32(-1), index), axis=axis)
-    counted = index - last_gap
-    return np.flip(counted, axis) if reverse else counted
-
-
-def _taper_edges(field: CellArray, occupied: CellMask, slip: SlipSettings) -> CellArray:
-    """Ramp a field to zero at the fault's edges, and zero the unoccupied cells.
-
-    The taper is separable, a product of one ramp per edge in whole cells. The edges are
-    the fault's and not the chart's. Where the ``occupied`` mask is partial, the ramps
-    follow the outline of the occupied cells rather than the chart's rectangle.
-    """
-    ramp = np.ones(field.shape, dtype=np.float64)
-    for fraction, axis, reverse in (
-        (slip.top_taper, 0, False),
-        (slip.bottom_taper, 0, True),
-        (slip.side_taper, 1, False),
-        (slip.side_taper, 1, True),
-    ):
-        cells = int(fraction * field.shape[axis] + 0.5)
-        if cells:
-            ramp *= np.minimum(_reach(occupied, axis, reverse=reverse) / cells, 1.0)
-    return field * ramp * occupied
-
-
-def _scale_to_moment(
-    pattern: CellArray, rigidity_pa: CellArray, areas_km2: CellArray, moment_nm: float
-) -> CellArray:
-    """Scale a slip pattern, in metres, so the segment's moment is ``moment_nm``."""
-    total = float(np.sum(rigidity_pa * areas_km2 * M2_PER_KM2 * pattern))
-    if not total > 0.0:
-        raise RuptureGeneratorError(
-            "the slip pattern carries no moment anywhere -- every subfault was tapered "
-            "or masked to zero"
-        )
-    return (moment_nm / total) * pattern
-
-
 # --------------------------------------------------------------------- the front
-
-
-def _speed_field(
-    shear_speed_km_s: CellArray,
-    timing: TimingSettings,
-    geometric_correction: float,
-) -> CellArray:
-    """Rupture speed along fault."""
-    fraction = timing.velocity_fraction / geometric_correction
-    if fraction > RAYLEIGH_VELOCITY_FRACTION:
-        fraction += 1.0 - RAYLEIGH_VELOCITY_FRACTION
-    fraction = min(max(fraction, MINIMUM_VELOCITY_FRACTION), MAXIMUM_VELOCITY_FRACTION)
-    speed = fraction * shear_speed_km_s
-    if not np.all(speed > 0.0):
-        worst = np.unravel_index(int(np.argmin(speed)), speed.shape)
-        raise RuptureGeneratorError(
-            f"the rupture speed at subfault {tuple(int(k) for k in worst)} is "
-            f"{float(speed[worst]):.4g} km/s; check the shear speed field"
-        )
-    return speed
 
 
 def _travel_times(
@@ -554,24 +143,27 @@ def _travel_times(
 def _blend_onset(
     travel_s: CellArray,
     displacement_s: CellArray,
-    scale_s: float,
+    blend_s: float,
     seed: JumpSeed,
-    blend_sigma: float,
 ) -> CellArray:
     """Blend in rupture propagation perturbation terms preserving causality.
 
-    ``t = T + min(tau / (n sigma), tau / (c max(-delta, 0)), 1) * delta`` with ``tau``
+    ``t = T + min(tau / blend, tau / (c max(-delta, 0)), 1) * delta`` with ``tau``
     the time since the seed and ``delta`` the displacement with its seed value removed.
     The first term is the model, the width of the zone over which roughness accumulates.
     The second is arithmetic, per cell. It stops any subfault from rupturing before the
     front that seeded it, and stops one deep dip from holding back the whole fault
     behind it.
     """
-    if scale_s == 0.0:
+    displacement = displacement_s - displacement_s[seed.cell]
+    if not np.any(displacement):
         return travel_s
     since_seed_s = travel_s - seed.time_s
-    displacement = displacement_s - displacement_s[seed.cell]
-    weight = np.minimum(1.0, since_seed_s / (blend_sigma * scale_s))
+    weight = (
+        np.ones_like(since_seed_s)
+        if blend_s == 0.0
+        else np.minimum(1.0, since_seed_s / blend_s)
+    )
 
     # Where the dip is zero or the draw moves the cell later, the ratio is astronomical
     # and the minimum ignores it: such a cell is under no causal bound at all.
@@ -581,53 +173,60 @@ def _blend_onset(
     return travel_s + np.minimum(weight, causal) * displacement
 
 
-def _read(
-    geometry: Geometry,
-    name: str,
-    field: SpatialField,
-    accept: Callable[[CellArray], np.ndarray],
-    wanted: str,
-) -> CellArray:
-    """A field at a chart's cell centres, checked.
+# ------------------------------------------------------------------ one segment
+
+
+def _moment(context: SegmentContext, slip_m: CellArray) -> tuple[CellArray, float]:
+    """Check a slip against its chart and source, and return it with its moment.
 
     Raises
     ------
     RuptureGeneratorError
-        If the field gives the wrong shape, or a value ``accept`` refuses.
+        If the slip doesn't fit the chart, or is negative or not finite on a fault
+        cell. Also if its moment is zero, or its magnitude lies more than
+        :data:`MOMENT_MAGNITUDE_TOLERANCE` from the source's.
     """
-    values = np.asarray(field(geometry.centres), dtype=np.float64)
-    if values.shape != geometry.cells:
+    geometry = context.geometry
+    slip_m = check_cells(
+        geometry,
+        "slip",
+        slip_m,
+        lambda slip: ~geometry.occupied | (np.isfinite(slip) & (slip >= 0.0)),
+        "finite, non-negative values on the fault",
+    )
+    slip_m = np.where(geometry.occupied, slip_m, 0.0)
+    moment_nm = context.moment_nm(slip_m)
+    if not moment_nm > 0.0:
+        raise RuptureGeneratorError("slip has zero moment")
+    drawn = magnitude_from_moment(moment_nm)
+    stated = magnitude_from_moment(context.source.moment_nm)
+    if abs(drawn - stated) > MOMENT_MAGNITUDE_TOLERANCE:
         raise RuptureGeneratorError(
-            f"{name} is shaped {values.shape} and the chart has {geometry.cells} cells"
+            f"slip sets a moment magnitude of {drawn:.3f} and the source's is "
+            f"{stated:.3f}; they differ by more than {MOMENT_MAGNITUDE_TOLERANCE}"
         )
-    if not np.all(accept(values)):
-        raise RuptureGeneratorError(
-            f"{name} runs {float(values.min()):.3g} to {float(values.max()):.3g}; "
-            f"it wants {wanted}"
-        )
-    return values
-
-
-def _positive(values: CellArray) -> np.ndarray:
-    return np.isfinite(values) & (values > 0.0)
+    return slip_m, moment_nm
 
 
 def generate_segment(
     geometry: Geometry,
     medium: Medium,
     source: SegmentSource,
-    settings: RuptureSettings,
+    model: RuptureModel,
     *,
     seed: JumpSeed,
     rng: np.random.Generator,
 ) -> SegmentRupture:
     """Draw one segment's slip, rise time, rake and onset.
 
-    The draws from ``rng`` come in a fixed order: slip's latent with rise time's
-    independent latent, then rake, then the onset displacement's independent latent.
-    Slip, rise and the displacement share one embedding, pre-corrected for slip's
-    marginal, because this function mixes them in slip's latent space. Rake has its
-    own embedding, uncorrected, because its marginal is normal.
+    The models come in a fixed order: slip, rise time, rake, speed, then the onset
+    displacement. ``rng`` spawns one generator per model in that order, so a model's
+    draws depend on ``rng`` alone and never on another model's draws. Replacing one
+    model leaves every other field it doesn't read bit-identical.
+
+    The moment that rise time and the displacement follow is the slip's in this
+    medium, which has to lie within :data:`MOMENT_MAGNITUDE_TOLERANCE` magnitude
+    units of ``source.moment_nm``. Off-fault slip comes out zero.
 
     Parameters
     ----------
@@ -637,8 +236,8 @@ def generate_segment(
         The rock, read at the chart's cell centres.
     source : SegmentSource
         The segment's moment, rake and slip covariance.
-    settings : RuptureSettings
-        How to draw each field.
+    model : RuptureModel
+        The models to draw each field with.
     seed : JumpSeed
         Where and when the front starts on this segment.
     rng : numpy.random.Generator
@@ -652,125 +251,93 @@ def generate_segment(
     Raises
     ------
     RuptureGeneratorError
-        If the medium or a profile reads out of range on this chart, the pattern has
-        zero moment, the speed field isn't positive, or the covariance doesn't embed on
-        this chart.
+        If the medium reads out of range on this chart, a model refuses the chart, or
+        a model returns a field that isn't shaped like the chart or holds values that
+        field can't take. Also if the slip's moment disagrees with the source's, or
+        the blend time is negative.
     """
-    slip, rise, timing = settings.slip, settings.rise, settings.timing
-    profiles = settings.profiles
-    shear_speed_km_s = _read(
-        geometry, "shear speed", medium.shear_speed_km_s, _positive, "positive values"
+    context = SegmentContext(
+        geometry=geometry,
+        source=source,
+        shear_speed_km_s=read_at_centres(
+            geometry,
+            "shear speed",
+            medium.shear_speed_km_s,
+            positive,
+            "positive values",
+        ),
+        density_g_cm3=read_at_centres(
+            geometry, "density", medium.density_g_cm3, positive, "positive values"
+        ),
     )
-    density_g_cm3 = _read(
-        geometry, "density", medium.density_g_cm3, _positive, "positive values"
-    )
-    rise_time_factor = _read(
-        geometry,
-        "the rise-time factor",
-        profiles.rise_time_factor,
-        _positive,
-        "positive values",
-    )
-    rise_time_slip_weight = _read(
-        geometry,
-        "the rise-time slip weight",
-        profiles.rise_time_slip_weight,
-        lambda weight: (weight >= 0.0) & (weight <= 1.0),
-        "weights in [0, 1]",
-    )
-    rupture_speed_factor = _read(
-        geometry,
-        "the rupture speed factor",
-        profiles.rupture_speed_factor,
-        _positive,
-        "positive values, or the front never arrives",
-    )
-
     beta = (
         None
-        if settings.pulse.beta is None
-        else _read(
+        if model.pulse.beta is None
+        else read_at_centres(
             geometry,
             "beta",
-            settings.pulse.beta,
+            model.pulse.beta,
             lambda beta: (beta > 0.0) & (beta <= 0.5),
             "rising fractions in (0, 0.5]",
         )
     )
+    streams = dict(zip(MODELS, rng.spawn(len(MODELS)), strict=True))
 
-    correction = _alpha_t(
-        float(np.mean(geometry.dip_deg[geometry.occupied])), source.rake_deg
+    slip = model.slip(context, streams["slip"])
+    slip_m, moment_nm = _moment(context, slip.slip_m)
+    check_cells(geometry, "slip's latent", slip.latent, np.isfinite, "finite values")
+    # The other models read the slip the rupture keeps.
+    slip = dataclasses.replace(slip, slip_m=slip_m)
+    rise = model.rise(context, slip, moment_nm, streams["rise"])
+    rise_time_s = check_cells(
+        geometry,
+        "rise time",
+        rise.values,
+        lambda rise_s: np.isfinite(rise_s) & (rise_s >= 0.0),
+        "finite, non-negative values",
     )
-    moment_nm = source.moment_nm
-    strike_km, dip_km = geometry.spacing_km
-    grid = Grid(geometry.cells, (dip_km, strike_km))
-    covariance = source.covariance
-    latent = sampler(
-        grid,
-        Covariance(
-            PreCorrected(covariance.correlation, slip.marginal), covariance.lengths_km
-        ),
+    rake = model.rake(context, streams["rake"])
+    rake_deg = check_cells(geometry, "rake", rake.values, np.isfinite, "finite values")
+    speed = model.speed(context, slip, streams["speed"])
+    speed_km_s = check_cells(
+        geometry,
+        "the rupture speed",
+        speed.values,
+        positive,
+        "positive values; check the shear speed field",
     )
-    # Latent sampler draws a complex field and returns both independent
-    # components instead of throwing away a field.
-    slip_latent, rise_independent = latent.draw(rng)
-    pattern = _taper_edges(slip.marginal.apply(slip_latent), geometry.occupied, slip)
-    slip_m = _scale_to_moment(
-        pattern,
-        rigidity_pa(shear_speed_km_s, density_g_cm3),
-        geometry.areas_km2,
-        moment_nm,
+    perturbation = model.perturbation(context, slip, moment_nm, streams["perturbation"])
+    displacement_s = check_cells(
+        geometry,
+        "the onset displacement",
+        perturbation.displacement_s,
+        np.isfinite,
+        "finite values",
     )
+    if not (np.isfinite(perturbation.blend_s) and perturbation.blend_s >= 0.0):
+        raise RuptureGeneratorError(
+            f"the onset displacement blends in over {perturbation.blend_s} s, which "
+            "is not a duration"
+        )
 
-    mean_rise_s = _cube_root_scaling(rise.coefficient, moment_nm) * correction
-    rho = float(
-        latent_correlation(slip.marginal, rise.marginal, np.array(rise.correlation))
-    )
-
-    weight = rise_time_slip_weight
-    rise_latent = mix(
-        (weight * rho + (1.0 - weight), slip_latent),
-        (weight * np.sqrt(1.0 - rho * rho), rise_independent),
-    )
-    rise_pattern = (
-        rise.marginal.apply(rise_latent) ** rise.slip_exponent * rise_time_factor
-    )
-    rise_time_s = rise_pattern * (
-        mean_rise_s / float(rise_pattern[geometry.occupied].mean())
-    )
-
-    rake_latent, _ = sampler(grid, covariance).draw(rng)
-    rake_deg = source.rake_deg + settings.rake.sigma_deg * standardise(rake_latent)
-
-    speed_km_s = (
-        _speed_field(shear_speed_km_s, timing, correction) * rupture_speed_factor
-    )
     travel_s = _travel_times(geometry, speed_km_s, seed)
-    scale_s = timing.offset_s + _cube_root_scaling(timing.coefficient, moment_nm)
-    onset_independent, _ = latent.draw(rng)
-    rho = float(latent_correlation(slip.marginal, NORMAL, np.array(timing.correlation)))
-    # genslip's tsfac is negative and this package reads it as a magnitude, so the
-    # displacement subtracts: with a positive correlation, high slip ruptures early.
-    displacement_s = -scale_s * standardise(
-        mix((rho, slip_latent), (np.sqrt(1.0 - rho * rho), onset_independent))
-    )
-
+    drawn = (slip, rise, rake, speed, perturbation)
     return SegmentRupture(
         geometry=geometry,
         slip_m=slip_m,
         rise_time_s=rise_time_s,
         rake_deg=rake_deg,
-        onset_s=_blend_onset(
-            travel_s, displacement_s, scale_s, seed, timing.blend_sigma
-        ),
+        onset_s=_blend_onset(travel_s, displacement_s, perturbation.blend_s, seed),
         speed_km_s=speed_km_s,
-        shear_speed_km_s=shear_speed_km_s,
-        density_g_cm3=density_g_cm3,
-        alpha_t=correction,
-        rise_time_mean_s=mean_rise_s,
-        onset_scale_s=scale_s,
-        dt_s=settings.pulse.dt_s,
+        shear_speed_km_s=context.shear_speed_km_s,
+        density_g_cm3=context.density_g_cm3,
+        dt_s=model.pulse.dt_s,
         beta=beta,
+        statistics={
+            f"{name}.{key}": float(value)
+            for name, model in zip(MODELS, drawn, strict=True)
+            for key, value in model.statistics.items()
+        },
     )
 
 
@@ -854,7 +421,8 @@ def first_arrival(
     medium : Medium
         The rock between the two, which sets the crossing time.
     model : JumpModel
-        How far a jump can land.
+        How far a jump can land, and whether it pairs interior cells as well as edge
+        cells.
     rng : numpy.random.Generator
         The jump's own generator.
 
@@ -868,7 +436,9 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    landings, departures, gap_km = child.nearest_cells_to(parent.geometry)
+    landings, departures, gap_km = child.nearest_cells_to(
+        parent.geometry, interior=model.interior
+    )
     reach_km = model.reach_km(float(gap_km.min()), rng)
     arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
         parent.geometry.centres[departures], child.centres[landings]
@@ -885,7 +455,7 @@ def generate(
     realisation: Realisation[Geometry],
     medium: Medium,
     sources: Mapping[str, SegmentSource],
-    settings: RuptureSettings,
+    model: RuptureModel | Mapping[str, RuptureModel],
     *,
     seed: int,
     jump_rule: JumpRule = first_arrival,
@@ -905,8 +475,8 @@ def generate(
         The rock.
     sources : Mapping of str to SegmentSource
         Each segment's source, by name.
-    settings : RuptureSettings
-        How to draw each field.
+    model : RuptureModel or Mapping of str to RuptureModel
+        How to draw each field: one for every segment, or one per segment by name.
     seed : int
         The seed every segment's generator derives from.
     jump_rule : JumpRule
@@ -922,13 +492,23 @@ def generate(
     Raises
     ------
     RuptureGeneratorError
-        If the seed isn't a non-negative integer, a segment has no source, or the
-        realisation has no hypocentre or no tree to walk.
+        If the seed isn't a non-negative integer, a segment has no source or model,
+        the models cover a segment the realisation lacks, a segment's draw fails, or
+        the realisation has no hypocentre or no tree to walk.
     """
     seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
     if missing:
         raise RuptureGeneratorError(f"{missing} have no source")
+    if not isinstance(model, RuptureModel):
+        missing = sorted(set(realisation) - set(model))
+        if missing:
+            raise RuptureGeneratorError(f"{missing} have no model")
+        unknown = sorted(set(model) - set(realisation))
+        if unknown:
+            raise RuptureGeneratorError(
+                f"models name {unknown}, which are not segments of the realisation"
+            )
 
     drawn: dict[str, SegmentRupture] = {}
     for name, parent, geometry in realisation.in_causal_order():
@@ -951,7 +531,7 @@ def generate(
             geometry,
             medium,
             sources[name],
-            settings,
+            model if isinstance(model, RuptureModel) else model[name],
             seed=start,
             rng=_segment_rng(seed, FIELDS_STREAM, name),
         )
@@ -960,17 +540,10 @@ def generate(
 
 __all__ = [
     "CAUSAL_MARGIN",
-    "UNMODIFIED",
-    "FaultProfiles",
+    "MOMENT_MAGNITUDE_TOLERANCE",
     "JumpRule",
     "JumpSeed",
-    "PulseSettings",
-    "RakeSettings",
-    "RiseSettings",
-    "RuptureSettings",
     "SegmentRupture",
-    "SlipSettings",
-    "TimingSettings",
     "check_seed",
     "first_arrival",
     "generate",

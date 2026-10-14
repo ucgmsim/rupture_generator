@@ -19,13 +19,23 @@ def scenario() -> config.Scenario:
     return config.build(dataclasses.replace(loaded, geometry=geometry))
 
 
+@pytest.fixture
+def coarse_example(tmp_path):
+    """The example as a rupture file at the fixture's resolution."""
+    loaded = config.load(EXAMPLE)
+    geometry = dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM)
+    path = tmp_path / "coarse.toml"
+    path.write_text(config.dump(dataclasses.replace(loaded, geometry=geometry)))
+    return path
+
+
 @pytest.fixture(scope="session")
 def ruptures(scenario: config.Scenario) -> Realisation[SegmentRupture]:
     return generate(
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
         jump_propagation_model=scenario.jump_model,
     )
@@ -36,3 +46,9 @@ def srf_path(tmp_path_factory, scenario, ruptures):
     path = tmp_path_factory.mktemp("srf") / "rupture.srf"
     write_rupture(str(path), ruptures)
     return path
+
+
+def srf_body(path: Path) -> bytes:
+    """An SRF's bytes without its header comments, which hold the run's record."""
+    with path.open("rb") as handle:
+        return b"".join(line for line in handle if not line.startswith(b"#"))

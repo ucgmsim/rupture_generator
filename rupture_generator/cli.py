@@ -2,9 +2,13 @@
 
 Everything here is a library call. A TOML ``INPUT`` is a rupture file to draw, and
 ``OUTPUT``'s suffix picks what to write: ``.srf`` for an SRF, or ``.h5`` or ``.nc`` for
-the drawn fields, which make an SRF later. Next to either goes the config with every
-default written out, ``OUTPUT.toml``, which records what the run used. A fields file
-as ``INPUT`` writes its SRF to ``OUTPUT``.
+the drawn fields, which make an SRF later. A fields file as ``INPUT`` writes its SRF to
+``OUTPUT``.
+
+Each draw keeps its run record, :mod:`rupture_generator.record`: the config with every
+default written out, the software that ran it and the digests of its inputs. An SRF
+stores it in its header's comment lines, and a fields file in its root attributes. The
+SRF made from a fields file keeps the fields file's record.
 """
 
 import argparse
@@ -13,31 +17,38 @@ from pathlib import Path
 
 from rupture_generator import config as rupture_config
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.formats.fields import SUFFIXES, fields_to_srf, write_fields
+from rupture_generator.formats.fields import (
+    RECORD_ATTRIBUTE,
+    SUFFIXES,
+    fields_to_srf,
+    write_fields,
+)
 from rupture_generator.formats.srf import write_rupture
+from rupture_generator.record import run_record
 from rupture_generator.rupture.generator import generate
 
 
 def _draw(source: Path, output: Path) -> None:
-    """Draw the rupture ``source`` describes and write it, with its config, to ``output``."""
+    """Draw the rupture ``source`` describes, and write it and its record."""
     if output.suffix != ".srf" and output.suffix not in SUFFIXES:
         raise RuptureGeneratorError(
             f"{output} ends in neither .srf nor one of {', '.join(SUFFIXES)}"
         )
     config = rupture_config.load(source)
+    record = run_record(source, config)
     scenario = rupture_config.build(config)
     drawn = generate(
         scenario.realisation,
         scenario.medium,
         scenario.sources,
-        scenario.settings,
+        scenario.model,
         seed=scenario.seed,
         jump_propagation_model=scenario.jump_model,
     )
-    write = write_rupture if output.suffix == ".srf" else write_fields
-    write(str(output), drawn)
-    # COMMENT: are we still writing a side-car file here? why?
-    output.with_name(output.name + ".toml").write_text(rupture_config.dump(config))
+    if output.suffix == ".srf":
+        write_rupture(str(output), drawn, comments=record.splitlines())
+    else:
+        write_fields(output, drawn, attrs={RECORD_ATTRIBUTE: record})
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,0 +1,43 @@
+# The two faults of two_faults.toml, with settings that differ on one segment.
+# A [segments.<name>] table starts from the global table of the same name and
+# replaces the keys it gives; [segments.<name>.correlation] does the same over the
+# source's correlation table.
+
+seed = 7
+
+[geometry]
+path = "two_faults.geojson"
+crs = "EPSG:2193"
+spacing_km = 0.1
+
+[hypocentre]
+segment = "bent"
+strike_fraction = 0.3
+dip_fraction = 0.5
+
+[medium]
+bottom_depth_km  = [5.0, 15.0, 40.0]
+shear_speed_km_s = [3.0, 3.5, 3.8]
+density_g_cm3    = [2.6, 2.7, 2.8]
+
+[source]
+type = "per_fault"
+magnitudes = { bent = 6.6, next = 6.4 }
+rakes = { bent = 160.0, next = 180.0 }
+
+[propagation]
+type = "likeliest"
+
+[slip]
+bottom_taper = 0.02
+
+# Smoother, more slowly ruptured slip on the second fault, with longer correlation
+# along strike. Every other setting on it is the global one.
+[segments.next.slip]
+coefficient_of_variation = 0.6
+
+[segments.next.speed]
+velocity_fraction = 0.7
+
+[segments.next.correlation]
+strike_offset = 2.2

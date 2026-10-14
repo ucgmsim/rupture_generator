@@ -1,7 +1,7 @@
 # Two faults, the first bent into two planes, ruptured from a hypocentre on the first.
 # Every table but [geometry], [hypocentre], [medium] and [source] is optional;
 # what is left out takes the library's defaults, which `rupture-generator` writes out
-# in full next to the SRF.
+# in full in the SRF's header comments.
 
 seed = 7
 
@@ -32,7 +32,7 @@ type = "sampled"
 bottom_taper = 0.02
 
 # Shallow rise time follows slip's rank order, fading out between 1 and 3 km.
-[profiles.rise_time_slip_weight]
+[rise.slip_weight]
 type = "ramp"
 centre_km = 2.0
 half_width_km = 1.0
@@ -40,7 +40,7 @@ shallow = 0.0
 deep = 1.0
 
 # A slower front in the top few kilometres.
-[profiles.rupture_speed_factor]
+[speed.factor]
 type = "profile"
 depth_km = [5.0, 8.0]
 values = [0.6, 1.0]

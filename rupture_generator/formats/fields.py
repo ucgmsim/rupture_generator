@@ -7,15 +7,16 @@ precision, so the SRF written from a file read back is byte-identical to one wri
 from the draw.
 
 The root group stores the projection as WKT in ``crs``, the hypocentre in
-``hypocentre_segment``, ``hypocentre_strike_km`` and ``hypocentre_dip_km``. Its ``segment`` variable names
-the segments in drawing order, the order the SRF writes them in, and ``parent`` names
-the segment that triggered each one, empty for the hypocentre's. Each segment is a
-group of its own name. Its cell fields are on ``(dip, strike)`` with their units in
-``units``, its chart's nodes on ``(node_dip, node_strike, axis)``, its cell centres on
-``(dip, strike, axis)``, and its three statistics and its pulse's ``dt_s`` in
-attributes.
+``hypocentre_segment``, ``hypocentre_strike_km`` and ``hypocentre_dip_km``. Its
+``segment`` variable names the segments in drawing order, the order the SRF writes
+them in, and ``parent`` names the segment that triggered each one, empty for the
+hypocentre's. Each segment is a group of its own name. Its cell fields are on
+``(dip, strike)`` with their units in ``units``, its chart's nodes on ``(node_dip,
+node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its pulse's
+``dt_s`` and the statistics its models reported in attributes.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,9 +48,10 @@ _FIELDS = {
     "density_g_cm3": "g cm-3",
 }
 """Each cell field of :class:`SegmentRupture`, with its units."""
-_SCALARS = ("alpha_t", "rise_time_mean_s", "onset_scale_s", "dt_s")
-"""Each scalar of :class:`SegmentRupture`, kept as an attribute."""
 _COMPRESSION = {"zlib": True, "complevel": 4}
+
+RECORD_ATTRIBUTE = "run_record"
+"""The root attribute that holds the record of the run that drew the fields."""
 
 
 def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
@@ -74,7 +76,7 @@ def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
     dataset = xr.Dataset(
         variables,
         coords={"axis": _AXIS},
-        attrs={name: getattr(rupture, name) for name in _SCALARS},
+        attrs={"dt_s": rupture.dt_s, **rupture.statistics},
     )
     encoding = {
         str(name): _COMPRESSION
@@ -87,6 +89,8 @@ def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
 def write_fields(
     path: Path | str,
     realisation: Realisation[SegmentRupture],
+    *,
+    attrs: Mapping[str, str | int | float] | None = None,
 ) -> None:
     """Write drawn segments, and what an SRF of them needs, as a DataTree in HDF5.
 
@@ -96,6 +100,8 @@ def write_fields(
         Where to write the file.
     realisation : Realisation of SegmentRupture
         The drawn fault system.
+    attrs : Mapping of str to str, int or float, optional
+        More attributes for the root, such as the run's record.
 
     Raises
     ------
@@ -113,9 +119,12 @@ def write_fields(
         raise RuptureGeneratorError(
             f"{awkward} contain '/', which separates the groups of {path}"
         )
-    attrs: dict[str, str | float] = {"crs": realisation.crs.to_wkt()}
+    root_attrs: dict[str, str | int | float] = {
+        **(attrs or {}),
+        "crs": realisation.crs.to_wkt(),
+    }
     if (hypocentre := realisation.hypocentre) is not None:
-        attrs |= {
+        root_attrs |= {
             "hypocentre_segment": hypocentre.segment,
             "hypocentre_strike_km": hypocentre.strike_km,
             "hypocentre_dip_km": hypocentre.dip_km,
@@ -126,7 +135,7 @@ def write_fields(
             "segment",
             [realisation.tree[name] or "" for name in names],
         )
-    groups: dict[str, xr.Dataset] = {"/": xr.Dataset(variables, attrs=attrs)}
+    groups: dict[str, xr.Dataset] = {"/": xr.Dataset(variables, attrs=root_attrs)}
     encoding: dict[str, dict[str, dict]] = {}
     for name, rupture in realisation.items():
         groups[name], encoding[f"/{name}"] = _segment(rupture)
@@ -157,6 +166,11 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
     OSError
         If reading the file fails.
     """
+    return _read(path)[0]
+
+
+def _read(path: Path | str) -> tuple[Realisation[SegmentRupture], str | None]:
+    """A fields file's drawn system, and its run's record if it has one."""
     import xarray as xr
 
     path = Path(path)
@@ -173,9 +187,14 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
                     plane_cells=tuple(int(n) for n in group["plane_cells"].values),
                 )
                 values: dict[str, Any] = {f: group[f].values for f in _FIELDS}
-                values |= {s: float(group.attrs[s]) for s in _SCALARS}
-                values["beta"] = group["beta"].values if "beta" in group else None
-                segments[name] = SegmentRupture(geometry=geometry, **values)
+                attrs = {k: float(v) for k, v in group.attrs.items()}
+                segments[name] = SegmentRupture(
+                    geometry=geometry,
+                    **values,
+                    dt_s=attrs.pop("dt_s"),
+                    beta=group["beta"].values if "beta" in group else None,
+                    statistics=attrs,
+                )
             parents = (
                 {
                     name: str(parent) or None
@@ -194,15 +213,22 @@ def read_fields(path: Path | str) -> Realisation[SegmentRupture]:
                 else None
             )
             crs = pyproj.CRS.from_wkt(str(root.attrs["crs"]))
+            record = (
+                str(root.attrs[RECORD_ATTRIBUTE])
+                if RECORD_ATTRIBUTE in root.attrs
+                else None
+            )
         except KeyError as error:
             raise RuptureGeneratorError(
                 f"{path} has no {error}; it is not a fields file"
             ) from error
-    return Realisation(segments, crs, hypocentre, parents)
+    return Realisation(segments, crs, hypocentre, parents), record
 
 
 def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     """Write the SRF of the rupture stored in a fields file.
+
+    The SRF's header comments keep the fields file's record of the draw.
 
     Parameters
     ----------
@@ -218,7 +244,18 @@ def fields_to_srf(source: Path | str, destination: Path | str) -> None:
     OSError
         If reading or writing a file fails.
     """
-    write_rupture(str(destination), read_fields(source))
+    realisation, record = _read(source)
+    write_rupture(
+        str(destination),
+        realisation,
+        comments=() if record is None else record.splitlines(),
+    )
 
 
-__all__ = ["SUFFIXES", "fields_to_srf", "read_fields", "write_fields"]
+__all__ = [
+    "RECORD_ATTRIBUTE",
+    "SUFFIXES",
+    "fields_to_srf",
+    "read_fields",
+    "write_fields",
+]

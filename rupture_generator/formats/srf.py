@@ -15,6 +15,7 @@ edge, so the projection's grid convergence never reaches the file.
 import dataclasses
 import itertools
 import secrets
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -172,6 +173,8 @@ def _plane_points(
 def write_rupture(
     path: str | Path,
     realisation: Realisation[SegmentRupture],
+    *,
+    comments: Sequence[str] = (),
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
 
@@ -185,12 +188,15 @@ def write_rupture(
     realisation : Realisation of SegmentRupture
         The drawn fault system, written in its segments' order. Its projection and
         hypocentre locate the planes, and each segment's pulse sets its slip rates.
+    comments : sequence of str, optional
+        The header's comment lines, such as the run's record, one line each.
 
     Raises
     ------
     RuptureGeneratorError
         For a slipping subfault whose rise time rounds to no samples at its segment's
-        ``dt_s``, a ``beta`` outside ``(0, 0.5]``, or points the SRF writer refuses.
+        ``dt_s``, a ``beta`` outside ``(0, 0.5]``, or points or comments the SRF writer
+        refuses.
     OSError
         If writing the file fails.
     """
@@ -208,7 +214,7 @@ def write_rupture(
 
     partial = path.with_name(f".{path.name}.{secrets.token_hex(4)}.partial")
     try:
-        with srf.Writer(partial, planes) as writer:
+        with srf.Writer(partial, planes, comments=comments) as writer:
             for name, rupture in realisation.items():
                 for columns, strike_deg in zip(
                     _plane_slices(rupture.geometry), strikes[name], strict=True

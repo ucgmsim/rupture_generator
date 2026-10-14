@@ -6,7 +6,7 @@ The library is plain data and plain functions, and the usual run is five calls::
               geometry_from_geojson(handle, crs).items()}
     realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
     medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
-    drawn = generate(realisation, medium, sources, RuptureSettings(), seed=seed)
+    drawn = generate(realisation, medium, sources, RuptureModel(), seed=seed)
     write_rupture(path, drawn)
 
 :func:`write_fields` stores the drawn fields instead, a fraction of the SRF's size,
@@ -19,20 +19,16 @@ last 64 covariance embeddings, two per segment, so drawing a fault system of up 
 32 segments again reuses every one. ``sampler.cache_clear()`` releases them.
 """
 
+from importlib.metadata import version
+
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.fields import read_fields, write_fields
 from rupture_generator.formats.srf import write_rupture
 from rupture_generator.geometry import Geometry, Segment, geometry_from_geojson
 from rupture_generator.rupture.generator import (
-    FaultProfiles,
     JumpRule,
-    PulseSettings,
-    RakeSettings,
-    RiseSettings,
-    RuptureSettings,
+    JumpSeed,
     SegmentRupture,
-    SlipSettings,
-    TimingSettings,
     first_arrival,
     generate,
     generate_segment,
@@ -47,6 +43,25 @@ from rupture_generator.rupture.medium import (
     layered_medium,
     ramp_field,
 )
+from rupture_generator.rupture.models import (
+    CorrelatedPerturbation,
+    CorrelatedRise,
+    Drawn,
+    DrawnSlip,
+    GaussianRake,
+    Perturbation,
+    PerturbationModel,
+    PulseSettings,
+    RakeModel,
+    RiseModel,
+    RuptureModel,
+    SegmentContext,
+    ShearFractionSpeed,
+    SlipField,
+    SlipModel,
+    SpeedModel,
+    gaussian_anamorphosis,
+)
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
@@ -59,30 +74,44 @@ from rupture_generator.rupture.source import (
     split_moment,
 )
 
+__version__ = version("rupture-generator")
+"""The installed version, from the latest git tag when it was built."""
+
 __all__ = [
     "MAI_BEROZA",
+    "CorrelatedPerturbation",
+    "CorrelatedRise",
     "CorrelationRelation",
-    "FaultProfiles",
+    "Drawn",
+    "DrawnSlip",
+    "GaussianRake",
     "Geometry",
     "Hypocentre",
     "JumpModel",
     "JumpRule",
+    "JumpSeed",
     "Layers",
     "Medium",
+    "Perturbation",
+    "PerturbationModel",
     "PulseSettings",
-    "RakeSettings",
+    "RakeModel",
     "Realisation",
-    "RiseSettings",
+    "RiseModel",
     "RuptureGeneratorError",
-    "RuptureSettings",
+    "RuptureModel",
     "Segment",
+    "SegmentContext",
     "SegmentRupture",
     "SegmentSource",
-    "SlipSettings",
+    "ShearFractionSpeed",
+    "SlipField",
+    "SlipModel",
     "SpatialField",
-    "TimingSettings",
+    "SpeedModel",
     "constant_field",
     "first_arrival",
+    "gaussian_anamorphosis",
     "generate",
     "generate_segment",
     "geometry_from_geojson",
