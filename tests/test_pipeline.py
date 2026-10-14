@@ -18,6 +18,8 @@ from rupture_generator.rupture.generator import (
     first_arrival,
 )
 from rupture_generator.rupture.propagator import JumpModel
+from rupture_generator.sampling import sampler
+from rupture_generator.sampling.field import SAMPLER_CACHE_SIZE
 
 
 def test_every_segment_carries_its_moment(scenario, ruptures):
@@ -231,3 +233,17 @@ def test_a_jump_draws_apart_from_any_segments_fields(scenario):
     same = _segment_rng(scenario.seed, FIELDS_STREAM, name).random(4)
     assert not np.array_equal(jump, fields)
     assert not np.array_equal(jump, same)
+
+
+def test_a_second_draw_reuses_every_embedding(scenario):
+    sampler.cache_clear()
+    for _ in range(2):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            scenario.settings,
+            seed=scenario.seed,
+        )
+    assert sampler.cache_info().hits == 2 * len(scenario.realisation)
+    assert SAMPLER_CACHE_SIZE >= 2 * 20
