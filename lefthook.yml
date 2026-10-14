@@ -24,5 +24,18 @@ pre-push:
 
     vale:
       # Needs `vale sync` once, to fetch the styles named in .vale.ini.
-      run: vale {push_files}
+      #
+      # The same gate as the Vale workflow: any alert fails, warnings and
+      # suggestions included. Vale itself exits 0 on those, and above 1 only
+      # when it fails to run.
+      run: |
+        alerts=$(vale --output=line {push_files})
+        status=$?
+        if [ "$status" -gt 1 ]; then
+          exit "$status"
+        fi
+        if [ -n "$alerts" ]; then
+          echo "$alerts"
+          exit 1
+        fi
       glob: "*.{py,md,rs}"
