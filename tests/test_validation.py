@@ -22,6 +22,7 @@ from rupture_generator import (
     layered_field,
     ramp_field,
 )
+from rupture_generator.geometry import NSHM_ALIASES
 from rupture_generator.sampling import Marginal
 
 NZTM = pyproj.CRS("EPSG:2193")
@@ -184,6 +185,39 @@ def test_a_section_that_describes_no_fault_is_refused(feature, message):
         section["properties"].update(feature["properties"])
     with pytest.raises(RuptureGeneratorError, match=message):
         _read(section)
+
+
+def test_a_missing_property_names_the_section_and_what_it_has():
+    section = _section()
+    del section["properties"]["dip_deg"]
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"^section 'a' has no 'dip_deg' property; it has \['dip_direction_deg', "
+        r"'lower_depth_km', 'name', 'upper_depth_km'\]$",
+    ):
+        _read(section)
+
+
+def test_a_section_without_a_name_is_named_by_its_id():
+    section = _section(id="AF-1")
+    del section["properties"]["name"]
+    with pytest.raises(
+        RuptureGeneratorError, match=r"^section 'AF-1' has no 'name' property; it has"
+    ):
+        _read(section)
+
+
+def test_a_missing_aliased_property_names_both_spellings():
+    section = _section()
+    del section["properties"]["dip_deg"]
+    with pytest.raises(RuptureGeneratorError, match="no 'dip_deg' or 'DipDeg'"):
+        geometry_from_geojson(
+            io.StringIO(
+                json.dumps({"type": "FeatureCollection", "features": [section]})
+            ),
+            NZTM,
+            aliases=NSHM_ALIASES,
+        )
 
 
 def test_a_trace_of_one_point_is_refused():

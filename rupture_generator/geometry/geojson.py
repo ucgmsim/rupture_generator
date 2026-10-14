@@ -103,18 +103,29 @@ class Segment:
         properties = {
             (aliases or {}).get(key, key): value for key, value in given.items()
         }
+
+        def missing(key: str, section: str) -> RuptureGeneratorError:
+            spellings = [
+                key,
+                *(old for old, new in (aliases or {}).items() if new == key),
+            ]
+            return RuptureGeneratorError(
+                f"{section} has no {' or '.join(map(repr, spellings))} property; it "
+                f"has {sorted(given)}"
+            )
+
         try:
             name = str(properties["name"])
         except KeyError:
-            raise RuptureGeneratorError("a section has no 'name' property") from None
+            identifier = feature.get("id")
+            section = "a section" if identifier is None else f"section {identifier!r}"
+            raise missing("name", section) from None
 
         def number(key: str) -> float:
             try:
                 return float(properties[key])
             except KeyError:
-                raise RuptureGeneratorError(
-                    f"{name}: the section has no {key!r} property"
-                ) from None
+                raise missing(key, f"section {name!r}") from None
             except (TypeError, ValueError) as error:
                 raise RuptureGeneratorError(
                     f"{name}: {key} is {properties[key]!r}, which is not a number"
