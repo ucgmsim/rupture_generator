@@ -1,6 +1,15 @@
-# The Beavan BF15 rupture, converted from a workflow realisation: seven faults, each with
-# its own magnitude, in a predetermined triggering order. Depth profiles as in
-# alpine_hope.toml.
+# The Beavan BF15 rupture of the 2010 Mw 7.1 Darfield earthquake, converted from a
+# workflow realisation: seven faults, each with its own magnitude, in a predetermined
+# triggering order. The fault geometry is Beavan et al.'s geodetic slip model:
+#
+#   Beavan, J., Motagh, M., Fielding, E. J., Donnelly, N. and Collett, D. (2012). Fault
+#   slip models of the 2010-2011 Canterbury, New Zealand, earthquakes from geodetic
+#   data and observations of postseismic ground deformation. New Zealand Journal of
+#   Geology and Geophysics 55(3), 207-221. https://doi.org/10.1080/00288306.2012.697472
+#
+# The parameters are not tuned to match the observations of this earthquake.
+#
+# Depth profiles as in alpine_hope.toml.
 #
 # Gridded at 0.1 km, as the workflow runs it; about four seconds to generate.
 
@@ -163,6 +172,11 @@ Greendale_central = "Greendale_NW_SE"
 Fault_Near_Hororata = "Greendale_NW_SE"
 Greendale_East = "Greendale_central"
 Fault_NE = "Greendale_East"
+
+# The faults cross one another, so each jump starts where the child meets its parent,
+# not only at their edges.
+[propagation.model]
+interior = true
 
 [slip]
 coefficient_of_variation = 0.9

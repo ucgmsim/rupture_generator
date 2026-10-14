@@ -1,5 +1,7 @@
 # A crustal M6.2 on the bent Hope fault: one magnitude for the event, its correlation
 # lengths from Mai & Beroza (2002). Depth profiles as in alpine_hope.toml.
+#
+# The parameters are not tuned to match any observations: this is not a past earthquake.
 
 seed = 1234
 

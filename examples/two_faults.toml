@@ -2,6 +2,8 @@
 # Every table but [geometry], [hypocentre], [medium] and [source] is optional;
 # what is left out takes the library's defaults, which `rupture-generator` writes out
 # in full in the SRF's header comments.
+#
+# The parameters are not tuned to match any observations: this is not a past earthquake.
 
 seed = 7
 

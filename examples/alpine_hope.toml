@@ -1,10 +1,22 @@
-# The Alpine-Hope joint rupture (Rupture 71072), converted from a workflow realisation.
+# The Alpine-Hope joint rupture (Rupture 71072) of the 2022 New Zealand National Seismic
+# Hazard Model, converted from a workflow realisation. A scenario rather than a past
+# earthquake: the rupture is one of the hazard model's inversion rupture set, on fault
+# sections of the New Zealand Community Fault Model v1.0.
+#
+#   Gerstenberger, M. C. et al. (2024). The Seismicity Rate Model for the 2022 Aotearoa
+#   New Zealand National Seismic Hazard Model. Bulletin of the Seismological Society
+#   of America 114(1), 182-216. https://doi.org/10.1785/0120230165
+#   Seebeck, H. et al. (2024). The New Zealand Community Fault Model - version 1.0: an
+#   improved geological foundation for seismic hazard modelling. New Zealand Journal
+#   of Geology and Geophysics 67(2), 209-229. https://doi.org/10.1080/00288306.2023.2181362
 #
 # Twenty faults, each with a magnitude of its own; together Mw 8.31. The source is
 # `per_fault` because the hazard model already decided how the moment divides between
 # them. The propagation is predetermined for the same reason: the hazard model chose
 # which fault triggers which. The jump *points* are not carried across -- this
 # generator finds them from the solved wavefront.
+#
+# The parameters are not tuned to match any observations: this is not a past earthquake.
 #
 # The depth profiles are ramps: rise time doubled above 5 km and below 20 km, the
 # front slowed to 0.6 over the same ramps, shallow rise time tied to slip above 3 km,

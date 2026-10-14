@@ -1,8 +1,30 @@
-# Colombia Mw 7.4, a single intermediate-depth plane (97-109 km). The correlation
-# relation is Mai & Beroza's, spelled out. The depth profiles' shallow ramps end at
-# 8 km and their deep ramps start at 197.5 km, so they are flat across the fault.
+# The 2026-08-10 Mw 7.4 intermediate-depth earthquake 4 km SSW of San Jose del Palmar,
+# Colombia, on the plane of the USGS finite-fault model for us6000tjl2 (version 1,
+# 2026-08-14): https://earthquake.usgs.gov/earthquakes/eventpage/us6000tjl2/finite-fault
 #
-# Gridded at 0.1 km, as the workflow runs it; about five seconds to generate.
+# The finite-fault model's inversion grid, 150 x 66 km striking 225.6 and dipping 71.8,
+# reaches well past where the earthquake slipped. The plane is that grid trimmed as
+# Somerville et al. (1999) trim one, with source_modelling's trim_dims_somerville:
+# rows and columns at the grid's edges go while their mean slip is under 30% of the
+# remaining grid's.
+#
+#   Somerville, P. et al. (1999). Characterizing crustal earthquake slip models for the
+#   prediction of strong ground motion. Seismological Research Letters 70(1), 59-80.
+#   https://doi.org/10.1785/gssrl.70.1.59
+#
+# That keeps 6 to 30 km down dip, but the model's hypocentre is 45 km down dip, below
+# the patch that slipped. So the plane runs on down to include the hypocentre's row:
+# 102 x 42 km, from 88.9 to 128.8 km deep. The trace is its top edge. The hypocentre is
+# the model's, 15 km along strike and 39 km down dip on the trimmed plane, and the rake
+# is the kept subfaults' moment-weighted mean.
+#
+# The parameters are not tuned to match the observations of this earthquake.
+#
+# The correlation relation is Mai & Beroza's, spelled out. The depth profiles' shallow
+# ramps end at 8 km and their deep ramps start at 197.5 km, so they are flat across the
+# fault.
+#
+# Gridded at 0.1 km, as the workflow runs it; about three seconds to generate.
 
 seed = 45876
 
@@ -13,8 +35,8 @@ spacing_km = 0.1
 
 [hypocentre]
 segment = "fault"
-strike_km = 52.85
-dip_km = 8.7
+strike_km = 15.0
+dip_km = 39.0
 
 [medium]
 bottom_depth_km = [
@@ -78,7 +100,7 @@ density_g_cm3 = [
 [source]
 type = "finite"
 magnitude = 7.4
-rake_deg = 162.38
+rake_deg = 50.54
 
 [source.correlation]
 strike_exponent = 0.5

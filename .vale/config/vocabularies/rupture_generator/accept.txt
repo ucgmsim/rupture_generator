@@ -36,3 +36,14 @@ Beavan
 [Mm]etres?
 [Kk]ilometres?
 [Cc]entimetres?
+Darfield
+Mw
+Charing
+pytest
+config
+Heaton
+Hudnut
+Gerstenberger
+Seebeck
+Somerville
+Catia

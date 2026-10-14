@@ -1,76 +1,176 @@
-# rupture-generator
+<!-- vale Google.Headings = NO -->
+# Rupture Generator
+<!-- vale Google.Headings = YES -->
+
+![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
+
+*One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake on the seven
+faults of [Beavan et al. (2012)](https://doi.org/10.1080/00288306.2012.697472),
+gridded at 0.1 km and seen from the south at true scale. Darker is more slip, and the
+black lines are the rupture front every five seconds. The rupture starts on the
+Charing Cross fault and triggers the other six in a fixed order, each drawing its own
+slip field and scaling it to its own magnitude. `just hero` draws it again.*
 
 Kinematic rupture models for ground-motion simulation. Given a fault system and its
 magnitudes, the generator draws a slip distribution and works out when each subfault
-starts and how long it slips for. The result is an SRF.
+starts and how long it slips for. The result is an SRF, or a smaller file of the
+fields that makes the same SRF later.
 
-A port and rework of `genslip` v5.6.2.
+<!-- vale Google.Acronyms = NO -->
+Built on the Graves and Pitarka generator
+([2010](https://doi.org/10.1785/0120100057),
+[2015](https://doi.org/10.1785/0220140101),
+[2016](https://doi.org/10.1785/0120160088)), loosely based on the
+[SCEC BBP platform](https://github.com/SCECcode/bbp).
+<!-- vale Google.Acronyms = YES -->
 
-## Install
+---
+
+## Build
+
+The hot kernels are a Rust extension, built with
+[setuptools-rust](https://github.com/PyO3/setuptools-rust). Requires Python 3.14 or
+newer and a stable Rust toolchain.
 
 ```sh
-uv sync                 # builds the Rust kernels as part of the install
-uv sync --extra vis     # adds the 3-D viewer
+uv sync                 # creates a venv and builds the Rust extension
+uv sync --all-extras    # everything below too
 ```
 
-The build needs a Rust toolchain. `setuptools-rust` drives `cargo` from
-`pyproject.toml`.
+| Extra   | Installs                      | Needed for              |
+|---------|-------------------------------|-------------------------|
+| `vis`   | rerun-sdk                     | `rupture-view`          |
+| `test`  | pytest, hypothesis            | the test suite          |
+| `bench` | pytest-benchmark              | `just bench`            |
 
-## Use
+---
 
-A rupture is one TOML file next to a GeoJSON fault system.
+## Quick start
 
 ```sh
-# A rupture file in, an SRF out. The SRF's header comments record the run: the
-# config, every default included, and the software and inputs it ran with.
-rupture-generator examples/alpine_hope.toml alpine_hope.srf
-
-# Watch it happen (needs the `vis` extra), or save a Rerun recording instead.
-rupture-view alpine_hope.srf
-rupture-view alpine_hope.srf --save alpine_hope.rrd
+uv run rupture-generator examples/alpine_hope.toml alpine_hope.srf
+uv run rupture-view alpine_hope.srf
 ```
 
-The examples under `examples/` include the Landers, Northridge, and Colombia
-earthquakes, the Beavan and Alpine-Hope workflow realisations, and two small systems
-for testing. All run at 0.1 km except Alpine-Hope, which runs at 0.25 km to generate
-in about ten seconds. At 0.1 km it takes about a minute and writes an SRF of
-8.9 GB. `examples/from_realisation.py` converts a workflow
-`realisation.json` into the same pair of files.
+A rupture is one TOML file next to a GeoJSON fault system. The SRF's header comments
+record the run: the config with every default written out, and the software and
+inputs it ran with.
 
-From Python, the usual run is five calls:
+`examples/` holds past earthquakes and hazard-model scenarios, each with the source
+of its fault geometry. Their parameters are illustrative: no example tunes them to
+match the observations of its earthquake.
+
+| Example            | Rupture                                  | Geometry from                                                                                                                                                            |
+|--------------------|------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `landers.toml`     | 1992 Mw 7.28 Landers earthquake          | [Wald and Heaton (1994)](https://doi.org/10.1785/BSSA0840030668), SRCMOD s1992LANDER01WALD                                                                               |
+| `northridge.toml`  | 1994 Mw 6.8 Northridge earthquake        | [Wald, Heaton and Hudnut (1996)](https://doi.org/10.1785/BSSA08601BS49), SRCMOD s1994NORTHR01WALD                                                                       |
+| `beavan.toml`      | 2010 Mw 7.1 Darfield earthquake          | [Beavan et al. (2012)](https://doi.org/10.1080/00288306.2012.697472)                                                                                                     |
+| `colombia.toml`    | 2026 Mw 7.4 San José del Palmar, Colombia, earthquake, intermediate depth | USGS finite-fault model [us6000tjl2](https://earthquake.usgs.gov/earthquakes/eventpage/us6000tjl2/finite-fault), trimmed with [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
+| `venezuela.toml`   | 2026 Mw 7.5 Catia La Mar, Venezuela, earthquake | USGS finite-fault model [us6000t7zp](https://earthquake.usgs.gov/earthquakes/eventpage/us6000t7zp/finite-fault), trimmed with  [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
+| `alpine_hope.toml` | Alpine-Hope Mw 8.31 scenario, rupture 71072 of the 2022 NZ NSHM | [Gerstenberger et al. (2024)](https://doi.org/10.1785/0120230165), on the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
+
+`crustal.toml` is a scenario Mw 6.2 on the Hope fault, and `two_faults.toml` and
+`two_faults_segments.toml` are small made-up systems for testing.
+
+`examples/from_realisation.py` converts a [workflow](https://github.com/ucgmsim/workflow) `realisation.json` into inputs for this repository.
+
+---
+
+## Command line
+
+| Command                                   | Effect                                            |
+|-------------------------------------------|---------------------------------------------------|
+| `rupture-generator rupture.toml out.srf`  | Draw a rupture and write its SRF                  |
+| `rupture-generator rupture.toml out.h5`   | Draw a rupture and write its fields, `.h5` or `.nc` |
+| `rupture-generator fields.h5 out.srf`     | Write the SRF of a stored draw                     |
+| `rupture-view out.srf`                    | Watch the rupture in Rerun, with the `vis` extra  |
+| `rupture-view out.srf --save out.rrd`     | Save a Rerun recording instead                    |
+
+A fields file is a fraction of the SRF's size because it doesn't contain full
+slip time functions and instead describes the functional form of the slip time
+function at each point.
+
+The rupture viewer can be used to see an interactive 3D visualisation of a generated rupture.
+
+![The Rerun viewer at the end of the Venezuela example: final slip on its two segments, beside the rupture's statistics, its slip histogram and its moment rate](docs/images/rupture_viewer.png)
+
+*`rupture-view` on the Venezuela example, the two segments of the 2026 Mw 7.5 Catia
+La Mar earthquake's finite-fault model, 86.5 s in, once every subfault has slipped.
+Slip builds up on `hot` as each subfault's pulse runs, while the panels on the left
+give the rupture's statistics, the distribution of slip so far, and the moment rate.
+The tabs switch the fault to onset, pulse duration, or rake. Rupture parameters in
+this scenario are illustrative only and not fit to the actual event.*
+
+---
+
+## Configuration
+
+Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optional.
+
+| Table                                                     | Sets                                                                                                                                          |
+|-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| `seed`                                                    | Rupture realisation seed.                                                                                                                     |
+| `[geometry]`                                              | Path to GeoJSON source definition, its projected CRS, and the grid spacing.                                                                   |
+| `[hypocentre]`                                            | Location of hypocentre.                                                                                                                       |
+| `[medium]`                                                | A 1-D velocity model: layer bottoms, shear speed, density. More complex media (e.g. 3D velocity models) are expressed through the python API. |
+| `[source]`                                                | `per_fault` magnitudes and rakes, or one `finite` magnitude split.                                                                            |
+| `[propagation]`                                           | Which fault triggers which: `predetermined`, `sampled`, `likeliest`.                                                                          |
+| `[slip]`, `[rise]`, `[rake]`, `[speed]`, `[perturbation]` | Each field model's settings.                                                                                                                  |
+| `[pulse]`                                                 | Slip-rate sampling and shape parameters.                                                                                                      |
+| `[segments.<name>]`                                       | Per-segment rupture field models.                                                                                                     |
+
+Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
+or `profile` tables.
+
+---
+
+## Python API
+
+The Python API can be used to generate more complex ruptures. A typical invocation looks like,
 
 ```python
+# Define the geometry (or "charts") for each rupture segment.
 charts = {
     name: chart.subdivide(0.1)
     for name, chart in geometry_from_geojson(handle, crs).items()
 }
+# Sample a rupture path from the realisation. Realisation is an abstract
+# description of a rupture at this point without sampled fields.
 realisation = sample_path(Realisation(charts, crs), hypocentre, rng=rng)
+# Define a medium, which defines the functions that are called to sample Vs and density.
 medium = layered_medium(Layers(bottom_depth_km), shear_speed_km_s, density_g_cm3)
+# Sample all rupture fields on the realisation using the default
+# ``RuptureModel``. Complex cases can inject functions to override slip, rise,
+# rake, or rupture timing perturbation, as well as the Eikonal solver.
 ruptures = generate(realisation, medium, sources, RuptureModel(), seed=seed)
 write_rupture(path, ruptures)
 ```
 
-`rupture_generator.config` builds the same inputs from a TOML file.
+### Extending
 
-## Extending
+A `RuptureModel` is five field models: `slip`, `rise`, `rake`, `speed` and
+`perturbation`, the onset's displacement off the coherent front. Each is any
+callable with the arguments its protocol in `rupture_generator.rupture.models`
+states. The defaults are the Graves & Pitarka model, which the TOML file
+configures. Its `pulse` holds the slip-rate sample interval and the pulse's
+rising fraction, which every segment's SRF rows follow.
 
-A `RuptureModel` is five models, one per field: `slip`, `rise`, `rake`, `speed` and
-`perturbation`, the onset's displacement off the coherent front. Each is any callable
-with the arguments its protocol in `rupture_generator.rupture.models` states. The
-defaults are the Graves & Pitarka model, which the TOML file configures. Any other
-model comes in through the library. Its `pulse` holds the slip-rate sample
-interval and the pulse's rising fraction, which every segment's SRF rows follow.
+The generator hands each model a `SegmentContext`, the geometry, source and
+media, and an independent RNG stream. The generator checks what each model
+returns and computes the moment from the slip. It also solves the front and
+blends the rupture perturbations in. It refuses a slip whose moment magnitude
+lies more than 0.05 from the source's.
 
-The generator hands each model a `SegmentContext`, the chart, source and rock, and
-a generator of its own. Replacing one model never changes the draws of any other.
-The generator checks what each model returns and computes the moment from the slip.
-It also solves the front and blends the displacement in. It refuses a slip whose
-moment magnitude lies more than 0.05 from the source's.
+The underlying assumptions from the Graves and Pitarka method enter via latent fields under the NORTA framework. The slip latent distribution is used to correlate to the other fields. 
 
-Slip's latent field is the one link between models. Rise time and the displacement
-mix their own draws into it, at a Gaussian-copula correlation. Any slip gets such a
-latent from `gaussian_anamorphosis`, so a slip from elsewhere, such as an inversion,
-keeps its values, and the other models draw rise time, rake and onset around it:
+![Slip, rise time, rupture time and rake on one fault, with rise time and rupture time each shown as a share of slip plus independent noise](docs/images/slip_rise_rake.png)
+
+*How the fields compose. Rise time is a share of slip plus independent noise with
+slip's von Kármán spectrum, and rupture time adds both to the eikonal solution. Rake
+draws from the same spectrum, independent of slip. The correlations are
+illustrative, not the generator's defaults.*
+
+As an example of extending this rupture generator, lets implement a prescribed slip field to the model. To do this we must implement a `SlipField` that returns the given slip, in metres, and the _derived_ latent distribution by Gaussian anamorphosis. A helper for this is implemented in `gaussian_anamorphosis`.
 
 ```python
 import dataclasses
@@ -96,7 +196,7 @@ class GivenSlip:
         )
 ```
 
-One model serves every segment, or a mapping gives each segment its own:
+You can then inject this given slip model, either to every fault, or to a specific fault in the rupture and let the rupture generator run the other faults.
 
 ```python
 models = {name: RuptureModel() for name in realisation}
@@ -104,135 +204,11 @@ models["alpine"] = RuptureModel(slip=GivenSlip(inverted_slip_m))
 ruptures = generate(realisation, medium, sources, models, seed=seed)
 ```
 
-## Design
+All other fields can be modified in the same manner.
 
-**One geometry type.** A fault segment is a `Geometry`: a structured `(i, j)` grid of
-node positions in a projected CRS, `i` down dip and `j` along strike. A segment hung
-from a bent trace is several planes side by side. Each plane has a separate column of
-nodes at its edge, so two planes meet along the trace and part below it, as a fault
-does at a kink. Centres,
-areas, dips and arc lengths derive from the nodes, so nothing can go stale.
+---
 
-**Fault systems come from GeoJSON.** Each `Feature` is a section: a trace, one dip,
-a dip direction, and a depth range. That's the `simpleFaultSource` data model of
-OpenQuake and of the New Zealand, GEM and USGS hazard models, so a hazard model's
-file loads directly and opens in QGIS.
-
-**The rock is a function of position.** A `Medium` holds shear speed and density as
-`SpatialField`s: deterministic functions from positions `(..., 3)` to values `(...)`.
-A segment reads the medium at its cell centres, and a jump reads it along the line it
-crosses. A 1-D velocity model is `layered_medium`, and a caller can pass any other
-field, a 3D model or a random medium realised up front. The settings the rupture
-itself varies with depth, such as rise-time and rupture-speed factors, belong to the
-model that uses them. In TOML these are the `[medium]` table, and the `factor` and
-`slip_weight` profiles of the `[rise]` and `[speed]` tables.
-
-**One field sampler.** Slip, rise time, rake and the onset displacement all come from
-one circulant-embedding sampler over a von Kármán covariance, as in Mai & Beroza 2002.
-NORTA fits each field's *marginal* exactly, rather than rescaling a Gaussian, and
-pre-corrects the covariance so that the configured correlation length applies to the
-written field rather than to the latent one. genslip's `1 + cov * Z` clipped at zero
-is a normal with a point mass at zero, and matches neither the mean nor the spread its
-configuration asks for. Rise time and the onset displacement correlate with slip because
-they share its latent field. Their correlations are between the latent fields, a Gaussian
-copula, so they mean the same thing whatever slip's marginal is.
-
-**A coherent front first, roughness after.** A factored fast-sweeping
-eikonal solve gives first arrivals over the rupture speed field, `|grad T| = 1/v`,
-with its minimum at the seed. A slip-correlated displacement in seconds is then
-added. Seconds are the unit because the spread of rupture-time heterogeneity is the
-quantity calibrated against recorded ground motion. That spread follows each
-segment's own moment:
-
-    sigma = offset_s + coefficient * 1e-9 * M0^(1/3)
-
-with `M0` in dyne-centimetres, the units the published coefficient uses. The defaults
-are the magnitudes of genslip's `tsfac_bzero` and `tsfac_slope` as the production
-workflow sets them.
-
-**The displacement blends in from the seed.** genslip adds it raw. Its earliest
-subfault is then whichever patch drew the deepest dip rather than the hypocentre, and
-subfaults start before the front arrives at them. Here the displacement grows in with
-time since the seed:
-
-    tau   = travel - seed_time
-    blend = min(1, tau / (n * sigma))                  # n = blend_sigma, 4
-    clamp = min(1, tau / (c * max(-displacement, 0)))  # per cell, c = 1.05
-    onset = travel + min(blend, clamp) * displacement
-
-The blend is the model, a zone of `n` sigma over which roughness accumulates. The
-clamp is arithmetic: per cell, no subfault starts before the front that seeded it, and
-one deep dip doesn't delay the rest of the fault. The seed keeps its time exactly,
-because both terms are zero there.
-
-**The rupture speed has two branches.** In-plane rupture has no steady solution
-between the Rayleigh speed and the shear speed. The speed fraction runs
-sub-Rayleigh up to `0.9194 Vs`, or supershear from `Vs` to `sqrt(2) Vs`, with the
-forbidden zone skipped by a shift rather than clipped into. genslip clips onto the
-whole interval `[0.25, 1.414]`, forbidden zone included.
-
-**Faults trigger each other through a tree.** Every segment except the first has one
-triggering parent. A rupture file states the tree, or the generator draws one or
-takes the likeliest under the Shaw & Dieterich 2007 jump model, where the chance of
-crossing a gap decays with its width. Drawing uses Wilson's algorithm, and the likeliest tree is
-a maximum spanning tree.
-
-**A jump crosses as an S wave.** Each of the child's edge cells pairs with its
-nearest parent cell. Its trigger time is the front's arrival at that parent cell plus
-the shear-wave travel time across the gap, integrated through the medium. Pairing from
-the parent's side instead would let a wave from far up the parent outrun the front,
-since the shear speed is faster than the rupture speed along any straight line. The
-Shaw & Dieterich model, read as a survival function, sets the jump's range: one draw
-per jump from its own random stream, conditioned on the tree having crossed the
-nearest gap. The earliest trigger time within that range is the child's seed.
-
-**Each segment draws from its own stream.** A segment's random generator derives from
-the event seed and the segment's name. Adding, removing, or reordering segments leaves
-every other segment's fields bit-identical, and so does changing how fronts jump.
-Within a segment, each model draws from a stream of its own, so replacing one
-model leaves every field that doesn't read it bit-identical.
-
-**SI throughout.** The package works in metres for slip, newton-metres for moment
-and square metres for area. The SRF format's centimetres appear only in
-`formats/srf.py`.
-
-**Rust for the hot kernels.** `_kernels` exposes the eikonal solve, the slip-rate
-pulse synthesis and the circulant-embedding draw. They're stateless functions of
-arrays, and the defaults they use come from Python. Orchestration, configuration,
-geometry, and file handling are Python too. The SRF codec is a separate library,
-[`ucgmsim/srf`](https://github.com/ucgmsim/srf).
-
-**Errors say which kind of wrong.** Everything this package refuses on purpose raises
-`RuptureGeneratorError`. The command line reports that as a message and lets anything
-else raise, so a bug in the generator never looks like a mistake in your file.
-
-```
-rupture_generator/
-  cli.py              rupture-generator: a rupture file in, an SRF out
-  config.py           The TOML schema, and building the library's inputs from it
-  errors.py           What this package raises
-  view.py             rupture-view: the rupture in Rerun
-  geometry/
-    geometry.py       Geometry: the chart, its cells and distances between charts
-    geojson.py        GeoJSON sections into charts
-  rupture/
-    generator.py      One segment's draw, the front, and the jump rule
-    models.py         The five models' protocols, and Graves & Pitarka's defaults
-    medium.py         Medium, SpatialField and the 1-D velocity model
-    propagator.py     The jump model, and which fault triggers which
-    realisation.py    A fault system: charts, CRS, hypocentre and tree
-    source.py         Magnitude, moment, rake and correlation lengths per segment
-  sampling/
-    field.py          Gaussian fields by circulant embedding
-    norta.py          Exact marginals, and the latent correlation behind them
-    von_karman.py     The von Kármán correlation function
-  formats/
-    srf.py            SRF 2.0 written and read, over ucgmsim/srf
-crates/
-  kernels/            eikonal_solve, synthesise_pulses, circulant_draw
-```
-
-## Development
+## Testing
 
 ```sh
 just test     # pytest, doctests, and the Rust suites
@@ -240,19 +216,20 @@ just lint     # ty, ruff, clippy, numpydoc
 just bench    # the kernels, and every example end to end with its peak RSS
 ```
 
-The benchmarks use pytest-benchmark. CI runs them on every pull request, against
-the base branch's own suite when it has one, and posts the comparison to the pull
-request.
-
 Tests state properties wherever one exists to state, with Hypothesis on the Python
 side and `proptest` on the Rust side. Numbers quoted in docstrings are measurements,
-and tests assert the ones that constrain behaviour.
+and tests assert the ones that constrain behaviour. CI runs the benchmarks on every
+pull request against the base branch and posts the comparison.
+
+---
 
 ## Known limits
 
 - The sampler refuses a grid whose circulant embedding exceeds
   `sampling.field.MAXIMUM_EMBEDDING_CELLS`, 134 million padded cells.
 - Jumps cross along a straight line. A shear wave in a layered medium bends, and
-  can arrive sooner along a fast layer than along the chord.
-- The wavefront sweeps the chart's index grid, so on a curved or tapered chart the
-  travel paths follow the grid's own metric rather than the fault's real geometry.
+  can arrive sooner along a fast layer than along the chord. Ray traced jumps
+  are a planned addition.
+- The plumbing for curved rupture exists but is as-yet unimplemented. This is implemented in an upcoming release.
+- Aspects of the Graves and Pitarka method aren't yet implemented. The main
+  holdout is roughness which is implemented in an upcoming release.

@@ -1,0 +1,160 @@
+# The 2026-06-24 Mw 7.5 earthquake 20 km W of Catia La Mar, Venezuela, on the two
+# planes of the USGS finite-fault model for us6000t7zp (version 1, 2026-07-27):
+# https://earthquake.usgs.gov/earthquakes/eventpage/us6000t7zp/finite-fault
+#
+# The finite-fault model has two segments end to end along the coast, 60 km striking 81
+# and 200 km striking 86.1, both dipping 78 to the south from 0.22 to 43.3 km deep.
+# Its inversion grid reaches well past where the earthquake slipped, so each segment is
+# trimmed as Somerville et al. (1999) trim one, with source_modelling's
+# trim_dims_somerville: rows and columns at the grid's edges go while their mean slip is
+# under 30% of the remaining grid's.
+#
+#   Somerville, P. et al. (1999). Characterizing crustal earthquake slip models for the
+#   prediction of strong ground motion. Seismological Research Letters 70(1), 59-80.
+#   https://doi.org/10.1785/gssrl.70.1.59
+#
+# The first segment keeps 10 to 60 km along strike and 8.8 to 35.2 km down dip (50 x
+# 26.4 km, 8.8 to 34.7 km deep), and the second its whole length and the top 35.2 km
+# (200 x 35.2 km, 0.22 to 34.7 km deep). Each trace is its trimmed segment's top edge,
+# placed from the inversion's top row of subfaults: the model's "top-center"
+# coordinates are each segment's east end.
+#
+# Each segment's magnitude is its whole moment in the model (Mw 6.99 and 7.49, together
+# Mw 7.54), and its rake the kept subfaults' moment-weighted mean. The hypocentre is the
+# model's, on the first segment 15 km along strike and 13.2 km down dip of the trimmed
+# plane, and the rupture runs east from it. The velocity model is the model's, its depth
+# column read as layer tops.
+#
+# The parameters are not tuned to match the observations of this earthquake.
+#
+# Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 0.1 km, about four
+# seconds to generate.
+
+seed = 20260624
+
+[geometry]
+path = "venezuela.geojson"
+crs = "EPSG:2202"
+spacing_km = 0.1
+
+[hypocentre]
+segment = "Segment 1"
+strike_km = 15.0
+dip_km = 13.2
+
+[medium]
+bottom_depth_km = [
+    2.002,
+    3.148,
+    12.914,
+    24.318,
+    36.249,
+    232.249,
+    1000.0,
+]
+shear_speed_km_s = [
+    1.15,
+    2.25,
+    3.6,
+    3.89,
+    4.32,
+    4.473,
+    4.657,
+]
+density_g_cm3 = [
+    2.0385,
+    2.2815,
+    2.7196,
+    2.8506,
+    3.0023,
+    3.3754,
+    3.4465,
+]
+
+[source]
+type = "per_fault"
+magnitudes = { "Segment 1" = 6.99, "Segment 2" = 7.49 }
+rakes = { "Segment 1" = -174.76, "Segment 2" = -178.13 }
+
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+"Segment 2" = "Segment 1"
+
+[source.correlation]
+strike_exponent = 0.5
+strike_offset = 2.5
+dip_exponent = 0.3333333333333333
+dip_offset = 1.5
+
+[slip]
+coefficient_of_variation = 0.9
+side_taper = 0.02
+top_taper = 0.0
+bottom_taper = 0.0
+
+[rise]
+coefficient = 1.6
+correlation = 0.9
+slip_exponent = 0.5
+coefficient_of_variation = 0.75
+
+[rise.factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    2.0,
+    1.0,
+    1.0,
+    2.0,
+]
+
+[rise.slip_weight]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.0
+deep = 1.0
+
+[rake]
+sigma_deg = 15.0
+
+[speed]
+velocity_fraction = 0.8
+
+[speed.factor]
+type = "profile"
+depth_km = [
+    5.0,
+    8.0,
+    15.0,
+    20.0,
+]
+values = [
+    0.6,
+    1.0,
+    1.0,
+    0.6,
+]
+
+[perturbation]
+offset_s = 0.1
+coefficient = 0.5
+correlation = 0.8
+blend_sigma = 4.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13
