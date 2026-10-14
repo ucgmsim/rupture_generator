@@ -77,6 +77,21 @@ def test_a_bad_file_names_the_key_at_fault(tmp_path, old, new, message):
             'segment = "bnt"',
             "hypocentre.segment: 'bnt' is not one of",
         ),
+        (
+            'crs = "EPSG:2193"',
+            'crs = ""',
+            "geometry.crs: a projected CRS in metres is required",
+        ),
+        (
+            'crs = "EPSG:2193"',
+            'crs = "EPSG:2227"',
+            "geometry.crs: EPSG:2227 .* US survey foot",
+        ),
+        (
+            'crs = "EPSG:2193"',
+            'crs = "EPSG:32612"',
+            "EPSG:32612 .* the faults 'bent', 'next' lie outside it",
+        ),
     ],
 )
 def test_parts_that_do_not_fit_are_refused_when_built(old, new, message):

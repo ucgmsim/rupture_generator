@@ -22,6 +22,7 @@ from rupture_generator import (
     layered_field,
     ramp_field,
 )
+from rupture_generator.geometry import NSHM_ALIASES
 from rupture_generator.sampling import Marginal
 
 NZTM = pyproj.CRS("EPSG:2193")
@@ -186,6 +187,39 @@ def test_a_section_that_describes_no_fault_is_refused(feature, message):
         _read(section)
 
 
+def test_a_missing_property_names_the_section_and_what_it_has():
+    section = _section()
+    del section["properties"]["dip_deg"]
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"^section 'a' has no 'dip_deg' property; it has \['dip_direction_deg', "
+        r"'lower_depth_km', 'name', 'upper_depth_km'\]$",
+    ):
+        _read(section)
+
+
+def test_a_section_without_a_name_is_named_by_its_id():
+    section = _section(id="AF-1")
+    del section["properties"]["name"]
+    with pytest.raises(
+        RuptureGeneratorError, match=r"^section 'AF-1' has no 'name' property; it has"
+    ):
+        _read(section)
+
+
+def test_a_missing_aliased_property_names_both_spellings():
+    section = _section()
+    del section["properties"]["dip_deg"]
+    with pytest.raises(RuptureGeneratorError, match="no 'dip_deg' or 'DipDeg'"):
+        geometry_from_geojson(
+            io.StringIO(
+                json.dumps({"type": "FeatureCollection", "features": [section]})
+            ),
+            NZTM,
+            aliases=NSHM_ALIASES,
+        )
+
+
 def test_a_trace_of_one_point_is_refused():
     section = _section()
     section["geometry"]["coordinates"] = [[172.0, -42.0]]
@@ -291,6 +325,65 @@ def test_a_realisation_needs_a_fault_in_a_projected_frame():
         Realisation({}, NZTM)
     with pytest.raises(RuptureGeneratorError, match="not a projected CRS"):
         Realisation({"a": _plane()}, pyproj.CRS("EPSG:4326"))
+    with pytest.raises(RuptureGeneratorError, match="US survey foot"):
+        Realisation({"a": _plane()}, pyproj.CRS("EPSG:2227"))
+
+
+# ------------------------------------------------------------------------ crs
+
+
+@pytest.mark.parametrize(
+    ("crs", "message"),
+    [
+        (None, "a projected CRS in metres is required"),
+        ("", "a projected CRS in metres is required"),
+        ("nonsense", "'nonsense' is not a CRS"),
+        ("EPSG:4326", "EPSG:4326 .* is not a projected CRS"),
+        ("EPSG:2227", "EPSG:2227 .* measures its axes in US survey foot"),
+    ],
+)
+def test_a_crs_that_is_not_projected_in_metres_is_refused(crs, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        geometry_from_geojson(
+            io.StringIO(json.dumps({"type": "FeatureCollection", "features": []})), crs
+        )
+
+
+def _utah():
+    section = _section(properties={"name": "wasatch", "dip_direction_deg": 270.0})
+    section["geometry"]["coordinates"] = [[-111.9, 40.7], [-111.8, 40.9]]
+    return {"type": "FeatureCollection", "features": [section]}
+
+
+def test_a_crs_made_for_elsewhere_is_refused():
+    # NZTM would build Utah's faults half as big again, without a word.
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"EPSG:2193 .* is made for longitude 166.37 to 178.63 .* the faults "
+        r"'wasatch' lie outside it, at longitude -111.9 to -111.8 .* EPSG:32612",
+    ):
+        geometry_from_geojson(io.StringIO(json.dumps(_utah())), NZTM)
+    charts = geometry_from_geojson(io.StringIO(json.dumps(_utah())), "EPSG:32612")
+    assert set(charts) == {"wasatch"}
+
+
+def test_a_crs_that_stretches_the_faults_is_refused():
+    # Web Mercator covers the world, and stretches lengths by a third at 42 S.
+    with pytest.raises(RuptureGeneratorError, match="stretches lengths by up to 3"):
+        geometry_from_geojson(
+            io.StringIO(
+                json.dumps({"type": "FeatureCollection", "features": [_section()]})
+            ),
+            "EPSG:3857",
+        )
+
+
+def test_an_offshore_fault_near_the_area_of_use_is_accepted():
+    section = _section()
+    # 0.8 degrees west of NZTM's area of use, like the Puysegur end of the Alpine
+    # fault.
+    section["geometry"]["coordinates"] = [[165.55, -46.0], [165.6, -45.9]]
+    assert set(_read(section)) == {"a"}
 
 
 def test_a_hypocentre_off_the_fault_is_refused():
