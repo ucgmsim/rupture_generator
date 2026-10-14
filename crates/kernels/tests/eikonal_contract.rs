@@ -1,10 +1,10 @@
 //! What any first-arrival solver must satisfy, whatever scheme it uses.
 //!
-//! Taken from the port's contract and made generative. Every property below quantifies
-//! over generated grid shapes, spacings, slowness fields and seed sets, because a
-//! property asserted at one point is only a smoke test. The accuracy tests compare
-//! against **analytic truth** on the two media whose truth has a closed form (uniform,
-//! and a constant gradient), never against another solver.
+//! Every property below quantifies over generated grid shapes, spacings, slowness
+//! fields and seed sets, because a property asserted at one point is only a smoke
+//! test. The accuracy tests compare against **analytic truth** on the two media whose
+//! truth has a closed form (uniform, and a constant gradient), never against another
+//! solver.
 //!
 //! # Asserted properties, and properties deliberately left out
 //!
@@ -304,7 +304,8 @@ fn gradient_slowness(cells: usize, h: f64, v0: f64, g: f64) -> Vec<f64> {
 /// with `d` the straight-line distance and `v₁`, `v₂` the speeds at the two
 /// endpoints. It depends on the endpoints' *depths* only through their speeds, not
 /// on the path, which makes it usable as a per-cell reference. It's an analytic
-/// solution rather than a second copy of the code under test (rule 5).
+/// solution rather than a second copy of the code under test, so it can't share
+/// the solver's mistakes.
 fn gradient_arrival_s(cell: (usize, usize), seed: (usize, usize), h: f64, v0: f64, g: f64) -> f64 {
     let speed_at = |depth_cells: usize| v0 + g * exact(depth_cells) * h;
     let distance = distance_km(cell, seed, (h, h));
@@ -348,10 +349,9 @@ proptest! {
     ///
     /// The discriminating accuracy measurement. Any scheme exact for plane waves passes
     /// on a uniform medium, but a gradient bends the rays into circular arcs and tests
-    /// whether the scheme reproduces curvature. This check separated the two rejected
-    /// solvers from the one in use (`DEFECTS.md` 19): a scheme polluted by the source
-    /// singularity doesn't converge at all. The bound is loose on purpose: 1.5
-    /// against a measured 2.0, where the rejected solvers scored 1.01 and 1.03. The
+    /// whether the scheme reproduces curvature. A scheme polluted by the source
+    /// singularity doesn't converge at all and scores a ratio near 1. The bound is
+    /// loose on purpose: 1.5 against the 2 that first-order convergence gives. The
     /// test quantifies over crustal-looking profiles, 1.5 to 3 km/s at zero depth
     /// and gaining 30 to 90 m/s per km.
     #[test]
@@ -392,12 +392,10 @@ fn the_sweep_count_does_not_grow_with_the_mesh() {
 
 /// A high-contrast medium settles, and settles on the round-off-free answer.
 ///
-/// This test exists for a regression. The sweep's stopping test had no tolerance, and
-/// a strict `<` on `f64` kept it iterating while sweeps shaved femtoseconds off. The
-/// round limit then tripped on round-off rather than on the medium. On the Wellington
-/// `Ohariu` segment, three of its seventeen rounds went on improvements below 1e-8 s, and the same three-round tail appeared at every contrast from 3.3x to
-/// 26x. Widening the rupture velocity band onto the supershear branch took that segment's
-/// contrast to 26x and pushed it past a limit of 16.
+/// A stopping test with no tolerance, a strict `<` on `f64`, keeps iterating while
+/// sweeps shave femtoseconds off, and the round limit then trips on round-off rather
+/// than on the medium. A high-contrast medium from the supershear end of the rupture
+/// velocity band is where that shows first.
 ///
 /// The test builds its contrast from the band the generator permits (`0.25 Vs` to
 /// `sqrt(2) Vs` over a shear speed varying by a factor of four with depth, about 23x)

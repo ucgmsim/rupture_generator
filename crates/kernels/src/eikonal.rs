@@ -416,11 +416,10 @@ fn update(
     // wave crossing one cell along an axis is always causal, so a node whose
     // triangles all failed still gets a bound rather than an infinite arrival.
     //
-    // Offering this alongside the triangles rather than after them costs a factor of
-    // six on a gradient. It's an unfactored first-order update, and wherever it's the
-    // smaller of the two, it replaces the triangles' value and injects exactly the source-singularity error
-    // the factorisation exists to remove. Measured at 1.03e-02 against 1.75e-03 on
-    // the constant-gradient case.
+    // Offering this alongside the triangles rather than after them makes the error on
+    // a constant gradient several times larger. It's an unfactored first-order update,
+    // and wherever it's the smaller of the two, it replaces the triangles' value and
+    // injects exactly the source-singularity error the factorisation exists to remove.
     for (arrival, spacing) in along_j
         .into_iter()
         .flatten()
