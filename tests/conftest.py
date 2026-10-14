@@ -34,10 +34,5 @@ def ruptures(scenario: config.Scenario) -> Realisation[SegmentRupture]:
 @pytest.fixture(scope="session")
 def srf_path(tmp_path_factory, scenario, ruptures):
     path = tmp_path_factory.mktemp("srf") / "rupture.srf"
-    write_rupture(
-        str(path),
-        ruptures,
-        dt_s=scenario.dt_s,
-        beta=scenario.beta,
-    )
+    write_rupture(str(path), ruptures)
     return path

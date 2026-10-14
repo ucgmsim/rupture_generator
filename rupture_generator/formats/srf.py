@@ -15,7 +15,6 @@ edge, so the projection's grid convergence never reaches the file.
 import dataclasses
 import itertools
 import secrets
-from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -117,19 +116,16 @@ def _plane_points(
     columns: slice,
     strike_deg: float,
     transformer: pyproj.Transformer,
-    *,
-    dt_s: float,
-    beta: CellArray | None,
 ) -> tuple[srf.Points, srf.SlipRate]:
     """One plane's points and slip-rate rows, in SRF order and SRF units.
 
     Raises
     ------
     RuptureGeneratorError
-        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, or a
-        ``beta`` outside ``(0, 0.5]``.
+        For a slipping subfault whose rise time rounds to no samples at the segment's
+        ``dt_s``, or a ``beta`` outside ``(0, 0.5]``.
     """
-    geometry = rupture.geometry
+    geometry, dt_s, beta = rupture.geometry, rupture.dt_s, rupture.beta
 
     def cells(field: CellArray) -> np.ndarray:
         return np.ascontiguousarray(field[:, columns]).ravel()
@@ -176,9 +172,6 @@ def _plane_points(
 def write_rupture(
     path: str | Path,
     realisation: Realisation[SegmentRupture],
-    *,
-    dt_s: float,
-    beta: Mapping[str, CellArray] | None = None,
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
 
@@ -191,18 +184,13 @@ def write_rupture(
         Where to write the file.
     realisation : Realisation of SegmentRupture
         The drawn fault system, written in its segments' order. Its projection and
-        hypocentre locate the planes.
-    dt_s : float
-        The slip-rate sample interval in seconds.
-    beta : Mapping of str to CellArray, optional
-        The Liu-Archuleta-Hartzell rising fraction per cell, by segment. A segment
-        without one gets a single-sample impulse per subfault.
+        hypocentre locate the planes, and each segment's pulse sets its slip rates.
 
     Raises
     ------
     RuptureGeneratorError
-        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, a
-        ``beta`` outside ``(0, 0.5]``, or points the SRF writer refuses.
+        For a slipping subfault whose rise time rounds to no samples at its segment's
+        ``dt_s``, a ``beta`` outside ``(0, 0.5]``, or points the SRF writer refuses.
     OSError
         If writing the file fails.
     """
@@ -222,20 +210,11 @@ def write_rupture(
     try:
         with srf.Writer(partial, planes) as writer:
             for name, rupture in realisation.items():
-                segment_beta = None if beta is None else beta.get(name)
                 for columns, strike_deg in zip(
                     _plane_slices(rupture.geometry), strikes[name], strict=True
                 ):
                     writer.write(
-                        *_plane_points(
-                            name,
-                            rupture,
-                            columns,
-                            strike_deg,
-                            transformer,
-                            dt_s=dt_s,
-                            beta=segment_beta,
-                        )
+                        *_plane_points(name, rupture, columns, strike_deg, transformer)
                     )
         partial.replace(path)
     except srf.SrfError as error:

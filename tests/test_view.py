@@ -83,13 +83,13 @@ def test_a_step_that_is_not_a_positive_time_is_refused(srf_path, step, capsys):
     assert "--step" in capsys.readouterr().err
 
 
-def test_a_rupture_without_slip_is_described_without_nan(tmp_path, scenario, ruptures):
+def test_a_rupture_without_slip_is_described_without_nan(tmp_path, ruptures):
     still = {
         name: dataclasses.replace(r, slip_m=np.zeros_like(r.slip_m))
         for name, r in ruptures.items()
     }
     path = tmp_path / "still.srf"
-    write_rupture(path, ruptures.with_segments(still), dt_s=scenario.dt_s)
+    write_rupture(path, ruptures.with_segments(still))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         text = _statistics(read_rupture(path))

@@ -87,7 +87,7 @@ def test_pulses_integrate_to_slip(srf, scenario):
     rows = np.diff(row_ptr)
     integral = (
         np.add.reduceat(parsed.slip_rate.values.astype(float), row_ptr[:-1][rows > 0])
-        * scenario.dt_s
+        * scenario.settings.pulse.dt_s
     )
     np.testing.assert_allclose(integral, parsed.points.slip1[rows > 0], rtol=1e-5)
 
@@ -131,25 +131,28 @@ def test_the_reader_finds_the_hypocentre(srf_path, scenario):
     assert abs(found[2] - depth_km) < spacing_km
 
 
-def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptures):
-    beta = {name: np.full(r.geometry.cells, 0.7) for name, r in ruptures.items()}
+def _steep(ruptures):
+    """The ruptures with a rising fraction the kernel refuses."""
+    return ruptures.with_segments(
+        {
+            name: dataclasses.replace(r, beta=np.full(r.geometry.cells, 0.7))
+            for name, r in ruptures.items()
+        }
+    )
+
+
+def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, ruptures):
     with pytest.raises(RuptureGeneratorError, match="beta"):
-        write_rupture(
-            str(tmp_path / "bad.srf"),
-            ruptures,
-            dt_s=scenario.dt_s,
-            beta=beta,
-        )
+        write_rupture(str(tmp_path / "bad.srf"), _steep(ruptures))
     # The writer had already put the header out. The failure removed the partial file.
     assert not list(tmp_path.iterdir())
 
 
-def test_a_failed_write_leaves_the_existing_file(tmp_path, scenario, ruptures):
+def test_a_failed_write_leaves_the_existing_file(tmp_path, ruptures):
     path = tmp_path / "kept.srf"
     path.write_text("an earlier rupture")
-    beta = {name: np.full(r.geometry.cells, 0.7) for name, r in ruptures.items()}
     with pytest.raises(RuptureGeneratorError):
-        write_rupture(path, ruptures, dt_s=scenario.dt_s, beta=beta)
+        write_rupture(path, _steep(ruptures))
     assert path.read_text() == "an earlier rupture"
     assert list(tmp_path.iterdir()) == [path]
 
@@ -163,7 +166,7 @@ def test_points_the_writer_refuses_are_a_rupture_error(
     monkeypatch.setattr(srf_format.Writer, "write", refuse)
     path = tmp_path / "refused.srf"
     with pytest.raises(RuptureGeneratorError, match=f"^{path}: The points"):
-        write_rupture(path, ruptures, dt_s=scenario.dt_s)
+        write_rupture(path, ruptures)
     assert not list(tmp_path.iterdir())
 
 
@@ -215,7 +218,7 @@ def test_a_point_without_a_pulse_records_no_slip(tmp_path, scenario, ruptures):
         slip_m[0, :] = 5e-5
         faint[name] = dataclasses.replace(rupture, slip_m=slip_m)
     path = tmp_path / "faint.srf"
-    write_rupture(path, ruptures.with_segments(faint), dt_s=scenario.dt_s)
+    write_rupture(path, ruptures.with_segments(faint))
     parsed = srf_format.read(path)
     empty = np.diff(parsed.slip_rate.offsets) == 0
     assert empty.any()

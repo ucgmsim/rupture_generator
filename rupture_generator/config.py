@@ -31,13 +31,13 @@ from mashumaro.types import Discriminator
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
-    CellArray,
     Geometry,
     geometry_from_geojson,
     projected_crs,
 )
 from rupture_generator.rupture.generator import (
     FaultProfiles,
+    PulseSettings,
     RakeSettings,
     RiseSettings,
     RuptureSettings,
@@ -648,8 +648,6 @@ def dump(config: RuptureConfig) -> str:
 class Scenario:
     """Everything that :func:`~rupture_generator.rupture.generator.generate` takes.
 
-    The SRF writer's inputs too, all built from a config.
-
     Parameters
     ----------
     realisation : Realisation of Geometry
@@ -664,11 +662,6 @@ class Scenario:
         How far each jump can cover.
     seed : int
         The seed every random draw derives from.
-    dt_s : float
-        The slip-rate sample interval, in seconds.
-    beta : dict of str to CellArray or None
-        The pulse shape's rising fraction per cell by segment. ``None`` gives
-        single-sample impulses.
     """
 
     realisation: Realisation[Geometry]
@@ -677,8 +670,6 @@ class Scenario:
     settings: RuptureSettings
     jump_model: JumpModel
     seed: int
-    dt_s: float
-    beta: dict[str, CellArray] | None
 
 
 def _sources(
@@ -798,14 +789,6 @@ def build(config: RuptureConfig) -> Scenario:
     realisation = Realisation(charts, crs, hypocentre=hypocentre)
 
     medium = config.medium.medium()
-    beta = (
-        None
-        if config.pulse.beta is None
-        else {
-            name: config.pulse.beta.field()(chart.centres)
-            for name, chart in charts.items()
-        }
-    )
 
     return Scenario(
         realisation=_propagated(
@@ -819,11 +802,13 @@ def build(config: RuptureConfig) -> Scenario:
             rake=config.rake,
             timing=config.timing,
             profiles=config.profiles.profiles(),
+            pulse=PulseSettings(
+                dt_s=config.pulse.dt_s,
+                beta=None if config.pulse.beta is None else config.pulse.beta.field(),
+            ),
         ),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,
-        dt_s=config.pulse.dt_s,
-        beta=beta,
     )
 
 
