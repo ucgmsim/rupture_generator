@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            -68.66716,
+            10.43898
+          ],
+          [
+            -68.21601,
+            10.50938
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Segment 1",
+        "dip_deg": 78.0,
+        "dip_direction_deg": 171.0,
+        "upper_depth_km": 8.828,
+        "lower_depth_km": 34.651
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            -68.21656,
+            10.52302
+          ],
+          [
+            -66.39293,
+            10.64073
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Segment 2",
+        "dip_deg": 78.0,
+        "dip_direction_deg": 176.1,
+        "upper_depth_km": 0.22,
+        "lower_depth_km": 34.651
+      }
+    }
+  ]
+}

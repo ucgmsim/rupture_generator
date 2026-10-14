@@ -1,11 +1,18 @@
 # The 1994 Mw 6.8 Northridge earthquake, from Wald, Heaton & Hudnut (1996), SRCMOD
-# s1994NORTHR01WALD. A blind thrust: one plane striking 122 and dipping 40 to the
-# south-west, its top 5 km down, 18 km along strike and 24 km down dip. The trace is
-# the plane's top edge, through the centre of the inversion's top row of subfaults.
+# s1994NORTHR01WALD: Wald, D. J., Heaton, T. H. and Hudnut, K. W. (1996). The slip
+# history of the 1994 Northridge, California, earthquake determined from
+# strong-motion, teleseismic, GPS, and leveling data. Bulletin of the Seismological
+# Society of America 86(1B), S49-S70. https://doi.org/10.1785/BSSA08601BS49
+#
+# A blind thrust: one plane striking 122 and dipping 40 to the south-west, its top 5 km
+# down, 18 km along strike and 24 km down dip. The trace is the plane's top edge,
+# through the centre of the inversion's top row of subfaults.
 #
 # Magnitude, average rake and velocity model are the FSP's (its depth column read
 # as layer tops). The hypocentre is the FSP's, 15 km along strike and 20 km down
 # dip; the published epicentre and 17.5 km depth project to 15.0 and 19.4 km.
+#
+# The parameters are not tuned to match the observations of this earthquake.
 #
 # Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 0.1 km, about two
 # seconds to generate; the inversion's subfaults are 1.29 x 1.71 km.

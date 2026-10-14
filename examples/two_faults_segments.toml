@@ -2,6 +2,8 @@
 # A [segments.<name>] table starts from the global table of the same name and
 # replaces the keys it gives; [segments.<name>.correlation] does the same over the
 # source's correlation table.
+#
+# The parameters are not tuned to match any observations: this is not a past earthquake.
 
 seed = 7
 

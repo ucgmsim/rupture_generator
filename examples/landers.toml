@@ -1,8 +1,12 @@
 # The 1992 Mw 7.28 Landers earthquake, from Wald & Heaton (1994), SRCMOD
-# s1992LANDER01WALD. Three vertical right-lateral segments, each a straight plane
-# from the inversion: Johnson Valley, Homestead Valley and Camp Rock - Emerson.
-# Each trace runs half the segment's length either side of the top-centre the FSP
-# gives, so the stepovers between segments are the inversion's own.
+# s1992LANDER01WALD: Wald, D. J. and Heaton, T. H. (1994). Spatial and temporal
+# distribution of slip for the 1992 Landers, California, earthquake. Bulletin of the
+# Seismological Society of America 84(3), 668-691. https://doi.org/10.1785/BSSA0840030668
+#
+# Three vertical right-lateral segments, each a straight plane from the inversion:
+# Johnson Valley, Homestead Valley and Camp Rock - Emerson. Each trace runs half the
+# segment's length either side of the top-centre the FSP gives, so the stepovers
+# between segments are the inversion's own.
 #
 # The rupture started on Johnson Valley and ran north, so the propagation is
 # predetermined. Each segment's magnitude is its share of the inverted slip times
@@ -10,6 +14,8 @@
 # its velocity model, so only the shares are taken). The velocity model is the FSP's,
 # its depth column read as layer bottoms. The hypocentre is the FSP's (11 km along
 # strike, 7 km down dip); the epicentre projects to 11.9 km.
+#
+# The parameters are not tuned to match the observations of this earthquake.
 #
 # Depth profiles and pulse shape as in alpine_hope.toml. Gridded at 0.1 km, about four
 # seconds to generate; the inversion's subfaults are 3 x 2.5 km.
