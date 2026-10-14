@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import scipy as sp
 
 from rupture_generator import (
     Hypocentre,
@@ -8,8 +9,17 @@ from rupture_generator import (
     RuptureSettings,
     generate,
 )
-from rupture_generator.rupture.generator import first_arrival
+from rupture_generator.rupture.generator import (
+    FIELDS_STREAM,
+    JUMP_STREAM,
+    JumpSeed,
+    _segment_rng,
+    _travel_times,
+    first_arrival,
+)
 from rupture_generator.rupture.propagator import JumpModel
+from rupture_generator.sampling import sampler
+from rupture_generator.sampling.field import SAMPLER_CACHE_SIZE
 
 
 def test_every_segment_carries_its_moment(scenario, ruptures):
@@ -186,3 +196,54 @@ def test_default_settings_are_valid():
 def test_inconsistent_realisations_are_refused(scenario, build):
     with pytest.raises(RuptureGeneratorError):
         build(scenario.realisation)
+
+
+def test_high_slip_ruptures_early(scenario, ruptures):
+    # A positive correlation pulls high-slip patches ahead of the coherent front,
+    # as genslip's negative tsfac does.
+    assert scenario.settings.timing.correlation > 0.0
+    hypocentre = scenario.realisation.hypocentre
+    root = ruptures[hypocentre.segment]
+    seed = JumpSeed(root.geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km), 0.0)
+    front_s = _travel_times(root.geometry, root.speed_km_s, seed)
+    occupied = root.geometry.occupied
+    rho = sp.stats.spearmanr(
+        root.slip_m[occupied], (root.onset_s - front_s)[occupied]
+    ).statistic
+    assert rho < -0.3
+
+
+@pytest.mark.parametrize("seed", [-1, 1.5, True])
+def test_a_seed_that_is_not_a_non_negative_integer_is_refused(scenario, seed):
+    with pytest.raises(RuptureGeneratorError, match="non-negative integer"):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            scenario.settings,
+            seed=seed,
+        )
+
+
+def test_a_jump_draws_apart_from_any_segments_fields(scenario):
+    # A segment named like the old jump key must not share the jump's stream.
+    name = next(iter(scenario.realisation))
+    jump = _segment_rng(scenario.seed, JUMP_STREAM, name).random(4)
+    fields = _segment_rng(scenario.seed, FIELDS_STREAM, f"jump:{name}").random(4)
+    same = _segment_rng(scenario.seed, FIELDS_STREAM, name).random(4)
+    assert not np.array_equal(jump, fields)
+    assert not np.array_equal(jump, same)
+
+
+def test_a_second_draw_reuses_every_embedding(scenario):
+    sampler.cache_clear()
+    for _ in range(2):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            scenario.settings,
+            seed=scenario.seed,
+        )
+    assert sampler.cache_info().hits == 2 * len(scenario.realisation)
+    assert SAMPLER_CACHE_SIZE >= 2 * 20

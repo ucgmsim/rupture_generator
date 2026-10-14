@@ -126,12 +126,26 @@ class Medium:
         -------
         np.ndarray
             Travel time of each crossing in seconds, ``(...)``.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If the shear speed anywhere along a crossing isn't positive and finite.
         """
         start = np.asarray(start_km, dtype=np.float64)
         step = np.asarray(end_km, dtype=np.float64) - start
         fractions = (np.arange(samples) + 0.5) / samples
         points = start[..., None, :] + fractions[:, None] * step[..., None, :]
-        slowness = 1.0 / self.shear_speed_km_s(points)
+        speed = np.asarray(self.shear_speed_km_s(points), dtype=np.float64)
+        bad = ~(np.isfinite(speed) & (speed > 0.0))
+        if np.any(bad):
+            where = points[bad][0]
+            raise RuptureGeneratorError(
+                f"the shear speed along a crossing is {float(speed[bad][0])} at "
+                f"{where[0]:.3f} km E, {where[1]:.3f} km N, {where[2]:.3f} km deep; "
+                "it wants positive values"
+            )
+        slowness = 1.0 / speed
         return np.linalg.norm(step, axis=-1) * slowness.mean(axis=-1)
 
 

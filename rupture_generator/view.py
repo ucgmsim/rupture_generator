@@ -7,7 +7,7 @@ dip, in metres east, north and **up** from the rupture's centre. Up, because a
 viewer's vertical axis points up.
 
 The slip view accumulates on ``hot``, integrating each point's pulse from its own
-onset. Onset and rise time appear whole on viridis, and rake as arrows along each
+onset. Onset and pulse duration appear whole on viridis, and rake as arrows along each
 point's slip, coloured by slip. The moment comes from the same integration, and each
 field's distribution sits beside the fault, with slip's growing as the rupture runs.
 """
@@ -67,8 +67,8 @@ VIRIDIS = _packed(
         for k in range(3)
     )
 )
-"""Viridis in 256 shades, packed RGBA as Rerun takes colours: for onset and rise
-time, which have no meaningful zero."""
+"""Viridis in 256 shades, packed RGBA as Rerun takes colours: for onset and pulse
+duration, which have no meaningful zero."""
 
 HOT = _packed(
     *(
@@ -96,7 +96,12 @@ UI_POINTS = -1.0
 """Rerun reads a negative radius as a width in screen points rather than metres, so a
 contour stays visible however far the camera is zoomed out."""
 
-TABS = {"slip": "slip", "onset": "onset", "rise_time": "rise time", "rake": "rake"}
+TABS = {
+    "slip": "slip",
+    "onset": "onset",
+    "pulse_duration": "pulse duration",
+    "rake": "rake",
+}
 
 BINS = 40
 """Histogram bins per field."""
@@ -315,22 +320,26 @@ def _statistics(rupture: SrfRupture) -> str:
     """The rupture in a few lines of Markdown."""
     moment = float(np.sum(rupture.rigidity_pa * rupture.area_m2 * rupture.slip_m))
     slipping = rupture.slip_m > 0
+    lines = [
+        f"- {rupture.slip_m.size:,} points on {len(rupture.planes)} planes",
+        f"- onset: last subfault at {rupture.onset_s.max():.1f} s",
+        f"- rake: {rupture.rake_deg.mean():.0f} ± {rupture.rake_deg.std():.0f} deg",
+    ]
+    if not moment > 0.0 or not slipping.any():
+        return "\n".join(["**No slip**, so no moment", "", *lines])
+    lines[1:1] = [
+        (
+            f"- slip: mean {rupture.slip_m[slipping].mean():.2f} m, "
+            f"max {rupture.slip_m.max():.2f} m"
+        ),
+        (
+            "- pulse duration: mean "
+            f"{rupture.pulse_duration_s[slipping].mean():.2f} s, "
+            f"max {rupture.pulse_duration_s.max():.2f} s"
+        ),
+    ]
     return "\n".join(
-        [
-            f"**Mw {magnitude_from_moment(moment):.2f}** ({moment:.3e} N m)",
-            "",
-            f"- {rupture.slip_m.size:,} points on {len(rupture.planes)} planes",
-            (
-                f"- slip: mean {rupture.slip_m[slipping].mean():.2f} m, "
-                f"max {rupture.slip_m.max():.2f} m"
-            ),
-            (
-                f"- rise time: mean {rupture.rise_time_s[slipping].mean():.2f} s, "
-                f"max {rupture.rise_time_s.max():.2f} s"
-            ),
-            f"- onset: last subfault at {rupture.onset_s.max():.1f} s",
-            f"- rake: {rupture.rake_deg.mean():.0f} ± {rupture.rake_deg.std():.0f} deg",
-        ]
+        [f"**Mw {magnitude_from_moment(moment):.2f}** ({moment:.3e} N m)", "", *lines]
     )
 
 
@@ -402,7 +411,7 @@ def _log(rupture: SrfRupture, step_s: float) -> None:
     )
     for key, values in (
         ("onset", rupture.onset_s),
-        ("rise_time", rupture.rise_time_s),
+        ("pulse_duration", rupture.pulse_duration_s),
         ("rake", rupture.rake_deg),
     ):
         low, high = float(values.min()), float(values.max())
@@ -481,6 +490,17 @@ def _log(rupture: SrfRupture, step_s: float) -> None:
     )
 
 
+def _positive_seconds(text: str) -> float:
+    """``--step`` as a positive, finite number of seconds."""
+    try:
+        step_s = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not (math.isfinite(step_s) and step_s > 0.0):
+        raise argparse.ArgumentTypeError(f"a step of {text} s is not a positive time")
+    return step_s
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the viewer.
 
@@ -501,7 +521,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("srf", type=Path, help="a version 2 SRF")
     parser.add_argument(
-        "--step", type=float, default=0.5, help="seconds between frames (default 0.5)"
+        "--step",
+        type=_positive_seconds,
+        default=0.5,
+        help="seconds between frames (default 0.5)",
     )
     parser.add_argument(
         "--save", type=Path, help="write a .rrd recording instead of opening a window"

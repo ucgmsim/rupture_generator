@@ -706,7 +706,9 @@ def generate_segment(
     scale_s = timing.offset_s + _cube_root_scaling(timing.coefficient, moment_nm)
     onset_independent, _ = latent.draw(rng)
     rho = float(latent_correlation(slip.marginal, NORMAL, np.array(timing.correlation)))
-    displacement_s = scale_s * standardise(
+    # genslip's tsfac is negative and this package reads it as a magnitude, so the
+    # displacement subtracts: with a positive correlation, high slip ruptures early.
+    displacement_s = -scale_s * standardise(
         mix((rho, slip_latent), (np.sqrt(1.0 - rho * rho), onset_independent))
     )
 
@@ -730,13 +732,44 @@ def generate_segment(
 # --------------------------------------------------------------- the whole system
 
 
-def _segment_rng(seed: int, segment: str) -> np.random.Generator:
-    """The generator one segment draws from, keyed by its **name**.
+def check_seed(seed: object) -> int:
+    """Refuse a seed that isn't a non-negative integer.
+
+    Parameters
+    ----------
+    seed : object
+        The seed to check.
+
+    Returns
+    -------
+    int
+        The seed.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If ``seed`` is a boolean, a float or another non-integer, or negative.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
+        raise RuptureGeneratorError(f"a seed is a non-negative integer, got {seed!r}")
+    return int(seed)
+
+
+FIELDS_STREAM = 0
+"""The spawn key's first element for a segment's fields."""
+
+JUMP_STREAM = 1
+"""The spawn key's first element for the jump onto a segment."""
+
+
+def _segment_rng(seed: int, stream: int, segment: str) -> np.random.Generator:
+    """The generator one segment draws ``stream`` from, keyed by the segment's **name**.
 
     Keying by name and not by position makes a fault system's segments independent of
     each other's presence. Adding or dropping a segment, or reordering the file, leaves
     every other segment's fields bit-identical. Without that, two realisations of a
-    system wouldn't be comparable at all.
+    system wouldn't be comparable at all. The stream comes first in the spawn key, so
+    no segment name can collide with another stream's key.
 
     The key is a BLAKE2b hash of the name. Python's :func:`hash` salts string hashes
     per interpreter, so it reproduces nothing between runs.
@@ -744,7 +777,9 @@ def _segment_rng(seed: int, segment: str) -> np.random.Generator:
     key = int.from_bytes(
         hashlib.blake2b(segment.encode(), digest_size=8).digest(), "big"
     )
-    return np.random.default_rng(np.random.SeedSequence(entropy=seed, spawn_key=(key,)))
+    return np.random.default_rng(
+        np.random.SeedSequence(entropy=seed, spawn_key=(stream, key))
+    )
 
 
 type JumpRule = Callable[
@@ -842,9 +877,10 @@ def generate(
     Raises
     ------
     RuptureGeneratorError
-        If a segment has no source, or the realisation has no hypocentre or no tree
-        to walk.
+        If the seed isn't a non-negative integer, a segment has no source, or the
+        realisation has no hypocentre or no tree to walk.
     """
+    seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
     if missing:
         raise RuptureGeneratorError(f"{missing} have no source")
@@ -864,7 +900,7 @@ def generate(
                 geometry,
                 medium,
                 jump_propagation_model,
-                _segment_rng(seed, f"jump:{name}"),
+                _segment_rng(seed, JUMP_STREAM, name),
             )
         drawn[name] = generate_segment(
             geometry,
@@ -872,7 +908,7 @@ def generate(
             sources[name],
             settings,
             seed=start,
-            rng=_segment_rng(seed, name),
+            rng=_segment_rng(seed, FIELDS_STREAM, name),
         )
     return realisation.with_segments(drawn)
 
@@ -889,6 +925,7 @@ __all__ = [
     "SegmentRupture",
     "SlipSettings",
     "TimingSettings",
+    "check_seed",
     "first_arrival",
     "generate",
     "generate_segment",

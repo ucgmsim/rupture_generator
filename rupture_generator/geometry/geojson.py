@@ -89,24 +89,40 @@ class Segment:
         Raises
         ------
         RuptureGeneratorError
-            For a missing property, a dip outside ``(0, 90]``, a depth range that fails
+            For a missing or non-numeric property, a trace that isn't coordinate
+            pairs, a dip outside ``(0, 90]``, a depth range that fails
             to reach downward, or a dip direction that fails to pick one side of every
             plane.
         """
+        given = feature.get("properties") or {}
+        if not isinstance(given, Mapping):
+            raise RuptureGeneratorError(
+                f"a section's properties are an object, not {given!r}"
+            )
         properties = {
-            (aliases or {}).get(key, key): value
-            for key, value in (feature.get("properties") or {}).items()
+            (aliases or {}).get(key, key): value for key, value in given.items()
         }
         try:
             name = str(properties["name"])
-            dip_deg = float(properties["dip_deg"])
-            dip_direction_deg = float(properties["dip_direction_deg"])
-            upper_depth_km = float(properties["upper_depth_km"])
-            lower_depth_km = float(properties["lower_depth_km"])
-        except KeyError as missing:
-            raise RuptureGeneratorError(
-                f"a section has no {missing} property"
-            ) from None
+        except KeyError:
+            raise RuptureGeneratorError("a section has no 'name' property") from None
+
+        def number(key: str) -> float:
+            try:
+                return float(properties[key])
+            except KeyError:
+                raise RuptureGeneratorError(
+                    f"{name}: the section has no {key!r} property"
+                ) from None
+            except (TypeError, ValueError) as error:
+                raise RuptureGeneratorError(
+                    f"{name}: {key} is {properties[key]!r}, which is not a number"
+                ) from error
+
+        dip_deg = number("dip_deg")
+        dip_direction_deg = number("dip_direction_deg")
+        upper_depth_km = number("upper_depth_km")
+        lower_depth_km = number("lower_depth_km")
         if not 0.0 < dip_deg <= 90.0:
             raise RuptureGeneratorError(
                 f"{name}: a dip of {dip_deg} degrees is not in (0, 90]"
@@ -116,7 +132,12 @@ class Segment:
                 f"{name}: {upper_depth_km} to {lower_depth_km} km is not a depth range"
             )
 
-        trace = np.asarray(feature["geometry"]["coordinates"], dtype=np.float64)
+        try:
+            trace = np.asarray(feature["geometry"]["coordinates"], dtype=np.float64)
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuptureGeneratorError(
+                f"{name}: the trace's coordinates are not longitude, latitude pairs"
+            ) from error
         if trace.ndim != 2 or trace.shape[1] != 2 or len(trace) < 2:
             raise RuptureGeneratorError(
                 f"{name}: the trace is shaped {trace.shape}; it wants at least two "
@@ -197,6 +218,13 @@ class Segment:
         )
 
 
+def _named(feature: Mapping[str, Any]) -> str:
+    """A feature's name, from its properties, for an error message."""
+    properties = feature.get("properties")
+    name = properties.get("name") if isinstance(properties, Mapping) else None
+    return "a section" if name is None else str(name)
+
+
 def geometry_from_geojson(
     handle: TextIO, crs: pyproj.CRS, *, aliases: Mapping[str, str] | None = None
 ) -> dict[str, Geometry]:
@@ -221,8 +249,8 @@ def geometry_from_geojson(
     Raises
     ------
     RuptureGeneratorError
-        Unless the document is a collection of ``LineString`` sections with distinct
-        names.
+        Unless the document is JSON, and a collection of ``LineString`` sections with
+        distinct names.
     """
     transformer = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 
@@ -232,9 +260,18 @@ def geometry_from_geojson(
                 return Segment.from_feature(obj, aliases)
             case {"type": "Feature", "geometry": {"type": kind}}:
                 raise RuptureGeneratorError(
-                    f"a section is a LineString trace, not a {kind}"
+                    f"{_named(obj)}: a section is a LineString trace, not a {kind}"
+                )
+            case {"type": "Feature"}:
+                raise RuptureGeneratorError(
+                    f"{_named(obj)}: a section is a LineString trace, and this one "
+                    f"has the geometry {obj.get('geometry')!r}"
                 )
             case {"type": "FeatureCollection", "features": [*segments]}:
+                if not all(isinstance(segment, Segment) for segment in segments):
+                    raise RuptureGeneratorError(
+                        "a FeatureCollection of sections holds only Features"
+                    )
                 charts = {
                     segment.name: segment.to_geometry(transformer)
                     for segment in segments
@@ -245,7 +282,11 @@ def geometry_from_geojson(
             case _:
                 return obj
 
-    charts = json.load(handle, object_hook=_hook)
+    try:
+        charts = json.load(handle, object_hook=_hook)
+    except json.JSONDecodeError as error:
+        source = getattr(handle, "name", "the GeoJSON document")
+        raise RuptureGeneratorError(f"{source} is not JSON: {error}") from error
     if (
         not isinstance(charts, dict)
         or not charts

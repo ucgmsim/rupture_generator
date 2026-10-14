@@ -1,3 +1,7 @@
+import dataclasses
+import os
+import threading
+
 import numpy as np
 import pyproj
 import pytest
@@ -137,11 +141,83 @@ def test_a_pulse_the_kernel_refuses_is_a_rupture_error(tmp_path, scenario, ruptu
             beta=beta,
         )
     # The writer had already put the header out. The failure removed the partial file.
-    assert not (tmp_path / "bad.srf").exists()
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_failed_write_leaves_the_existing_file(tmp_path, scenario, ruptures):
+    path = tmp_path / "kept.srf"
+    path.write_text("an earlier rupture")
+    beta = {name: np.full(r.geometry.cells, 0.7) for name, r in ruptures.items()}
+    with pytest.raises(RuptureGeneratorError):
+        write_rupture(path, ruptures, dt_s=scenario.dt_s, beta=beta)
+    assert path.read_text() == "an earlier rupture"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_points_the_writer_refuses_are_a_rupture_error(
+    tmp_path, scenario, ruptures, monkeypatch
+):
+    def refuse(self, points, slip_rate):
+        raise srf_format.SrfError("The points run past what the planes declare")
+
+    monkeypatch.setattr(srf_format.Writer, "write", refuse)
+    path = tmp_path / "refused.srf"
+    with pytest.raises(RuptureGeneratorError, match=f"^{path}: The points"):
+        write_rupture(path, ruptures, dt_s=scenario.dt_s)
+    assert not list(tmp_path.iterdir())
 
 
 def test_a_file_that_is_not_an_srf_is_a_rupture_error(tmp_path):
     path = tmp_path / "not.srf"
     path.write_text("garbage")
-    with pytest.raises(RuptureGeneratorError):
+    with pytest.raises(RuptureGeneratorError) as caught:
         read_rupture(path)
+    assert str(caught.value).count(str(path)) == 1
+
+
+def test_the_reader_reports_pulse_duration_not_rise_time(srf_path):
+    rupture = read_rupture(srf_path)
+    np.testing.assert_allclose(
+        rupture.pulse_duration_s, np.diff(rupture.pulse_offsets) * rupture.dt_s
+    )
+    assert not hasattr(rupture, "rise_time_s")
+
+
+def test_the_reader_takes_a_pipe(srf_path, tmp_path):
+    fifo = tmp_path / "rupture.fifo"
+    os.mkfifo(fifo)
+    contents = srf_path.read_bytes()
+    feeder = threading.Thread(target=fifo.write_bytes, args=(contents,))
+    feeder.start()
+    try:
+        piped = read_rupture(fifo)
+    finally:
+        feeder.join()
+    np.testing.assert_array_equal(piped.slip_m, read_rupture(srf_path).slip_m)
+
+
+def test_a_record_the_reader_refuses_names_its_file(srf_path, monkeypatch):
+    # srf.read puts the path in a parse error, and leaves it out of an error from the
+    # checks on the records it builds from the parse.
+    def refuse(source):
+        raise srf_format.SrfError("The planes declare 3 points, but there are 2")
+
+    monkeypatch.setattr(srf_format, "read", refuse)
+    with pytest.raises(RuptureGeneratorError, match=f"^{srf_path}: The planes"):
+        read_rupture(srf_path)
+
+
+def test_a_point_without_a_pulse_records_no_slip(tmp_path, scenario, ruptures):
+    # The kernel leaves the pulse empty below its slip floor. slip1 must agree.
+    faint = {}
+    for name, rupture in ruptures.items():
+        slip_m = rupture.slip_m.copy()
+        slip_m[0, :] = 5e-5
+        faint[name] = dataclasses.replace(rupture, slip_m=slip_m)
+    path = tmp_path / "faint.srf"
+    write_rupture(path, ruptures.with_segments(faint), dt_s=scenario.dt_s)
+    parsed = srf_format.read(path)
+    empty = np.diff(parsed.slip_rate.offsets) == 0
+    assert empty.any()
+    assert np.all(parsed.points.slip1[empty] == 0.0)
+    assert np.all(parsed.points.slip1[~empty] > 0.0)

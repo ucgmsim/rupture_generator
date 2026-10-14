@@ -14,6 +14,7 @@ edge, so the projection's grid convergence never reaches the file.
 
 import dataclasses
 import itertools
+import secrets
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -148,6 +149,10 @@ def _plane_points(
     def single(values: np.ndarray) -> np.ndarray:
         return np.asarray(values, dtype=np.float32)
 
+    # The kernel leaves the pulse empty where slip is too small to resolve. The file
+    # records that point as not slipping.
+    slip_m = np.where(np.diff(row_offsets) > 0, slip_m, 0.0)
+
     points = srf.Points(
         lon=single(lon),
         lat=single(lat),
@@ -169,7 +174,7 @@ def _plane_points(
 
 
 def write_rupture(
-    path: str,
+    path: str | Path,
     realisation: Realisation[SegmentRupture],
     *,
     dt_s: float,
@@ -177,9 +182,12 @@ def write_rupture(
 ) -> None:
     """Write drawn segments, and the rock each one read, as an SRF.
 
+    The file goes to a hidden sibling of ``path`` first and replaces ``path`` only once
+    it's whole. A failed write leaves ``path`` as it was.
+
     Parameters
     ----------
-    path : str
+    path : str or Path
         Where to write the file.
     realisation : Realisation of SegmentRupture
         The drawn fault system, written in its segments' order. Its projection and
@@ -193,9 +201,12 @@ def write_rupture(
     Raises
     ------
     RuptureGeneratorError
-        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, or a
-        ``beta`` outside ``(0, 0.5]``.
+        For a slipping subfault whose rise time rounds to no samples at ``dt_s``, a
+        ``beta`` outside ``(0, 0.5]``, or points the SRF writer refuses.
+    OSError
+        If writing the file fails.
     """
+    path = Path(path)
     transformer = pyproj.Transformer.from_crs(
         realisation.crs, "EPSG:4326", always_xy=True
     )
@@ -207,8 +218,9 @@ def write_rupture(
         headers, strikes[name] = _planes(rupture.geometry, on_segment, transformer)
         planes.extend(headers)
 
+    partial = path.with_name(f".{path.name}.{secrets.token_hex(4)}.partial")
     try:
-        with srf.Writer(path, planes) as writer:
+        with srf.Writer(partial, planes) as writer:
             for name, rupture in realisation.items():
                 segment_beta = None if beta is None else beta.get(name)
                 for columns, strike_deg in zip(
@@ -225,9 +237,11 @@ def write_rupture(
                             beta=segment_beta,
                         )
                     )
-    except BaseException:
-        Path(path).unlink(missing_ok=True)
-        raise
+        partial.replace(path)
+    except srf.SrfError as error:
+        raise RuptureGeneratorError(f"{path}: {error}") from error
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -256,8 +270,11 @@ class SrfRupture:
         Each point's rake in degrees.
     slip_m : np.ndarray
         Each point's slip, in metres.
-    rise_time_s : np.ndarray
-        Each point's rise time in seconds.
+    pulse_duration_s : np.ndarray
+        How long each point's slip-rate pulse runs in the file, in seconds, which is
+        its sample count times its ``dt``. Since an SRF has no rise time column, this
+        is the nearest thing to one it holds, and a poor one: a single-sample impulse
+        spans a few samples whatever the generator drew for its rise time.
     shear_speed_km_s : np.ndarray
         The shear speed at each point in kilometres per second.
     density_g_cm3 : np.ndarray
@@ -282,7 +299,7 @@ class SrfRupture:
     dt_s: np.ndarray
     rake_deg: np.ndarray
     slip_m: np.ndarray
-    rise_time_s: np.ndarray
+    pulse_duration_s: np.ndarray
     shear_speed_km_s: np.ndarray
     density_g_cm3: np.ndarray
     pulse_offsets: np.ndarray
@@ -329,7 +346,9 @@ def _hypocentre(plane: srf.Plane, positions: np.ndarray) -> tuple[float, float, 
 def read_rupture(path: str | Path) -> SrfRupture:
     """Read a version 2 SRF, as :func:`write_rupture` writes, into SI.
 
-    Only the ``slip1`` component comes back, the only one this package writes.
+    Only the ``slip1`` component comes back, the only one this package writes. A
+    regular file is memory-mapped. This function reads anything else, such as a pipe,
+    whole.
 
     Parameters
     ----------
@@ -348,10 +367,15 @@ def read_rupture(path: str | Path) -> SrfRupture:
     OSError
         If reading the file fails.
     """
+    path = Path(path)
     try:
-        parsed = srf.read(path)
+        # srf.read memory-maps a path, and refuses a pipe or a terminal as empty.
+        parsed = srf.read(path if path.is_file() else path.read_bytes())
     except srf.SrfError as error:
-        raise RuptureGeneratorError(str(error)) from error
+        message = str(error)
+        if not message.startswith(f"{path}:"):
+            message = f"{path}: {message}"
+        raise RuptureGeneratorError(message) from error
     points = parsed.points
     if points.vs is None or points.density is None:
         raise RuptureGeneratorError(
@@ -378,7 +402,7 @@ def read_rupture(path: str | Path) -> SrfRupture:
         dt_s=points.dt.astype(np.float64),
         rake_deg=points.rake.astype(np.float64),
         slip_m=points.slip1.astype(np.float64) / CM_PER_M,
-        rise_time_s=parsed.rise,
+        pulse_duration_s=parsed.rise,
         shear_speed_km_s=points.vs.astype(np.float64) / CM_PER_KM,
         density_g_cm3=points.density.astype(np.float64),
         pulse_offsets=parsed.slip_rate.offsets.astype(np.int64),

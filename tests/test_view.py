@@ -1,7 +1,10 @@
+import dataclasses
+import warnings
+
 import numpy as np
 import pytest
 
-from rupture_generator.formats.srf import read_rupture
+from rupture_generator.formats.srf import read_rupture, write_rupture
 
 pytest.importorskip("rerun")
 
@@ -11,6 +14,7 @@ from rupture_generator.view import (
     _positions_m,
     _slip_by,
     _slip_directions,
+    _statistics,
     main,
 )
 
@@ -70,3 +74,25 @@ def test_slip_directions_are_unit_and_in_plane(rupture):
         0.0,
         atol=1e-6,
     )
+
+
+@pytest.mark.parametrize("step", ["0", "-1", "nan", "soon"])
+def test_a_step_that_is_not_a_positive_time_is_refused(srf_path, step, capsys):
+    with pytest.raises(SystemExit):
+        main([str(srf_path), "--step", step])
+    assert "--step" in capsys.readouterr().err
+
+
+def test_a_rupture_without_slip_is_described_without_nan(tmp_path, scenario, ruptures):
+    still = {
+        name: dataclasses.replace(r, slip_m=np.zeros_like(r.slip_m))
+        for name, r in ruptures.items()
+    }
+    path = tmp_path / "still.srf"
+    write_rupture(path, ruptures.with_segments(still), dt_s=scenario.dt_s)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        text = _statistics(read_rupture(path))
+        assert main([str(path), "--save", str(tmp_path / "still.rrd")]) == 0
+    assert "nan" not in text.lower()
+    assert "No slip" in text

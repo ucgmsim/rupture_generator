@@ -42,8 +42,9 @@ MAXIMUM_EMBEDDING_DOUBLINGS = 3
 MAXIMUM_EMBEDDING_CELLS = 1 << 27
 """The largest padded grid to transform. """
 
-SAMPLER_CACHE_SIZE = 4
-"""Cache capacity for remembering successful embedding sizes."""
+SAMPLER_CACHE_SIZE = 64
+"""How many embeddings :func:`sampler` keeps. Each segment takes two, so a fault system
+of up to 32 segments draws again without embedding anything."""
 
 
 @dataclasses.dataclass(frozen=True)

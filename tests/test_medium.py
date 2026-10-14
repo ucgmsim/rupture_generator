@@ -77,3 +77,14 @@ def test_profiles_default_to_unmodified():
     positions = np.zeros((3, 3))
     for field in dataclasses.fields(profiles):
         np.testing.assert_array_equal(getattr(profiles, field.name)(positions), 1.0)
+
+
+def test_a_crossing_through_no_rock_is_refused():
+    def holey(positions):
+        speed = np.full(positions.shape[:-1], 3.0)
+        speed[positions[..., 0] > 1.0] = np.nan
+        return speed
+
+    medium = Medium(holey, constant_field(2.7))
+    with pytest.raises(RuptureGeneratorError, match="along a crossing"):
+        medium.crossing_time_s(np.array([0.0, 0.0, 5.0]), np.array([2.0, 0.0, 5.0]))
