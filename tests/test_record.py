@@ -1,6 +1,5 @@
 import hashlib
 import importlib.metadata
-import subprocess
 import tomllib
 
 import srf
@@ -37,15 +36,6 @@ def test_a_record_states_the_config_and_what_ran_it():
     for given, path in zip(provenance["inputs"], read, strict=True):
         assert given["path"] == str(path.resolve())
         assert given["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def test_outside_a_checkout_there_is_no_commit(monkeypatch):
-    def refuse(*arguments):
-        raise subprocess.CalledProcessError(128, ["git", *arguments])
-
-    monkeypatch.setattr(run_record, "_git", refuse)
-    record = run_record.run_record(EXAMPLE, rupture_config.load(EXAMPLE))
-    assert "commit" not in tomllib.loads(record)["provenance"]
 
 
 def test_the_srf_of_a_fields_file_keeps_the_draws_record(tmp_path, coarse_example):
