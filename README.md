@@ -230,7 +230,6 @@ pull request against the base branch and posts the comparison.
 - Jumps cross along a straight line. A shear wave in a layered medium bends, and
   can arrive sooner along a fast layer than along the chord. Ray traced jumps
   are a planned addition.
-- The plumbing for curved rupture exists but is as-yet unimplemented. This will
-  arrive in an upcoming release.
-- Aspects of the Graves and Pitarka method are not yet implemented. The main
-  holdout is roughness which will be implemented in an upcoming release.
+- The plumbing for curved rupture exists but is as-yet unimplemented. This is implemented in an upcoming release.
+- Aspects of the Graves and Pitarka method aren't yet implemented. The main
+  holdout is roughness which is implemented in an upcoming release.
