@@ -33,7 +33,7 @@ numpydoc:
 deptry:
     uv run deptry .
 
-# What the 5,000-line budget is measured against: the package, less the viewer.
+# Line counts of the package's modules, less the viewer, largest first.
 budget:
     @find rupture_generator -name '*.py' ! -name view.py | xargs wc -l | sort -rn
 

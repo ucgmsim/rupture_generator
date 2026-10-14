@@ -35,9 +35,9 @@ fn row(csr: &CsrPulses, subfault: usize) -> &[f64] {
 /// The renormalisation makes the integral the slip *by construction*, and only
 /// rounding remains. The rounding comes from the `f64` fold (each add rounds at ≤ half
 /// an ulp, and modelled as independent that's ~`ε·√n/3` relative) and from the common
-/// scale factor (~2ε, systematic, which doesn't average away). The factor of four covers the
-/// tails; at 400 samples the bound is ~2e-14, eleven orders below the 1% slip
-/// tolerance of the old bounds table, so "exactly" is the right word for it.
+/// scale factor (~2ε, systematic, which doesn't average away). The factor of four
+/// covers the tails; at 400 samples the bound is ~2e-14, so "exactly" is the right
+/// word for it.
 fn integral_round_trip(samples: usize) -> f64 {
     4.0 * f64::EPSILON * (exact(samples).sqrt() + 2.0)
 }
@@ -122,11 +122,9 @@ proptest! {
     /// Every subfault whose slip exceeds the guard has a non-empty pulse, or the call
     /// refuses and identifies a subfault whose rise time does round to zero samples.
     ///
-    /// **`DEFECTS.md` 21.** genslip silently dropped subfaults whose rise time
-    /// rounded to zero samples: 0.63% of the moment on the corpus fixture, gone
-    /// without a word. "Unrepresentable rise time is an error that identifies the
-    /// subfault, never a silent zero" is one of the four wrong numbers the rewrite
-    /// fixes, and this property keeps it fixed. Over rise times generated down to
+    /// genslip silently drops subfaults whose rise time rounds to zero samples, and
+    /// their moment with them. Here an unrepresentable rise time is an error that
+    /// identifies the subfault, never a silent zero. Over rise times generated down to
     /// zero, a slipping subfault either gets samples or appears in the error. The
     /// margins (0.6/0.4 of a sample) pin down *when* each outcome must happen, clear
     /// of the round-to-nearest boundary at half a sample.
@@ -175,7 +173,7 @@ proptest! {
 
     /// `delta` is the impulse `[0, slip/dt, 0]`, whatever the rise time says.
     ///
-    /// Exactly the spike `oliu_p` substitutes for a pulse too short to resolve, and
+    /// Exactly the spike `oliu_p_into` substitutes for a pulse too short to resolve, and
     /// this is that branch under its own name. It's also why the shape can never
     /// refuse a rise time.
     #[test]
@@ -238,9 +236,9 @@ fn a_smaller_beta_gives_a_more_impulsive_pulse() {
 /// Around one sample, the shape is a fixed spike rather than a computed curve, and
 /// the spike is exactly what `delta` produces.
 ///
-/// Pinned because it's a discontinuity in behaviour: a rewrite that computed the
-/// sinusoid here instead would change the shortest pulses on every fault without
-/// changing anything a smooth-field test looks at.
+/// Pinned because it's a discontinuity in behaviour: computing the sinusoid here
+/// instead would change the shortest pulses on every fault without changing
+/// anything a smooth-field test looks at.
 #[test]
 fn a_pulse_of_about_one_sample_is_the_delta_spike() {
     let (slip, dt_s) = (2.5, 0.005);
@@ -271,7 +269,7 @@ fn a_negative_slip_is_conserved_with_its_sign() {
 // ---------------------------------------------------------------------------------
 
 /// The refusal names everything the caller needs: which subfault, its rise time,
-/// and the interval that can't represent it (`DEFECTS.md` 21).
+/// and the interval that can't represent it.
 #[test]
 fn the_unrepresentable_refusal_names_the_subfault() {
     let error = pulse::synthesise_pulses(

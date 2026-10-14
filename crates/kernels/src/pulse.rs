@@ -14,8 +14,8 @@ pub enum Shape<'a> {
     ///
     /// `beta` is the fraction of the rise time spent in the rising limb. Larger is
     /// smoother, and shallow subfaults get the largest values. It's an array because
-    /// the depth profile produces one. A constant-`beta` parametrisation (the old
-    /// `ucsb` family) is a constant array.
+    /// the depth profile produces one. genslip's `ucsb` shape, the same sinusoid with
+    /// one `beta` for every subfault, is a constant array.
     OliuP { beta: &'a [f64] },
     /// A single-sample impulse: `[0, slip/dt, 0]`.
     ///
@@ -269,9 +269,8 @@ fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) -> Result<(), Error> 
 ///
 /// `values` is the caller's slice of the output buffer, already the length pass 1
 /// worked out for this subfault, and already zero. Writing into it rather than
-/// returning a `Vec` limits the whole synthesis to one allocation: a fault of two
-/// million subfaults was two million heap allocations and a copy of every sample out
-/// of each.
+/// returning a `Vec` limits the whole synthesis to one allocation, rather than one
+/// per subfault and a copy of every sample out of each.
 ///
 /// # Errors
 ///

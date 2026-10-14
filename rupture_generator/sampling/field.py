@@ -145,8 +145,8 @@ def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, i
             raise RuptureGeneratorError(
                 f"a {grid.shape[0]}x{grid.shape[1]} grid with correlation lengths "
                 f"{covariance.lengths_km} km embeds in {padded[0]}x{padded[1]} = "
-                f"{padded[0] * padded[1]:,} cells, past the {MAXIMUM_EMBEDDING_CELLS:,} "
-                "this machine can transform"
+                f"{padded[0] * padded[1]:,} cells, past the limit of "
+                f"{MAXIMUM_EMBEDDING_CELLS:,}"
             )
 
         lags = [

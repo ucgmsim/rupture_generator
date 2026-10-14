@@ -68,8 +68,8 @@ class Geometry:
     nodes : NodeArray
         Node positions, ``(n_i+1, n_j+1, 3)``, kilometres in the projected CRS.
     occupied : CellMask
-        Which cells are fault. All true for a chart built from planes. A resampled
-        curved interface fills only part of its parameter rectangle.
+        Which cells are fault. All true for a chart built from planes; a chart built
+        directly may leave part of its rectangle unoccupied.
     plane_cells : tuple of int
         How many cell columns each plane has, in trace order. Each plane writes as
         its own SRF plane.
@@ -175,8 +175,8 @@ class Geometry:
 
         The sampler and the eikonal solve both take this one spacing. It averages
         every along-strike and every down-dip step rather than reading one edge,
-        because a plane hung from a bent trace is a trapezoid and a resampled
-        interface has no uniform spacing anywhere.
+        because a plane hung from a bent trace is a trapezoid, whose steps vary from
+        one edge to the other.
         """
         strike = np.linalg.norm(np.diff(self.nodes, axis=1), axis=-1)
         dip = np.linalg.norm(np.diff(self.nodes, axis=0), axis=-1)
@@ -277,8 +277,8 @@ class Geometry:
 
         An edge cell is a fault cell with a neighbour off the fault or off the grid,
         where a front can leave this chart or arrive from another. The code averages
-        their centres from the nodes rather than reading :attr:`centres`, because the
-        edge of a production interface is a few thousand cells out of twenty million.
+        their centres from the nodes rather than reading :attr:`centres`, because on a
+        large chart the edge is a small fraction of the cells.
         """
         i, j = np.nonzero(
             self.occupied & ~sp.ndimage.binary_erosion(self.occupied, border_value=0)

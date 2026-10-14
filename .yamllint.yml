@@ -1,6 +1,7 @@
 # yamllint's defaults are written for hand-authored documents, and every YAML
-# file in this repo is a GitHub Actions workflow. Without this the pre-push
-# yamllint hook fires on all of them for things Actions requires.
+# file in this repo but the hook and Vale configs is a GitHub Actions workflow.
+# Without this the pre-push yamllint hook fires on the workflows for things
+# Actions requires.
 extends: default
 
 rules:
@@ -10,8 +11,8 @@ rules:
   # `on:` is the Actions trigger key, not the YAML 1.1 boolean `on`.
   truthy:
     check-keys: false
-  # Job names, action refs and ${{ }} expressions do not wrap. 140 clears the
-  # longest line in the repo, publish-PyPI.yml's `run-name:` expression.
+  # Job names, URLs, action refs and ${{ }} expressions do not wrap, so the
+  # limit leaves room for them.
   line-length:
     max: 140
     allow-non-breakable-words: true

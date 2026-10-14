@@ -2,9 +2,9 @@
 //! quantify over the same input space rather than each inventing a narrower one.
 //!
 //! Ranges are physical: slowness 0.2 to 2.0 s/km is shear speed 0.5 to 5 km/s, spacing
-//! from 0.1 to 2 km brackets every production subfault size, slip up to 30 m covers a
-//! magnitude-9 asperity, and `dt` from 1 to 50 ms brackets the sample intervals SRF
-//! files record. The grids are small because the properties are resolution-independent.
+//! from 0.1 to 2 km brackets the subfault sizes of the example configs, slip up to
+//! 30 m covers a magnitude-9 asperity, and `dt` from 1 to 50 ms brackets the sample
+//! intervals SRF files record. The grids are small because the properties are resolution-independent.
 //! The one that isn't, convergence order, sets its own sizes.
 
 // Each integration test compiles this module and uses its half.
@@ -145,7 +145,7 @@ fn subfaults(
     })
 }
 
-/// Every rise time resolvable: at least 1.6 samples, so `oliu_p` always has a
+/// Every rise time resolvable: at least 1.6 samples, so `oliu_p_into` always has a
 /// computed shape rather than its spike or its refusal.
 pub fn resolvable_subfaults() -> impl Strategy<Value = Subfaults> {
     subfaults(1.6_f64..400.0)

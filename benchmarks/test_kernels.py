@@ -1,4 +1,4 @@
-"""The hot paths, each timed alone on a production-sized grid.
+"""The hot paths, each timed alone.
 
 Every case is a 0.1 km grid as large as one segment of the examples: a 25 km wide,
 60 km long fault for the field and front kernels, and the same fault's subfaults for
