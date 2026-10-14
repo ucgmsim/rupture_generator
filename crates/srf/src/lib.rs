@@ -8,7 +8,6 @@
 )]
 
 pub mod pytypes;
-mod scanner;
 mod srf_parser;
 mod srf_writer;
 mod types;
@@ -76,10 +75,7 @@ pub fn parse_srf(py: Python<'_>, buffer: PyBuffer<u8>) -> PyResult<Py<PySrfFile>
     if bytes.is_empty() {
         return Err(PyValueError::new_err("Cannot parse SRF from empty buffer"));
     }
-    let srf_file = py.detach(|| {
-        let mut scanner = scanner::Scanner::new(bytes);
-        srf_parser::read_srf_struct(&mut scanner).or_else(marshall_value_error)
-    })?;
+    let srf_file = py.detach(|| srf_parser::read_srf(bytes).or_else(marshall_value_error))?;
     Ok(srf_file.into_pyobject(py)?.unbind())
 }
 

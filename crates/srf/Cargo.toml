@@ -11,7 +11,6 @@ name = "srf_parser"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-itertools = "0.15"
 lexical-core = "1.0.6"
 ndarray = "0.17"
 nom = "8"

@@ -1,12 +1,28 @@
+//! The SRF grammar, as nom parsers over the file's bytes.
+//!
+//! Numbers go through [`number`], which hands the stream straight to
+//! `lexical_core::parse_partial`: it recognises and converts in one pass, where nom's
+//! `float` recognises, checks UTF-8 and then parses again through `str::parse`. On
+//! 6.9 million numbers that was 0.113 s against 0.268 s, and number conversion is most
+//! of a parse.
+//!
+//! A pulse's samples stream from [`number`] straight into the CSR matrix, so a
+//! multi-gigabyte file is never also held as per-pulse temporaries.
+
 #![expect(
     clippy::similar_names,
     reason = "the vocabulary is the SRF format's -- slip/slipt1, srf/srf_file -- and \
               renaming for distinctness would move it away from the spec"
 )]
 
+use nom::bytes::complete::tag;
+use nom::character::complete::{line_ending, multispace0, not_line_ending, space0};
+use nom::error::{ContextError, ErrorKind, ParseError, context};
+use nom::multi::{count, many0_count};
+use nom::sequence::{preceded, terminated};
+use nom::{IResult, Parser};
 use thiserror::Error;
 
-use crate::scanner;
 use crate::types::{
     CsrMatrix, Point, PointV2, SrfFile, SrfMetadata, SrfMetadataV2, SrfMetadataVersioned, SrfPlane,
 };
@@ -17,22 +33,15 @@ pub enum Version {
     V2,
 }
 
-impl Version {
-    fn parse(line: &[u8]) -> Result<Self, SrfParseError> {
-        match line.trim_ascii() {
-            b"1.0" => Ok(Version::V1),
-            b"2.0" => Ok(Version::V2),
-            other => Err(SrfParseError::UnknownVersion(
-                String::from_utf8_lossy(other).into_owned(),
-            )),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum SrfParseError {
-    #[error(transparent)]
-    Scanner(#[from] scanner::ScannerError),
+    #[error("line {line}:{column}: expected {expected}, found \"{found}\"")]
+    Syntax {
+        line: usize,
+        column: usize,
+        expected: &'static str,
+        found: String,
+    },
     #[error("unknown SRF version: {0}")]
     UnknownVersion(String),
     #[error("PLANE headers expect {expected} total points but POINTS declares {declared}")]
@@ -47,25 +56,145 @@ pub enum SrfParseError {
     UnsupportedSlipArray(usize),
 }
 
-fn read_srf_header(
-    scanner: &mut scanner::Scanner,
-    plane_count: usize,
-) -> Result<Vec<SrfPlane>, SrfParseError> {
-    let mut plane_vec = Vec::new();
-    for _ in 0..plane_count {
-        let elon = scanner.next()?;
-        let elat = scanner.next()?;
-        let nstk = scanner.next()?;
-        let ndip = scanner.next()?;
-        let len = scanner.next()?;
-        let wid = scanner.next()?;
-        scanner.expect_end_of_line()?;
-        let stk = scanner.next()?;
-        let dip = scanner.next()?;
-        let dtop = scanner.next()?;
-        let shyp = scanner.next()?;
-        let dhyp = scanner.next()?;
-        plane_vec.push(SrfPlane {
+/// Why a parser stopped: the bytes it stopped at and what it wanted there, or a file
+/// that is well formed but breaks the format's rules.
+#[derive(Debug)]
+enum Fault<'a> {
+    Syntax {
+        at: &'a [u8],
+        expected: &'static str,
+    },
+    // Boxed so every number read, millions per file, returns a small `Result`.
+    Srf(Box<SrfParseError>),
+}
+
+impl<'a> ParseError<&'a [u8]> for Fault<'a> {
+    /// Every leaf parser names what it wanted through `context`, so this is only the
+    /// fallback for one that doesn't.
+    fn from_error_kind(at: &'a [u8], _: ErrorKind) -> Self {
+        Fault::Syntax {
+            at,
+            expected: "valid SRF syntax",
+        }
+    }
+
+    fn append(_: &'a [u8], _: ErrorKind, other: Self) -> Self {
+        other
+    }
+}
+
+impl<'a> ContextError<&'a [u8]> for Fault<'a> {
+    fn add_context(_: &'a [u8], expected: &'static str, other: Self) -> Self {
+        match other {
+            Fault::Syntax { at, .. } => Fault::Syntax { at, expected },
+            srf @ Fault::Srf(_) => srf,
+        }
+    }
+}
+
+impl Fault<'_> {
+    /// The public error, with a syntax fault's position worked out from what's left.
+    ///
+    /// Counted here rather than tracked during the parse: this is the error path, which
+    /// runs once.
+    #[expect(
+        clippy::naive_bytecount,
+        reason = "the error path, once per parse; a bytecount dependency for that is \
+                  more than it is worth"
+    )]
+    fn into_error(self, input: &[u8]) -> SrfParseError {
+        match self {
+            Fault::Srf(error) => *error,
+            Fault::Syntax { at, expected } => {
+                let consumed = &input[..input.len() - at.len()];
+                let line = consumed.iter().filter(|&&c| c == b'\n').count() + 1;
+                let column = consumed
+                    .iter()
+                    .rposition(|&c| c == b'\n')
+                    .map_or(consumed.len() + 1, |newline| consumed.len() - newline);
+                let token = at.split(u8::is_ascii_whitespace).next().unwrap_or_default();
+                SrfParseError::Syntax {
+                    line,
+                    column,
+                    expected,
+                    found: if at.is_empty() {
+                        "end of input".to_owned()
+                    } else {
+                        String::from_utf8_lossy(&token[..token.len().min(32)]).into_owned()
+                    },
+                }
+            }
+        }
+    }
+}
+
+type Parsed<'a, T> = IResult<&'a [u8], T, Fault<'a>>;
+
+/// Stop the parse on a rule the format breaks, which no alternative could rescue.
+fn refuse<'a, T>(error: SrfParseError) -> Parsed<'a, T> {
+    Err(nom::Err::Failure(Fault::Srf(Box::new(error))))
+}
+
+/// One number, after any whitespace, read by `lexical_core` straight off the stream.
+#[expect(
+    clippy::inline_always,
+    reason = "measured: without it a 234 MiB file parses at 323 MiB/s, with it 346"
+)]
+#[inline(always)]
+fn number<T: lexical_core::FromLexical>(input: &[u8]) -> Parsed<'_, T> {
+    let input = input.trim_ascii_start();
+    match lexical_core::parse_partial(input) {
+        Ok((value, read)) => Ok((&input[read..], value)),
+        Err(_) => Err(nom::Err::Error(Fault::Syntax {
+            at: input,
+            expected: "a number",
+        })),
+    }
+}
+
+/// The rest of a line, which must be blank, and its newline.
+fn end_of_line(input: &[u8]) -> Parsed<'_, ()> {
+    context("the end of the line", preceded(space0, line_ending))
+        .map(|_| ())
+        .parse(input)
+}
+
+/// An exact keyword, after any whitespace.
+fn keyword<'a>(word: &'static str) -> impl Parser<&'a [u8], Output = (), Error = Fault<'a>> {
+    context(word, preceded(multispace0, tag(word.as_bytes()))).map(|_| ())
+}
+
+fn version(input: &[u8]) -> Parsed<'_, Version> {
+    let (rest, line) =
+        context("a version line", terminated(not_line_ending, line_ending)).parse(input)?;
+    match line.trim_ascii() {
+        b"1.0" => Ok((rest, Version::V1)),
+        b"2.0" => Ok((rest, Version::V2)),
+        other => refuse(SrfParseError::UnknownVersion(
+            String::from_utf8_lossy(other).into_owned(),
+        )),
+    }
+}
+
+/// Comment lines, which a version 2 file may have between its version and `PLANE`.
+fn comments(input: &[u8]) -> Parsed<'_, ()> {
+    many0_count(preceded(
+        multispace0,
+        (tag(&b"#"[..]), not_line_ending, line_ending),
+    ))
+    .map(|_| ())
+    .parse(input)
+}
+
+fn plane(input: &[u8]) -> Parsed<'_, SrfPlane> {
+    let (input, (elon, elat, nstk, ndip, len, wid)) =
+        (number, number, number, number, number, number).parse(input)?;
+    let (input, ()) = end_of_line(input)?;
+    let (input, (stk, dip, dtop, shyp, dhyp)) =
+        (number, number, number, number, number).parse(input)?;
+    Ok((
+        input,
+        SrfPlane {
             elon,
             elat,
             nstk,
@@ -77,9 +206,14 @@ fn read_srf_header(
             dtop,
             shyp,
             dhyp,
-        });
-    }
-    Ok(plane_vec)
+        },
+    ))
+}
+
+fn planes(input: &[u8]) -> Parsed<'_, Vec<SrfPlane>> {
+    let (input, ()) = keyword("PLANE").parse(input)?;
+    let (input, planes) = number::<usize>(input)?;
+    count(plane, planes).parse(input)
 }
 
 // Slip values dominate SRF files, and EMOD3D writes them fixed-width (%13.5e
@@ -124,64 +258,84 @@ impl PointHeader {
 }
 
 // Common point header values for both V1 and V2.
-fn read_point_header(scanner: &mut scanner::Scanner) -> Result<PointHeader, SrfParseError> {
-    Ok(PointHeader {
-        lon: scanner.next()?,
-        lat: scanner.next()?,
-        dep: scanner.next()?,
-        stk: scanner.next()?,
-        dip: scanner.next()?,
-        area: scanner.next()?,
-        tinit: scanner.next()?,
-        dt: scanner.next()?,
-    })
+fn point_header(input: &[u8]) -> Parsed<'_, PointHeader> {
+    (
+        number, number, number, number, number, number, number, number,
+    )
+        .map(|(lon, lat, dep, stk, dip, area, tinit, dt)| PointHeader {
+            lon,
+            lat,
+            dep,
+            stk,
+            dip,
+            area,
+            tinit,
+            dt,
+        })
+        .parse(input)
 }
 
-/// Read one point's slip-rate pulse into the matrix.
+/// The slip line's opening `rake slip1 nt1`, and the rise time `nt1` samples make.
+fn slip_line(input: &[u8], dt: f32) -> Parsed<'_, (f32, f32, usize, f32)> {
+    let (input, (rake, slip1, nt)) = (number, number, number::<usize>).parse(input)?;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sample counts are far below 2^24; the format stores them as text"
+    )]
+    let rise = (nt as f32) * dt;
+    Ok((input, (rake, slip1, nt, rise)))
+}
+
+/// One point's slip-rate pulse, streamed into the matrix.
 ///
-/// It no longer needs `tinit` or `dt`: the columns are relative to the pulse, and
-/// the onset stays the float already read into the metadata. See `CsrMatrix::add_row`.
-fn read_slip_row(
-    scanner: &mut scanner::Scanner,
-    slipt1: &mut CsrMatrix,
-    nt: usize,
-) -> Result<(), SrfParseError> {
-    let _slip2 = scanner.next::<f32>()?;
-    let nt2 = scanner.next::<usize>()?;
+/// The columns are relative to the pulse, and the onset stays the float already read
+/// into the metadata. See `CsrMatrix::add_row`.
+fn slip_row<'a>(input: &'a [u8], slipt1: &mut CsrMatrix, nt: usize) -> Parsed<'a, ()> {
+    let (input, (_slip2, nt2, _slip3, nt3)) = (
+        number::<f32>,
+        number::<usize>,
+        number::<f32>,
+        number::<usize>,
+    )
+        .parse(input)?;
     if nt2 != 0 {
-        return Err(SrfParseError::UnsupportedSlipArray(2));
+        return refuse(SrfParseError::UnsupportedSlipArray(2));
     }
-    let _slip3 = scanner.next::<f32>()?;
-
-    let nt3 = scanner.next::<usize>()?;
     if nt3 != 0 {
-        return Err(SrfParseError::UnsupportedSlipArray(3));
+        return refuse(SrfParseError::UnsupportedSlipArray(3));
     }
-    itertools::process_results((0..nt).map(|_| scanner.next()), |clean_iter| {
-        slipt1.add_row(clean_iter);
-    })?;
-    Ok(())
+    let (mut rest, mut failure) = (input, None);
+    let samples = std::iter::from_fn(|| match number::<f32>(rest) {
+        Ok((after, sample)) => {
+            rest = after;
+            Some(sample)
+        }
+        Err(error) => {
+            failure = Some(error);
+            None
+        }
+    });
+    slipt1.add_row(samples.take(nt));
+    match failure {
+        Some(error) => Err(error),
+        None => Ok((rest, ())),
+    }
 }
 
-fn read_srf_points_v1(
-    planes: &[SrfPlane],
-    scanner: &mut scanner::Scanner,
-) -> Result<(SrfMetadata, CsrMatrix), SrfParseError> {
-    scanner.skip_token(b"POINTS")?;
-    let plane_point_count = planes.iter().map(super::types::SrfPlane::points).sum();
-    let point_count = scanner.next()?;
-    if point_count != plane_point_count {
-        return Err(SrfParseError::PointCountMismatch {
-            declared: point_count,
-            expected: plane_point_count,
-        });
+fn points_v1<'a>(input: &'a [u8], planes: &[SrfPlane]) -> Parsed<'a, (SrfMetadata, CsrMatrix)> {
+    let (mut input, ()) = keyword("POINTS").parse(input)?;
+    let expected = planes.iter().map(SrfPlane::points).sum();
+    let declared;
+    (input, declared) = number(input)?;
+    if declared != expected {
+        return refuse(SrfParseError::PointCountMismatch { declared, expected });
     }
-    let slipt1_capacity = scanner.remaining() / APPROX_BYTES_PER_SLIP_VALUE;
-    let mut metadata = SrfMetadata::with_capacity(point_count);
-    let mut slipt1 = CsrMatrix::new(point_count, slipt1_capacity);
+    let mut metadata = SrfMetadata::with_capacity(declared);
+    let mut slipt1 = CsrMatrix::new(declared, input.len() / APPROX_BYTES_PER_SLIP_VALUE);
 
-    for _ in 0..point_count {
-        let header = read_point_header(scanner)?;
+    for _ in 0..declared {
+        let header;
+        (input, header) = point_header(input)?;
         // technically the read_srf routines in EMOD3D don't need to have a
         // newline here, but requiring one distinguishes a mislabelled
         // version 1.0 SRF and a version 2.0 SRF because EOL conveniently
@@ -190,107 +344,93 @@ fn read_srf_points_v1(
         //
         // - read_srf (in the srf_subs.c versions): reads the floats with scanf(), which tolerates newlines.
         // - write_srf (same files): always writes a newline after the header (header + vs + density in SRF 2.0).
-        scanner.expect_end_of_line()?;
-        let rake = scanner.next()?;
-        let slip1 = scanner.next()?;
-        let nt = scanner.next::<usize>()?;
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "sample counts are far below 2^24; the format stores them as text"
-        )]
-        let rise = (nt as f32) * header.dt;
-
+        (input, ()) = end_of_line(input)?;
+        let (rake, slip1, nt, rise);
+        (input, (rake, slip1, nt, rise)) = slip_line(input, header.dt)?;
         metadata.push(&header.into_point(rake, slip1, rise));
-
-        read_slip_row(scanner, &mut slipt1, nt)?;
+        (input, ()) = slip_row(input, &mut slipt1, nt)?;
     }
-    Ok((metadata, slipt1))
+    Ok((input, (metadata, slipt1)))
 }
 
-fn skip_comments(scanner: &mut scanner::Scanner) -> Result<(), SrfParseError> {
-    scanner.skip_spaces()?;
-    while scanner.peek()? == b'#' {
-        let _ = scanner.line()?;
-        // Whitespace could legally appear here, but this parser accepts only a strict subset.
-    }
-    Ok(())
-}
-
-fn read_srf_points_v2(
+fn points_v2<'a>(
+    mut input: &'a [u8],
     planes: &[SrfPlane],
-    scanner: &mut scanner::Scanner,
-) -> Result<(SrfMetadataV2, CsrMatrix), SrfParseError> {
-    let point_count = planes.iter().map(super::types::SrfPlane::points).sum();
-    let slipt1_capacity = scanner.remaining() / APPROX_BYTES_PER_SLIP_VALUE;
+) -> Parsed<'a, (SrfMetadataV2, CsrMatrix)> {
+    let total = planes.iter().map(SrfPlane::points).sum();
+    let mut metadata = SrfMetadataV2::with_capacity(total);
+    let mut slipt1 = CsrMatrix::new(total, input.len() / APPROX_BYTES_PER_SLIP_VALUE);
 
-    let mut metadata = SrfMetadataV2::with_capacity(point_count);
-    let mut slipt1 = CsrMatrix::new(point_count, slipt1_capacity);
-
-    for (i, plane) in planes.iter().enumerate() {
-        scanner.skip_token(b"POINTS")?;
-        let plane_point_count = scanner.next()?;
-        if plane.points() != plane_point_count {
-            return Err(SrfParseError::PlanePointCountMismatch {
-                plane: i,
-                declared: plane_point_count,
-                expected: plane.points(),
+    for (plane, header) in planes.iter().enumerate() {
+        (input, ()) = keyword("POINTS").parse(input)?;
+        let declared;
+        (input, declared) = number(input)?;
+        if declared != header.points() {
+            return refuse(SrfParseError::PlanePointCountMismatch {
+                plane,
+                declared,
+                expected: header.points(),
             });
         }
-
-        for _ in 0..plane_point_count {
-            let header = read_point_header(scanner)?;
-            let vs = scanner.next()?;
-            let density = scanner.next()?;
+        for _ in 0..declared {
+            let (point, vs, density);
+            (input, point) = point_header(input)?;
+            (input, (vs, density)) = (number, number).parse(input)?;
             // Like the V1 parser, expecting EOL here helps detect mangled SRFs
-            scanner.expect_end_of_line()?;
-            let rake = scanner.next()?;
-            let slip1 = scanner.next()?;
-
-            let nt = scanner.next::<usize>()?;
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "sample counts are far below 2^24 and the format stores them as text"
-            )]
-            let rise = (nt as f32) * header.dt;
-
+            (input, ()) = end_of_line(input)?;
+            let (rake, slip1, nt, rise);
+            (input, (rake, slip1, nt, rise)) = slip_line(input, point.dt)?;
             metadata.push(&PointV2 {
-                base: header.into_point(rake, slip1, rise),
+                base: point.into_point(rake, slip1, rise),
                 vs,
                 density,
             });
-            read_slip_row(scanner, &mut slipt1, nt)?;
+            (input, ()) = slip_row(input, &mut slipt1, nt)?;
         }
     }
-    Ok((metadata, slipt1))
+    Ok((input, (metadata, slipt1)))
 }
 
-pub fn read_srf_struct(scanner: &mut scanner::Scanner) -> Result<SrfFile, SrfParseError> {
-    let version = Version::parse(scanner.line()?)?;
+fn srf(input: &[u8]) -> Parsed<'_, SrfFile> {
+    let (input, version) = version(input)?;
     // Comments can only occur between the version indicator and the PLANE token.
-    if version == Version::V2 {
-        skip_comments(scanner)?;
-    }
-
-    scanner.skip_token(b"PLANE")?;
-    let plane_count: usize = scanner.next()?;
-    let planes = read_srf_header(scanner, plane_count)?;
-
-    let (metadata, slipt1) = match version {
+    let (input, ()) = match version {
+        Version::V1 => (input, ()),
+        Version::V2 => comments(input)?,
+    };
+    let (input, planes) = planes(input)?;
+    let (input, (metadata, slipt1)) = match version {
         Version::V1 => {
-            let (metadata, slipt1) = read_srf_points_v1(&planes, scanner)?;
-            (SrfMetadataVersioned::V1(metadata), slipt1)
+            let (input, (metadata, slipt1)) = points_v1(input, &planes)?;
+            (input, (SrfMetadataVersioned::V1(metadata), slipt1))
         }
         Version::V2 => {
-            let (metadata, slipt1) = read_srf_points_v2(&planes, scanner)?;
-            (SrfMetadataVersioned::V2(metadata), slipt1)
+            let (input, (metadata, slipt1)) = points_v2(input, &planes)?;
+            (input, (SrfMetadataVersioned::V2(metadata), slipt1))
         }
     };
+    Ok((
+        input,
+        SrfFile {
+            planes,
+            metadata,
+            slipt1,
+        },
+    ))
+}
 
-    Ok(SrfFile {
-        planes,
-        metadata,
-        slipt1,
-    })
+/// Parse a whole SRF.
+///
+/// # Errors
+///
+/// [`SrfParseError`] for bytes that aren't an SRF this parser reads, with the line and
+/// column of a syntax error.
+pub fn read_srf(input: &[u8]) -> Result<SrfFile, SrfParseError> {
+    match srf(input) {
+        Ok((_, file)) => Ok(file),
+        Err(nom::Err::Error(fault) | nom::Err::Failure(fault)) => Err(fault.into_error(input)),
+        Err(nom::Err::Incomplete(_)) => unreachable!("every parser here is complete"),
+    }
 }
 
 #[cfg(test)]
@@ -323,8 +463,7 @@ POINTS 2\n\
 
     #[test]
     fn parses_v1() {
-        let mut scanner = scanner::Scanner::new(SRF_V1);
-        let srf = read_srf_struct(&mut scanner).unwrap();
+        let srf = read_srf(SRF_V1).unwrap();
         assert_eq!(srf.planes.len(), 1);
         let metadata = match &srf.metadata {
             SrfMetadataVersioned::V1(metadata) => metadata,
@@ -339,8 +478,7 @@ POINTS 2\n\
 
     #[test]
     fn parses_v2() {
-        let mut scanner = scanner::Scanner::new(SRF_V2);
-        let srf = read_srf_struct(&mut scanner).unwrap();
+        let srf = read_srf(SRF_V2).unwrap();
         let metadata = match &srf.metadata {
             SrfMetadataVersioned::V2(metadata) => metadata,
             SrfMetadataVersioned::V1(_) => panic!("expected V2 metadata"),
@@ -370,15 +508,13 @@ POINTS 1\n\
 
     #[test]
     fn rejects_unknown_version() {
-        let mut scanner = scanner::Scanner::new(b"3.0\nPLANE 1\n");
-        let err = read_srf_struct(&mut scanner).unwrap_err();
+        let err = read_srf(b"3.0\nPLANE 1\n").unwrap_err();
         assert!(matches!(err, SrfParseError::UnknownVersion(version) if version == "3.0"));
     }
 
     #[test]
     fn parses_v2_with_multiple_planes() {
-        let mut scanner = scanner::Scanner::new(SRF_V2_TWO_PLANES);
-        let srf = read_srf_struct(&mut scanner).unwrap();
+        let srf = read_srf(SRF_V2_TWO_PLANES).unwrap();
         assert_eq!(srf.planes.len(), 2);
         let metadata = match &srf.metadata {
             SrfMetadataVersioned::V2(metadata) => metadata,
@@ -407,8 +543,7 @@ POINTS 2\n\
 
     #[test]
     fn parses_v1_with_multiple_planes() {
-        let mut scanner = scanner::Scanner::new(SRF_V1_TWO_PLANES);
-        let srf = read_srf_struct(&mut scanner).unwrap();
+        let srf = read_srf(SRF_V1_TWO_PLANES).unwrap();
         assert_eq!(srf.planes.len(), 2);
         let metadata = match &srf.metadata {
             SrfMetadataVersioned::V1(metadata) => metadata,
@@ -423,8 +558,7 @@ POINTS 2\n\
     fn rejects_v1_point_count_mismatch() {
         // Plane declares 2x1 points but POINTS declares 3.
         let data = replace_once(SRF_V1, b"POINTS 2", b"POINTS 3");
-        let mut scanner = scanner::Scanner::new(&data);
-        let err = read_srf_struct(&mut scanner).unwrap_err();
+        let err = read_srf(&data).unwrap_err();
         assert!(matches!(
             err,
             SrfParseError::PointCountMismatch {
@@ -439,8 +573,7 @@ POINTS 2\n\
         // Second plane is 1x1 but its POINTS block declares 2; the first
         // plane must parse cleanly before the mismatch can fail it.
         let data = replace_once(SRF_V2_TWO_PLANES, b"POINTS 1\n0.2", b"POINTS 2\n0.2");
-        let mut scanner = scanner::Scanner::new(&data);
-        let err = read_srf_struct(&mut scanner).unwrap_err();
+        let err = read_srf(&data).unwrap_err();
         assert!(matches!(
             err,
             SrfParseError::PlanePointCountMismatch {
@@ -457,11 +590,9 @@ POINTS 2\n\
         // float), and not every prefix errors. None may panic, though, and a cut
         // mid-record must error.
         for len in 0..SRF_V1.len() {
-            let mut scanner = scanner::Scanner::new(&SRF_V1[..len]);
-            let _ = read_srf_struct(&mut scanner);
+            let _ = read_srf(&SRF_V1[..len]);
         }
-        let mut scanner = scanner::Scanner::new(&SRF_V1[..SRF_V1.len() / 2]);
-        assert!(read_srf_struct(&mut scanner).is_err());
+        assert!(read_srf(&SRF_V1[..SRF_V1.len() / 2]).is_err());
     }
 
     #[test]
@@ -470,11 +601,13 @@ POINTS 2\n\
         // so on v1 data it swallows the v1 line's rake/slip1 tokens and the
         // expect_end_of_line() check right after doesn't find a newline.
         let data = replace_once(SRF_V1, b"1.0\n", b"2.0\n");
-        let mut scanner = scanner::Scanner::new(&data);
-        let err = read_srf_struct(&mut scanner).unwrap_err();
+        let err = read_srf(&data).unwrap_err();
         assert!(matches!(
             err,
-            SrfParseError::Scanner(scanner::ScannerError::NoNewlineFound { .. })
+            SrfParseError::Syntax {
+                expected: "the end of the line",
+                ..
+            }
         ));
     }
 
@@ -483,30 +616,67 @@ POINTS 2\n\
         // read_srf_points_v1 checks for end-of-line right after the point
         // header, but v2 data still has vs/density left on that same line.
         let data = replace_once(SRF_V2, b"2.0\n", b"1.0\n");
-        let mut scanner = scanner::Scanner::new(&data);
-        let err = read_srf_struct(&mut scanner).unwrap_err();
+        let err = read_srf(&data).unwrap_err();
         assert!(matches!(
             err,
-            SrfParseError::Scanner(scanner::ScannerError::NoNewlineFound { .. })
+            SrfParseError::Syntax {
+                expected: "the end of the line",
+                ..
+            }
         ));
     }
 
     #[test]
     fn version_line_tolerates_surrounding_whitespace() {
         let data = replace_once(SRF_V1, b"1.0\n", b"1.0 \r\n");
-        let mut scanner = scanner::Scanner::new(&data);
-        assert!(read_srf_struct(&mut scanner).is_ok());
+        assert!(read_srf(&data).is_ok());
+    }
+
+    #[test]
+    fn a_syntax_error_names_its_line_column_and_token() {
+        // The second point's latitude, on line 9 after the 4 characters of "0.2 ".
+        let data = replace_once(SRF_V1, b"0.2 -43.1", b"0.2 abc");
+        let err = read_srf(&data).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                SrfParseError::Syntax {
+                    line: 9,
+                    column: 5,
+                    expected: "a number",
+                    found,
+                } if found == "abc"
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_pulse_is_a_syntax_error() {
+        // The first pulse promises three samples and the line holds two, so the third
+        // read lands on the next point's header and the counts no longer line up.
+        let data = replace_once(SRF_V1, b"0.1 0.2 0.3\n", b"0.1 0.2\n");
+        assert!(matches!(
+            read_srf(&data).unwrap_err(),
+            SrfParseError::Syntax { .. }
+        ));
     }
 
     const SRF_BAD_PLANE_HEADER: &[u8] = b"0.0 0.0 2 1 4.0 2.0 90.0 45.0 0.0 0.0 1.0";
 
     #[test]
     fn plane_header_rejects_no_newline() {
-        let mut scanner = scanner::Scanner::new(SRF_BAD_PLANE_HEADER);
-        let err = read_srf_header(&mut scanner, 1).unwrap_err();
+        let err = plane(SRF_BAD_PLANE_HEADER).unwrap_err();
+        let nom::Err::Error(fault) = err else {
+            panic!("expected a recoverable error, got {err:?}");
+        };
+        let err = fault.into_error(SRF_BAD_PLANE_HEADER);
         assert!(matches!(
             err,
-            SrfParseError::Scanner(scanner::ScannerError::NoNewlineFound { .. })
+            SrfParseError::Syntax {
+                expected: "the end of the line",
+                ..
+            }
         ));
     }
 
@@ -533,7 +703,7 @@ POINTS 2\n\
         let mut points = 0;
         for _ in 0..RUNS {
             let start = std::time::Instant::now();
-            let srf = read_srf_struct(&mut scanner::Scanner::new(&data)).expect("fixture parses");
+            let srf = read_srf(&data).expect("fixture parses");
             best = best.min(start.elapsed());
             points = match &srf.metadata {
                 SrfMetadataVersioned::V1(metadata) => metadata.lon.len(),

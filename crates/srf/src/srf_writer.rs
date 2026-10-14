@@ -267,8 +267,7 @@ pub fn write_srf<W: Write, S: AsRef<[f32]>, R: AsRef<[usize]>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scanner::Scanner;
-    use crate::srf_parser::read_srf_struct;
+    use crate::srf_parser::read_srf;
     use crate::types::{CsrMatrixView, SrfFileView, SrfMetadataVersioned};
 
     const SRF_V1: &[u8] = b"1.0\n\
@@ -299,8 +298,7 @@ POINTS 1\n\
 0.4\n";
 
     fn parse(data: &[u8]) -> SrfFile {
-        let mut scanner = Scanner::new(data);
-        read_srf_struct(&mut scanner).unwrap()
+        read_srf(data).unwrap()
     }
 
     fn write_to_vec<S: AsRef<[f32]>, R: AsRef<[usize]>>(srf: &SrfFile<S, R>) -> Vec<u8> {
