@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=2",
     "pyproj>=3.6",
     "scipy>=1.13",
-    "ucgmsim-srf",
+    "ucgmsim-srf>=2026.10.1",
 ]
 
 [project.scripts]
@@ -129,10 +129,6 @@ skip = true
 [[tool.npdlint.scope]]
 match = { nested = true }
 skip = true
-
-[tool.uv.sources]
-# Not on PyPI yet.
-ucgmsim-srf = { git = "https://github.com/ucgmsim/srf", rev = "8a18ef6131c94df032681d2817a06b8b3055ce1d" }
 
 [tool.uv]
 cache-keys = [
