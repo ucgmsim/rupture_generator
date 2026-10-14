@@ -49,7 +49,10 @@ class Segment:
     name : str
         The section's name, unique within its file.
     dip_deg : float
-        Dip from horizontal in degrees, in ``(0, 90]``.
+        Dip from horizontal in degrees, in ``(0, 90]``, measured along the dip
+        direction.
+    dip_direction_deg : float
+        The azimuth every plane hangs toward, in degrees clockwise from north.
     upper_depth_km : float
         Depth of the top edge in kilometres.
     lower_depth_km : float
@@ -59,6 +62,7 @@ class Segment:
     trace: TraceArray
     name: str
     dip_deg: float
+    dip_direction_deg: float
     upper_depth_km: float
     lower_depth_km: float
 
@@ -143,6 +147,7 @@ class Segment:
             trace=trace,
             name=name,
             dip_deg=dip_deg,
+            dip_direction_deg=dip_direction_deg,
             upper_depth_km=upper_depth_km,
             lower_depth_km=lower_depth_km,
         )
@@ -150,8 +155,12 @@ class Segment:
     def to_geometry(self, transformer: pyproj.Transformer) -> Geometry:
         """Build the coarsest chart, with one cell per plane.
 
-        Each plane has its own column of nodes at the junction with the next, and
-        hangs perpendicular to its own projected strike. :meth:`Geometry.subdivide`
+        The bottom edge is the trace moved by one vector, ``depth / tan(dip)`` along
+        the dip direction and ``depth`` down, as the hazard model draws a section.
+        Every plane is then a parallelogram sheared toward the dip direction, and
+        neighbours share their junction from top to bottom. A plane whose strike isn't
+        square to the dip direction dips a little more steeply than ``dip_deg``, by
+        under 2 degrees on the Alpine and Hope sections. :meth:`Geometry.subdivide`
         cuts the chart to a working resolution.
 
         Parameters
@@ -167,28 +176,22 @@ class Segment:
         east_m, north_m = transformer.transform(self.trace[:, 0], self.trace[:, 1])
         trace_km = np.column_stack([east_m, north_m]) / 1000.0
 
-        steps_km = np.diff(trace_km, axis=0)
-        down_dip_rad = np.arctan2(steps_km[:, 0], steps_km[:, 1]) + np.pi / 2
+        # The dip direction is a true azimuth. Step 1 km along it from the trace's
+        # middle and project, so the projection's grid convergence is accounted for.
+        lon, lat = self.trace[len(self.trace) // 2]
+        ahead_lon, ahead_lat, _ = _GEOD.fwd(lon, lat, self.dip_direction_deg, 1000.0)
+        (x0, x1), (y0, y1) = transformer.transform([lon, ahead_lon], [lat, ahead_lat])
+        heading = np.array([x1 - x0, y1 - y0])
+        heading /= np.linalg.norm(heading)
+
         depth_km = self.lower_depth_km - self.upper_depth_km
         reach_km = depth_km / np.tan(np.radians(self.dip_deg))
-        down = np.column_stack(
-            [
-                reach_km * np.sin(down_dip_rad),
-                reach_km * np.cos(down_dip_rad),
-                np.full(len(steps_km), depth_km),
-            ]
-        )
+        down = np.array([*(reach_km * heading), depth_km])
 
-        surface = np.column_stack(
-            [trace_km, np.full(len(trace_km), self.upper_depth_km)]
-        )
-        # Each plane's near then far node, so each plane has its own nodes at the
-        # junction with the next.
-        top = np.stack([surface[:-1], surface[1:]], axis=1).reshape(-1, 3)
-        bottom = top + np.repeat(down, 2, axis=0)
-        planes = len(steps_km)
+        top = np.column_stack([trace_km, np.full(len(trace_km), self.upper_depth_km)])
+        planes = len(trace_km) - 1
         return Geometry(
-            nodes=np.stack([top, bottom]),
+            nodes=np.stack([top, top + down]),
             occupied=np.ones((1, planes), dtype=bool),
             plane_cells=(1,) * planes,
         )

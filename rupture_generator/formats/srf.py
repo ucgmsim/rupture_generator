@@ -65,12 +65,15 @@ def _planes(
 ) -> tuple[list[PySrfPlane], list[float]]:
     """One header per plane, and each plane's strike for its points.
 
-    ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
-    it gets a ``shyp`` and ``dhyp``, along strike from the plane's top centre and down
-    dip from its top edge, and every other plane gets neither.
+    An SRF plane is a rectangle, and a plane hung toward a dip direction is a
+    parallelogram sheared along strike. ``wid`` is its width square to strike, so
+    ``len * wid`` is its area. ``hypocentre`` is the realisation's if it lies on this
+    segment. The plane holding it gets a ``shyp`` and ``dhyp``, the hypocentre's
+    position along strike from the plane's top centre and down dip square to strike,
+    which a reader walking the rectangle lands on exactly. Every other plane gets
+    neither.
     """
     arc_km = geometry.strike_arc_km
-    width_km = float(geometry.dip_arc_km[-1])
     headers, strikes = [], []
     for columns, plane in zip(
         _plane_slices(geometry), geometry.plane_nodes(), strict=True
@@ -84,24 +87,30 @@ def _planes(
         centre_lon, centre_lat = _to_lon_lat(
             transformer, plane[0, [0, -1], 0].mean(), plane[0, [0, -1], 1].mean()
         )
+        length_km = end_km - start_km
+        dip_deg = float(geometry.dip_deg[:, columns].mean())
+        shyp = dhyp = NO_HYPOCENTRE
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
+        if on_plane:
+            assert hypocentre is not None
+            position = geometry.position_at(hypocentre.strike_km, hypocentre.dip_km)
+            along = plane[0, -1, :2] - plane[0, 0, :2]
+            centre = 0.5 * (plane[0, 0, :2] + plane[0, -1, :2])
+            shyp = float((position[:2] - centre) @ along / np.linalg.norm(along))
+            dhyp = float((position[2] - plane[0, 0, 2]) / np.sin(np.radians(dip_deg)))
         headers.append(
             PySrfPlane(
                 elon=float(centre_lon),
                 elat=float(centre_lat),
                 nstk=columns.stop - columns.start,
                 ndip=geometry.cells[0],
-                len=end_km - start_km,
-                wid=width_km,
+                len=length_km,
+                wid=float(geometry.areas_km2[:, columns].sum()) / length_km,
                 stk=strike_deg,
-                dip=float(geometry.dip_deg[:, columns].mean()),
+                dip=dip_deg,
                 dtop=float(plane[0, 0, 2]),
-                shyp=(
-                    hypocentre.strike_km - 0.5 * (start_km + end_km)
-                    if on_plane
-                    else NO_HYPOCENTRE
-                ),
-                dhyp=hypocentre.dip_km if on_plane else NO_HYPOCENTRE,
+                shyp=shyp,
+                dhyp=dhyp,
             )
         )
         strikes.append(strike_deg)

@@ -1,4 +1,5 @@
 import io
+import itertools
 import json
 
 import numpy as np
@@ -42,16 +43,46 @@ SECTION = {
 }
 
 
-def test_subdivided_planes_keep_their_area_and_dip():
-    coarse = geometry_from_geojson(
+def _bent():
+    return geometry_from_geojson(
         io.StringIO(json.dumps(SECTION)), pyproj.CRS("EPSG:2193")
     )["bent"]
-    fine = coarse.subdivide(0.5)
-    width_km = 15.0 / np.sin(np.radians(60.0))
-    assert fine.areas_km2.sum() == pytest.approx(
-        coarse.strike_arc_km[-1] * width_km, rel=1e-12
+
+
+def test_a_bent_trace_hangs_as_one_translated_sheet():
+    coarse = _bent()
+    # Every node drops by the same vector, so neighbouring planes share their
+    # junction all the way down and no seam opens.
+    down = coarse.nodes[1] - coarse.nodes[0]
+    np.testing.assert_allclose(down, down[:1].repeat(len(down), axis=0), atol=1e-12)
+    reach_km = 15.0 / np.tan(np.radians(60.0))
+    assert np.linalg.norm(down[0, :2]) == pytest.approx(reach_km, rel=1e-12)
+    assert down[0, 2] == pytest.approx(15.0)
+
+
+def test_a_plane_off_square_to_the_dip_direction_dips_more_steeply():
+    trace = np.array(SECTION["features"][0]["geometry"]["coordinates"])
+    strikes_deg, _, _ = pyproj.Geod(ellps="WGS84").inv(
+        trace[:-1, 0], trace[:-1, 1], trace[1:, 0], trace[1:, 1]
     )
-    np.testing.assert_allclose(fine.dip_deg, 60.0, atol=1e-9)
+    across = np.abs(np.sin(np.radians(300.0 - strikes_deg)))
+    expected = np.degrees(np.arctan(np.tan(np.radians(60.0)) / across))
+    # The trace dips to the left, so the section reverses it: its planes run backwards.
+    # The 0.05 degrees is the projection's grid convergence, which the geodesic
+    # strikes here don't see.
+    np.testing.assert_allclose(_bent().dip_deg[0], expected[::-1], atol=0.05)
+
+
+def test_subdivided_planes_keep_their_area_and_dip():
+    coarse = _bent()
+    fine = coarse.subdivide(0.5)
+    assert fine.areas_km2.sum() == pytest.approx(coarse.areas_km2.sum(), rel=1e-12)
+    for plane, (start, stop) in enumerate(
+        itertools.pairwise(np.cumsum([0, *fine.plane_cells]))
+    ):
+        np.testing.assert_allclose(
+            fine.dip_deg[:, start:stop], coarse.dip_deg[0, plane], atol=1e-9
+        )
     assert fine.plane_cells == (70, 67)
 
 

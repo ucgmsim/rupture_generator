@@ -118,7 +118,7 @@ def test_slip_cannot_follow_a_normal():
         ),
         (
             lambda: Geometry(np.zeros((2, 3, 3)), np.ones((1, 1), bool), (1,)),
-            "seam column",
+            "junction column",
         ),
         (
             lambda: Geometry(np.full((2, 2, 3), np.nan), np.ones((1, 1), bool), (1,)),
@@ -142,10 +142,6 @@ def test_a_chart_reads_as_its_shape():
 def test_a_position_off_the_chart_is_refused():
     with pytest.raises(RuptureGeneratorError, match="off the fault"):
         _plane().cell_at(5.0, 0.5)
-
-
-def test_one_plane_has_no_seams():
-    assert _plane().seam_divergence_km().shape == (0,)
 
 
 @pytest.mark.parametrize("spacing_km", [0.0, np.inf])

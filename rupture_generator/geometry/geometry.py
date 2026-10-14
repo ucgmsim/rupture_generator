@@ -2,20 +2,13 @@
 
 Positions are east, north and depth in kilometres in the realisation's projected CRS,
 depth positive down. ``i`` runs down dip and ``j`` along strike. A chart is one or more
-planes laid side by side along strike. Each plane has its **own** column of nodes at
-the junction with the next, so two planes hung from a bent trace meet along the trace
-and can separate below it, as a kinked fault does.
-
-Cell arrays are two-dimensional across the whole chart, ``(n_i, n_j)``, because the
-eikonal solve and the slip spectrum both work on an index grid with a uniform
-``(strike, dip)`` metric. The node positions hold the real geometry, from which the
-areas, the dips and the distances between charts follow.
+planes laid side by side along strike, each sharing its junction column of nodes with
+the next, so the chart is one continuous grid.
 """
 
 import dataclasses
 import functools
 import itertools
-from collections.abc import Callable
 
 import numpy as np
 import scipy as sp
@@ -23,7 +16,7 @@ import scipy as sp
 from rupture_generator.errors import RuptureGeneratorError
 
 type NodeArray = np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
-"""Node positions, ``(n_i+1, n_j+n_k, 3)`` for a chart of ``n_k`` planes."""
+"""Node positions, ``(n_i+1, n_j+1, 3)``."""
 
 type CellArray = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 """One value per cell, ``(n_i, n_j)``."""
@@ -35,7 +28,9 @@ type CellSelection = tuple[np.ndarray, np.ndarray]
 """Some cells named as two index arrays, ``(i, j)``: what indexing a field wants."""
 
 
-def _locate(position_km: float, arc_km: np.ndarray, *, axis: str) -> int:
+def _position_to_cell_index(
+    position_km: float, arc_km: np.ndarray, *, axis: str
+) -> int:
     """The cell containing a position along an arc of node distances.
 
     A position on an interior boundary belongs to the cell after it, and one on the far
@@ -52,10 +47,7 @@ def _locate(position_km: float, arc_km: np.ndarray, *, axis: str) -> int:
 
 
 def _resample(plane: NodeArray, rows: int, columns: int) -> NodeArray:
-    """One plane's nodes bilinearly resampled onto ``rows x columns`` cells.
-
-    Exact for a parallelogram, which is every plane hung from a straight trace segment.
-    """
+    """One plane's nodes bilinearly resampled onto ``rows x columns`` cells."""
     interpolate = sp.interpolate.RegularGridInterpolator(
         (np.arange(plane.shape[0]), np.arange(plane.shape[1])), plane
     )
@@ -74,12 +66,13 @@ class Geometry:
     Attributes
     ----------
     nodes : NodeArray
-        Node positions, ``(n_i+1, n_j+n_k, 3)``, kilometres in the projected CRS.
+        Node positions, ``(n_i+1, n_j+1, 3)``, kilometres in the projected CRS.
     occupied : CellMask
         Which cells are fault. All true for a chart built from planes. A resampled
         curved interface fills only part of its parameter rectangle.
     plane_cells : tuple of int
-        How many cell columns each plane has, in trace order.
+        How many cell columns each plane has, in trace order. Each plane writes as
+        its own SRF plane.
     """
 
     nodes: NodeArray
@@ -91,19 +84,19 @@ class Geometry:
         nodes = self.nodes
         if nodes.ndim != 3 or nodes.shape[-1] != 3 or nodes.shape[0] < 2:
             raise RuptureGeneratorError(
-                f"nodes are shaped {nodes.shape}; a chart wants (n_i+1, n_j+n_k, 3) "
+                f"nodes are shaped {nodes.shape}; a chart wants (n_i+1, n_j+1, 3) "
                 "with at least one row of cells"
             )
         if not self.plane_cells or min(self.plane_cells) < 1:
             raise RuptureGeneratorError(
                 f"every plane needs at least one cell column, got {self.plane_cells}"
             )
-        columns = sum(self.plane_cells) + len(self.plane_cells)
+        columns = sum(self.plane_cells) + 1
         if nodes.shape[1] != columns:
             raise RuptureGeneratorError(
                 f"{len(self.plane_cells)} planes of {self.plane_cells} cells want "
-                f"{columns} node columns, and the nodes have {nodes.shape[1]}; every "
-                "plane carries its own seam column"
+                f"{columns} node columns, and the nodes have {nodes.shape[1]}; "
+                "neighbouring planes share their junction column"
             )
         if not np.all(np.isfinite(nodes)):
             raise RuptureGeneratorError("nodes contain a NaN or infinity")
@@ -132,34 +125,29 @@ class Geometry:
     # ---------------------------------------------------------- one plane at a time
 
     def plane_nodes(self) -> list[NodeArray]:
-        """List each plane's own node grid, as a contiguous slice rather than a copy.
+        """List each plane's node grid, as a view rather than a copy.
+
+        Neighbouring views overlap in the junction column they share.
 
         Returns
         -------
         list of NodeArray
             One ``(n_i+1, columns+1, 3)`` view per plane, in trace order.
         """
-        starts = np.cumsum([0, *(cells + 1 for cells in self.plane_cells)])
-        return [self.nodes[:, start:stop] for start, stop in itertools.pairwise(starts)]
-
-    def _per_plane(self, cellwise: Callable[[NodeArray], np.ndarray]) -> np.ndarray:
-        """A cell quantity computed plane by plane and joined along strike."""
-        parts = [cellwise(plane) for plane in self.plane_nodes()]
-        return parts[0] if len(parts) == 1 else np.concatenate(parts, axis=1)
+        edges = np.cumsum([0, *self.plane_cells])
+        return [self.nodes[:, a : b + 1] for a, b in itertools.pairwise(edges)]
 
     @functools.cached_property
     def centres(self) -> NodeArray:
         """NodeArray: Cell centres, ``(n_i, n_j, 3)``, the mean of the corners."""
-        return self._per_plane(
-            lambda p: 0.25 * (p[:-1, :-1] + p[:-1, 1:] + p[1:, 1:] + p[1:, :-1])
-        )
+        p = self.nodes
+        return 0.25 * (p[:-1, :-1] + p[:-1, 1:] + p[1:, 1:] + p[1:, :-1])
 
     @functools.cached_property
     def _diagonal_normals(self) -> NodeArray:
         """NodeArray: ``AC x BD`` per cell, along its normal, twice its area long."""
-        return self._per_plane(
-            lambda p: np.cross(p[1:, 1:] - p[:-1, :-1], p[1:, :-1] - p[:-1, 1:])
-        )
+        p = self.nodes
+        return np.cross(p[1:, 1:] - p[:-1, :-1], p[1:, :-1] - p[:-1, 1:])
 
     @functools.cached_property
     def areas_km2(self) -> CellArray:
@@ -190,11 +178,9 @@ class Geometry:
         because a plane hung from a bent trace is a trapezoid and a resampled
         interface has no uniform spacing anywhere.
         """
-        strike, dip = [], []
-        for plane in self.plane_nodes():
-            strike.append(np.linalg.norm(np.diff(plane, axis=1), axis=-1).ravel())
-            dip.append(np.linalg.norm(np.diff(plane, axis=0), axis=-1).ravel())
-        return float(np.concatenate(strike).mean()), float(np.concatenate(dip).mean())
+        strike = np.linalg.norm(np.diff(self.nodes, axis=1), axis=-1)
+        dip = np.linalg.norm(np.diff(self.nodes, axis=0), axis=-1)
+        return float(strike.mean()), float(dip.mean())
 
     @functools.cached_property
     def strike_arc_km(self) -> np.ndarray:
@@ -203,11 +189,8 @@ class Geometry:
         Shaped ``(n_j+1,)``. With :attr:`dip_arc_km` it lets a hypocentre be two
         lengths rather than two indices.
         """
-        steps = [
-            np.linalg.norm(np.diff(plane[0], axis=0), axis=-1)
-            for plane in self.plane_nodes()
-        ]
-        return np.concatenate([[0.0], np.cumsum(np.concatenate(steps))])
+        steps = np.linalg.norm(np.diff(self.nodes[0], axis=0), axis=-1)
+        return np.concatenate([[0.0], np.cumsum(steps)])
 
     @functools.cached_property
     def dip_arc_km(self) -> np.ndarray:
@@ -236,27 +219,8 @@ class Geometry:
             For a position off the fault, naming the axis and the fault's extent.
         """
         return (
-            _locate(dip_km, self.dip_arc_km, axis="dip"),
-            _locate(strike_km, self.strike_arc_km, axis="strike"),
-        )
-
-    def seam_divergence_km(self) -> np.ndarray:
-        """Measure how far apart adjacent planes' shared edges run.
-
-        Planes hung from a bent trace meet along the trace and separate below it, by
-        1.285 km at the deepest row of the Hope example.
-
-        Returns
-        -------
-        np.ndarray
-            The largest separation down each junction between planes in kilometres,
-            ``(n_k-1,)``. Empty for one plane.
-        """
-        return np.array(
-            [
-                float(np.linalg.norm(near[:, -1] - far[:, 0], axis=-1).max())
-                for near, far in itertools.pairwise(self.plane_nodes())
-            ]
+            _position_to_cell_index(dip_km, self.dip_arc_km, axis="dip"),
+            _position_to_cell_index(strike_km, self.strike_arc_km, axis="strike"),
         )
 
     def subdivide(self, spacing_km: float) -> Geometry:
@@ -265,7 +229,7 @@ class Geometry:
         Bilinear interpolation over each plane's own nodes gives the new nodes, with
         the cell count along each plane rounded and at least one. The planes of one
         chart share a dip extent, so all of them take the row count the ``j = 0``
-        edge implies.
+        edge implies, and a junction column resamples the same from either side.
 
         Parameters
         ----------
@@ -296,12 +260,46 @@ class Geometry:
         for plane in self.plane_nodes():
             length_km = float(np.linalg.norm(np.diff(plane[0], axis=0), axis=-1).sum())
             columns.append(max(1, round(length_km / spacing_km)))
-            planes.append(_resample(plane, rows, columns[-1]))
+            resampled = _resample(plane, rows, columns[-1])
+            # Every plane after the first starts on the junction its neighbour ended on.
+            planes.append(resampled if not planes else resampled[:, 1:])
         return Geometry(
             nodes=np.concatenate(planes, axis=1),
             occupied=np.ones((rows, sum(columns)), dtype=bool),
             plane_cells=tuple(columns),
         )
+
+    def position_at(self, strike_km: float, dip_km: float) -> np.ndarray:
+        """Find where a position on the fault lies in space.
+
+        The position is read bilinearly within the cell :meth:`cell_at` finds, which
+        is exact on a planar cell.
+
+        Parameters
+        ----------
+        strike_km : float
+            Distance along strike from the chart's first top corner, in kilometres.
+        dip_km : float
+            Distance down dip from the top edge, in kilometres.
+
+        Returns
+        -------
+        np.ndarray
+            East, north and depth, ``(3,)``, in kilometres in the projected CRS.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a position off the fault, naming the axis and the fault's extent.
+        """
+        i, j = self.cell_at(strike_km, dip_km)
+        strike_arc, dip_arc = self.strike_arc_km, self.dip_arc_km
+        u = (strike_km - strike_arc[j]) / (strike_arc[j + 1] - strike_arc[j])
+        v = (dip_km - dip_arc[i]) / (dip_arc[i + 1] - dip_arc[i])
+        corners = self.nodes[i : i + 2, j : j + 2]
+        top = (1.0 - u) * corners[0, 0] + u * corners[0, 1]
+        bottom = (1.0 - u) * corners[1, 0] + u * corners[1, 1]
+        return (1.0 - v) * top + v * bottom
 
     # -------------------------------------------------------- between two charts
 
@@ -317,13 +315,9 @@ class Geometry:
         i, j = np.nonzero(
             self.occupied & ~sp.ndimage.binary_erosion(self.occupied, border_value=0)
         )
-        left = j + np.repeat(np.arange(self.planes), self.plane_cells)[j]
         nodes = self.nodes
         centres = 0.25 * (
-            nodes[i, left]
-            + nodes[i, left + 1]
-            + nodes[i + 1, left + 1]
-            + nodes[i + 1, left]
+            nodes[i, j] + nodes[i, j + 1] + nodes[i + 1, j + 1] + nodes[i + 1, j]
         )
         return (i, j), sp.spatial.cKDTree(centres)
 
