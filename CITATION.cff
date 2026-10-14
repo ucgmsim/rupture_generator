@@ -7,9 +7,11 @@ abstract: >-
   described in GeoJSON, and writes them as Standard Rupture Format files.
   A port and extension of SCEC BBP's genslip.
 authors:
-  - name: ucgmsim
   - family-names: Faulkner
     given-names: Jake
+    affiliation: University of Canterbury
+  - family-names: Bradley
+    given-names: Brendon
     affiliation: University of Canterbury
 repository-code: "https://github.com/ucgmsim/rupture_generator"
 url: "https://github.com/ucgmsim/rupture_generator"
