@@ -38,7 +38,7 @@ def test_the_version_is_the_installed_one():
 
 def test_a_record_round_trips(tmp_path, copied_example):
     loaded = rupture_config.load(copied_example)
-    location = tmp_path / "out" / "rupture.srf.toml"
+    location = tmp_path / "out" / "rupture.toml"
     location.write_text(run_record.run_record(copied_example, loaded, location))
     config, provenance = run_record.read_record(location)
     assert config == loaded
@@ -52,7 +52,7 @@ def test_a_record_round_trips(tmp_path, copied_example):
 
 
 def test_a_record_moved_with_its_inputs_still_runs(tmp_path, copied_example):
-    location = tmp_path / "out" / "rupture.srf.toml"
+    location = tmp_path / "out" / "rupture.toml"
     loaded = rupture_config.load(copied_example)
     location.write_text(run_record.run_record(copied_example, loaded, location))
     stated = tomllib.loads(location.read_text())["geometry"]["path"]
