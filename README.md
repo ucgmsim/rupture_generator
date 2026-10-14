@@ -9,7 +9,7 @@ A port and rework of `genslip` v5.6.2.
 ## Install
 
 ```sh
-uv sync                 # builds the two Rust extensions as part of the install
+uv sync                 # builds the Rust kernels as part of the install
 uv sync --extra vis     # adds the 3-D viewer
 ```
 
@@ -140,10 +140,11 @@ every other segment's fields bit-identical, and so does changing how fronts jump
 and square metres for area. The SRF format's centimetres appear only in
 `formats/srf.py`.
 
-**Rust for the hot kernels and the SRF codec.** `_kernels` exposes the eikonal solve,
-the slip-rate pulse synthesis and the circulant-embedding draw. They're stateless
-functions of arrays, and the defaults they use come from Python. Orchestration,
-configuration, geometry, and file handling are Python too.
+**Rust for the hot kernels.** `_kernels` exposes the eikonal solve, the slip-rate
+pulse synthesis and the circulant-embedding draw. They're stateless functions of
+arrays, and the defaults they use come from Python. Orchestration, configuration,
+geometry, and file handling are Python too. The SRF codec is a separate library,
+[`ucgmsim/srf`](https://github.com/ucgmsim/srf).
 
 **Errors say which kind of wrong.** Everything this package refuses on purpose raises
 `RuptureGeneratorError`. The command line reports that as a message and lets anything
@@ -169,10 +170,9 @@ rupture_generator/
     norta.py          Exact marginals, and the latent correlation behind them
     von_karman.py     The von Kármán correlation function
   formats/
-    srf.py            SRF 2.0 written and read, over the Rust codec
+    srf.py            SRF 2.0 written and read, over ucgmsim/srf
 crates/
   kernels/            eikonal_solve, synthesise_pulses, circulant_draw
-  srf/                SRF read and write
 ```
 
 ## Development

@@ -1,6 +1,6 @@
 default: test
 
-# The Python suite, then the doctests, then both Rust suites.
+# The Python suite, then the doctests, then the Rust suite.
 test: pytest cargo
 
 pytest:
@@ -9,7 +9,6 @@ pytest:
 
 cargo:
     cargo test --manifest-path crates/kernels/Cargo.toml
-    cargo test --manifest-path crates/srf/Cargo.toml
 
 lint: ty ruff clippy numpydoc
 
@@ -27,7 +26,6 @@ ruff:
 
 clippy:
     cargo clippy --manifest-path crates/kernels/Cargo.toml -- -D warnings
-    cargo clippy --manifest-path crates/srf/Cargo.toml -- -D warnings
 
 numpydoc:
     uv run numpydoc lint rupture_generator/*.py
