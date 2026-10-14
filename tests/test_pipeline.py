@@ -202,3 +202,15 @@ def test_high_slip_ruptures_early(scenario, ruptures):
         root.slip_m[occupied], (root.onset_s - front_s)[occupied]
     ).statistic
     assert rho < -0.3
+
+
+@pytest.mark.parametrize("seed", [-1, 1.5, True])
+def test_a_seed_that_is_not_a_non_negative_integer_is_refused(scenario, seed):
+    with pytest.raises(RuptureGeneratorError, match="non-negative integer"):
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            scenario.settings,
+            seed=seed,
+        )

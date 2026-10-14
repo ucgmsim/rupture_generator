@@ -43,6 +43,8 @@ def test_defaults_are_the_librarys():
             "propagation: has no variant with type = 'sample'",
         ),
         ("seed = 7\n", "", "seed: is missing"),
+        ("seed = 7\n", "seed = -7\n", "seed: a seed is a non-negative integer"),
+        ("seed = 7\n", "seed = 7.5\n", "seed: a seed is a non-negative integer"),
         (
             "centre_km = 2.0",
             'centre_km = "two"',

@@ -43,6 +43,7 @@ from rupture_generator.rupture.generator import (
     RuptureSettings,
     SlipSettings,
     TimingSettings,
+    check_seed,
 )
 from rupture_generator.rupture.medium import (
     Layers,
@@ -532,7 +533,7 @@ class RuptureConfig:
         ``[pulse]``.
     """
 
-    seed: int
+    seed: int = dataclasses.field(metadata={"deserialize": check_seed})
     geometry: GeometryConfig
     hypocentre: HypocentreConfig
     medium: MediumConfig

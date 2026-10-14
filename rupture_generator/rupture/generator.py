@@ -732,6 +732,29 @@ def generate_segment(
 # --------------------------------------------------------------- the whole system
 
 
+def check_seed(seed: object) -> int:
+    """Refuse a seed that isn't a non-negative integer.
+
+    Parameters
+    ----------
+    seed : object
+        The seed to check.
+
+    Returns
+    -------
+    int
+        The seed.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If ``seed`` is a boolean, a float or another non-integer, or negative.
+    """
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
+        raise RuptureGeneratorError(f"a seed is a non-negative integer, got {seed!r}")
+    return int(seed)
+
+
 def _segment_rng(seed: int, segment: str) -> np.random.Generator:
     """The generator one segment draws from, keyed by its **name**.
 
@@ -844,9 +867,10 @@ def generate(
     Raises
     ------
     RuptureGeneratorError
-        If a segment has no source, or the realisation has no hypocentre or no tree
-        to walk.
+        If the seed isn't a non-negative integer, a segment has no source, or the
+        realisation has no hypocentre or no tree to walk.
     """
+    seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
     if missing:
         raise RuptureGeneratorError(f"{missing} have no source")
@@ -891,6 +915,7 @@ __all__ = [
     "SegmentRupture",
     "SlipSettings",
     "TimingSettings",
+    "check_seed",
     "first_arrival",
     "generate",
     "generate_segment",
