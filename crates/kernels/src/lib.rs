@@ -83,8 +83,9 @@ fn eikonal_solve<'py>(
 /// Liu-Archuleta-Hartzell piecewise sinusoid; absent, a single-sample impulse. Returns `(offsets, samples)`:
 /// subfault `k`'s pulse is `samples[offsets[k]:offsets[k+1]]` in m/s, normalised so
 /// `dt_s * samples.sum()` recovers the slip. An empty row is a subfault that doesn't
-/// slip; a subfault that slips but whose rise time rounds to zero samples at `dt_s`
-/// is a `ValueError` naming it, never a silent zero.
+/// slip. A rise time under half a sample slips instantaneously, as the spike
+/// `[0, slip/dt, 0]`, and keeps all of its slip; with `beta`, a slipping subfault's
+/// negative or non-finite rise time is a `ValueError` naming it.
 #[pyfunction]
 #[pyo3(signature = (slip_m, rise_time_s, dt_s, beta=None))]
 fn synthesise_pulses<'py>(

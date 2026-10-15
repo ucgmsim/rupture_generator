@@ -6,8 +6,9 @@
 //! would satisfy all of it if it conserved slip and started and ended at rest, and if
 //! it grew more impulsive as `beta` fell. The properties test the physics, not the
 //! formula. They quantify over generated `(slip, rise time, dt, beta)`, including rise
-//! times *below* what `dt` can represent, because the refusal belongs to the contract
-//! as much as the pulse does.
+//! times *below* what `dt` can represent, because what happens to those, an
+//! instantaneous slip within one sample, belongs to the contract as much as the pulse
+//! does.
 
 mod common;
 
@@ -52,7 +53,7 @@ proptest! {
     /// moment come out right whichever shape the caller picks.
     #[test]
     fn every_slipping_subfault_conserves_its_slip(subfaults in resolvable_subfaults()) {
-        let csr = synthesise(&subfaults).expect("resolvable rise times never refuse");
+        let csr = synthesise(&subfaults).expect("finite rise times never refuse");
 
         prop_assert_eq!(csr.offsets.len(), subfaults.slip_m.len() + 1);
         prop_assert_eq!(csr.offsets[0], 0);
@@ -119,63 +120,51 @@ proptest! {
         }
     }
 
-    /// Every subfault whose slip exceeds the guard has a non-empty pulse, or the call
-    /// refuses and identifies a subfault whose rise time does round to zero samples.
+    /// Every subfault whose slip exceeds the guard keeps all of it, whatever its rise
+    /// time, and a rise time under half a sample slips instantaneously.
     ///
-    /// genslip silently drops subfaults whose rise time rounds to zero samples, and
-    /// their moment with them. Here an unrepresentable rise time is an error that
-    /// identifies the subfault, never a silent zero. Over rise times generated down to
-    /// zero, a slipping subfault either gets samples or appears in the error. The
-    /// margins (0.6/0.4 of a sample) pin down *when* each outcome must happen, clear
-    /// of the round-to-nearest boundary at half a sample.
+    /// genslip floors every rise time under `dt` to `dt`, a one-sample pulse. Here a
+    /// rise time that rounds to no samples gets the same three-point spike as one that
+    /// rounds to one. The kernel neither drops nor refuses a slipping subfault. Over
+    /// rise times generated down to zero, each slipping subfault conserves its slip,
+    /// and one safely under half a sample (0.4 of one, clear of the round-to-nearest
+    /// boundary) is exactly the spike.
     #[test]
-    fn a_slipping_subfault_is_never_silently_dropped(subfaults in adversarial_subfaults()) {
-        match synthesise(&subfaults) {
-            Ok(csr) => {
-                for (subfault, &slip) in subfaults.slip_m.iter().enumerate() {
-                    prop_assert_eq!(
-                        row(&csr, subfault).is_empty(),
-                        slip.abs() <= MIN_SLIP_M,
-                        "subfault {} with slip {} m and rise {} s at dt {}",
-                        subfault, slip, subfaults.rise_time_s[subfault], subfaults.dt_s
-                    );
-                }
-                // If any slipping subfault's rise time were safely below half a
-                // sample, the call should have refused instead.
-                for (subfault, &slip) in subfaults.slip_m.iter().enumerate() {
-                    prop_assert!(
-                        slip.abs() <= MIN_SLIP_M
-                            || subfaults.rise_time_s[subfault] >= 0.4 * subfaults.dt_s,
-                        "subfault {} slips {} m with a rise time of {} s at dt {} \
-                         and was not refused",
-                        subfault, slip, subfaults.rise_time_s[subfault], subfaults.dt_s
-                    );
-                }
+    fn a_slipping_subfault_is_never_dropped(subfaults in adversarial_subfaults()) {
+        let csr = synthesise(&subfaults).expect("finite rise times never refuse");
+        for (subfault, &slip) in subfaults.slip_m.iter().enumerate() {
+            let samples = row(&csr, subfault);
+            prop_assert_eq!(
+                samples.is_empty(),
+                slip.abs() <= MIN_SLIP_M,
+                "subfault {} with slip {} m and rise {} s at dt {}",
+                subfault, slip, subfaults.rise_time_s[subfault], subfaults.dt_s
+            );
+            if slip.abs() <= MIN_SLIP_M {
+                continue;
             }
-            Err(Error::UnrepresentableRiseTime { subfault, rise_time_s, dt_s }) => {
-                prop_assert!(
-                    subfaults.slip_m[subfault].abs() > MIN_SLIP_M,
-                    "the refusal names subfault {}, which does not slip",
-                    subfault
-                );
-                prop_assert_eq!(rise_time_s.to_bits(), subfaults.rise_time_s[subfault].to_bits());
-                prop_assert_eq!(dt_s.to_bits(), subfaults.dt_s.to_bits());
-                prop_assert!(
-                    rise_time_s < 0.6 * dt_s,
-                    "subfault {} was refused at rise {} s, dt {} s — a representable \
-                     rise time",
-                    subfault, rise_time_s, dt_s
+            let integral: f64 = samples.iter().map(|sample| sample * subfaults.dt_s).sum();
+            prop_assert!(
+                (integral - slip).abs() <= integral_round_trip(samples.len()) * slip.abs(),
+                "subfault {} integrates to {} m, not {} m",
+                subfault, integral, slip
+            );
+            if subfaults.rise_time_s[subfault] < 0.4 * subfaults.dt_s {
+                prop_assert_eq!(
+                    samples,
+                    &[0.0, slip / subfaults.dt_s, 0.0][..],
+                    "subfault {} at rise {} s, dt {} s",
+                    subfault, subfaults.rise_time_s[subfault], subfaults.dt_s
                 );
             }
-            Err(other) => prop_assert!(false, "unexpected refusal: {}", other),
         }
     }
 
     /// `delta` is the impulse `[0, slip/dt, 0]`, whatever the rise time says.
     ///
     /// Exactly the spike `oliu_p_into` substitutes for a pulse too short to resolve, and
-    /// this is that branch under its own name. It's also why the shape can never
-    /// refuse a rise time.
+    /// this is that branch under its own name. It never reads the rise time, so it
+    /// never refuses one.
     #[test]
     fn delta_is_the_impulse_whatever_the_rise_time(subfaults in adversarial_subfaults()) {
         let csr = pulse::synthesise_pulses(
@@ -233,8 +222,8 @@ fn a_smaller_beta_gives_a_more_impulsive_pulse() {
     );
 }
 
-/// Around one sample, the shape is a fixed spike rather than a computed curve, and
-/// the spike is exactly what `delta` produces.
+/// Around one sample and below it, the shape is a fixed spike rather than a computed
+/// curve, and the spike is exactly what `delta` produces.
 ///
 /// Pinned because it's a discontinuity in behaviour: computing the sinusoid here
 /// instead would change the shortest pulses on every fault without changing
@@ -248,6 +237,36 @@ fn a_pulse_of_about_one_sample_is_the_delta_spike() {
         .expect("delta represents every rise time");
     assert_eq!(oliu.samples, delta.samples);
     assert_eq!(oliu.samples, vec![0.0, slip / dt_s, 0.0]);
+}
+
+/// A rise time under half a sample, down to exactly zero, slips instantaneously: the
+/// subfault gets the one-sample spike and keeps all of its slip, as genslip's floor
+/// to `dt` gives it. The subfaults around it keep their computed pulses.
+#[test]
+fn a_rise_time_under_half_a_sample_slips_instantaneously() {
+    let dt_s = 0.005;
+    for rise in [0.2 * dt_s, 0.0] {
+        let slip = 3.18;
+        let csr = pulse::synthesise_pulses(
+            &[1.0, slip, 1.0],
+            &[1.0, rise, 1.0],
+            Shape::OliuP {
+                beta: &[0.2, 0.2, 0.2],
+            },
+            dt_s,
+        )
+        .expect("a short rise time is an instantaneous slip, not an error");
+        let spike = row(&csr, 1);
+        assert_eq!(spike, &[0.0, slip / dt_s, 0.0][..], "rise {rise} s");
+        let integral: f64 = spike.iter().map(|sample| sample * dt_s).sum();
+        assert!(
+            (integral - slip).abs() <= integral_round_trip(spike.len()) * slip,
+            "rise {rise} s integrates to {integral} m, not {slip} m"
+        );
+        for subfault in [0, 2] {
+            assert_eq!(row(&csr, subfault).len(), 201, "subfault {subfault}");
+        }
+    }
 }
 
 /// The integral keeps the slip's sign: a back-slipping subfault conserves its slip
@@ -268,30 +287,26 @@ fn a_negative_slip_is_conserved_with_its_sign() {
 // Refusals: the kernel names bad inputs rather than synthesising around them
 // ---------------------------------------------------------------------------------
 
-/// The refusal names everything the caller needs: which subfault, its rise time,
-/// and the interval that can't represent it.
+/// A slipping subfault's rise time must be a duration. A negative or non-finite one
+/// means something failed upstream, and the error gives the subfault's index rather
+/// than slipping it instantaneously. The kernel ignores a subfault that doesn't slip.
 #[test]
-fn the_unrepresentable_refusal_names_the_subfault() {
-    let error = pulse::synthesise_pulses(
-        &[1.0, 3.18, 1.0],
-        &[1.0, 0.002, 1.0],
-        Shape::OliuP {
-            beta: &[0.2, 0.2, 0.2],
-        },
-        0.005,
-    )
-    .expect_err("subfault 1 slips but cannot be sampled");
-    assert_eq!(
-        error,
-        Error::UnrepresentableRiseTime {
-            subfault: 1,
-            rise_time_s: 0.002,
-            dt_s: 0.005
-        }
-    );
-    let message = error.to_string();
-    for needed in ["subfault 1", "0.002", "0.005"] {
-        assert!(message.contains(needed), "missing {needed}: {message}");
+fn a_rise_time_that_is_no_duration_is_refused_by_subfault() {
+    for bad in [-0.001, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let error = pulse::synthesise_pulses(
+            &[0.0, 1.0, 1.0],
+            &[bad, 1.0, bad],
+            Shape::OliuP {
+                beta: &[0.2, 0.2, 0.2],
+            },
+            0.005,
+        )
+        .expect_err("a slipping subfault's rise time must be a duration");
+        assert!(
+            matches!(error, Error::RiseTimeOutOfRange { subfault: 2, .. }),
+            "rise = {bad} gave {error}"
+        );
+        assert!(error.to_string().contains("subfault 2"), "{error}");
     }
 }
 

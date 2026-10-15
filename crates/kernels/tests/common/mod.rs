@@ -146,13 +146,13 @@ fn subfaults(
 }
 
 /// Every rise time resolvable: at least 1.6 samples, so `oliu_p_into` always has a
-/// computed shape rather than its spike or its refusal.
+/// computed shape rather than its spike.
 pub fn resolvable_subfaults() -> impl Strategy<Value = Subfaults> {
     subfaults(1.6_f64..400.0)
 }
 
 /// Rise times down to zero, *below* what the sample interval can represent, which
-/// exercises the refusal contract and not just the happy path.
+/// exercises the instantaneous slip and not just the computed shape.
 pub fn adversarial_subfaults() -> impl Strategy<Value = Subfaults> {
     subfaults(0.0_f64..3.0)
 }
