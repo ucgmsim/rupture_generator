@@ -162,6 +162,8 @@ def test_moment_magnitude_is_hanks_kanamori_equation_7():
         Marginal("truncated_exponential", 0.9),
         Marginal("gamma", 0.75),
         Marginal("doubly_truncated_normal", 0.6, 4.3),
+        Marginal("truncated_normal", 0.5, minimum=0.2),
+        Marginal("gamma", 0.75, minimum=0.01),
     ],
 )
 def test_the_tabulated_transform_matches_the_quantile(marginal):
@@ -200,3 +202,92 @@ def test_the_doubly_truncated_normal_approaches_the_truncated_exponential():
     maximum = float(exponential.support()[1])
     # The fit stops widening its parent short of the limit, so it falls just below.
     assert 0.0 < 0.9 - _doubly_truncated_normal_ceiling(maximum) < 5e-4
+
+
+CUT_FAMILIES = [
+    ("truncated_normal", 0.5),
+    ("gamma", 0.75),
+    ("gamma", 0.2),
+    ("gamma", 2.0),
+]
+
+
+@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES)
+@pytest.mark.parametrize("fraction", [1e-6, 0.01, 0.5, 0.95])
+def test_a_cut_marginal_keeps_its_mean_and_spread_above_its_minimum(
+    family, spread, fraction
+):
+    from rupture_generator.sampling import largest_minimum
+    from rupture_generator.sampling.norta import NORTA_TAIL, _distribution
+
+    minimum = fraction * largest_minimum(family, spread)
+    marginal = Marginal(family, spread, minimum=minimum)
+    fitted = _distribution(marginal)
+    assert fitted.support()[0] == pytest.approx(minimum, rel=1e-9)
+    assert fitted.mean() == pytest.approx(1.0, abs=1e-9)
+    assert fitted.std() == pytest.approx(spread, rel=1e-7)
+    # The moments by quadrature over the quantile function, apart from the fit's own.
+    edges = (NORTA_TAIL, 1.0 - NORTA_TAIL)
+    mean = sp.integrate.quad(fitted.ppf, *edges, limit=400, epsabs=1e-11)[0]
+    square = sp.integrate.quad(
+        lambda quantile: fitted.ppf(quantile) ** 2, *edges, limit=400, epsabs=1e-11
+    )[0]
+    assert mean == pytest.approx(1.0, abs=1e-5)
+    assert np.sqrt(square - mean * mean) == pytest.approx(spread, rel=1e-4)
+    assert marginal.power_mean(1.0) == pytest.approx(1.0, abs=1e-6)
+    assert marginal.power_mean(2.0) == pytest.approx(1.0 + spread**2, rel=1e-3)
+    # The transform doesn't give a value under the cut.
+    drawn = marginal.apply(np.random.default_rng(1).standard_normal(200_000))
+    assert drawn.min() >= minimum * (1.0 - 1e-12)
+    assert drawn.mean() == pytest.approx(1.0, abs=0.01 * spread)
+
+
+# A gamma of spread 2 has shape 1/4 and puts 0.4% of its values under 1e-9, so even
+# that cut moves it measurably. The families here put almost none there.
+@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES[:3])
+def test_a_marginal_cut_at_almost_nothing_is_the_uncut_one(family, spread):
+    uncut = Marginal(family, spread)
+    assert Marginal(family, spread, minimum=0.0) == uncut
+    latent = np.linspace(-5.0, 5.0, 1001)
+    np.testing.assert_allclose(
+        Marginal(family, spread, minimum=1e-9).apply(latent),
+        uncut.apply(latent),
+        rtol=1e-4,
+        atol=1e-8,
+    )
+
+
+@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES)
+def test_norta_corrects_for_the_cut_marginal(family, spread):
+    from rupture_generator.sampling import largest_minimum, latent_correlation
+    from rupture_generator.sampling.norta import (
+        _correlation_series,
+        _hermite_expansion,
+    )
+
+    marginal = Marginal(family, spread, minimum=0.5 * largest_minimum(family, spread))
+    uncut = Marginal(family, spread)
+    # The expansion is of the cut transform: unit mean, the stated spread.
+    expansion = _hermite_expansion(marginal)
+    assert expansion.coefficients[0] == pytest.approx(1.0, abs=1e-6)
+    assert expansion.spread == pytest.approx(spread, rel=2e-3)
+    # The cut changes the map from latent to marginal correlation, and the inverse
+    # follows it.
+    series = _correlation_series(marginal, marginal)
+    assert not np.allclose(series, _correlation_series(uncut, uncut))
+    target = np.array([0.1, 0.5, 0.9])
+    latent = latent_correlation(marginal, marginal, target)
+    delivered = np.polynomial.polynomial.polyval(latent, np.r_[0.0, series])
+    np.testing.assert_allclose(delivered, target, atol=1e-8)
+    lags = np.array([0.0, 1.0])
+    corrected = PreCorrected(lambda lag: np.exp(-lag), marginal)
+    np.testing.assert_allclose(
+        corrected(lags), latent_correlation(marginal, marginal, np.exp(-lags))
+    )
+
+
+def test_a_normal_has_no_power_mean():
+    from rupture_generator import RuptureGeneratorError
+
+    with pytest.raises(RuptureGeneratorError, match="no power mean"):
+        Marginal().power_mean(0.5)

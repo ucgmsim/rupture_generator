@@ -27,6 +27,7 @@ from typing import Protocol
 
 import numpy as np
 import scipy as sp
+from scipy.optimize import brentq
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
@@ -38,6 +39,7 @@ from rupture_generator.sampling import (
     Marginal,
     MarginalFamily,
     PreCorrected,
+    largest_minimum,
     mix,
     sampler,
     standardise,
@@ -499,13 +501,17 @@ def _correlation(value: float) -> None:
 
 
 def _positive_marginal(
-    what: str, family: MarginalFamily, spread: float, maximum: float
+    what: str,
+    family: MarginalFamily,
+    spread: float,
+    maximum: float,
+    minimum: float,
 ) -> Marginal:
     if family == "normal":
         raise RuptureGeneratorError(
             f"{what} values are positive, so they cannot follow a normal marginal"
         )
-    return Marginal(family, spread, maximum)
+    return Marginal(family, spread, maximum, minimum)
 
 
 def _independent(
@@ -549,6 +555,9 @@ class DrawnSlip:
     maximum : float
         The largest slip on the fault in mean slips, for a ``doubly_truncated_normal``
         alone. Infinite otherwise.
+    minimum : float
+        The smallest slip the marginal draws in mean slips, before the taper, for a
+        ``truncated_normal`` or ``gamma`` alone. Zero leaves the family uncut.
     side_taper : float
         The fraction of the fault's length from each end over which slip ramps to zero.
     top_taper : float
@@ -562,6 +571,7 @@ class DrawnSlip:
     family: MarginalFamily = "truncated_exponential"
     coefficient_of_variation: float = 0.90
     maximum: float = np.inf
+    minimum: float = 0.0
     side_taper: float = 0.02
     top_taper: float = 0.0
     bottom_taper: float = 0.0
@@ -582,7 +592,11 @@ class DrawnSlip:
     def marginal(self) -> Marginal:
         """Marginal: The unit-mean distribution that slip values follow."""
         return _positive_marginal(
-            "slip", self.family, self.coefficient_of_variation, self.maximum
+            "slip",
+            self.family,
+            self.coefficient_of_variation,
+            self.maximum,
+            self.minimum,
         )
 
     def _taper(self, field: CellArray, occupied: CellMask) -> CellArray:
@@ -656,6 +670,31 @@ class CorrelatedRise:
     from :func:`geometric_correction`. The pattern is a power of a field
     correlated with slip's latent, times a depth profile.
 
+    ``minimum_s`` sets a floor in seconds that every occupied cell keeps on every
+    segment. A floor in seconds is a different fraction of the mean on each segment,
+    and the power, the depth profile and the rescale to the mean all move it. No one
+    cut of the marginal meets it, and the floor comes in two steps:
+
+    1. :meth:`floored_marginal` cuts the marginal at the smallest ``c`` whose power,
+       at the smallest factor on the segment, lands on the floor when the pattern's
+       mean is its expected value. The cut marginal keeps its stated mean and spread.
+       A cell can then drop under the floor only where the drawn pattern's mean
+       exceeds its expected value.
+    2. A drawn pattern's mean strays from its expected value. One scale ``s`` makes
+       ``max(s * pattern, minimum_s)`` average ``mean_s`` over the occupied cells,
+       and that's the rise time. When the plain rescale keeps every cell at or over
+       the floor, ``s`` is that rescale and no cell sits at the floor.
+
+    The mean is then ``mean_s`` up to rounding, and the floor holds exactly. The cut
+    marginal has its stated spread. Each cell at the floor narrows the rise time's
+    spread a little, and the scale that makes up the mean lifts every other cell by
+    the same fraction. The statistic ``floored`` reports the share of cells at the
+    floor: none in most draws, and about a percent at Mw 4.5 with a slip exponent of
+    1.5. The Gaussian-copula correlation with slip is between the latents, which the
+    cut leaves alone. Rise time keeps the latent's rank order, and with it its rank
+    correlation with slip, except that cells at the floor tie. The Pearson
+    correlation of the values moves with the marginal, as for any change of marginal.
+
     Attributes
     ----------
     coefficient : float
@@ -674,6 +713,13 @@ class CorrelatedRise:
     maximum : float
         The longest rise time in mean rise times, for a ``doubly_truncated_normal``
         alone. Infinite otherwise.
+    minimum : float
+        A ``truncated_normal`` or ``gamma`` marginal's cut, in its unit mean. With a
+        ``minimum_s`` the cut is the larger of this and the one the floor needs.
+    minimum_s : float, optional
+        The shortest rise time any occupied cell has, in seconds. Without it rise time
+        has no floor beyond the marginal's. A pulse can't sample a rise time much
+        under its sample interval: set the floor to the pulse's ``dt_s`` or more.
     factor : SpatialField
         The relative rise time.
     slip_weight : SpatialField
@@ -689,6 +735,8 @@ class CorrelatedRise:
     family: MarginalFamily = "gamma"
     coefficient_of_variation: float = 0.75
     maximum: float = np.inf
+    minimum: float = 0.0
+    minimum_s: float | None = None
     factor: SpatialField = UNMODIFIED
     slip_weight: SpatialField = UNMODIFIED
 
@@ -700,14 +748,90 @@ class CorrelatedRise:
                 "for independent noise, which is a different model; use one above 0.1"
             )
         _correlation(self.correlation)
-        _ = self.marginal
+        marginal = self.marginal
+        if self.minimum_s is not None:
+            if not (np.isfinite(self.minimum_s) and self.minimum_s > 0.0):
+                raise RuptureGeneratorError(
+                    f"a rise-time floor is a positive duration, got {self.minimum_s} s"
+                )
+            # Refuses a family no minimum can cut.
+            largest_minimum(marginal.family, marginal.coefficient_of_variation)
 
     @property
     def marginal(self) -> Marginal:
         """Marginal: The unit-mean distribution that rise time values follow."""
         return _positive_marginal(
-            "rise time", self.family, self.coefficient_of_variation, self.maximum
+            "rise time",
+            self.family,
+            self.coefficient_of_variation,
+            self.maximum,
+            self.minimum,
         )
+
+    def floored_marginal(self, mean_s: float, factor: np.ndarray) -> Marginal:
+        """The marginal cut where ``minimum_s`` needs it on a segment.
+
+        This is the first step of the floor. With ``p`` the slip exponent and ``X_c``
+        the marginal cut at ``c``, the cut is the smallest ``c``, no lower than
+        ``minimum``, with ``mean_s * c^p * min(factor) / (E[X_c^p] * mean(factor))``
+        at least ``minimum_s``. The search rounds it up to four digits. Segments of
+        nearly the same mean then share the cached transform.
+
+        Parameters
+        ----------
+        mean_s : float
+            The segment's mean rise time, in seconds.
+        factor : numpy.ndarray
+            The relative rise time on the segment's occupied cells.
+
+        Returns
+        -------
+        Marginal
+            The marginal, cut. Without a ``minimum_s`` it's :attr:`marginal`.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If the floor isn't below ``mean_s``, or the cut it needs would leave the
+            family short of its spread.
+        """
+        marginal = self.marginal
+        if self.minimum_s is None:
+            return marginal
+        if not self.minimum_s < mean_s:
+            raise RuptureGeneratorError(
+                f"a rise-time floor of {self.minimum_s} s is not below the mean rise "
+                f"time of {mean_s:.4g} s, so no rise time can keep both"
+            )
+        power = self.slip_exponent
+        # The floor in mean rise times, at the smallest factor, against the pattern's
+        # expected mean.
+        needed = (self.minimum_s / mean_s) * float(np.mean(factor) / np.min(factor))
+
+        def margin(cut: float) -> float:
+            cut_marginal = dataclasses.replace(marginal, minimum=cut)
+            return cut**power / cut_marginal.power_mean(power) - needed
+
+        if margin(marginal.minimum) >= 0.0:
+            return marginal
+        largest = largest_minimum(marginal.family, marginal.coefficient_of_variation)
+        # The fit degrades as the cut nears the family's limit. The search stops 1%
+        # short of it.
+        top = marginal.minimum + 0.99 * (largest - marginal.minimum)
+        if not top > marginal.minimum or margin(top) < 0.0:
+            raise RuptureGeneratorError(
+                f"a rise-time floor of {self.minimum_s} s is {needed:.3g} of the mean "
+                f"rise time of {mean_s:.4g} s at the smallest factor, and a "
+                f"{marginal.family} with a coefficient of variation of "
+                f"{marginal.coefficient_of_variation} cannot be cut that high; lower "
+                f"the floor or the coefficient of variation"
+            )
+        cut = brentq(margin, marginal.minimum, top, xtol=1.0e-15, rtol=1.0e-10)
+        places = 3 - int(np.floor(np.log10(cut)))
+        rounded = max(
+            round(float(np.ceil(cut * 10.0**places)) / 10.0**places, places), cut
+        )
+        return dataclasses.replace(marginal, minimum=rounded if rounded <= top else cut)
 
     def __call__(
         self,
@@ -733,12 +857,14 @@ class CorrelatedRise:
         -------
         Drawn
             Rise time in seconds, with the mean as ``mean_s`` and the correction as
-            ``alpha_t``.
+            ``alpha_t``. With a ``minimum_s``, also the marginal's cut as ``minimum``,
+            and the share of occupied cells at the floor as ``floored``.
 
         Raises
         ------
         RuptureGeneratorError
-            If a profile reads out of range on this chart.
+            If a profile reads out of range on this chart, or the floor is out of the
+            marginal's reach on it.
         """
         geometry = context.geometry
         factor = read_at_centres(
@@ -753,16 +879,48 @@ class CorrelatedRise:
         )
         correction = geometric_correction(geometry, context.source.rake_deg)
         mean_s = cube_root_scaling(self.coefficient, moment_nm) * correction
+        marginal = self.floored_marginal(mean_s, factor[geometry.occupied])
         rho = self.correlation
         latent = mix(
             (slip_weight * rho + (1.0 - slip_weight), slip.latent),
             (slip_weight * np.sqrt(1.0 - rho * rho), _independent(context, slip, rng)),
         )
-        pattern = self.marginal.apply(latent) ** self.slip_exponent * factor
+        pattern = marginal.apply(latent) ** self.slip_exponent * factor
+        statistics = {"mean_s": mean_s, "alpha_t": correction}
+        if self.minimum_s is None:
+            return Drawn(
+                pattern * (mean_s / float(pattern[geometry.occupied].mean())),
+                statistics,
+            )
+        rise_s, floored = _floored(pattern, geometry.occupied, mean_s, self.minimum_s)
         return Drawn(
-            pattern * (mean_s / float(pattern[geometry.occupied].mean())),
-            {"mean_s": mean_s, "alpha_t": correction},
+            rise_s, statistics | {"minimum": marginal.minimum, "floored": floored}
         )
+
+
+def _floored(
+    pattern: CellArray, occupied: CellMask, mean_s: float, minimum_s: float
+) -> tuple[CellArray, float]:
+    """Scale a pattern to a mean over the occupied cells, holding a floor.
+
+    The result is ``max(s * pattern, minimum_s)``, with ``s`` the scale that puts its
+    mean at ``mean_s``. Holding the ``k`` smallest cells at the floor needs
+    ``s_k = (n * mean_s - k * minimum_s) / sum(the rest)``. Every ``s_k`` makes the
+    floored mean at least ``mean_s``, and the right ``k`` makes it exactly that, so
+    ``s`` is the least ``s_k``. Needs ``minimum_s < mean_s``.
+
+    Returns the rise time, and the share of the occupied cells at the floor.
+    """
+    inside = pattern[occupied]
+    scale = mean_s / float(inside.mean())
+    if scale * float(inside.min()) >= minimum_s:
+        return pattern * scale, 0.0
+    ordered = np.sort(inside)
+    rest = np.cumsum(ordered[::-1])[::-1]
+    held = np.arange(ordered.size)
+    scale = float(np.min((ordered.size * mean_s - held * minimum_s) / rest))
+    floored = float(np.mean(scale * inside < minimum_s))
+    return np.maximum(pattern * scale, minimum_s), floored
 
 
 # ------------------------------------------------------------------------ rake

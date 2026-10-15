@@ -281,3 +281,89 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
     )
     with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
         rupture_config.build(rupture_config.load(path))
+
+
+FLOORED = (
+    BASE.replace(
+        "two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson"))
+    ).replace(
+        "[slip]\n",
+        '[rise]\nfamily = "truncated_normal"\ncoefficient_of_variation = 0.5\n'
+        "minimum_s = 0.005\n\n[slip]\n",
+    )
+    + "\n[segments.next.rise]\nminimum_s = 0.01\nminimum = 0.02\n"
+)
+
+
+def test_a_rise_floor_reads_overrides_and_round_trips(tmp_path):
+    path = tmp_path / "floored.toml"
+    path.write_text(FLOORED)
+    loaded = rupture_config.load(path)
+    assert loaded.rise.minimum_s == 0.005
+    assert loaded.rise.minimum == 0.0
+    following = loaded.segments["next"].rise
+    assert following is not None
+    assert (following.minimum_s, following.minimum) == (0.01, 0.02)
+    # The keys the segment's table leaves out are the global table's.
+    assert following.family == "truncated_normal"
+    assert following.coefficient_of_variation == 0.5
+
+    text = rupture_config.dump(loaded)
+    assert "minimum_s = 0.005" in text and "minimum = 0.0" in text
+    again = tmp_path / "again.toml"
+    again.write_text(text)
+    assert rupture_config.load(again) == loaded
+
+    models = rupture_config.build(loaded).model
+    assert isinstance(models, dict)
+    for name, minimum_s in (("bent", 0.005), ("next", 0.01)):
+        rise = models[name].rise
+        assert isinstance(rise, rupture_config.Rise)
+        assert rise.minimum_s == minimum_s
+
+
+def test_without_a_floor_the_record_has_none():
+    loaded = rupture_config.load(EXAMPLE)
+    assert loaded.rise.minimum_s is None
+    assert "minimum_s" not in rupture_config.dump(loaded)
+    assert "minimum = 0.0" in rupture_config.dump(loaded)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            "minimum_s = 0.005",
+            "minimum_s = -0.005",
+            "rise: a rise-time floor is a positive duration",
+        ),
+        (
+            "minimum_s = 0.005",
+            'minimum_s = "dt"',
+            "rise.minimum_s: could not convert string to float",
+        ),
+        (
+            "minimum_s = 0.01\n",
+            "minimum_s = 0.0\n",
+            "segments.next.rise: a rise-time floor is a positive duration",
+        ),
+        (
+            "minimum = 0.02\n",
+            "minimum = 0.6\n",
+            "segments.next.rise: a unit-mean truncated normal cut at 0.6",
+        ),
+        (
+            "[slip]\n",
+            "[slip]\nminimum = 0.1\n",
+            "slip: only a truncated_normal or gamma marginal takes a minimum",
+        ),
+    ],
+)
+def test_a_bad_rise_floor_names_the_key_at_fault(tmp_path, old, new, message):
+    assert old in FLOORED
+    path = tmp_path / "bad.toml"
+    path.write_text(FLOORED.replace(old, new, 1))
+    with pytest.raises(
+        RuptureGeneratorError, match=message.replace("[", r"\[").replace("(", r"\(")
+    ):
+        rupture_config.load(path)

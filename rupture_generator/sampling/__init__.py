@@ -15,6 +15,7 @@ from rupture_generator.sampling.norta import (
     Marginal,
     MarginalFamily,
     PreCorrected,
+    largest_minimum,
     latent_correlation,
 )
 from rupture_generator.sampling.von_karman import HURST, VonKarman
@@ -31,6 +32,7 @@ __all__ = [
     "PreCorrected",
     "Sampler",
     "VonKarman",
+    "largest_minimum",
     "latent_correlation",
     "mix",
     "sampler",

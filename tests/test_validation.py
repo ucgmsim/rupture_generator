@@ -100,6 +100,96 @@ def test_a_marginal_its_family_cannot_have_is_refused(family, cov, maximum, mess
         Marginal(family, cov, maximum)
 
 
+@pytest.mark.parametrize(
+    ("family", "cov", "minimum", "message"),
+    [
+        ("truncated_exponential", 0.9, 0.1, "only a truncated_normal or gamma"),
+        ("normal", 0.0, 0.1, "only a truncated_normal or gamma"),
+        ("gamma", 0.75, 1.0, r"lies in \[0, 1\)"),
+        ("gamma", 0.75, -0.1, r"lies in \[0, 1\)"),
+        ("truncated_normal", 0.5, np.nan, r"lies in \[0, 1\)"),
+        ("truncated_normal", 0.6, 0.5, "cut at 0.5 has a coefficient of variation"),
+        ("truncated_normal", 1.5, 0.1, "cut at 0.1 has a coefficient of variation"),
+        ("gamma", 2.0, 0.05, "gamma cut at 0.05 has a coefficient of variation"),
+    ],
+)
+def test_a_minimum_its_family_cannot_have_is_refused(family, cov, minimum, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        Marginal(family, cov, minimum=minimum)
+
+
+def test_only_a_family_that_takes_a_minimum_has_a_largest_one():
+    from rupture_generator.sampling import largest_minimum
+
+    with pytest.raises(RuptureGeneratorError, match="only a truncated_normal or gamma"):
+        largest_minimum("truncated_exponential", 0.9)
+    assert largest_minimum("truncated_normal", 0.4) == pytest.approx(0.6)
+    # Past the gamma's ceiling at a cut of zero, the largest cut is zero.
+    assert largest_minimum("gamma", 40.0) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        (lambda: CorrelatedRise(minimum_s=0.0), "positive duration"),
+        (lambda: CorrelatedRise(minimum_s=-0.005), "positive duration"),
+        (lambda: CorrelatedRise(minimum_s=np.inf), "positive duration"),
+        (
+            lambda: CorrelatedRise(
+                family="doubly_truncated_normal",
+                coefficient_of_variation=0.6,
+                maximum=4.3,
+                minimum_s=0.005,
+            ),
+            "only a truncated_normal or gamma",
+        ),
+        (lambda: CorrelatedRise(minimum=0.5), "gamma cut at 0.5"),
+        (
+            lambda: DrawnSlip(family="truncated_exponential", minimum=0.1),
+            "only a truncated_normal or gamma",
+        ),
+    ],
+)
+def test_a_floor_the_rise_time_cannot_keep_is_refused(build, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        build()
+
+
+@pytest.mark.parametrize(
+    ("minimum_s", "mean_s", "message"),
+    [
+        (0.3, 0.3, "is not below the mean rise time of 0.3 s"),
+        (0.5, 0.3, "is not below the mean rise time of 0.3 s"),
+        # At a power of 1 the cut is the floor in means, and a truncated normal of
+        # spread 0.9 takes no cut past 0.1.
+        (0.05, 0.3, "cannot be cut that high"),
+    ],
+)
+def test_a_floor_out_of_the_marginals_reach_is_refused(minimum_s, mean_s, message):
+    rise = CorrelatedRise(
+        family="truncated_normal",
+        coefficient_of_variation=0.9,
+        slip_exponent=1.0,
+        minimum_s=minimum_s,
+    )
+    with pytest.raises(RuptureGeneratorError, match=message):
+        rise.floored_marginal(mean_s, np.ones(4))
+
+
+def test_a_floor_the_marginal_already_keeps_needs_no_further_cut():
+    rise = CorrelatedRise(
+        family="truncated_normal",
+        coefficient_of_variation=0.5,
+        slip_exponent=1.0,
+        minimum=0.3,
+        minimum_s=0.01,
+    )
+    assert rise.floored_marginal(1.0, np.ones(4)) == rise.marginal
+    assert (
+        CorrelatedRise().floored_marginal(1.0, np.ones(4)) == CorrelatedRise().marginal
+    )
+
+
 def test_slip_cannot_follow_a_normal():
     with pytest.raises(RuptureGeneratorError, match="slip values are positive"):
         DrawnSlip(family="normal")

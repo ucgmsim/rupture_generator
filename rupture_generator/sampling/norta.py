@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.special import factorial
+from scipy.special import factorial, gammaincc, gammainccinv, log_ndtr
 from scipy.stats import gamma as gamma_distribution
 from scipy.stats import norm, truncexpon, truncnorm
 
@@ -77,6 +77,16 @@ DOUBLY_TRUNCATED_NORMAL_WIDEST = 20.0
 to its flat-parent limit: at a maximum of 2 it then sits 2e-5 below the uniform's
 ``1/sqrt(3)``."""
 
+TRUNCATED_GAMMA_SMALLEST_SHAPE = 1.0e-3
+"""The smallest shape the fit of a gamma cut at a minimum searches. As the shape
+falls to zero the cut gamma tends to ``exp(-x/scale)/x`` above the cut, whose spread
+is finite, so a cut gamma's spread has a ceiling. This shape sets it."""
+
+MINIMUM_FAMILIES = ("truncated_normal", "gamma")
+"""The families a minimum can cut. The truncated exponential's cut already fixes its
+largest value and the doubly truncated normal's lower cut sits at zero, so neither
+takes a second parameter at the bottom."""
+
 type MarginalFamily = Literal[
     "normal",
     "truncated_normal",
@@ -95,9 +105,20 @@ class Marginal:
     and ``gamma`` lie on the positive half-line, and ``truncated_exponential`` is the
     family Thingbaijam & Mai (2016) fitted to SRCMOD slip, whose cut also fixes the
     largest value on the fault. ``doubly_truncated_normal`` lies on
-    ``[0, maximum]``, so it takes its largest value separately from its spread. Every
-    expensive function in this module caches its results by marginal, so instances
-    are immutable and hashable.
+    ``[0, maximum]``, so it takes its largest value separately from its spread.
+
+    A ``truncated_normal`` or ``gamma`` also takes a lower cut, ``minimum``. The fit
+    redoes the family on ``[minimum, inf)`` rather than clipping it. The cut family
+    stays unit-mean with the stated spread, and no value falls under the cut. The
+    quantile transform spreads the probability the parent had under the cut over the
+    whole distribution, and no value piles up at the cut. A truncated normal cut at
+    ``minimum`` is the zero-truncated normal of spread
+    ``coefficient_of_variation / (1 - minimum)``, scaled by ``1 - minimum`` and
+    shifted up by ``minimum``. A cut gamma has no such identity, and the fit finds
+    its shape and scale together.
+
+    Every expensive function in this module caches its results by marginal, so
+    instances are immutable and hashable.
 
     Attributes
     ----------
@@ -109,11 +130,16 @@ class Marginal:
     maximum : float
         The largest value, in means, of a ``doubly_truncated_normal``. Every other
         family leaves it infinite.
+    minimum : float
+        The smallest value, in means, of a ``truncated_normal`` or ``gamma``, in
+        ``[0, 1)``. Zero, the default, leaves the family uncut, and every other family
+        takes zero alone.
     """
 
     family: MarginalFamily = "normal"
     coefficient_of_variation: float = 0.0
     maximum: float = np.inf
+    minimum: float = 0.0
 
     def __post_init__(self) -> None:
         """Refuse a family and spread that no distribution in the family attains."""
@@ -121,6 +147,16 @@ class Marginal:
             raise RuptureGeneratorError(
                 f"only a doubly_truncated_normal marginal takes a maximum; a "
                 f"{self.family} was given {self.maximum}"
+            )
+        if not 0.0 <= self.minimum < 1.0:
+            raise RuptureGeneratorError(
+                f"a minimum is a fraction of the unit mean, so it lies in [0, 1); got "
+                f"{self.minimum}"
+            )
+        if self.minimum > 0.0 and self.family not in MINIMUM_FAMILIES:
+            raise RuptureGeneratorError(
+                f"only a truncated_normal or gamma marginal takes a minimum; a "
+                f"{self.family} was given {self.minimum}"
             )
         if self.family == "normal":
             return
@@ -130,11 +166,26 @@ class Marginal:
                 f"a {self.family} marginal needs a positive coefficient of variation, "
                 f"got {value}"
             )
+        if self.family == "truncated_normal" and self.minimum > 0.0:
+            ceiling = TRUNCATED_NORMAL_MAXIMUM_COV * (1.0 - self.minimum)
+            if value >= ceiling:
+                raise RuptureGeneratorError(
+                    f"a unit-mean truncated normal cut at {self.minimum} has a "
+                    f"coefficient of variation below {ceiling:.4f}, where it becomes "
+                    f"an exponential above the cut; got {value}"
+                )
         if self.family == "truncated_normal" and value >= TRUNCATED_NORMAL_MAXIMUM_COV:
             raise RuptureGeneratorError(
                 f"a unit-mean truncated normal cannot have a coefficient of variation "
                 f"of {value}; use a gamma marginal"
             )
+        if self.family == "gamma" and self.minimum > 0.0:
+            ceiling = _truncated_gamma_ceiling(self.minimum)
+            if value >= ceiling:
+                raise RuptureGeneratorError(
+                    f"a unit-mean gamma cut at {self.minimum} has a coefficient of "
+                    f"variation below {ceiling:.4f}; got {value}"
+                )
         if self.family == "truncated_exponential" and not (
             TRUNCATED_EXPONENTIAL_MINIMUM_COV
             < value
@@ -187,6 +238,90 @@ class Marginal:
             return np.asarray(latent, dtype=np.float64)
         latents, values = _transform_table(self)
         return np.interp(latent, latents, values)
+
+    def power_mean(self, power: float) -> float:
+        """The mean of a value raised to ``power``, ``E[X^power]``.
+
+        Gauss-Hermite quadrature integrates the quantile function against the standard
+        normal. It skips the caches :meth:`apply` fills, and a caller searching over
+        many marginals leaves them to the marginals it draws with.
+
+        Parameters
+        ----------
+        power : float
+            The exponent.
+
+        Returns
+        -------
+        float
+            ``E[X^power]``, which is 1 at ``power`` 0 or 1.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If the marginal is the standard normal, whose values have no real
+            fractional power.
+        """
+        if self.is_normal:
+            raise RuptureGeneratorError(
+                "a normal marginal's values can be negative, so they have no power mean"
+            )
+        quantiles, weights = _quadrature_quantiles()
+        values = np.asarray(_fit(self).ppf(quantiles), dtype=np.float64)
+        return float(np.sum(weights * values**power))
+
+
+@functools.cache
+def _quadrature_quantiles() -> tuple[np.ndarray, np.ndarray]:
+    """Gauss-Hermite nodes as probabilities inside the tails, and normalised weights."""
+    nodes, weights = np.polynomial.hermite_e.hermegauss(NORTA_QUADRATURE_POINTS)
+    quantiles = np.clip(norm.cdf(nodes), NORTA_TAIL, 1.0 - NORTA_TAIL)
+    return quantiles, weights / np.sqrt(2.0 * np.pi)
+
+
+@functools.lru_cache(maxsize=16)
+def largest_minimum(family: MarginalFamily, coefficient_of_variation: float) -> float:
+    """The supremum of the cuts a family takes at a given spread.
+
+    A cut squeezes a unit-mean family into ``[minimum, inf)`` and so narrows it. Past
+    this cut the family can't reach ``coefficient_of_variation``, and at the cut
+    itself it can't either.
+
+    Parameters
+    ----------
+    family : MarginalFamily
+        The family, one of :data:`MINIMUM_FAMILIES`.
+    coefficient_of_variation : float
+        The spread the cut family has to keep.
+
+    Returns
+    -------
+    float
+        The supremum, in ``[0, 1)``. Zero means no cut keeps the spread.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the family takes no minimum, or the spread is out of its range uncut.
+    """
+    if family not in MINIMUM_FAMILIES:
+        raise RuptureGeneratorError(
+            f"only a truncated_normal or gamma marginal takes a minimum, not a {family}"
+        )
+    # Construction validates the spread uncut.
+    spread = Marginal(family, coefficient_of_variation).coefficient_of_variation
+    if family == "truncated_normal":
+        return 1.0 - spread / TRUNCATED_NORMAL_MAXIMUM_COV
+    # The ceiling falls toward zero as the cut nears the mean, so a bracket that
+    # halves its distance to 1 finds where it passes the spread.
+    lower, upper = 0.0, 0.5
+    if _truncated_gamma_ceiling(lower) <= spread:
+        return 0.0
+    while _truncated_gamma_ceiling(upper) > spread:
+        lower, upper = upper, 1.0 - 0.5 * (1.0 - upper)
+    return brentq(
+        lambda cut: _truncated_gamma_ceiling(cut) - spread, lower, upper, xtol=1.0e-12
+    )
 
 
 NORMAL = Marginal()
@@ -276,19 +411,192 @@ def _doubly_truncated_normal_ceiling(maximum: float) -> float:
     )
 
 
-@functools.lru_cache(maxsize=16)
-def _distribution(marginal: Marginal) -> Any:
+def _truncated_gamma_moments(shape: float, cut: float) -> tuple[float, float]:
+    """Mean and coefficient of variation of a unit-scale gamma cut below at ``cut``.
+
+    ``E[Y^n | Y > t] = shape (shape + 1) ... (shape + n - 1) Q(shape + n, t) /
+    Q(shape, t)``, with ``Q`` the regularised upper incomplete gamma function.
+    """
+    tail = gammaincc(shape, cut)
+    mean = shape * gammaincc(shape + 1.0, cut) / tail
+    square = shape * (shape + 1.0) * gammaincc(shape + 2.0, cut) / tail
+    return float(mean), float(np.sqrt(max(square - mean * mean, 0.0)) / mean)
+
+
+def _truncated_gamma_standard_cut(shape: float, minimum: float) -> float:
+    """The cut on a unit-scale gamma that sits ``minimum`` of the cut mean up.
+
+    Scaled to unit mean, a gamma cut at ``t`` has its smallest value at ``t`` over
+    its cut mean, which rises with ``t`` from 0 toward 1.
+    """
+    if minimum == 0.0:
+        return 0.0
+
+    def excess(cut: float) -> float:
+        return cut / _truncated_gamma_moments(shape, cut)[0] - minimum
+
+    upper = max(shape, 1.0)
+    while excess(upper) < 0.0:
+        upper *= 2.0
+    return brentq(excess, 0.0, upper, xtol=1.0e-14 * minimum, rtol=1.0e-14)
+
+
+def _truncated_gamma_spread(shape: float, minimum: float) -> float:
+    """Coefficient of variation of the unit-mean gamma of ``shape`` cut at ``minimum``.
+
+    It falls as the shape grows, from its ceiling toward zero.
+    """
+    return _truncated_gamma_moments(
+        shape, _truncated_gamma_standard_cut(shape, minimum)
+    )[1]
+
+
+@functools.lru_cache(maxsize=64)
+def _truncated_gamma_ceiling(minimum: float) -> float:
+    """The largest spread the fit can give a gamma cut at ``minimum``.
+
+    The spread at :data:`TRUNCATED_GAMMA_SMALLEST_SHAPE`, the lower end of the fit's
+    bracket on the shape.
+    """
+    return _truncated_gamma_spread(TRUNCATED_GAMMA_SMALLEST_SHAPE, minimum)
+
+
+class _TruncatedGamma:
+    """A unit-mean gamma cut below, with the methods :func:`_fit` callers use.
+
+    SciPy's gamma has no lower cut, and its generic truncation inverts the CDF
+    numerically. The quantile function here inverts the regularised upper
+    incomplete gamma function instead, which keeps the tail accurate.
+    """
+
+    def __init__(self, shape: float, cut: float) -> None:
+        """Cut a unit-scale gamma of ``shape`` at ``cut``, and scale it to unit mean."""
+        self.shape = shape
+        self.cut = cut
+        mean, self.spread = _truncated_gamma_moments(shape, cut)
+        self.scale = 1.0 / mean
+        self.tail = float(gammaincc(shape, cut))
+
+    def ppf(self, quantile: np.ndarray) -> np.ndarray:
+        """The quantile function.
+
+        Parameters
+        ----------
+        quantile : numpy.ndarray
+            Probabilities in ``[0, 1]``, of any shape.
+
+        Returns
+        -------
+        numpy.ndarray
+            The value at each probability, shaped like ``quantile``.
+        """
+        upper = (1.0 - np.asarray(quantile, dtype=np.float64)) * self.tail
+        return self.scale * gammainccinv(self.shape, upper)
+
+    def mean(self) -> float:
+        """The mean.
+
+        Returns
+        -------
+        float
+            The mean, 1 up to rounding.
+        """
+        return self.scale * _truncated_gamma_moments(self.shape, self.cut)[0]
+
+    def std(self) -> float:
+        """The standard deviation.
+
+        Returns
+        -------
+        float
+            The standard deviation, the coefficient of variation up to rounding.
+        """
+        return self.mean() * self.spread
+
+    def support(self) -> tuple[float, float]:
+        """The interval the values lie in.
+
+        Returns
+        -------
+        tuple of float
+            The cut, and infinity.
+        """
+        return self.scale * self.cut, np.inf
+
+
+def _truncated_gamma(spread: float, minimum: float) -> _TruncatedGamma:
+    """The unit-mean gamma cut at ``minimum`` with coefficient of variation ``spread``.
+
+    A root-find in the logarithm of the shape brackets it between
+    :data:`TRUNCATED_GAMMA_SMALLEST_SHAPE` and a shape whose uncut spread is half the
+    target, which the cut only narrows.
+    """
+    largest = max(4.0 / (spread * spread), 4.0)
+    log_shape = brentq(
+        lambda value: _truncated_gamma_spread(np.exp(value), minimum) - spread,
+        np.log(TRUNCATED_GAMMA_SMALLEST_SHAPE),
+        np.log(largest),
+        xtol=1.0e-13,
+    )
+    shape = float(np.exp(log_shape))
+    return _TruncatedGamma(shape, _truncated_gamma_standard_cut(shape, minimum))
+
+
+def _zero_truncated_normal_moments(alpha: float) -> tuple[float, float]:
+    """Mean and coefficient of variation of ``N(alpha, 1)`` cut below at zero.
+
+    In closed form, with the inverse Mills ratio ``phi(alpha) / Phi(alpha)`` taken in
+    logarithms so that it holds far into the lower tail.
+    """
+    ratio = float(np.exp(norm.logpdf(alpha) - log_ndtr(alpha)))
+    mean = alpha + ratio
+    return mean, float(np.sqrt(max(1.0 - ratio * mean, 0.0))) / mean
+
+
+def _cut_truncated_normal(spread: float, minimum: float) -> Any:
+    """The unit-mean normal cut at ``minimum`` with coefficient of variation ``spread``.
+
+    Less the minimum, a normal cut at the minimum is a normal cut at zero, with mean
+    ``1 - minimum`` and the same standard deviation, so spread
+    ``spread / (1 - minimum)``. The fit finds that one as it does the uncut family,
+    then scales it by ``1 - minimum`` and shifts it up by ``minimum``. The moments
+    come in closed form rather than from SciPy's, which cost a hundred times as
+    much. A search over cuts then stays quick.
+    """
+    relative = spread / (1.0 - minimum)
+    alpha = brentq(
+        lambda value: _zero_truncated_normal_moments(value)[1] - relative,
+        -40.0,
+        60.0,
+        xtol=1.0e-13,
+    )
+    mean = _zero_truncated_normal_moments(alpha)[0]
+    return truncnorm(
+        a=-alpha,
+        b=np.inf,
+        loc=minimum + (1.0 - minimum) * alpha / mean,
+        scale=(1.0 - minimum) / mean,
+    )
+
+
+def _fit(marginal: Marginal) -> Any:
     """Map from marginal distribution to scipy distribution class.
 
-    Each distribution's shape gives the target coefficient of variation.
+    Each distribution's shape gives the target coefficient of variation, and its
+    support starts at the marginal's minimum. Uncached: :func:`_distribution` is the
+    cached form.
     """
     spread = marginal.coefficient_of_variation
     # A marginal's parameters are its mean and coefficient of variation. The gamma
     # distribution's shape parameter, which scipy requires, inverts in closed form.
-    # The truncated exponential and truncated normal invert by optimisation.
+    # The truncated exponential and truncated normal invert by optimisation, and so
+    # does a gamma cut at a minimum. A minimum takes its own branch, and a family
+    # without one keeps the fit it always had.
     match marginal.family:
         case "normal":
             return norm(0.0, 1.0)  # TODO: Should this not be also a function of spread?
+        case "gamma" if marginal.minimum > 0.0:
+            return _truncated_gamma(spread, marginal.minimum)
         case "gamma":
             shape = 1.0 / (spread * spread)
             return gamma_distribution(a=shape, scale=1.0 / shape)
@@ -301,6 +609,8 @@ def _distribution(marginal: Marginal) -> Any:
             )
             mean = float(truncexpon(b=cut, loc=0.0, scale=1.0).mean())
             return truncexpon(b=cut, loc=0.0, scale=1.0 / mean)
+        case "truncated_normal" if marginal.minimum > 0.0:
+            return _cut_truncated_normal(spread, marginal.minimum)
         case "truncated_normal":
 
             def spread_at(alpha: float) -> float:
@@ -326,6 +636,10 @@ def _distribution(marginal: Marginal) -> Any:
             return _doubly_truncated_normal(location, scale, maximum)
         case unknown:
             raise ValueError(f"Unimplementhed marginal distribution: {unknown}")
+
+
+_distribution = functools.lru_cache(maxsize=16)(_fit)
+"""The fitted distribution of a marginal, cached by marginal."""
 
 
 @functools.lru_cache(maxsize=16)

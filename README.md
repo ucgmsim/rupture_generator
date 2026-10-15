@@ -122,6 +122,14 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
 or `profile` tables.
 
+`minimum_s` in `[rise]` sets a floor on rise time in seconds, such as the pulse's
+`dt_s`. Every subfault keeps it on every segment and at every magnitude, and the
+segment's mean rise time is unchanged. The draw cuts the marginal where the floor
+needs it. Any cell the rescale to the mean leaves under the floor takes the floor's
+value, and the rest scale up to keep the mean.
+`[slip]` and `[rise]` also take a `minimum`, a cut on a `truncated_normal` or `gamma`
+marginal in units of its mean that keeps the stated spread.
+
 ---
 
 ## Python API

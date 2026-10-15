@@ -494,7 +494,8 @@ def generate(
     RuptureGeneratorError
         If the seed isn't a non-negative integer, a segment has no source or model,
         the models cover a segment the realisation lacks, a segment's draw fails, or
-        the realisation has no hypocentre or no tree to walk.
+        the realisation has no hypocentre or no tree to walk. A failed draw's
+        message starts with the segment's name.
     """
     seed = check_seed(seed)
     missing = sorted(set(realisation) - set(sources))
@@ -527,14 +528,17 @@ def generate(
                 jump_propagation_model,
                 _segment_rng(seed, JUMP_STREAM, name),
             )
-        drawn[name] = generate_segment(
-            geometry,
-            medium,
-            sources[name],
-            model if isinstance(model, RuptureModel) else model[name],
-            seed=start,
-            rng=_segment_rng(seed, FIELDS_STREAM, name),
-        )
+        try:
+            drawn[name] = generate_segment(
+                geometry,
+                medium,
+                sources[name],
+                model if isinstance(model, RuptureModel) else model[name],
+                seed=start,
+                rng=_segment_rng(seed, FIELDS_STREAM, name),
+            )
+        except RuptureGeneratorError as error:
+            raise RuptureGeneratorError(f"segment {name!r}: {error}") from error
     return realisation.with_segments(drawn)
 
 
