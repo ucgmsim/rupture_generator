@@ -54,7 +54,7 @@ RECORD_ATTRIBUTE = "run_record"
 """The root attribute that holds the record of the run that drew the fields."""
 
 
-def _segment(rupture: SegmentRupture) -> tuple[xr.Dataset, dict[str, dict]]:
+def _segment(rupture: SegmentRupture) -> "tuple[xr.Dataset, dict[str, dict]]":
     """One segment's group, and the compression for each of its variables."""
     import xarray as xr
 
