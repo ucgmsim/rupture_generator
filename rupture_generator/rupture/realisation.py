@@ -32,7 +32,7 @@ class Hypocentre:
     @classmethod
     def from_fractions(
         cls, segment: str, geometry: Geometry, strike: float, dip: float
-    ) -> Hypocentre:
+    ) -> "Hypocentre":
         """Convert a hypocentre from fractions of a chart's extent.
 
         Parameters
@@ -158,7 +158,7 @@ class Realisation[S](Mapping[str, S]):
 
     def propagated(
         self, tree: Mapping[str, str | None], hypocentre: Hypocentre
-    ) -> Realisation[S]:
+    ) -> "Realisation[S]":
         """Record where the rupture starts and how it spreads.
 
         Parameters
@@ -175,7 +175,7 @@ class Realisation[S](Mapping[str, S]):
         """
         return dataclasses.replace(self, tree=tree, hypocentre=hypocentre)
 
-    def with_segments[T](self, segments: Mapping[str, T]) -> Realisation[T]:
+    def with_segments[T](self, segments: Mapping[str, T]) -> "Realisation[T]":
         """Replace every segment's value, with the same frame, hypocentre and tree.
 
         Parameters

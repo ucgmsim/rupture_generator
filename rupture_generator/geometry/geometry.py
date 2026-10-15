@@ -223,7 +223,7 @@ class Geometry:
             _position_to_cell_index(strike_km, self.strike_arc_km, axis="strike"),
         )
 
-    def subdivide(self, spacing_km: float) -> Geometry:
+    def subdivide(self, spacing_km: float) -> "Geometry":
         """Recut this chart into cells of about ``spacing_km`` on a side.
 
         Bilinear interpolation over each plane's own nodes gives the new nodes, with
@@ -296,7 +296,7 @@ class Geometry:
         return (i, j), sp.spatial.cKDTree(self.centres[i, j])
 
     def nearest_cells_to(
-        self, other: Geometry, *, interior: bool = False
+        self, other: "Geometry", *, interior: bool = False
     ) -> tuple[CellSelection, CellSelection, np.ndarray]:
         """Pair each of this chart's edge cells with the closest edge cell of another.
 
