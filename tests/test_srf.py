@@ -224,3 +224,58 @@ def test_a_point_without_a_pulse_records_no_slip(tmp_path, scenario, ruptures):
     assert empty.any()
     assert np.all(parsed.points.slip1[empty] == 0.0)
     assert np.all(parsed.points.slip1[~empty] > 0.0)
+
+
+def test_a_rise_time_under_half_a_sample_slips_within_one_sample(tmp_path):
+    from rupture_generator import config, generate
+
+    from .conftest import EXAMPLE, SPACING_KM
+
+    # Small, linear in an uncorrelated marginal with density at zero: some slipping
+    # subfault draws a rise time that rounds to no samples at all.
+    loaded = config.load(EXAMPLE)
+    scenario = config.build(
+        dataclasses.replace(
+            loaded,
+            seed=3,
+            geometry=dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM),
+            source=dataclasses.replace(
+                loaded.source, magnitudes={"bent": 4.5, "next": 4.3}
+            ),
+            rise=dataclasses.replace(
+                loaded.rise,
+                family="truncated_normal",
+                coefficient_of_variation=0.5,
+                slip_exponent=1.0,
+                correlation=0.0,
+            ),
+        )
+    )
+    drawn = generate(
+        scenario.realisation,
+        scenario.medium,
+        scenario.sources,
+        scenario.model,
+        seed=scenario.seed,
+        jump_propagation_model=scenario.jump_model,
+    )
+    dt_s = loaded.pulse.dt_s
+    slip_m = column(drawn, lambda r: r.slip_m)
+    rise_s = column(drawn, lambda r: r.rise_time_s)
+    # 1e-4 m is the kernel's `pulse::MIN_SLIP_M`, under which a point has no pulse.
+    short = (slip_m > 1.0e-4) & (rise_s < 0.5 * dt_s)
+    assert short.any()
+
+    path = tmp_path / "short.srf"
+    write_rupture(path, drawn)
+    parsed = srf_format.read(path)
+    offsets = parsed.slip_rate.offsets.astype(np.int64)
+    rates = parsed.slip_rate.values.astype(float)
+    for point in np.flatnonzero(short):
+        pulse = rates[offsets[point] : offsets[point + 1]]
+        # The one-sample spike [0, slip/dt, 0], which keeps all of the slip.
+        assert pulse.size == 3 and pulse[0] == pulse[2] == 0.0
+        assert pulse.sum() * dt_s == pytest.approx(parsed.points.slip1[point], rel=1e-6)
+        assert parsed.points.slip1[point] == pytest.approx(
+            slip_m[point] * 100.0, rel=1e-6
+        )

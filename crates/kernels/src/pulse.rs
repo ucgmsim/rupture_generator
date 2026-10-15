@@ -19,8 +19,9 @@ pub enum Shape<'a> {
     OliuP { beta: &'a [f64] },
     /// A single-sample impulse: `[0, slip/dt, 0]`.
     ///
-    /// Exactly what [`Shape::OliuP`] substitutes for a pulse too short to resolve,
-    /// and this is that branch under its own name rather than a second spelling.
+    /// Exactly what [`Shape::OliuP`] substitutes for a pulse of a sample or less,
+    /// rise times under half a sample included, and this is that branch under its
+    /// own name rather than a second spelling.
     Delta,
 }
 
@@ -50,19 +51,11 @@ pub enum Error {
         "subfault {subfault} has beta = {beta}; the rising limb's fraction must be in (0, 0.5]"
     )]
     BetaOutOfRange { subfault: usize, beta: f64 },
-    /// A slipping subfault whose rise time rounds to zero samples at this interval.
-    ///
-    /// Refused rather than dropped: the caller can lower `dt_s` or floor the rise
-    /// time, but it can't lose the moment.
-    #[error(
-        "subfault {subfault} slips, but its rise time of {rise_time_s} s rounds to zero \
-         samples at dt = {dt_s} s; refusing rather than silently dropping its moment"
-    )]
-    UnrepresentableRiseTime {
-        subfault: usize,
-        rise_time_s: f64,
-        dt_s: f64,
-    },
+    /// A slipping subfault's rise time must be a finite, non-negative duration. A
+    /// short one is fine, since under half a sample it slips instantaneously, but
+    /// NaN, infinity or a negative time means something failed upstream.
+    #[error("subfault {subfault} slips, but has a rise time of {rise_time_s} s")]
+    RiseTimeOutOfRange { subfault: usize, rise_time_s: f64 },
 }
 
 /// Every subfault's pulse, as compressed sparse rows.
@@ -79,11 +72,16 @@ pub struct CsrPulses {
 
 /// Slip-normalised pulse synthesis.
 ///
+/// A slipping subfault's pulse integrates to its slip, however short its rise time.
+/// A rise time of about a sample or less, down to zero, gets the three-point spike
+/// `[0, slip/dt, 0]`, and the subfault slips instantaneously within one sample.
+/// genslip floors rise times to `dt` the same way.
+///
 /// # Errors
 ///
 /// [`Error`]: mismatched array lengths, a non-positive `dt_s`, non-finite slip, a
-/// `beta` outside `(0, 0.5]`, or a slipping subfault whose rise time
-/// is unrepresentable at `dt_s`.
+/// `beta` outside `(0, 0.5]`, or, for [`Shape::OliuP`], a slipping subfault whose
+/// rise time is negative or not finite.
 pub fn synthesise_pulses(
     slip_m: &[f64],
     rise_time_s: &[f64],
@@ -134,19 +132,22 @@ pub fn synthesise_pulses(
         let length = if slip.abs() > MIN_SLIP_M {
             match shape {
                 Shape::Delta => SPIKE_SAMPLES,
-                Shape::OliuP { .. } => match samples(rise_time_s[subfault], dt_s) {
-                    0 => {
-                        return Err(Error::UnrepresentableRiseTime {
+                Shape::OliuP { .. } => {
+                    let rise = rise_time_s[subfault];
+                    if !rise.is_finite() || rise < 0.0 {
+                        return Err(Error::RiseTimeOutOfRange {
                             subfault,
-                            rise_time_s: rise_time_s[subfault],
-                            dt_s,
+                            rise_time_s: rise,
                         });
                     }
-                    // Too short to resolve: a fixed spike replaces the shape.
-                    1 => SPIKE_SAMPLES,
-                    // One more sample than the duration covers, to close the pulse.
-                    count => count + 1,
-                },
+                    match samples(rise, dt_s) {
+                        // Too short to resolve, under half a sample included: a fixed
+                        // spike replaces the shape, and the subfault slips at once.
+                        0 | 1 => SPIKE_SAMPLES,
+                        // One more sample than the duration covers, to close the pulse.
+                        count => count + 1,
+                    }
+                }
             }
         } else {
             0
@@ -163,7 +164,7 @@ pub fn synthesise_pulses(
         shape,
         dt_s,
     };
-    fill(job, &mut all_samples)?;
+    fill(job, &mut all_samples);
     Ok(CsrPulses {
         offsets,
         samples: all_samples,
@@ -183,8 +184,8 @@ struct Job<'a> {
 /// The samples in a pulse too short for its shape to mean anything: rise, peak, fall.
 const SPIKE_SAMPLES: usize = 3;
 
-/// How many samples a duration covers, rounded to nearest. A negative or NaN duration
-/// saturates to zero, an empty pulse.
+/// How many samples a duration covers, rounded to nearest. Pass 1 refuses a negative
+/// or non-finite duration before calling this.
 fn samples(duration_s: f64, dt_s: f64) -> usize {
     (duration_s / dt_s).round() as usize
 }
@@ -198,9 +199,9 @@ const SUBFAULTS_PER_TASK: usize = 64;
 /// The offsets cut `out` into one disjoint `&mut [f64]` per run of
 /// [`SUBFAULTS_PER_TASK`] subfaults. The tasks share only immutable inputs and
 /// don't need locks. Rise time varies by an order of magnitude across a fault, and
-/// rayon's work stealing evens out the uneven runs. The error reports the lowest
-/// failing subfault, whatever order the tasks ran in.
-fn fill(job: Job<'_>, out: &mut [f64]) -> Result<(), Error> {
+/// rayon's work stealing evens out the uneven runs. Pass 1 checked every input, so
+/// nothing here can fail.
+fn fill(job: Job<'_>, out: &mut [f64]) {
     let subfaults = job.slip_m.len();
     let mut tasks = Vec::with_capacity(subfaults.div_ceil(SUBFAULTS_PER_TASK));
     let mut rest = out;
@@ -213,38 +214,32 @@ fn fill(job: Job<'_>, out: &mut [f64]) -> Result<(), Error> {
     }
     tasks
         .into_par_iter()
-        .find_map_first(|(start, end, run)| fill_run(job, start, end, run).err())
-        .map_or(Ok(()), Err)
+        .for_each(|(start, end, run)| fill_run(job, start, end, run));
 }
 
 /// Subfaults `start..end`, whose samples fill exactly `run`, in order.
-fn fill_run(job: Job<'_>, start: usize, end: usize, run: &mut [f64]) -> Result<(), Error> {
+fn fill_run(job: Job<'_>, start: usize, end: usize, run: &mut [f64]) {
     let base = job.offsets[start];
     for subfault in start..end {
         let pulse = &mut run[job.offsets[subfault] - base..job.offsets[subfault + 1] - base];
         if !pulse.is_empty() {
-            write(job, subfault, pulse)?;
+            write(job, subfault, pulse);
         }
     }
-    Ok(())
 }
 
 /// One subfault's pulse, into the slice pass 1 sized for it.
-fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) -> Result<(), Error> {
+fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) {
     let slip = job.slip_m[subfault];
     match job.shape {
         Shape::OliuP { beta } => oliu_p_into(
             pulse,
-            subfault,
             slip,
             job.rise_time_s[subfault],
             beta[subfault],
             job.dt_s,
         ),
-        Shape::Delta => {
-            pulse.copy_from_slice(&[0.0, slip / job.dt_s, 0.0]);
-            Ok(())
-        }
+        Shape::Delta => pulse.copy_from_slice(&[0.0, slip / job.dt_s, 0.0]),
     }
 }
 
@@ -263,33 +258,24 @@ fn write(job: Job<'_>, subfault: usize, pulse: &mut [f64]) -> Result<(), Error> 
 /// the pulse. A source-time function that ends at a non-zero rate is a step in
 /// velocity, which radiates at every frequency and isn't what the model means.
 ///
-/// A duration of about one sample gives a fixed three-point spike rather than
-/// anything computed. The shape means nothing at that resolution, and a triangle
-/// replaces it, which is also what [`Shape::Delta`] is.
+/// A duration of about one sample or less, down to zero, gives a fixed three-point
+/// spike rather than anything computed. The shape means nothing at that resolution,
+/// and a triangle replaces it, which is also what [`Shape::Delta`] is. A subfault
+/// whose rise time is under half a sample slips instantaneously, as genslip's floor
+/// to `dt` makes it.
 ///
 /// `values` is the caller's slice of the output buffer, already the length pass 1
 /// worked out for this subfault, and already zero. Writing into it rather than
 /// returning a `Vec` limits the whole synthesis to one allocation, rather than one
 /// per subfault and a copy of every sample out of each.
 ///
-/// # Errors
-///
-/// [`Error::UnrepresentableRiseTime`] at `subfault` if normalising the shape fails.
-///
 /// (orig. `gen_OliuP_stf`, `gslip_sliprate_subs.c`)
-fn oliu_p_into(
-    values: &mut [f64],
-    subfault: usize,
-    slip: f64,
-    duration_s: f64,
-    beta: f64,
-    dt_s: f64,
-) -> Result<(), Error> {
+fn oliu_p_into(values: &mut [f64], slip: f64, duration_s: f64, beta: f64, dt_s: f64) {
     let count = samples(duration_s, dt_s);
-    if count == 1 {
+    if count <= 1 {
         // Too short to resolve: use a fixed spike in place of a computed shape.
         values.copy_from_slice(&[0.0, 1.0, 0.0]);
-        return normalise(values, subfault, slip, duration_s, dt_s);
+        return normalise(values, slip, dt_s);
     }
 
     let rise_end = beta * duration_s;
@@ -314,36 +300,24 @@ fn oliu_p_into(
             0.0
         };
     }
-    normalise(values, subfault, slip, duration_s, dt_s)
+    normalise(values, slip, dt_s);
 }
 
-/// Scale so `dt · Σ values` is `slip`, or refuse if no scale can do it.
+/// Scale so `dt · Σ values` is `slip`.
 ///
 /// Shared so that "conserves slip" is one line of code rather than a property each
-/// shape has to remember to have.
-///
-/// # Errors
-///
-/// [`Error::UnrepresentableRiseTime`] at `subfault` if the integral isn't positive,
-/// which means the shape degenerated at this resolution.
-fn normalise(
-    values: &mut [f64],
-    subfault: usize,
-    slip: f64,
-    rise_time_s: f64,
-    dt_s: f64,
-) -> Result<(), Error> {
+/// shape has to remember to have. The spike's middle sample is 1. A computed shape
+/// writes positive samples before its duration ends, because with `beta <= 0.5`
+/// no piece's cosine argument gets as far as making it zero. Either way the
+/// integral is positive.
+fn normalise(values: &mut [f64], slip: f64, dt_s: f64) {
     let integral: f64 = values.iter().map(|value| dt_s * value).sum();
-    if !integral.is_finite() || integral <= 0.0 {
-        return Err(Error::UnrepresentableRiseTime {
-            subfault,
-            rise_time_s,
-            dt_s,
-        });
-    }
+    debug_assert!(
+        integral.is_finite() && integral > 0.0,
+        "a pulse shape integrates to {integral}"
+    );
     let scale = slip / integral;
     for value in values {
         *value *= scale;
     }
-    Ok(())
 }

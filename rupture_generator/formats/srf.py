@@ -194,9 +194,10 @@ def write_rupture(
     Raises
     ------
     RuptureGeneratorError
-        For a slipping subfault whose rise time rounds to no samples at its segment's
-        ``dt_s``, a ``beta`` outside ``(0, 0.5]``, or points or comments the SRF writer
-        refuses.
+        For a ``beta`` outside ``(0, 0.5]``, a slipping subfault's negative or
+        non-finite rise time, or points or comments the SRF writer refuses. A rise
+        time under half of ``dt_s`` is no error: that subfault slips within one
+        sample.
     OSError
         If writing the file fails.
     """
