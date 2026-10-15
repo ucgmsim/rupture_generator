@@ -13,6 +13,9 @@ authors:
   - family-names: Bradley
     given-names: Brendon
     affiliation: University of Canterbury
+  - family-names: Pajaro
+    given-names: Cesar
+    affiliation: University of Canterbury
 repository-code: "https://github.com/ucgmsim/rupture_generator"
 url: "https://github.com/ucgmsim/rupture_generator"
 license: MIT

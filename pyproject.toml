@@ -21,6 +21,11 @@ dependencies = [
   "xarray>=2026.9.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ucgmsim/rupture_generator"
+Source = "https://github.com/ucgmsim/rupture_generator"
+Issues = "https://github.com/ucgmsim/rupture_generator/issues"
+
 [project.scripts]
 rupture-generator = "rupture_generator.cli:main"
 rupture-view = "rupture_generator.view:main"
