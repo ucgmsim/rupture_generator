@@ -115,7 +115,7 @@ def _colours(
     return cmap[np.clip(shade, 0.0, 255.0).astype(np.uint8)]
 
 
-def _histogram(values: np.ndarray, low: float, high: float) -> rr.BarChart:
+def _histogram(values: np.ndarray, low: float, high: float) -> "rr.BarChart":
     """``values`` counted in :data:`BINS` bins from ``low`` to ``high``, as a bar chart."""
     import rerun as rr
 
@@ -343,7 +343,7 @@ def _statistics(rupture: SrfRupture) -> str:
     )
 
 
-def _layout() -> rrb.Blueprint:
+def _layout() -> "rrb.Blueprint":
     """Lay out one fault tab per field, with the numbers and moment release beside them."""
     import rerun.blueprint as rrb
 
