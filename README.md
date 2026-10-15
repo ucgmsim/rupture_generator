@@ -1,6 +1,7 @@
 <!-- vale Google.Headings = NO -->
 # Rupture Generator
 <!-- vale Google.Headings = YES -->
+[![DOI](https://zenodo.org/badge/1302333750.svg)](https://doi.org/10.5281/zenodo.23384099)
 
 ![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/beavan_slip.png)
 
