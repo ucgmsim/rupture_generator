@@ -2,7 +2,7 @@
 # Rupture Generator
 <!-- vale Google.Headings = YES -->
 
-![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](docs/images/beavan_slip.png)
+![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/beavan_slip.png)
 
 *One draw of `examples/beavan.toml`: the 2010 Mw 7.1 Darfield earthquake on the seven
 faults of [Beavan et al. (2012)](https://doi.org/10.1080/00288306.2012.697472),
@@ -92,7 +92,7 @@ function at each point.
 
 The rupture viewer can be used to see an interactive 3D visualisation of a generated rupture.
 
-![The Rerun viewer at the end of the Venezuela example: final slip on its two segments, beside the rupture's statistics, its slip histogram and its moment rate](docs/images/rupture_viewer.png)
+![The Rerun viewer at the end of the Venezuela example: final slip on its two segments, beside the rupture's statistics, its slip histogram and its moment rate](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/rupture_viewer.png)
 
 *`rupture-view` on the Venezuela example, the two segments of the 2026 Mw 7.5 Catia
 La Mar earthquake's finite-fault model, 86.5 s in, once every subfault has slipped.
@@ -163,7 +163,7 @@ lies more than 0.05 from the source's.
 
 The underlying assumptions from the Graves and Pitarka method enter via latent fields under the NORTA framework. The slip latent distribution is used to correlate to the other fields. 
 
-![Slip, rise time, rupture time and rake on one fault, with rise time and rupture time each shown as a share of slip plus independent noise](docs/images/slip_rise_rake.png)
+![Slip, rise time, rupture time and rake on one fault, with rise time and rupture time each shown as a share of slip plus independent noise](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/slip_rise_rake.png)
 
 *How the fields compose. Rise time is a share of slip plus independent noise with
 slip's von Kármán spectrum, and rupture time adds both to the eikonal solution. Rake
