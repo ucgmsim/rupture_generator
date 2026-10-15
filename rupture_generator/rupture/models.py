@@ -39,7 +39,6 @@ from rupture_generator.sampling import (
     Marginal,
     MarginalFamily,
     PreCorrected,
-    largest_minimum,
     mix,
     sampler,
     standardise,
@@ -557,7 +556,7 @@ class DrawnSlip:
         alone. Infinite otherwise.
     minimum : float
         The smallest slip the marginal draws in mean slips, before the taper, for a
-        ``truncated_normal`` or ``gamma`` alone. Zero leaves the family uncut.
+        ``truncated_normal`` alone. Zero leaves the family uncut.
     side_taper : float
         The fraction of the fault's length from each end over which slip ramps to zero.
     top_taper : float
@@ -689,8 +688,8 @@ class CorrelatedRise:
     marginal has its stated spread. Each cell at the floor narrows the rise time's
     spread a little, and the scale that makes up the mean lifts every other cell by
     the same fraction. The statistic ``floored`` reports the share of cells at the
-    floor: none in most draws, and about a percent at Mw 4.5 with a slip exponent of
-    1.5. The Gaussian-copula correlation with slip is between the latents, which the
+    floor: none in most draws, and a quarter of a percent at Mw 4.5 with a slip
+    exponent of 1 or 1.5. The Gaussian-copula correlation with slip is between the latents, which the
     cut leaves alone. Rise time keeps the latent's rank order, and with it its rank
     correlation with slip, except that cells at the floor tie. The Pearson
     correlation of the values moves with the marginal, as for any change of marginal.
@@ -706,16 +705,18 @@ class CorrelatedRise:
         The power of slip that rise time follows. At 0.5, rise time goes as the square
         root of slip.
     family : MarginalFamily
-        The unit-mean distribution rise time values follow, a gamma by default.
+        The unit-mean distribution rise time values follow, a truncated normal by
+        default.
     coefficient_of_variation : float
-        The spread of ``family``. Below unit spread the gamma's mode is away from zero.
-        No subfault then has a zero rise time.
+        The spread of ``family``. A truncated normal takes any spread under 1, and
+        it has density at zero: without a ``minimum`` or a ``minimum_s``, a subfault
+        can draw a rise time near zero.
     maximum : float
         The longest rise time in mean rise times, for a ``doubly_truncated_normal``
         alone. Infinite otherwise.
     minimum : float
-        A ``truncated_normal`` or ``gamma`` marginal's cut, in its unit mean. With a
-        ``minimum_s`` the cut is the larger of this and the one the floor needs.
+        A ``truncated_normal`` marginal's cut, in its unit mean. With a ``minimum_s``
+        the cut is the larger of this and the one the floor needs.
     minimum_s : float, optional
         The shortest rise time any occupied cell has, in seconds. Without it rise time
         has no floor beyond the marginal's. A pulse can't sample a rise time much
@@ -732,7 +733,7 @@ class CorrelatedRise:
     coefficient: float = 1.6
     correlation: float = 0.9
     slip_exponent: float = 0.5
-    family: MarginalFamily = "gamma"
+    family: MarginalFamily = "truncated_normal"
     coefficient_of_variation: float = 0.75
     maximum: float = np.inf
     minimum: float = 0.0
@@ -754,8 +755,11 @@ class CorrelatedRise:
                 raise RuptureGeneratorError(
                     f"a rise-time floor is a positive duration, got {self.minimum_s} s"
                 )
-            # Refuses a family no minimum can cut.
-            largest_minimum(marginal.family, marginal.coefficient_of_variation)
+            if marginal.family != "truncated_normal":
+                raise RuptureGeneratorError(
+                    f"a rise-time floor cuts the marginal, and only a truncated_normal "
+                    f"marginal takes a minimum; got a {marginal.family}"
+                )
 
     @property
     def marginal(self) -> Marginal:
@@ -814,11 +818,12 @@ class CorrelatedRise:
 
         if margin(marginal.minimum) >= 0.0:
             return marginal
-        largest = largest_minimum(marginal.family, marginal.coefficient_of_variation)
-        # The fit degrades as the cut nears the family's limit. The search stops 1%
-        # short of it.
+        # A truncated normal cut at c takes any spread under 1 - c. The cut stays under
+        # 1 - spread, and the fit degrades near that limit. The search stops 1% short
+        # of it.
+        largest = 1.0 - marginal.coefficient_of_variation
         top = marginal.minimum + 0.99 * (largest - marginal.minimum)
-        if not top > marginal.minimum or margin(top) < 0.0:
+        if margin(top) < 0.0:
             raise RuptureGeneratorError(
                 f"a rise-time floor of {self.minimum_s} s is {needed:.3g} of the mean "
                 f"rise time of {mean_s:.4g} s at the smallest factor, and a "

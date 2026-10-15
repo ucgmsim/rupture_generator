@@ -160,10 +160,9 @@ def test_moment_magnitude_is_hanks_kanamori_equation_7():
     "marginal",
     [
         Marginal("truncated_exponential", 0.9),
-        Marginal("gamma", 0.75),
+        Marginal("truncated_normal", 0.75),
         Marginal("doubly_truncated_normal", 0.6, 4.3),
         Marginal("truncated_normal", 0.5, minimum=0.2),
-        Marginal("gamma", 0.75, minimum=0.01),
     ],
 )
 def test_the_tabulated_transform_matches_the_quantile(marginal):
@@ -204,24 +203,17 @@ def test_the_doubly_truncated_normal_approaches_the_truncated_exponential():
     assert 0.0 < 0.9 - _doubly_truncated_normal_ceiling(maximum) < 5e-4
 
 
-CUT_FAMILIES = [
-    ("truncated_normal", 0.5),
-    ("gamma", 0.75),
-    ("gamma", 0.2),
-    ("gamma", 2.0),
-]
+CUT_SPREADS = [0.2, 0.5, 0.75]
 
 
-@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES)
+@pytest.mark.parametrize("spread", CUT_SPREADS)
 @pytest.mark.parametrize("fraction", [1e-6, 0.01, 0.5, 0.95])
-def test_a_cut_marginal_keeps_its_mean_and_spread_above_its_minimum(
-    family, spread, fraction
-):
-    from rupture_generator.sampling import largest_minimum
+def test_a_cut_marginal_keeps_its_mean_and_spread_above_its_minimum(spread, fraction):
     from rupture_generator.sampling.norta import NORTA_TAIL, _distribution
 
-    minimum = fraction * largest_minimum(family, spread)
-    marginal = Marginal(family, spread, minimum=minimum)
+    # A truncated normal cut at m reaches any spread under 1 - m.
+    minimum = fraction * (1.0 - spread)
+    marginal = Marginal("truncated_normal", spread, minimum=minimum)
     fitted = _distribution(marginal)
     assert fitted.support()[0] == pytest.approx(minimum, rel=1e-9)
     assert fitted.mean() == pytest.approx(1.0, abs=1e-9)
@@ -242,31 +234,29 @@ def test_a_cut_marginal_keeps_its_mean_and_spread_above_its_minimum(
     assert drawn.mean() == pytest.approx(1.0, abs=0.01 * spread)
 
 
-# A gamma of spread 2 has shape 1/4 and puts 0.4% of its values under 1e-9, so even
-# that cut moves it measurably. The families here put almost none there.
-@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES[:3])
-def test_a_marginal_cut_at_almost_nothing_is_the_uncut_one(family, spread):
-    uncut = Marginal(family, spread)
-    assert Marginal(family, spread, minimum=0.0) == uncut
+@pytest.mark.parametrize("spread", CUT_SPREADS)
+def test_a_marginal_cut_at_almost_nothing_is_the_uncut_one(spread):
+    uncut = Marginal("truncated_normal", spread)
+    assert Marginal("truncated_normal", spread, minimum=0.0) == uncut
     latent = np.linspace(-5.0, 5.0, 1001)
     np.testing.assert_allclose(
-        Marginal(family, spread, minimum=1e-9).apply(latent),
+        Marginal("truncated_normal", spread, minimum=1e-9).apply(latent),
         uncut.apply(latent),
         rtol=1e-4,
         atol=1e-8,
     )
 
 
-@pytest.mark.parametrize(("family", "spread"), CUT_FAMILIES)
-def test_norta_corrects_for_the_cut_marginal(family, spread):
-    from rupture_generator.sampling import largest_minimum, latent_correlation
+@pytest.mark.parametrize("spread", CUT_SPREADS)
+def test_norta_corrects_for_the_cut_marginal(spread):
+    from rupture_generator.sampling import latent_correlation
     from rupture_generator.sampling.norta import (
         _correlation_series,
         _hermite_expansion,
     )
 
-    marginal = Marginal(family, spread, minimum=0.5 * largest_minimum(family, spread))
-    uncut = Marginal(family, spread)
+    marginal = Marginal("truncated_normal", spread, minimum=0.5 * (1.0 - spread))
+    uncut = Marginal("truncated_normal", spread)
     # The expansion is of the cut transform: unit mean, the stated spread.
     expansion = _hermite_expansion(marginal)
     assert expansion.coefficients[0] == pytest.approx(1.0, abs=1e-6)

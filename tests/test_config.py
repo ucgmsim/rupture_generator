@@ -355,7 +355,17 @@ def test_without_a_floor_the_record_has_none():
         (
             "[slip]\n",
             "[slip]\nminimum = 0.1\n",
-            "slip: only a truncated_normal or gamma marginal takes a minimum",
+            "slip: only a truncated_normal marginal takes a minimum",
+        ),
+        (
+            'family = "truncated_normal"',
+            'family = "gamma"',
+            "rise.family: 'gamma' is not one of 'normal', 'truncated_normal',",
+        ),
+        (
+            "minimum = 0.02\n",
+            'minimum = 0.02\nfamily = "gamma"\n',
+            "segments.next.rise.family: 'gamma' is not one of",
         ),
     ],
 )

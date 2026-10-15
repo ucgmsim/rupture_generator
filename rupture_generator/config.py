@@ -26,7 +26,7 @@ filled in, which records what a run used.
 import dataclasses
 import tomllib
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 import numpy as np
 from mashumaro.codecs import BasicDecoder
@@ -654,12 +654,25 @@ def _describe(error: Exception, within: str | None = None) -> RuptureGeneratorEr
                 break
             case InvalidFieldValue():
                 path.append(link.field_name)
+                choices = _choices(link.field_type)
+                if choices:
+                    reason = (
+                        f"{link.field_value!r} is not one of "
+                        f"{', '.join(map(repr, choices))}"
+                    )
+                    break
                 reason = f"{link.field_value!r} is not a {getattr(link.field_type, '__name__', link.field_type)}"
             case RuptureGeneratorError() | ValueError() | TypeError():
                 reason = str(link)
                 break
         link = link.__cause__ or link.__context__
     return RuptureGeneratorError(f"{'.'.join(path) or 'the file'}: {reason}")
+
+
+def _choices(annotation: object) -> tuple[object, ...]:
+    """The values a ``Literal`` annotation allows, through a type alias, or none."""
+    annotation = getattr(annotation, "__value__", annotation)
+    return get_args(annotation) if get_origin(annotation) is Literal else ()
 
 
 def _table(table: object) -> dict[str, Any]:

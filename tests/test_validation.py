@@ -86,10 +86,11 @@ def test_settings_out_of_range_are_refused(build, message):
 @pytest.mark.parametrize(
     ("family", "cov", "maximum", "message"),
     [
-        ("gamma", 0.0, np.inf, "positive coefficient of variation"),
+        ("truncated_normal", 0.0, np.inf, "positive coefficient of variation"),
         ("truncated_normal", 5.0, np.inf, "truncated normal cannot"),
         ("truncated_exponential", 5.0, np.inf, "truncated exponential cannot"),
-        ("gamma", 0.75, 4.0, "only a doubly_truncated_normal"),
+        ("truncated_normal", 0.5, 4.0, "only a doubly_truncated_normal"),
+        ("gamma", 0.75, np.inf, "there is no 'gamma' marginal; the families are"),
         ("doubly_truncated_normal", 0.5, np.inf, "needs a finite maximum"),
         ("doubly_truncated_normal", 0.5, 1.0, "needs a finite maximum"),
         ("doubly_truncated_normal", 0.9, 4.3, "all but becomes the truncated"),
@@ -103,29 +104,18 @@ def test_a_marginal_its_family_cannot_have_is_refused(family, cov, maximum, mess
 @pytest.mark.parametrize(
     ("family", "cov", "minimum", "message"),
     [
-        ("truncated_exponential", 0.9, 0.1, "only a truncated_normal or gamma"),
-        ("normal", 0.0, 0.1, "only a truncated_normal or gamma"),
-        ("gamma", 0.75, 1.0, r"lies in \[0, 1\)"),
-        ("gamma", 0.75, -0.1, r"lies in \[0, 1\)"),
+        ("truncated_exponential", 0.9, 0.1, "only a truncated_normal marginal"),
+        ("normal", 0.0, 0.1, "only a truncated_normal marginal"),
+        ("truncated_normal", 0.75, 1.0, r"lies in \[0, 1\)"),
+        ("truncated_normal", 0.75, -0.1, r"lies in \[0, 1\)"),
         ("truncated_normal", 0.5, np.nan, r"lies in \[0, 1\)"),
         ("truncated_normal", 0.6, 0.5, "cut at 0.5 has a coefficient of variation"),
         ("truncated_normal", 1.5, 0.1, "cut at 0.1 has a coefficient of variation"),
-        ("gamma", 2.0, 0.05, "gamma cut at 0.05 has a coefficient of variation"),
     ],
 )
 def test_a_minimum_its_family_cannot_have_is_refused(family, cov, minimum, message):
     with pytest.raises(RuptureGeneratorError, match=message):
         Marginal(family, cov, minimum=minimum)
-
-
-def test_only_a_family_that_takes_a_minimum_has_a_largest_one():
-    from rupture_generator.sampling import largest_minimum
-
-    with pytest.raises(RuptureGeneratorError, match="only a truncated_normal or gamma"):
-        largest_minimum("truncated_exponential", 0.9)
-    assert largest_minimum("truncated_normal", 0.4) == pytest.approx(0.6)
-    # Past the gamma's ceiling at a cut of zero, the largest cut is zero.
-    assert largest_minimum("gamma", 40.0) == 0.0
 
 
 @pytest.mark.parametrize(
@@ -141,12 +131,12 @@ def test_only_a_family_that_takes_a_minimum_has_a_largest_one():
                 maximum=4.3,
                 minimum_s=0.005,
             ),
-            "only a truncated_normal or gamma",
+            "only a truncated_normal marginal takes a minimum",
         ),
-        (lambda: CorrelatedRise(minimum=0.5), "gamma cut at 0.5"),
+        (lambda: CorrelatedRise(minimum=0.5), "truncated normal cut at 0.5"),
         (
             lambda: DrawnSlip(family="truncated_exponential", minimum=0.1),
-            "only a truncated_normal or gamma",
+            "only a truncated_normal marginal takes a minimum",
         ),
     ],
 )

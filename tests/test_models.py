@@ -232,20 +232,26 @@ def _rise_draw(magnitude, *, minimum_s, seed=7, **rise):
     return _generate(scenario, scenario.model)
 
 
-@pytest.mark.parametrize(
-    ("family", "spread"), [("truncated_normal", 0.5), ("gamma", 0.75)]
-)
-@pytest.mark.parametrize("exponent", [0.5, 1.0, 1.5])
-@pytest.mark.parametrize("magnitude", [4.5, 6.0, 7.5])
+FLOOR_CASES = [
+    (spread, exponent, magnitude)
+    for spread in (0.5, 0.75)
+    for exponent in (0.5, 1.0, 1.5)
+    for magnitude in (4.5, 6.0, 7.5)
+    # test_a_floor_past_the_marginals_reach_names_the_segment draws this one.
+    if (spread, exponent, magnitude) != (0.75, 1.5, 4.5)
+]
+
+
+@pytest.mark.parametrize(("spread", "exponent", "magnitude"), FLOOR_CASES)
 @pytest.mark.parametrize("seed", [1, 2])
 def test_every_occupied_cell_keeps_the_rise_floor_and_the_mean_holds(
-    family, spread, exponent, magnitude, seed
+    spread, exponent, magnitude, seed
 ):
     drawn = _rise_draw(
         magnitude,
         minimum_s=DT_S,
         seed=seed,
-        family=family,
+        family="truncated_normal",
         coefficient_of_variation=spread,
         slip_exponent=exponent,
     )
@@ -257,8 +263,8 @@ def test_every_occupied_cell_keeps_the_rise_floor_and_the_mean_holds(
         )
         assert 0.0 < rupture.statistics["rise.minimum"] < 1.0
         # A cell drops to the floor only where the drawn mean runs over its expected
-        # value, and then few do: a percent at Mw 4.5 with a power of 1.5.
-        assert 0.0 <= rupture.statistics["rise.floored"] < 0.05
+        # value, and then few do: a quarter of a percent at Mw 4.5.
+        assert 0.0 <= rupture.statistics["rise.floored"] < 0.01
 
 
 def test_the_floor_lifts_rise_times_a_pulse_cannot_sample(tmp_path):
@@ -292,6 +298,16 @@ def test_a_floor_no_segment_can_keep_names_the_segment():
         match="segment 'bent': a rise-time floor of 100.0 s is not below",
     ):
         _rise_draw(6.0, minimum_s=100.0)
+
+
+def test_a_floor_past_the_marginals_reach_names_the_segment():
+    # At Mw 4.2 the floor is a seventh of the mean rise time, and at a power of 1.5
+    # it needs a cut past 0.2475, 99% of the way to the 0.25 a spread of 0.75 allows.
+    with pytest.raises(
+        RuptureGeneratorError,
+        match="segment 'next': a rise-time floor of 0.005 s .* cannot be cut that high",
+    ):
+        _rise_draw(4.5, minimum_s=DT_S, slip_exponent=1.5)
 
 
 @pytest.mark.parametrize("minimum_s", [0.05, 0.4, 0.8, 0.99])

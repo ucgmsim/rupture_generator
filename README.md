@@ -127,8 +127,8 @@ or `profile` tables.
 segment's mean rise time is unchanged. The draw cuts the marginal where the floor
 needs it. Any cell the rescale to the mean leaves under the floor takes the floor's
 value, and the rest scale up to keep the mean.
-`[slip]` and `[rise]` also take a `minimum`, a cut on a `truncated_normal` or `gamma`
-marginal in units of its mean that keeps the stated spread.
+`[slip]` and `[rise]` also take a `minimum`, a cut on a `truncated_normal` marginal
+in units of its mean that keeps the stated spread.
 
 ---
 
