@@ -71,7 +71,7 @@ def test_a_correlation_the_marginals_cannot_share_is_refused(sign):
     # By the series' odd symmetry the floor is minus the ceiling.
     with pytest.raises(RuptureGeneratorError, match="Gaussian copula"):
         latent_correlation(NORMAL, GAMMA, np.array([0.0, sign * (ceiling + 1e-6)]))
-    # Round-off past the extreme is clipped to the extreme latent correlation.
+    # Round-off clipping.
     edge = sign * (ceiling + 0.5 * NORTA_CORRELATION_SLACK)
     np.testing.assert_allclose(
         latent_correlation(NORMAL, GAMMA, np.array([edge])), [sign], atol=1e-9
@@ -112,7 +112,6 @@ def test_the_doubly_truncated_normal_parent_puts_the_cut_mean_at_one(scale, maxi
 
 
 def test_a_narrow_parent_is_barely_cut():
-    # Ten parent deviations from either cut, the parent and its cut agree.
     assert _doubly_truncated_normal_location(0.05, 2.0) == pytest.approx(1.0, abs=1e-12)
     assert _doubly_truncated_normal_spread(0.05, 2.0) == pytest.approx(0.05, rel=1e-12)
 
