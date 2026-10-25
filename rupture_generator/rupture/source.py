@@ -12,6 +12,10 @@ Research*, 84(B5), 2348-2350.
 
 Mai, P. M., & Beroza, G. C. (2002). A spatial random field model to characterize
 complexity in earthquake slip. *Journal of Geophysical Research*, 107(B11), 2308.
+
+Suzuki, F., Kato, K., & Watanabe, T. (2022). Spatial complexity characteristics of fault
+slip from Japanese earthquakes based on self-similar models. *Bulletin of the
+Seismological Society of America*, 112(4), 1853-1870.
 """
 
 import dataclasses
@@ -65,8 +69,9 @@ def magnitude_from_moment(moment_nm: float) -> float:
 class CorrelationRelation:
     """Slip correlation lengths that grow with magnitude.
 
-    ``length = 10 ** (exponent * Mw - offset)`` kilometres, along strike and down dip.
-    The defaults are Mai & Beroza (2002)'s fit for the von Karman correlation.
+    ``length = 10 ** (exponent * min(Mw, saturation) - offset)`` kilometres, along strike
+    and down dip. The defaults are Mai & Beroza (2002)'s fit for the von Karman
+    correlation, which never saturates.
 
     Parameters
     ----------
@@ -78,12 +83,19 @@ class CorrelationRelation:
         How fast the length down dip grows with magnitude.
     dip_offset : float
         The length down dip's offset, in decades of kilometres.
+    strike_saturation : float
+        The magnitude past which the length along strike stops growing.
+    dip_saturation : float
+        The magnitude past which the length down dip stops growing, such as the
+        seismogenic width bounding it.
     """
 
     strike_exponent: float = 0.5
     strike_offset: float = 2.5
     dip_exponent: float = 1.0 / 3.0
     dip_offset: float = 1.5
+    strike_saturation: float = np.inf
+    dip_saturation: float = np.inf
 
     def lengths_km(self, magnitude: float) -> tuple[float, float]:
         """Compute the correlation lengths for a magnitude.
@@ -99,8 +111,16 @@ class CorrelationRelation:
             ``(down dip, along strike)`` in kilometres, the chart's axis order.
         """
         return (
-            10.0 ** (self.dip_exponent * magnitude - self.dip_offset),
-            10.0 ** (self.strike_exponent * magnitude - self.strike_offset),
+            10.0
+            ** (
+                self.dip_exponent * min(magnitude, self.dip_saturation)
+                - self.dip_offset
+            ),
+            10.0
+            ** (
+                self.strike_exponent * min(magnitude, self.strike_saturation)
+                - self.strike_offset
+            ),
         )
 
 
@@ -109,6 +129,10 @@ VON_KARMAN = VonKarman()
 
 MAI_BEROZA = CorrelationRelation()
 """Mai & Beroza (2002): ``10^(Mw/2 - 2.5)`` along strike, ``10^(Mw/3 - 1.5)`` down dip."""
+
+SUZUKI_2022 = CorrelationRelation(0.5, 1.67, 0.5, 1.69, dip_saturation=6.3)
+"""Suzuki et al. (2022): ``10^(Mw/2 - 1.67)`` along strike, ``10^(min(Mw, 6.3)/2 - 1.69)``
+down dip. Smoother than Mai & Beroza, the shallow slip of Graves & Pitarka's hybrid."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -208,6 +232,7 @@ def split_moment(
 
 __all__ = [
     "MAI_BEROZA",
+    "SUZUKI_2022",
     "VON_KARMAN",
     "CorrelationRelation",
     "SegmentSource",

@@ -3,7 +3,9 @@
 This module embeds any correlation function and doesn't assume anything about what
 the caller does with the field. A :class:`Covariance` is a :class:`Correlation` and the
 lengths that scale its argument. :func:`sampler` embeds one on a :class:`Grid` once
-and draws from it as often as asked. Every tuple is ``(axis 0, axis 1)``.
+and draws from it as often as asked. A :class:`Blend` crossfades several covariances
+cell by cell, for a field whose correlation lengths change across the grid. Every tuple
+is ``(axis 0, axis 1)``.
 """
 
 import dataclasses
@@ -42,9 +44,10 @@ MAXIMUM_EMBEDDING_DOUBLINGS = 3
 MAXIMUM_EMBEDDING_CELLS = 1 << 27
 """The largest padded grid to transform. """
 
-SAMPLER_CACHE_SIZE = 64
-"""How many embeddings :func:`sampler` keeps. Each segment takes two, so a fault system
-of up to 32 segments draws again without embedding anything."""
+SAMPLER_CACHE_SIZE = 128
+"""How many embeddings :func:`sampler` keeps. Each segment takes two, and one more for
+each family a :class:`Blend` adds, so a fault system of up to 64 segments, or 42 with
+two families each, draws again without embedding anything."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -81,6 +84,21 @@ class Covariance:
 
     correlation: Correlation
     lengths_km: tuple[float, float]
+
+    def sampler(self, grid: Grid) -> "Sampler":
+        """Embed the covariance on ``grid``, through :func:`sampler`'s cache.
+
+        Parameters
+        ----------
+        grid : Grid
+            The grid to draw on.
+
+        Returns
+        -------
+        Sampler
+            The embedding, ready to draw from.
+        """
+        return sampler(grid, self)
 
 
 def _decay_length(correlation: Correlation, tolerance: float) -> float:
@@ -126,19 +144,26 @@ def _mirror_weights(extent: int) -> np.ndarray:
     return weights
 
 
-def _embed(grid: Grid, covariance: Covariance) -> tuple[FieldArray, tuple[int, int]]:
+def _embed(
+    grid: Grid, covariance: Covariance, floor: tuple[int, int] = (0, 0)
+) -> tuple[FieldArray, tuple[int, int]]:
     """The square-rooted eigenvalues of a circulant embedding, and the padded shape.
 
     The margin starts at the correlation's decay length and doubles until the variance
     the clipped negative eigenvalues drop is within :data:`MAXIMUM_VARIANCE_DEFICIT`.
+    The padded shape is at least ``floor`` on each axis.
     """
     decay = _decay_length(covariance.correlation, WRAP_TOLERANCE)
     for doubling in range(MAXIMUM_EMBEDDING_DOUBLINGS):
         margin = decay * 2**doubling
         rows, columns = (
-            _padded_extent(extent, resolution, length, margin)
-            for extent, resolution, length in zip(
-                grid.shape, grid.resolution_km, covariance.lengths_km, strict=True
+            max(_padded_extent(extent, resolution, length, margin), least)
+            for extent, resolution, length, least in zip(
+                grid.shape,
+                grid.resolution_km,
+                covariance.lengths_km,
+                floor,
+                strict=True,
             )
         )
         padded = (rows, columns)
@@ -212,12 +237,18 @@ class Sampler:
         tuple of FieldArray
             The real and imaginary fields, each shaped like the grid.
         """
-        seed = int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
-        return circulant_draw(self.amplitudes, self.padded, self.shape, seed)
+        return circulant_draw(self.amplitudes, self.padded, self.shape, _seed(rng))
+
+
+def _seed(rng: np.random.Generator) -> int:
+    """Take one draw's seed from ``rng``."""
+    return int(rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
 
 
 @functools.lru_cache(maxsize=SAMPLER_CACHE_SIZE)
-def sampler(grid: Grid, covariance: Covariance) -> Sampler:
+def sampler(
+    grid: Grid, covariance: Covariance, floor: tuple[int, int] = (0, 0)
+) -> Sampler:
     """Embed ``covariance`` on ``grid``, or return the embedding already made.
 
     Parameters
@@ -226,6 +257,8 @@ def sampler(grid: Grid, covariance: Covariance) -> Sampler:
         The grid to draw on.
     covariance : Covariance
         The covariance to embed.
+    floor : tuple of int, optional
+        The least padded shape, so covariances that share noise share a padded grid.
 
     Returns
     -------
@@ -238,7 +271,116 @@ def sampler(grid: Grid, covariance: Covariance) -> Sampler:
         If the covariance doesn't embed within the cell cap, or isn't positive
         definite at any margin tried.
     """
-    return Sampler(grid.shape, *_embed(grid, covariance))
+    return Sampler(grid.shape, *_embed(grid, covariance, floor))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Blend:
+    """Stationary covariances that filter one white noise, crossfaded cell by cell.
+
+    It is the covariance of a field whose correlation lengths change across the grid,
+    such as slip with long lengths near the surface and short ones at depth. Every
+    component filters the same noise, so a feature changes shape through a crossfade
+    rather than fading out. A cell's loadings are ``sin(pi w / 2)``, scaled to unit
+    variance from the components' exact cross-correlations, so the field is standard
+    normal at every cell however the weights overlap.
+
+    Attributes
+    ----------
+    components : tuple of Covariance
+        The stationary covariances.
+    weights : tuple of FieldArray
+        Each component's weight at each cell, in ``[0, 1]``. Every cell needs a
+        positive weight.
+    """
+
+    components: tuple[Covariance, ...]
+    weights: tuple[FieldArray, ...]
+
+    def sampler(self, grid: Grid) -> "BlendedSampler":
+        """Embed every component on ``grid`` at one padded shape, and load them.
+
+        Parameters
+        ----------
+        grid : Grid
+            The grid to draw on, shaped like the weights.
+
+        Returns
+        -------
+        BlendedSampler
+            The embeddings and each one's loading, ready to draw from.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If a cell has no positive weight, or a component doesn't embed.
+        """
+        gains = np.sin(0.5 * np.pi * np.asarray(self.weights))
+        power = np.sum(np.square(gains), axis=0)
+        if not np.all(power > 0.0):
+            raise RuptureGeneratorError(
+                f"{int(np.sum(~(power > 0.0)))} cells have no positive weight in the blend"
+            )
+        floor = (0, 0)
+        while True:
+            samplers = [
+                sampler(grid, component, floor) for component in self.components
+            ]
+            widest = tuple(max(axis) for axis in zip(*(s.padded for s in samplers)))
+            if all(s.padded == widest for s in samplers):
+                break
+            floor = widest
+        weights = np.outer(*(_mirror_weights(extent) for extent in widest))
+        amplitudes = np.array([s.amplitudes for s in samplers])
+        cross = np.einsum("ikl,jkl,kl->ij", amplitudes, amplitudes, weights)
+        cross /= widest[0] * widest[1]
+        gains /= np.sqrt(power)
+        variance = np.einsum("ikl,ij,jkl->kl", gains, cross, gains)
+        return BlendedSampler(tuple(samplers), gains / np.sqrt(variance))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class BlendedSampler:
+    """A :class:`Blend`'s components, embedded on one padded grid, and their loadings.
+
+    Attributes
+    ----------
+    samplers : tuple of Sampler
+        The components' embeddings, all at one padded shape.
+    loadings : numpy.ndarray
+        Each component's loading at each cell, shaped ``(components, *grid)``.
+    """
+
+    samplers: tuple[Sampler, ...]
+    loadings: np.ndarray
+
+    def draw(self, rng: np.random.Generator) -> tuple[FieldArray, FieldArray]:
+        """Draw a pair of independent blended fields, standard normal at every cell.
+
+        Every component draws from the one seed, so they filter the same noise. The
+        imaginary parts are independent of every real part, because the amplitudes
+        are even.
+
+        Parameters
+        ----------
+        rng : np.random.Generator
+            The generator the draw's seed comes from.
+
+        Returns
+        -------
+        tuple of FieldArray
+            The real and imaginary fields, each shaped like the grid.
+        """
+        seed = _seed(rng)
+        real = np.zeros(self.loadings.shape[1:])
+        imaginary = np.zeros(self.loadings.shape[1:])
+        for loading, embedding in zip(self.loadings, self.samplers, strict=True):
+            parts = circulant_draw(
+                embedding.amplitudes, embedding.padded, embedding.shape, seed
+            )
+            real += loading * parts[0]
+            imaginary += loading * parts[1]
+        return real, imaginary
 
 
 def mix(*terms: tuple[float | FieldArray, FieldArray]) -> FieldArray:

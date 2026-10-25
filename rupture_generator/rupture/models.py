@@ -23,7 +23,7 @@ The defaults are Graves & Pitarka's model: :class:`DrawnSlip`, :class:`Correlate
 
 import dataclasses
 from collections.abc import Callable, Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 
 import numpy as np
 import scipy as sp
@@ -31,15 +31,20 @@ import scipy as sp
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
 from rupture_generator.rupture.medium import SpatialField, constant_field, rigidity_pa
-from rupture_generator.rupture.source import SegmentSource
+from rupture_generator.rupture.source import (
+    CorrelationRelation,
+    SegmentSource,
+    magnitude_from_moment,
+)
 from rupture_generator.sampling import (
+    Blend,
     Covariance,
     Grid,
     Marginal,
     MarginalFamily,
     PreCorrected,
+    VonKarman,
     mix,
-    sampler,
     standardise,
 )
 
@@ -131,7 +136,7 @@ class SlipField:
         Slip, in metres. The generator zeroes it off the fault.
     latent : CellArray
         A standard normal field that slip is monotone in.
-    latent_covariance : Covariance
+    latent_covariance : Covariance or Blend
         The covariance the model drew ``latent`` from, or the nearest one for a slip it
         didn't draw.
         A model that mixes its own draw into ``latent`` draws from this.
@@ -141,7 +146,7 @@ class SlipField:
 
     slip_m: CellArray
     latent: CellArray
-    latent_covariance: Covariance
+    latent_covariance: Covariance | Blend
     statistics: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
 
@@ -512,7 +517,7 @@ def _independent(
     context: SegmentContext, slip: SlipField, rng: np.random.Generator
 ) -> CellArray:
     """A standard normal field independent of slip's latent, with its covariance."""
-    independent, _ = sampler(context.grid, slip.latent_covariance).draw(rng)
+    independent, _ = slip.latent_covariance.sampler(context.grid).draw(rng)
     return independent
 
 
@@ -530,6 +535,51 @@ def _reach(mask: CellMask, axis: int, *, reverse: bool) -> np.ndarray:
     last_gap = np.maximum.accumulate(np.where(ordered, np.int32(-1), index), axis=axis)
     counted = index - last_gap
     return np.flip(counted, axis) if reverse else counted
+
+
+@dataclasses.dataclass(frozen=True)
+class NoiseFamily:
+    """One stationary noise slip draws from, and where on the fault it applies.
+
+    Several families make Graves & Pitarka's hybrid slip: long correlation lengths near
+    the surface, short ones at depth, and a crossfade between them.
+
+    Attributes
+    ----------
+    weight : SpatialField
+        How much of slip's latent this family is at each position, in ``[0, 1]``.
+    relation : CorrelationRelation, optional
+        The family's correlation lengths at the segment's magnitude. The source's
+        lengths when absent.
+    hurst : float, optional
+        The family's von Karman Hurst exponent. The source's correlation function when
+        absent.
+    """
+
+    weight: SpatialField
+    relation: CorrelationRelation | None = None
+    hurst: float | None = None
+
+    def covariance(self, source: SegmentSource) -> Covariance:
+        """The family's covariance on a segment.
+
+        Parameters
+        ----------
+        source : SegmentSource
+            The segment's source, whose moment sets the magnitude.
+
+        Returns
+        -------
+        Covariance
+            The family's correlation function and lengths.
+        """
+        lengths = source.covariance.lengths_km
+        if self.relation is not None:
+            lengths = self.relation.lengths_km(magnitude_from_moment(source.moment_nm))
+        correlation = source.covariance.correlation
+        if self.hurst is not None:
+            correlation = VonKarman(self.hurst)
+        return Covariance(correlation, lengths)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -557,6 +607,9 @@ class DrawnSlip:
     bottom_taper : float
         The fraction of the fault's width from the bottom edge over which slip ramps to
         zero.
+    noise : tuple of NoiseFamily
+        The families slip's latent blends, each pre-corrected for the marginal. The
+        source's covariance alone when empty.
     """
 
     family: MarginalFamily = "truncated_exponential"
@@ -565,6 +618,7 @@ class DrawnSlip:
     side_taper: float = 0.02
     top_taper: float = 0.0
     bottom_taper: float = 0.0
+    noise: tuple[NoiseFamily, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a taper outside ``[0, 0.5]``, or a spread outside the family's range."""
@@ -605,6 +659,33 @@ class DrawnSlip:
                 ramp *= np.minimum(_reach(occupied, axis, reverse=reverse) / cells, 1.0)
         return field * ramp * occupied
 
+    def _latent_covariance(self, context: SegmentContext) -> Covariance | Blend:
+        """The covariance to draw the latent from, pre-corrected for the marginal."""
+
+        def corrected(covariance: Covariance) -> Covariance:
+            return Covariance(
+                PreCorrected(covariance.correlation, self.marginal),
+                covariance.lengths_km,
+            )
+
+        if not self.noise:
+            return corrected(context.source.covariance)
+        return Blend(
+            tuple(
+                corrected(family.covariance(context.source)) for family in self.noise
+            ),
+            tuple(
+                read_at_centres(
+                    context.geometry,
+                    "a slip noise family's weight",
+                    family.weight,
+                    lambda weight: (weight >= 0.0) & (weight <= 1.0),
+                    "weights in [0, 1]",
+                )
+                for family in self.noise
+            ),
+        )
+
     def __call__(self, context: SegmentContext, rng: np.random.Generator) -> SlipField:
         """Draw slip on a segment.
 
@@ -623,14 +704,12 @@ class DrawnSlip:
         Raises
         ------
         RuptureGeneratorError
-            If the covariance doesn't embed on this chart, or the taper leaves no
-            slip anywhere.
+            If the covariance doesn't embed on this chart, a noise family's weight
+            reads out of range, or the taper leaves no slip anywhere.
         """
-        geometry, covariance = context.geometry, context.source.covariance
-        latent_covariance = Covariance(
-            PreCorrected(covariance.correlation, self.marginal), covariance.lengths_km
-        )
-        latent, _ = sampler(context.grid, latent_covariance).draw(rng)
+        geometry = context.geometry
+        latent_covariance = self._latent_covariance(context)
+        latent, _ = latent_covariance.sampler(context.grid).draw(rng)
         pattern = self._taper(self.marginal.apply(latent), geometry.occupied)
         total = context.moment_nm(pattern)
         if not total > 0.0:
@@ -806,7 +885,7 @@ class GaussianRake:
         Drawn
             Rake in degrees.
         """
-        latent, _ = sampler(context.grid, context.source.covariance).draw(rng)
+        latent, _ = context.source.covariance.sampler(context.grid).draw(rng)
         return Drawn(context.source.rake_deg + self.sigma_deg * standardise(latent))
 
 
@@ -908,12 +987,16 @@ class CorrelatedPerturbation:
     blend_sigma : float
         The width of the zone over which the displacement grows in from the seed, in
         units of the spread.
+    independent : {"slip", "source"}
+        The covariance of the displacement's own draw: slip's latent's, which follows
+        any slip noise families, or the source's, which genslip v5.6.3 keeps.
     """
 
     offset_s: float = 0.1
     coefficient: float = 0.5
     correlation: float = 0.8
     blend_sigma: float = 4.0
+    independent: Literal["slip", "source"] = "slip"
 
     def __post_init__(self) -> None:
         """Refuse a negative spread, or a blend of no width."""
@@ -956,11 +1039,12 @@ class CorrelatedPerturbation:
         # genslip's tsfac is negative and this package reads it as a magnitude, so the
         # displacement subtracts: with a positive correlation, high slip ruptures early.
         rho = self.correlation
+        if self.independent == "slip":
+            independent = _independent(context, slip, rng)
+        else:
+            independent, _ = context.source.covariance.sampler(context.grid).draw(rng)
         displacement_s = -scale_s * standardise(
-            mix(
-                (rho, slip.latent),
-                (np.sqrt(1.0 - rho * rho), _independent(context, slip, rng)),
-            )
+            mix((rho, slip.latent), (np.sqrt(1.0 - rho * rho), independent))
         )
         return Perturbation(
             displacement_s, self.blend_sigma * scale_s, {"scale_s": scale_s}

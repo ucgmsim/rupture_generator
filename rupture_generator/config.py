@@ -64,6 +64,7 @@ from rupture_generator.rupture.models import (
     CorrelatedRise,
     DrawnSlip,
     GaussianRake,
+    NoiseFamily,
     PulseSettings,
     RuptureModel,
     ShearFractionSpeed,
@@ -242,9 +243,34 @@ UNMODIFIED = Constant(value=1.0)
 
 
 @dataclasses.dataclass(frozen=True)
-class Slip(DrawnSlip):
-    """``[slip]``: :class:`~rupture_generator.rupture.models.DrawnSlip`."""
+class Noise(NoiseFamily):
+    """``[[slip.noise]]``: :class:`~rupture_generator.rupture.models.NoiseFamily`.
 
+    Parameters
+    ----------
+    weight : DepthProfile
+        ``[slip.noise.weight]``, how much of slip's latent the family is.
+    relation : Correlation, optional
+        ``[slip.noise.relation]``, the family's correlation lengths.
+    """
+
+    weight: DepthProfile
+    relation: Correlation | None = None
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Slip(DrawnSlip):
+    """``[slip]``: :class:`~rupture_generator.rupture.models.DrawnSlip`.
+
+    Parameters
+    ----------
+    noise : tuple of Noise
+        ``[[slip.noise]]``, the families slip's latent blends. A segment's list
+        replaces the global one whole.
+    """
+
+    noise: tuple[Noise, ...] = ()
     Config = _Strict
 
 

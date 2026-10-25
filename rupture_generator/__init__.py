@@ -15,8 +15,9 @@ later.
 
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
 command line runs that file. :func:`rupture_generator.sampling.sampler` keeps the
-last 64 covariance embeddings, two per segment, so drawing a fault system of up to
-32 segments again reuses every one. ``sampler.cache_clear()`` releases them.
+last 128 covariance embeddings, two per segment and one more per extra slip noise
+family, so drawing a fault system of up to 64 segments again reuses every one.
+``sampler.cache_clear()`` releases them.
 """
 
 from importlib.metadata import version
