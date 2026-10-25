@@ -263,13 +263,19 @@ def sampler(
     Raises
     ------
     RuptureGeneratorError
-        If a weight is outside ``[0, 1]``, a cell has no positive weight, or a
+        If the weights don't match the covariances and the grid, a weight is outside
+        ``[0, 1]``, a cell has no positive weight, or a
         covariance doesn't embed within the cell cap or isn't positive definite at any
         margin tried.
     """
     shares = np.ones((len(covariances), *grid.shape))
     if weights is not None:
         shares = np.asarray(weights, dtype=np.float64)
+    if shares.shape != (len(covariances), *grid.shape):
+        raise RuptureGeneratorError(
+            f"{len(covariances)} covariances on a {grid.shape} grid need weights "
+            f"shaped {(len(covariances), *grid.shape)}, not {shares.shape}"
+        )
     if not np.all((shares >= 0.0) & (shares <= 1.0)):
         raise RuptureGeneratorError("a covariance's weight lies outside [0, 1]")
     gains = np.sin(0.5 * np.pi * shares)

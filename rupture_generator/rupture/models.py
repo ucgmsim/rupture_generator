@@ -603,7 +603,7 @@ def embed(
         ],
         [
             read_at_centres(
-                geometry, "a noise weight", family.weight, unit_interval, "[0, 1]"
+                geometry, "a noise weight", family.weight, np.isfinite, "finite values"
             )
             for family in noise
         ],

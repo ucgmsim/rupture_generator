@@ -72,6 +72,7 @@ def test_draws_are_standard_normal_and_the_pair_independent():
     [
         ([np.zeros(GRID.shape), DEEP], "weigh every covariance at zero"),
         ([1.0 - DEEP, 2.0 * DEEP], r"outside \[0, 1\]"),
+        ([DEEP], "need weights shaped"),
     ],
 )
 def test_bad_weights_are_refused(weights, message):
