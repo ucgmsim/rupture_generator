@@ -102,12 +102,6 @@ type = "finite"
 magnitude = 7.4
 rake_deg = 50.54
 
-[source.correlation]
-strike_exponent = 0.5
-strike_offset = 2.5
-dip_exponent = 0.3333
-dip_offset = 1.5
-
 [slip]
 coefficient_of_variation = 0.75
 side_taper = 0.02

@@ -12,7 +12,12 @@ segment's fields, in a fixed order:
 
 Slip's latent is the one dependency between models. A model that correlates with slip
 mixes its own draw into :attr:`SlipField.latent`. Its draw comes from
-:attr:`SlipField.latent_covariance`. The mixed field then has the latent's covariance.
+:attr:`SlipField.sampler`. The mixed field then has the latent's covariance.
+
+Every model that draws noise names it: a :data:`Noise`, one or more
+:class:`NoiseFamily` crossfaded by position, which :func:`embed` embeds on a chart.
+Graves & Pitarka's hybrid slip is two families, long correlation lengths near the
+surface and short ones at depth.
 Correlations with slip are between the latents: Gaussian-copula correlations, which
 mean the same whatever slip's marginal is, a drawn slip's or a given one's.
 :func:`gaussian_anamorphosis` gives any slip such a latent.
@@ -22,8 +27,9 @@ The defaults are Graves & Pitarka's model: :class:`DrawnSlip`, :class:`Correlate
 """
 
 import dataclasses
+import functools
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol
+from typing import Protocol
 
 import numpy as np
 import scipy as sp
@@ -32,19 +38,22 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
 from rupture_generator.rupture.medium import SpatialField, constant_field, rigidity_pa
 from rupture_generator.rupture.source import (
+    MAI_BEROZA,
     CorrelationRelation,
     SegmentSource,
-    magnitude_from_moment,
 )
 from rupture_generator.sampling import (
-    Blend,
+    HURST,
+    NORMAL,
     Covariance,
     Grid,
     Marginal,
     MarginalFamily,
     PreCorrected,
+    Sampler,
     VonKarman,
     mix,
+    sampler,
     standardise,
 )
 
@@ -85,7 +94,7 @@ class SegmentContext:
     geometry : Geometry
         The segment's chart.
     source : SegmentSource
-        The segment's moment, rake and slip covariance.
+        The segment's moment and rake.
     shear_speed_km_s : CellArray
         The medium's shear speed at the cell centres, in kilometres per second.
     density_g_cm3 : CellArray
@@ -119,12 +128,6 @@ class SegmentContext:
             np.sum(self.rigidity_pa * self.geometry.areas_km2 * M2_PER_KM2 * slip_m)
         )
 
-    @property
-    def grid(self) -> Grid:
-        """Grid: The chart's cells as a sampling grid, spacing down dip first."""
-        strike_km, dip_km = self.geometry.spacing_km
-        return Grid(self.geometry.cells, (dip_km, strike_km))
-
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class SlipField:
@@ -136,9 +139,8 @@ class SlipField:
         Slip, in metres. The generator zeroes it off the fault.
     latent : CellArray
         A standard normal field that slip is monotone in.
-    latent_covariance : Covariance or Blend
-        The covariance the model drew ``latent`` from, or the nearest one for a slip it
-        didn't draw.
+    sampler : Sampler
+        What the model drew ``latent`` from, or the nearest for a slip it didn't draw.
         A model that mixes its own draw into ``latent`` draws from this.
     statistics : Mapping of str to float
         Numbers the model reports about its draw.
@@ -146,7 +148,7 @@ class SlipField:
 
     slip_m: CellArray
     latent: CellArray
-    latent_covariance: Covariance | Blend
+    sampler: Sampler
     statistics: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
 
@@ -398,6 +400,22 @@ def read_at_centres(
     return check_cells(geometry, name, field(geometry.centres), accept, wanted)
 
 
+def unit_interval(values: CellArray) -> np.ndarray:
+    """Whether each value lies in ``[0, 1]``.
+
+    Parameters
+    ----------
+    values : CellArray
+        The values.
+
+    Returns
+    -------
+    numpy.ndarray
+        One boolean per value.
+    """
+    return (values >= 0.0) & (values <= 1.0)
+
+
 def positive(values: CellArray) -> np.ndarray:
     """Whether each value is finite and greater than zero.
 
@@ -513,12 +531,83 @@ def _positive_marginal(
     return Marginal(family, spread, maximum)
 
 
-def _independent(
-    context: SegmentContext, slip: SlipField, rng: np.random.Generator
-) -> CellArray:
-    """A standard normal field independent of slip's latent, with its covariance."""
-    independent, _ = slip.latent_covariance.sampler(context.grid).draw(rng)
-    return independent
+# ----------------------------------------------------------------------- noise
+
+
+@dataclasses.dataclass(frozen=True)
+class NoiseFamily:
+    """One stationary von Karman noise, and how much of a field it is where.
+
+    Attributes
+    ----------
+    relation : CorrelationRelation
+        The correlation lengths at the segment's magnitude.
+    hurst : float
+        The Hurst exponent.
+    weight : SpatialField
+        How much of the field this family is at each position, in ``[0, 1]``.
+    """
+
+    relation: CorrelationRelation = MAI_BEROZA
+    hurst: float = HURST
+    weight: SpatialField = UNMODIFIED
+
+
+type Noise = tuple[NoiseFamily, ...]
+"""Noise families crossfaded by position, each sharing one white noise."""
+
+STATIONARY: Noise = (NoiseFamily(),)
+"""Mai & Beroza (2002)'s lengths and Hurst exponent everywhere."""
+
+
+@functools.lru_cache(maxsize=128)
+def embed(
+    noise: Noise, geometry: Geometry, magnitude: float, marginal: Marginal = NORMAL
+) -> Sampler:
+    """Embed a noise on a chart, or return the embedding already made.
+
+    Every family is pre-corrected for ``marginal``, so the field it gives after the
+    marginal has the family's correlation. The cache keeps the last 128, so drawing the
+    same fault system again embeds nothing; ``embed.cache_clear()`` releases them.
+
+    Parameters
+    ----------
+    noise : Noise
+        The families.
+    geometry : Geometry
+        The chart.
+    magnitude : float
+        The segment's moment magnitude, which sets each family's lengths.
+    marginal : Marginal, optional
+        The marginal the drawn field takes. Normal by default.
+
+    Returns
+    -------
+    Sampler
+        The embedding, ready to draw from.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a weight reads out of ``[0, 1]``, or a family doesn't embed on the chart.
+    """
+    strike_km, dip_km = geometry.spacing_km
+    return sampler(
+        Grid(geometry.cells, (dip_km, strike_km)),
+        [
+            Covariance(
+                PreCorrected(VonKarman(family.hurst), marginal),
+                family.relation.lengths_km(magnitude),
+            )
+            for family in noise
+        ],
+        [
+            read_at_centres(
+                geometry, "a noise weight", family.weight, unit_interval, "[0, 1]"
+            )
+            for family in noise
+        ],
+    )
 
 
 # ------------------------------------------------------------------------ slip
@@ -538,57 +627,11 @@ def _reach(mask: CellMask, axis: int, *, reverse: bool) -> np.ndarray:
 
 
 @dataclasses.dataclass(frozen=True)
-class NoiseFamily:
-    """One stationary noise slip draws from, and where on the fault it applies.
-
-    Several families make Graves & Pitarka's hybrid slip: long correlation lengths near
-    the surface, short ones at depth, and a crossfade between them.
-
-    Attributes
-    ----------
-    weight : SpatialField
-        How much of slip's latent this family is at each position, in ``[0, 1]``.
-    relation : CorrelationRelation, optional
-        The family's correlation lengths at the segment's magnitude. The source's
-        lengths when absent.
-    hurst : float, optional
-        The family's von Karman Hurst exponent. The source's correlation function when
-        absent.
-    """
-
-    weight: SpatialField
-    relation: CorrelationRelation | None = None
-    hurst: float | None = None
-
-    def covariance(self, source: SegmentSource) -> Covariance:
-        """The family's covariance on a segment.
-
-        Parameters
-        ----------
-        source : SegmentSource
-            The segment's source, whose moment sets the magnitude.
-
-        Returns
-        -------
-        Covariance
-            The family's correlation function and lengths.
-        """
-        lengths = source.covariance.lengths_km
-        if self.relation is not None:
-            lengths = self.relation.lengths_km(magnitude_from_moment(source.moment_nm))
-        correlation = source.covariance.correlation
-        if self.hurst is not None:
-            correlation = VonKarman(self.hurst)
-        return Covariance(correlation, lengths)
-
-
-@dataclasses.dataclass(frozen=True)
 class DrawnSlip:
-    """Slip drawn from the source's covariance, with an exact marginal and tapered edges.
+    """Slip drawn from a noise, with an exact marginal and tapered edges.
 
-    The latent field's covariance is pre-corrected for the marginal, so the slip
-    itself has the source's correlation lengths. The model scales slip to the source's
-    moment.
+    The noise is pre-corrected for the marginal, so the slip itself has the noise's
+    correlation lengths. The model scales slip to the source's moment.
 
     Attributes
     ----------
@@ -607,9 +650,8 @@ class DrawnSlip:
     bottom_taper : float
         The fraction of the fault's width from the bottom edge over which slip ramps to
         zero.
-    noise : tuple of NoiseFamily
-        The families slip's latent blends, each pre-corrected for the marginal. The
-        source's covariance alone when empty.
+    noise : Noise
+        The noise slip's latent comes from, and rise time's independent part.
     """
 
     family: MarginalFamily = "truncated_exponential"
@@ -618,7 +660,7 @@ class DrawnSlip:
     side_taper: float = 0.02
     top_taper: float = 0.0
     bottom_taper: float = 0.0
-    noise: tuple[NoiseFamily, ...] = ()
+    noise: Noise = STATIONARY
 
     def __post_init__(self) -> None:
         """Refuse a taper outside ``[0, 0.5]``, or a spread outside the family's range."""
@@ -659,33 +701,6 @@ class DrawnSlip:
                 ramp *= np.minimum(_reach(occupied, axis, reverse=reverse) / cells, 1.0)
         return field * ramp * occupied
 
-    def _latent_covariance(self, context: SegmentContext) -> Covariance | Blend:
-        """The covariance to draw the latent from, pre-corrected for the marginal."""
-
-        def corrected(covariance: Covariance) -> Covariance:
-            return Covariance(
-                PreCorrected(covariance.correlation, self.marginal),
-                covariance.lengths_km,
-            )
-
-        if not self.noise:
-            return corrected(context.source.covariance)
-        return Blend(
-            tuple(
-                corrected(family.covariance(context.source)) for family in self.noise
-            ),
-            tuple(
-                read_at_centres(
-                    context.geometry,
-                    "a slip noise family's weight",
-                    family.weight,
-                    lambda weight: (weight >= 0.0) & (weight <= 1.0),
-                    "weights in [0, 1]",
-                )
-                for family in self.noise
-            ),
-        )
-
     def __call__(self, context: SegmentContext, rng: np.random.Generator) -> SlipField:
         """Draw slip on a segment.
 
@@ -704,12 +719,12 @@ class DrawnSlip:
         Raises
         ------
         RuptureGeneratorError
-            If the covariance doesn't embed on this chart, a noise family's weight
-            reads out of range, or the taper leaves no slip anywhere.
+            If the noise doesn't embed on this chart, or the taper leaves no slip
+            anywhere.
         """
         geometry = context.geometry
-        latent_covariance = self._latent_covariance(context)
-        latent, _ = latent_covariance.sampler(context.grid).draw(rng)
+        noise = embed(self.noise, geometry, context.source.magnitude, self.marginal)
+        latent, _ = noise.draw(rng)
         pattern = self._taper(self.marginal.apply(latent), geometry.occupied)
         total = context.moment_nm(pattern)
         if not total > 0.0:
@@ -720,7 +735,7 @@ class DrawnSlip:
         return SlipField(
             slip_m=(context.source.moment_nm / total) * pattern,
             latent=latent,
-            latent_covariance=latent_covariance,
+            sampler=noise,
         )
 
 
@@ -827,7 +842,7 @@ class CorrelatedRise:
             geometry,
             "the rise-time slip weight",
             self.slip_weight,
-            lambda weight: (weight >= 0.0) & (weight <= 1.0),
+            unit_interval,
             "weights in [0, 1]",
         )
         correction = geometric_correction(geometry, context.source.rake_deg)
@@ -835,7 +850,7 @@ class CorrelatedRise:
         rho = self.correlation
         latent = mix(
             (slip_weight * rho + (1.0 - slip_weight), slip.latent),
-            (slip_weight * np.sqrt(1.0 - rho * rho), _independent(context, slip, rng)),
+            (slip_weight * np.sqrt(1.0 - rho * rho), slip.sampler.draw(rng)[0]),
         )
         pattern = self.marginal.apply(latent) ** self.slip_exponent * factor
         return Drawn(
@@ -852,16 +867,19 @@ class GaussianRake:
     """Rake that strays from the source's by ``sigma * Z`` degrees.
 
     By design, rake doesn't depend on slip. A patch with more slip has no reason to
-    move in a different direction. The marginal is normal, so rake keeps the source's
+    move in a different direction. The marginal is normal, so rake keeps the noise's
     correlation lengths exactly, with no pre-correction.
 
     Attributes
     ----------
     sigma_deg : float
         The standard deviation of the rake about the segment's, in degrees.
+    noise : Noise
+        The noise rake strays by. Stationary by default, as in genslip.
     """
 
     sigma_deg: float = 15.0
+    noise: Noise = STATIONARY
 
     def __post_init__(self) -> None:
         """Refuse a negative spread."""
@@ -885,7 +903,9 @@ class GaussianRake:
         Drawn
             Rake in degrees.
         """
-        latent, _ = context.source.covariance.sampler(context.grid).draw(rng)
+        latent, _ = embed(self.noise, context.geometry, context.source.magnitude).draw(
+            rng
+        )
         return Drawn(context.source.rake_deg + self.sigma_deg * standardise(latent))
 
 
@@ -987,16 +1007,16 @@ class CorrelatedPerturbation:
     blend_sigma : float
         The width of the zone over which the displacement grows in from the seed, in
         units of the spread.
-    independent : {"slip", "source"}
-        The covariance of the displacement's own draw: slip's latent's, which follows
-        any slip noise families, or the source's, which genslip v5.6.3 keeps.
+    noise : Noise, optional
+        The noise of the displacement's own draw. Slip's when absent; genslip v5.6.3
+        draws it from :data:`STATIONARY` while slip's is hybrid.
     """
 
     offset_s: float = 0.1
     coefficient: float = 0.5
     correlation: float = 0.8
     blend_sigma: float = 4.0
-    independent: Literal["slip", "source"] = "slip"
+    noise: Noise | None = None
 
     def __post_init__(self) -> None:
         """Refuse a negative spread, or a blend of no width."""
@@ -1039,10 +1059,10 @@ class CorrelatedPerturbation:
         # genslip's tsfac is negative and this package reads it as a magnitude, so the
         # displacement subtracts: with a positive correlation, high slip ruptures early.
         rho = self.correlation
-        if self.independent == "slip":
-            independent = _independent(context, slip, rng)
-        else:
-            independent, _ = context.source.covariance.sampler(context.grid).draw(rng)
+        noise = slip.sampler
+        if self.noise is not None:
+            noise = embed(self.noise, context.geometry, context.source.magnitude)
+        independent, _ = noise.draw(rng)
         displacement_s = -scale_s * standardise(
             mix((rho, slip.latent), (np.sqrt(1.0 - rho * rho), independent))
         )

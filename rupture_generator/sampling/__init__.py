@@ -1,8 +1,6 @@
 """Random fields on the fault: Gaussian machinery, correlation functions, NORTA."""
 
 from rupture_generator.sampling.field import (
-    Blend,
-    BlendedSampler,
     Correlation,
     Covariance,
     FieldArray,
@@ -24,8 +22,6 @@ from rupture_generator.sampling.von_karman import HURST, VonKarman
 __all__ = [
     "HURST",
     "NORMAL",
-    "Blend",
-    "BlendedSampler",
     "Correlation",
     "Covariance",
     "FieldArray",

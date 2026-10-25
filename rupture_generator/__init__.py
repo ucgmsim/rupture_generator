@@ -14,10 +14,9 @@ and :func:`~rupture_generator.formats.fields.fields_to_srf` makes the SRF from t
 later.
 
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
-command line runs that file. :func:`rupture_generator.sampling.sampler` keeps the
-last 128 covariance embeddings, two per segment and one more per extra slip noise
-family, so drawing a fault system of up to 64 segments again reuses every one.
-``sampler.cache_clear()`` releases them.
+command line runs that file. :func:`embed` keeps the last 128 noise embeddings, two
+or three per segment, so drawing a fault system again reuses every one.
+``embed.cache_clear()`` releases them.
 """
 
 from importlib.metadata import version
@@ -45,11 +44,13 @@ from rupture_generator.rupture.medium import (
     ramp_field,
 )
 from rupture_generator.rupture.models import (
+    STATIONARY,
     CorrelatedPerturbation,
     CorrelatedRise,
     Drawn,
     DrawnSlip,
     GaussianRake,
+    NoiseFamily,
     Perturbation,
     PerturbationModel,
     PulseSettings,
@@ -61,12 +62,14 @@ from rupture_generator.rupture.models import (
     SlipField,
     SlipModel,
     SpeedModel,
+    embed,
     gaussian_anamorphosis,
 )
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
     MAI_BEROZA,
+    SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
     magnitude_from_moment,
@@ -80,6 +83,8 @@ __version__ = version("rupture-generator")
 
 __all__ = [
     "MAI_BEROZA",
+    "STATIONARY",
+    "SUZUKI_2022",
     "CorrelatedPerturbation",
     "CorrelatedRise",
     "CorrelationRelation",
@@ -93,6 +98,7 @@ __all__ = [
     "JumpSeed",
     "Layers",
     "Medium",
+    "NoiseFamily",
     "Perturbation",
     "PerturbationModel",
     "PulseSettings",
@@ -111,6 +117,7 @@ __all__ = [
     "SpatialField",
     "SpeedModel",
     "constant_field",
+    "embed",
     "first_arrival",
     "gaussian_anamorphosis",
     "generate",

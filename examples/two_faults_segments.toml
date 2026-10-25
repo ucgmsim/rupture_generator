@@ -1,7 +1,6 @@
 # The two faults of two_faults.toml, with settings that differ on one segment.
 # A [segments.<name>] table starts from the global table of the same name and
-# replaces the keys it gives; [segments.<name>.correlation] does the same over the
-# source's correlation table.
+# replaces the keys it gives. A list such as a noise replaces the global one whole.
 #
 # The parameters are not tuned to match any observations: this is not a past earthquake.
 
@@ -41,5 +40,5 @@ coefficient_of_variation = 0.6
 [segments.next.speed]
 velocity_fraction = 0.7
 
-[segments.next.correlation]
-strike_offset = 2.2
+[[segments.next.slip.noise]]
+relation = { strike_offset = 2.2 }

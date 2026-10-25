@@ -1,9 +1,10 @@
-"""Each segment's moment, rake and slip-patch size, derived from its magnitude.
+"""Each segment's moment and rake, and the correlation lengths its magnitude implies.
 
 A :class:`SegmentSource` is the part of a rupture that differs from segment to segment.
 A :class:`~rupture_generator.rupture.models.RuptureModel` draws the fields from
-it. The functions here
-derive sources from magnitudes, which is how a hazard model states them.
+it. The functions here derive sources from magnitudes, which is how a hazard model
+states them. A :class:`CorrelationRelation` gives a model's noise its lengths at a
+segment's magnitude.
 
 References
 ----------
@@ -26,7 +27,6 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import Geometry
 from rupture_generator.rupture.medium import Medium
 from rupture_generator.rupture.realisation import Realisation
-from rupture_generator.sampling import Correlation, Covariance, VonKarman
 
 DYNE_CM_PER_NM = 1.0e7
 
@@ -110,34 +110,27 @@ class CorrelationRelation:
         tuple of float
             ``(down dip, along strike)`` in kilometres, the chart's axis order.
         """
+        dip_magnitude = min(magnitude, self.dip_saturation)
+        strike_magnitude = min(magnitude, self.strike_saturation)
         return (
-            10.0
-            ** (
-                self.dip_exponent * min(magnitude, self.dip_saturation)
-                - self.dip_offset
-            ),
-            10.0
-            ** (
-                self.strike_exponent * min(magnitude, self.strike_saturation)
-                - self.strike_offset
-            ),
+            10.0 ** (self.dip_exponent * dip_magnitude - self.dip_offset),
+            10.0 ** (self.strike_exponent * strike_magnitude - self.strike_offset),
         )
 
-
-VON_KARMAN = VonKarman()
-"""Mai & Beroza (2002)'s correlation function, at their median Hurst exponent."""
 
 MAI_BEROZA = CorrelationRelation()
 """Mai & Beroza (2002): ``10^(Mw/2 - 2.5)`` along strike, ``10^(Mw/3 - 1.5)`` down dip."""
 
-SUZUKI_2022 = CorrelationRelation(0.5, 1.67, 0.5, 1.69, dip_saturation=6.3)
+SUZUKI_2022 = CorrelationRelation(
+    strike_offset=1.67, dip_exponent=0.5, dip_offset=1.69, dip_saturation=6.3
+)
 """Suzuki et al. (2022): ``10^(Mw/2 - 1.67)`` along strike, ``10^(min(Mw, 6.3)/2 - 1.69)``
 down dip. Smoother than Mai & Beroza, the shallow slip of Graves & Pitarka's hybrid."""
 
 
 @dataclasses.dataclass(frozen=True)
 class SegmentSource:
-    """One segment's moment, mean rake, and slip covariance.
+    """One segment's moment and mean rake.
 
     Parameters
     ----------
@@ -145,14 +138,10 @@ class SegmentSource:
         The segment's seismic moment in newton-metres. Positive.
     rake_deg : float
         The segment's mean rake in degrees.
-    covariance : Covariance
-        The correlation of the slip *pattern*, with its lengths in the chart's axis
-        order, ``(down dip, along strike)``.
     """
 
     moment_nm: float
     rake_deg: float
-    covariance: Covariance
 
     def __post_init__(self) -> None:
         """Refuse a moment of zero or less."""
@@ -161,13 +150,13 @@ class SegmentSource:
                 f"a segment's moment must be positive, got {self.moment_nm}"
             )
 
+    @property
+    def magnitude(self) -> float:
+        """float: The segment's moment magnitude."""
+        return magnitude_from_moment(self.moment_nm)
 
-def segment_source(
-    magnitude: float,
-    rake_deg: float,
-    relation: CorrelationRelation = MAI_BEROZA,
-    correlation: Correlation = VON_KARMAN,
-) -> SegmentSource:
+
+def segment_source(magnitude: float, rake_deg: float) -> SegmentSource:
     """Build a segment's source from its magnitude.
 
     Parameters
@@ -176,23 +165,13 @@ def segment_source(
         The segment's moment magnitude.
     rake_deg : float
         The segment's mean rake in degrees.
-    relation : CorrelationRelation, optional
-        How the correlation lengths follow the magnitude. Mai & Beroza (2002) by
-        default.
-    correlation : Correlation, optional
-        The correlation function. Von Karman at Mai & Beroza's median Hurst exponent
-        by default.
 
     Returns
     -------
     SegmentSource
-        The moment the magnitude gives, and the correlation lengths it implies.
+        The moment the magnitude gives, and the rake.
     """
-    return SegmentSource(
-        moment_nm=moment_from_magnitude(magnitude),
-        rake_deg=rake_deg,
-        covariance=Covariance(correlation, relation.lengths_km(magnitude)),
-    )
+    return SegmentSource(moment_from_magnitude(magnitude), rake_deg)
 
 
 def split_moment(
@@ -233,7 +212,6 @@ def split_moment(
 __all__ = [
     "MAI_BEROZA",
     "SUZUKI_2022",
-    "VON_KARMAN",
     "CorrelationRelation",
     "SegmentSource",
     "magnitude_from_moment",

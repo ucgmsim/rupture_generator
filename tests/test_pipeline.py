@@ -20,9 +20,8 @@ from rupture_generator.rupture.generator import (
     _travel_times,
     first_arrival,
 )
+from rupture_generator.rupture.models import embed
 from rupture_generator.rupture.propagator import JumpModel
-from rupture_generator.sampling import sampler
-from rupture_generator.sampling.field import SAMPLER_CACHE_SIZE
 
 
 def test_every_segment_carries_its_moment(scenario, ruptures):
@@ -307,7 +306,7 @@ def test_a_jump_draws_apart_from_any_segments_fields(scenario):
 
 
 def test_a_second_draw_reuses_every_embedding(scenario):
-    sampler.cache_clear()
+    embed.cache_clear()
     misses = []
     for _ in range(2):
         generate(
@@ -317,8 +316,7 @@ def test_a_second_draw_reuses_every_embedding(scenario):
             scenario.model,
             seed=scenario.seed,
         )
-        misses.append(sampler.cache_info().misses)
+        misses.append(embed.cache_info().misses)
     # Slip's latent and rake each embed once per segment; rise time and the onset
     # displacement draw from slip's embedding.
     assert misses == [2 * len(scenario.realisation)] * 2
-    assert SAMPLER_CACHE_SIZE >= 2 * 20

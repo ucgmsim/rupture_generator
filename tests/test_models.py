@@ -12,9 +12,11 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
 from rupture_generator import (
+    STATIONARY,
     Drawn,
     RuptureGeneratorError,
     SlipField,
+    embed,
     gaussian_anamorphosis,
     generate,
 )
@@ -150,7 +152,8 @@ def test_the_generator_refuses_a_slip_that_does_not_fit(
     slip_m = change(ruptures[name].slip_m)
 
     def bad(context, rng):
-        return SlipField(slip_m, np.zeros(slip_m.shape), context.source.covariance)
+        noise = embed(STATIONARY, context.geometry, context.source.magnitude)
+        return SlipField(slip_m, np.zeros(slip_m.shape), noise)
 
     with pytest.raises(RuptureGeneratorError, match=message):
         _generate(scenario, dataclasses.replace(scenario.model, slip=bad))

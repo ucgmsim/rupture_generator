@@ -39,9 +39,16 @@ def test_defaults_are_the_librarys():
         (loaded.perturbation, CorrelatedPerturbation()),
     ):
         for field in dataclasses.fields(theirs):
-            if field.name not in {"factor", "slip_weight"}:
+            if field.name not in {"factor", "slip_weight", "noise"}:
                 assert getattr(ours, field.name) == getattr(theirs, field.name)
     assert loaded.slip.side_taper == DrawnSlip().side_taper
+    for ours, theirs in zip(
+        (loaded.slip.noise, loaded.rake.noise),
+        (DrawnSlip().noise, GaussianRake().noise),
+    ):
+        assert [(dataclasses.astuple(f.relation), f.hurst) for f in ours] == [
+            (dataclasses.astuple(f.relation), f.hurst) for f in theirs
+        ]
     positions = np.zeros((2, 3))
     for profile in (rupture_config.Rise().factor, rupture_config.Speed().factor):
         np.testing.assert_array_equal(
@@ -193,11 +200,10 @@ def test_a_segment_table_overrides_the_global_one():
     assert following.rise == bent.rise
     assert following.perturbation == bent.perturbation
 
-    default = rupture_config.build(rupture_config.load(EXAMPLE))
-    assert scenario.sources["bent"] == default.sources["bent"]
+    (longer,) = following.slip.noise
     assert (
-        scenario.sources["next"].covariance.lengths_km[1]
-        > default.sources["next"].covariance.lengths_km[1]
+        longer.relation.lengths_km(7.0)[1]
+        > bent.slip.noise[0].relation.lengths_km(7.0)[1]
     )
 
 
