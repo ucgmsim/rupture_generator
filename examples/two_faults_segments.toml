@@ -32,8 +32,8 @@ type = "likeliest"
 [slip]
 bottom_taper = 0.02
 
-# Smoother, more slowly ruptured slip on the second fault, with longer correlation
-# along strike. Every other setting on it is the global one.
+# Smoother, more slowly ruptured slip on the second fault: one stationary family, its
+# correlation along strike longer than Mai & Beroza's, in place of the hybrid. Every other setting on it is the global one.
 [segments.next.slip]
 coefficient_of_variation = 0.6
 

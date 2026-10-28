@@ -36,9 +36,15 @@ import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
-from rupture_generator.rupture.medium import SpatialField, constant_field, rigidity_pa
+from rupture_generator.rupture.medium import (
+    SpatialField,
+    constant_field,
+    ramp_field,
+    rigidity_pa,
+)
 from rupture_generator.rupture.source import (
     MAI_BEROZA,
+    SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
 )
@@ -559,6 +565,17 @@ type Noise = tuple[NoiseFamily, ...]
 STATIONARY: Noise = (NoiseFamily(),)
 """Mai & Beroza (2002)'s lengths and Hurst exponent everywhere."""
 
+GP_HYBRID: Noise = (
+    NoiseFamily(SUZUKI_2022, weight=ramp_field(6.5, 1.5, 1.0, 0.0)),
+    NoiseFamily(weight=ramp_field(6.5, 1.5, 0.0, 1.0)),
+)
+"""Graves & Pitarka's hybrid, as genslip v5.6.3 configures it by default.
+
+Suzuki et al. (2022)'s lengths above 5 km and Mai & Beroza (2002)'s below 8 km, both
+at the default Hurst exponent, crossfaded over ``6.5 +- 1.5`` km, genslip's
+``hyb_corlen_dep`` and ``hyb_corlen_dep_range``.
+"""
+
 
 @functools.lru_cache(maxsize=128)
 def embed(
@@ -652,6 +669,7 @@ class DrawnSlip:
         zero.
     noise : Noise
         The noise slip's latent comes from, and rise time's independent part.
+        Graves & Pitarka's hybrid, :data:`GP_HYBRID`, by default.
     """
 
     family: MarginalFamily = "truncated_exponential"
@@ -660,7 +678,7 @@ class DrawnSlip:
     side_taper: float = 0.02
     top_taper: float = 0.0
     bottom_taper: float = 0.0
-    noise: Noise = STATIONARY
+    noise: Noise = GP_HYBRID
 
     def __post_init__(self) -> None:
         """Refuse a taper outside ``[0, 0.5]``, or a spread outside the family's range."""
@@ -1008,15 +1026,15 @@ class CorrelatedPerturbation:
         The width of the zone over which the displacement grows in from the seed, in
         units of the spread.
     noise : Noise, optional
-        The noise of the displacement's own draw. Slip's when absent, as in genslip v5.6.3
-        draws it from :data:`STATIONARY` while slip's is hybrid.
+        The noise of the displacement's own draw. :data:`STATIONARY` by default, as
+        genslip v5.6.3 draws it while slip's is hybrid. Slip's when ``None``.
     """
 
     offset_s: float = 0.1
     coefficient: float = 0.5
     correlation: float = 0.8
     blend_sigma: float = 4.0
-    noise: Noise | None = None
+    noise: Noise | None = STATIONARY
 
     def __post_init__(self) -> None:
         """Refuse a negative spread, or a blend of no width."""

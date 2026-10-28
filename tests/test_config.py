@@ -6,6 +6,7 @@ import pytest
 
 from rupture_generator import RuptureGeneratorError
 from rupture_generator import config as rupture_config
+from rupture_generator.rupture.source import MAI_BEROZA
 
 from .conftest import EXAMPLE
 
@@ -202,10 +203,7 @@ def test_a_segment_table_overrides_the_global_one():
     assert following.perturbation == bent.perturbation
 
     (longer,) = following.slip.noise
-    assert (
-        longer.relation.lengths_km(7.0)[1]
-        > bent.slip.noise[0].relation.lengths_km(7.0)[1]
-    )
+    assert longer.relation.lengths_km(7.0)[1] > MAI_BEROZA.lengths_km(7.0)[1]
 
 
 def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):

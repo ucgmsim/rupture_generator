@@ -44,6 +44,7 @@ from rupture_generator.rupture.medium import (
     ramp_field,
 )
 from rupture_generator.rupture.models import (
+    GP_HYBRID,
     STATIONARY,
     CorrelatedPerturbation,
     CorrelatedRise,
@@ -82,6 +83,7 @@ __version__ = version("rupture-generator")
 """The installed version, from the latest git tag when it was built."""
 
 __all__ = [
+    "GP_HYBRID",
     "MAI_BEROZA",
     "STATIONARY",
     "SUZUKI_2022",

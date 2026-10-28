@@ -20,7 +20,8 @@
 #
 # The parameters are not tuned to match the observations of this earthquake.
 #
-# The noise is the default, Mai & Beroza's lengths. The depth profiles' shallow
+# The noise is the default, Graves & Pitarka's hybrid. The plane lies wholly below its
+# ramp, so slip has Mai & Beroza's lengths throughout. The depth profiles' shallow
 # ramps end at 8 km and their deep ramps start at 197.5 km, so they are flat across the
 # fault.
 #

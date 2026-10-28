@@ -258,7 +258,18 @@ class Family(NoiseFamily):
 
 
 STATIONARY = (Family(),)
-"""The noise a model draws from when its table gives none."""
+"""Mai & Beroza (2002)'s lengths everywhere: rake's and the perturbation's default."""
+
+GP_HYBRID = (
+    Family(
+        relation=Correlation(
+            strike_offset=1.67, dip_exponent=0.5, dip_offset=1.69, dip_saturation=6.3
+        ),
+        weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=1.0, deep=0.0),
+    ),
+    Family(weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=0.0, deep=1.0)),
+)
+"""Graves & Pitarka's hybrid as genslip v5.6.3 configures it: slip's default."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -271,7 +282,7 @@ class Slip(DrawnSlip):
         ``[[slip.noise]]``, slip's noise.
     """
 
-    noise: tuple[Family, ...] = STATIONARY
+    noise: tuple[Family, ...] = GP_HYBRID
     Config = _Strict
 
 
@@ -328,10 +339,11 @@ class Perturbation(CorrelatedPerturbation):
     Parameters
     ----------
     noise : tuple of Family, optional
-        ``[[perturbation.noise]]``, the displacement's own noise. Slip's when absent.
+        ``[[perturbation.noise]]``, the displacement's own noise. Stationary when
+        absent.
     """
 
-    noise: tuple[Family, ...] | None = None
+    noise: tuple[Family, ...] | None = STATIONARY
     Config = _Strict
 
 
