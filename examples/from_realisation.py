@@ -196,7 +196,7 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
         ),
         rise=Rise(
             coefficient=srf["risetime_coef"],
-            factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
+            factor=Profile(depth_km=tuple(transitions), values=(2.0, 1.0, 1.0, 2.0)),
             slip_weight=Ramp(centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0),
         ),
         speed=Speed(
