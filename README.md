@@ -123,6 +123,12 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
 or `profile` tables.
 
+`[rise]` follows genslip v5.6.3. The mean rise time is `slip_coefficient` (1.1 s/m)
+times the mean slip, with Graves & Pitarka's dip-and-rake correction, and rise time is
+proportional to slip (`slip_exponent = 1.0`). Before v5.6.3, genslip took the mean
+from the cube root of the moment, and this generator's `coefficient` key did the same.
+That key is gone, and loading a file that sets it fails.
+
 ---
 
 ## Python API

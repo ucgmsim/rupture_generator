@@ -22,6 +22,11 @@ between faults, fitted by closest approach. This generator works them out itself
 the parent fault's solved onsets, so importing them would import the answer to a
 question this generator asks differently.
 
+**It drops the rise-time coefficient.** The workflow's ``risetime_coef`` scales the
+mean rise time with the cube root of the moment, as genslip did before v5.6.3. This
+generator scales it with the mean slip, as genslip v5.6.3 does, so the coefficient has
+no counterpart, and the rupture takes the default ``slip_coefficient``.
+
 It also drops everything belonging to the other programs in the workflow: `emod3d`,
 `hf`, `bb`, `im`, the domain and the 3D velocity model. They describe how to simulate
 the ground motion, not what the earthquake is.
@@ -195,7 +200,6 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
             bottom_taper=srf["bot_taper"],
         ),
         rise=Rise(
-            coefficient=srf["risetime_coef"],
             factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
             slip_weight=Ramp(centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0),
         ),

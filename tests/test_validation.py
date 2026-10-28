@@ -70,6 +70,8 @@ def _read(*features, document=None):
     ("build", "message"),
     [
         (lambda: CorrelatedRise(slip_exponent=0.05), "slip exponent"),
+        (lambda: CorrelatedRise(slip_coefficient=0.0), "coefficient must be positive"),
+        (lambda: CorrelatedRise(slip_coefficient=-1.1), "coefficient must be positive"),
         (lambda: CorrelatedRise(correlation=1.5), "correlation lies in"),
         (lambda: GaussianRake(sigma_deg=-1.0), "no sign"),
         (lambda: ShearFractionSpeed(velocity_fraction=0.0), "velocity fraction"),
