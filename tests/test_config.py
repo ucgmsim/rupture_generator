@@ -286,9 +286,9 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        # A key at the top level has no table to name, so the error names the file.
+        # A key at the top level has no table to name. The error cites the file instead.
         ("seed = 7\n", "seed = 7\nbogus = 1\n", "the file: has unknown keys ['bogus']"),
-        # A value of the wrong kind is named by its type's name, not its full repr.
+        # The error shows the type name of a wrong-kind value, not its full repr.
         (
             "magnitudes = { bent = 6.6, next = 6.4 }",
             "magnitudes = 3",
