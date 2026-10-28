@@ -281,3 +281,68 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
     )
     with pytest.raises(RuptureGeneratorError, match=r"segments: \['nxt'\] are not"):
         rupture_config.build(rupture_config.load(path))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        # A key at the top level has no table to name. The error cites the file instead.
+        ("seed = 7\n", "seed = 7\nbogus = 1\n", "the file: has unknown keys ['bogus']"),
+        # The error shows the type name of a wrong-kind value, not its full repr.
+        (
+            "magnitudes = { bent = 6.6, next = 6.4 }",
+            "magnitudes = 3",
+            "source.magnitudes: 3 is not a dict",
+        ),
+        ("dt_s = 0.005", "dt_s = 0.0", "pulse: a sample interval of 0.0 s is none"),
+        ("dt_s = 0.005", "dt_s = -1.0", "pulse: a sample interval of -1.0 s is none"),
+        ("seed = 7\n", "seed = 7\nsegments = 3\n", "segments: 3 is not a table"),
+        (
+            "seed = 7\n",
+            "seed = 7\nsegments = { next = 3 }\n",
+            "segments.next: 3 is not a table",
+        ),
+    ],
+)
+def test_a_bad_file_gives_exactly_this_message(tmp_path, old, new, message):
+    assert old in BASE
+    path = tmp_path / "bad.toml"
+    path.write_text(BASE.replace(old, new))
+    with pytest.raises(RuptureGeneratorError) as raised:
+        rupture_config.load(path)
+    assert str(raised.value) == message
+
+
+def test_a_positive_sample_interval_is_kept(tmp_path):
+    path = tmp_path / "fine.toml"
+    path.write_text(BASE.replace("dt_s = 0.005", "dt_s = 1e-6"))
+    assert rupture_config.load(path).pulse.dt_s == 1e-6
+
+
+@pytest.mark.parametrize(
+    ("propagation", "message"),
+    [
+        (None, "propagation: several segments need a [propagation] table"),
+        (
+            rupture_config.Predetermined(parents={"next": "bent", "nxt": "bent"}),
+            "propagation.parents: ['nxt'] are not segments",
+        ),
+    ],
+)
+def test_a_propagation_that_does_not_fit_is_refused(propagation, message):
+    loaded = dataclasses.replace(rupture_config.load(EXAMPLE), propagation=propagation)
+    with pytest.raises(RuptureGeneratorError) as raised:
+        rupture_config.build(loaded)
+    assert str(raised.value).startswith(message)
+
+
+def test_a_predetermined_tree_is_the_one_given():
+    loaded = dataclasses.replace(
+        rupture_config.load(EXAMPLE),
+        propagation=rupture_config.Predetermined(parents={"next": "bent"}),
+    )
+    scenario = rupture_config.build(loaded)
+    parents = {
+        name: parent for name, parent, _ in scenario.realisation.in_causal_order()
+    }
+    assert parents == {"bent": None, "next": "bent"}
