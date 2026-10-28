@@ -190,6 +190,7 @@ def test_a_segment_table_overrides_the_global_one():
     assert isinstance(scenario.model, dict)
     bent, following = scenario.model["bent"], scenario.model["next"]
     assert bent.slip == loaded.slip and bent.speed == loaded.speed
+    assert isinstance(bent.slip, rupture_config.Slip)
     assert isinstance(following.slip, rupture_config.Slip)
     assert isinstance(following.speed, rupture_config.Speed)
     assert following.slip.coefficient_of_variation == 0.6

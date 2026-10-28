@@ -1,4 +1,4 @@
-"""Noise families: blended sampling, the models that draw noise, and the config."""
+"""Noise families: blended sampling and the config, plus the models that draw noise."""
 
 import dataclasses
 
@@ -47,7 +47,7 @@ def test_covariances_share_the_widest_padded_shape():
 
 
 def test_a_cell_of_one_family_is_that_familys_draw():
-    blend = sampler(GRID, [LONG, SHORT], [1.0 - DEEP, DEEP])
+    blend = sampler(GRID, [LONG, SHORT], [1.0 - DEEP, DEEP])  # ty: ignore[invalid-argument-type]
     alone = sampler(GRID, [LONG])
     assert blend.padded == alone.padded
     mixed, alone_draw = (s.draw(np.random.default_rng(3)) for s in (blend, alone))
@@ -57,7 +57,7 @@ def test_a_cell_of_one_family_is_that_familys_draw():
 
 
 def test_draws_are_standard_normal_and_the_pair_independent():
-    blend = sampler(GRID, [LONG, SHORT], [1.0 - DEEP, DEEP])
+    blend = sampler(GRID, [LONG, SHORT], [1.0 - DEEP, DEEP])  # ty: ignore[invalid-argument-type]
     rng = np.random.default_rng(11)
     pairs = np.array([blend.draw(rng) for _ in range(600)])
     real, imaginary = pairs[:, 0], pairs[:, 1]

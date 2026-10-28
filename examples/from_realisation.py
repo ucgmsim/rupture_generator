@@ -203,7 +203,7 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
             velocity_fraction=velocity["rvfrac"],
             factor=Profile(
                 depth_km=transitions,
-                values=[velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]],
+                values=(velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]),
             ),
         ),
         pulse=PulseConfig(

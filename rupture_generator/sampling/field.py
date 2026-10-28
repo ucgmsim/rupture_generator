@@ -185,7 +185,7 @@ def _embed(
 class Sampler:
     """Covariances embedded on one grid, the expensive part, done once.
 
-    Every covariance is embedded at one padded shape and draws from one white noise.
+    The grid embeds all covariances at one padded shape and draws from one white noise.
     Each cell loads them at its own weights, so the field's correlation lengths can
     change across the grid.
 
@@ -243,7 +243,7 @@ def sampler(
     A cell loads each covariance at ``sin(pi w / 2)`` of its weight ``w``, scaled to
     unit variance from the covariances' exact cross-correlations, so the field is
     standard normal at every cell however the weights overlap. Between two covariances
-    whose weights sum to one, that is an equal-power crossfade.
+    whose weights sum to one, that's an equal-power crossfade.
 
     Parameters
     ----------

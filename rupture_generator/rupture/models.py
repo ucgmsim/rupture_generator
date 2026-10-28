@@ -14,8 +14,8 @@ Slip's latent is the one dependency between models. A model that correlates with
 mixes its own draw into :attr:`SlipField.latent`. Its draw comes from
 :attr:`SlipField.sampler`. The mixed field then has the latent's covariance.
 
-Every model that draws noise names it: a :data:`Noise`, one or more
-:class:`NoiseFamily` crossfaded by position, which :func:`embed` embeds on a chart.
+Every model that draws noise names it as a :data:`Noise`, which is one or more
+:class:`NoiseFamily` crossfaded by position. :func:`embed` places it on a chart.
 Graves & Pitarka's hybrid slip is two families, long correlation lengths near the
 surface and short ones at depth.
 Correlations with slip are between the latents: Gaussian-copula correlations, which
@@ -536,7 +536,7 @@ def _positive_marginal(
 
 @dataclasses.dataclass(frozen=True)
 class NoiseFamily:
-    """One stationary von Karman noise, and how much of a field it is where.
+    """One stationary von Karman noise, and how much of a field it's where.
 
     Attributes
     ----------
@@ -566,9 +566,9 @@ def embed(
 ) -> Sampler:
     """Embed a noise on a chart, or return the embedding already made.
 
-    Every family is pre-corrected for ``marginal``, so the field it gives after the
-    marginal has the family's correlation. The cache keeps the last 128, so drawing the
-    same fault system again embeds nothing; ``embed.cache_clear()`` releases them.
+    The pre-correction for ``marginal`` gives each family its own correlation after the
+    marginal. The cache keeps the last 128. Drawing the same fault system again doesn't
+    embed. ``embed.cache_clear()`` releases the cache.
 
     Parameters
     ----------
@@ -719,7 +719,7 @@ class DrawnSlip:
         Raises
         ------
         RuptureGeneratorError
-            If the noise doesn't embed on this chart, or the taper leaves no slip
+            If the noise doesn't embed on this chart, or the taper removes all slip
             anywhere.
         """
         geometry = context.geometry
@@ -1008,7 +1008,7 @@ class CorrelatedPerturbation:
         The width of the zone over which the displacement grows in from the seed, in
         units of the spread.
     noise : Noise, optional
-        The noise of the displacement's own draw. Slip's when absent; genslip v5.6.3
+        The noise of the displacement's own draw. Slip's when absent, as in genslip v5.6.3
         draws it from :data:`STATIONARY` while slip's is hybrid.
     """
 
