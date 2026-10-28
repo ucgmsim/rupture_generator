@@ -43,8 +43,8 @@ from rupture_generator.rupture.medium import (
     rigidity_pa,
 )
 from rupture_generator.rupture.source import (
-    MAI_BEROZA,
-    SUZUKI_2022,
+    GENSLIP_MAI_BEROZA,
+    GENSLIP_SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
 )
@@ -547,14 +547,15 @@ class NoiseFamily:
     Attributes
     ----------
     relation : CorrelationRelation
-        The correlation lengths at the segment's magnitude.
+        The correlation lengths at the segment's magnitude. Mai & Beroza (2002)'s as
+        genslip applies them by default.
     hurst : float
         The Hurst exponent.
     weight : SpatialField
         How much of the field this family is at each position, in ``[0, 1]``.
     """
 
-    relation: CorrelationRelation = MAI_BEROZA
+    relation: CorrelationRelation = GENSLIP_MAI_BEROZA
     hurst: float = HURST
     weight: SpatialField = UNMODIFIED
 
@@ -563,17 +564,17 @@ type Noise = tuple[NoiseFamily, ...]
 """Noise families crossfaded by position, each sharing one white noise."""
 
 STATIONARY: Noise = (NoiseFamily(),)
-"""Mai & Beroza (2002)'s lengths and Hurst exponent everywhere."""
+"""genslip's Mai & Beroza (2002) lengths and the default Hurst exponent everywhere."""
 
 GP_HYBRID: Noise = (
-    NoiseFamily(SUZUKI_2022, weight=ramp_field(6.5, 1.5, 1.0, 0.0)),
+    NoiseFamily(GENSLIP_SUZUKI_2022, weight=ramp_field(6.5, 1.5, 1.0, 0.0)),
     NoiseFamily(weight=ramp_field(6.5, 1.5, 0.0, 1.0)),
 )
 """Graves & Pitarka's hybrid, as genslip v5.6.3 configures it by default.
 
-Suzuki et al. (2022)'s lengths above 5 km and Mai & Beroza (2002)'s below 8 km, both
-at the default Hurst exponent, crossfaded over ``6.5 +- 1.5`` km, genslip's
-``hyb_corlen_dep`` and ``hyb_corlen_dep_range``.
+Suzuki et al. (2022)'s lengths above 5 km and Mai & Beroza (2002)'s below 8 km, each as
+genslip applies it, both at the default Hurst exponent, crossfaded over ``6.5 +- 1.5``
+km, genslip's ``hyb_corlen_dep`` and ``hyb_corlen_dep_range``.
 """
 
 

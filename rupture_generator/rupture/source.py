@@ -20,6 +20,7 @@ Seismological Society of America*, 112(4), 1853-1870.
 """
 
 import dataclasses
+import math
 
 import numpy as np
 
@@ -127,6 +128,41 @@ SUZUKI_2022 = CorrelationRelation(
 """Suzuki et al. (2022): ``10^(Mw/2 - 1.67)`` along strike, ``10^(min(Mw, 6.3)/2 - 1.69)``
 down dip. Smoother than Mai & Beroza, the shallow slip of Graves & Pitarka's hybrid."""
 
+CYCLES_OFFSET = math.log10(2.0 * math.pi)
+"""How many decades genslip's lengths overstate its patches by.
+
+genslip filters its spectrum with ``1 + k^2 a^2``, ``k`` in cycles per kilometre, where a
+von Karman correlation ``C(r / a)`` has the spectrum ``1 + 4 pi^2 k^2 a^2``. genslip's
+patches are then those of a length ``2 pi`` shorter than the one it states.
+"""
+
+
+def as_genslip(relation: CorrelationRelation) -> CorrelationRelation:
+    """Shorten a relation's lengths to the patches genslip draws from it.
+
+    Parameters
+    ----------
+    relation : CorrelationRelation
+        The relation as published, its lengths those of a von Karman correlation.
+
+    Returns
+    -------
+    CorrelationRelation
+        The relation with both offsets grown by :data:`CYCLES_OFFSET`.
+    """
+    return dataclasses.replace(
+        relation,
+        strike_offset=relation.strike_offset + CYCLES_OFFSET,
+        dip_offset=relation.dip_offset + CYCLES_OFFSET,
+    )
+
+
+GENSLIP_MAI_BEROZA = as_genslip(MAI_BEROZA)
+"""Mai & Beroza (2002) as genslip applies it, ``2 pi`` shorter than published."""
+
+GENSLIP_SUZUKI_2022 = as_genslip(SUZUKI_2022)
+"""Suzuki et al. (2022) as genslip applies it, ``2 pi`` shorter than published."""
+
 
 @dataclasses.dataclass(frozen=True)
 class SegmentSource:
@@ -210,10 +246,14 @@ def split_moment(
 
 
 __all__ = [
+    "CYCLES_OFFSET",
+    "GENSLIP_MAI_BEROZA",
+    "GENSLIP_SUZUKI_2022",
     "MAI_BEROZA",
     "SUZUKI_2022",
     "CorrelationRelation",
     "SegmentSource",
+    "as_genslip",
     "magnitude_from_moment",
     "moment_from_magnitude",
     "segment_source",

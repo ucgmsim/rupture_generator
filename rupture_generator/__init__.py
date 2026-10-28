@@ -69,6 +69,8 @@ from rupture_generator.rupture.models import (
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
+    GENSLIP_MAI_BEROZA,
+    GENSLIP_SUZUKI_2022,
     MAI_BEROZA,
     SUZUKI_2022,
     CorrelationRelation,
@@ -83,6 +85,8 @@ __version__ = version("rupture-generator")
 """The installed version, from the latest git tag when it was built."""
 
 __all__ = [
+    "GENSLIP_MAI_BEROZA",
+    "GENSLIP_SUZUKI_2022",
     "GP_HYBRID",
     "MAI_BEROZA",
     "STATIONARY",

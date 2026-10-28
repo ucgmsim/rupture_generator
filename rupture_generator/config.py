@@ -71,6 +71,8 @@ from rupture_generator.rupture.models import (
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
+    GENSLIP_MAI_BEROZA,
+    GENSLIP_SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
     moment_from_magnitude,
@@ -88,8 +90,14 @@ class _Strict(BaseConfig):
 
 @dataclasses.dataclass(frozen=True)
 class Correlation(CorrelationRelation):
-    """A noise family's ``relation`` table, Mai & Beroza (2002) when absent."""
+    """A noise family's ``relation`` table, genslip's Mai & Beroza (2002) when absent.
 
+    The lengths are a von Karman correlation's. genslip's own lengths are ``2 pi``
+    longer than the patches it draws, so its offsets read here grown by ``log10(2 pi)``.
+    """
+
+    strike_offset: float = GENSLIP_MAI_BEROZA.strike_offset
+    dip_offset: float = GENSLIP_MAI_BEROZA.dip_offset
     Config = _Strict
 
 
@@ -258,13 +266,11 @@ class Family(NoiseFamily):
 
 
 STATIONARY = (Family(),)
-"""Mai & Beroza (2002)'s lengths everywhere: rake's and the perturbation's default."""
+"""genslip's Mai & Beroza (2002) lengths everywhere: rake's and the perturbation's default."""
 
 GP_HYBRID = (
     Family(
-        relation=Correlation(
-            strike_offset=1.67, dip_exponent=0.5, dip_offset=1.69, dip_saturation=6.3
-        ),
+        relation=Correlation(**dataclasses.asdict(GENSLIP_SUZUKI_2022)),
         weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=1.0, deep=0.0),
     ),
     Family(weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=0.0, deep=1.0)),
