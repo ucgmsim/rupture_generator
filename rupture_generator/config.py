@@ -93,8 +93,7 @@ class Correlation(CorrelationRelation):
     """A noise family's ``relation`` table, genslip's Mai & Beroza (2002) when absent.
 
     The lengths are a von Karman correlation's. genslip's own lengths are ``2 pi``
-    longer than the patches it draws. Its offsets therefore read here grown by
-    ``log10(2 pi)``.
+    longer than the patches it draws. Its offsets read here grown by ``log10(2 pi)``.
 
     Parameters
     ----------
