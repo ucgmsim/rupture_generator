@@ -229,9 +229,9 @@ MOMENT_SIGMA_LN = 0.85
 """The standard deviation of a component's moment about its share, natural-log units.
 
 Bradley & Faulkner calibrate it from 238 components of 54 multi-component SRCMOD
-ruptures, as the spread of ``ln(M_c / M_T)`` about the share of the rule in
-:func:`split_moment`, each rupture's residuals centred. It shows no dependence on the
-component's share of the area.
+ruptures, as the spread of ``ln(M_c / M_T)`` about the share of
+:func:`component_weights`, each rupture's residuals centred. It shows no dependence on
+the component's share of the area.
 """
 
 
@@ -313,19 +313,6 @@ def moment_components(
 ) -> list[tuple[str, ...]]:
     """Group a fault system's segments into the components that share moment.
 
-    Segments join when the closest points of their faults below ``depth_km`` lie less
-    than ``separation_km`` apart, and their mean dips differ by less than
-    ``dip_delta_deg``. A component is a connected group of joined segments, so two
-    segments can share one through a third that joins both. Strike plays no part.
-
-    The rule is the one Bradley & Faulkner's moment partitioning uses, ported to charts
-    from ``find_connected_faults`` in the ``source_modelling`` package, without
-    depending on it. For a segment that stops short of ``depth_km``, the measurement
-    starts at 99% of its own bottom depth, or of its neighbour's if that's shallower.
-    The dip is the area-weighted mean over the fault cells, and the comparison takes
-    the plain difference of two dips, so two segments of equal dip and opposite dip
-    direction can join.
-
     Parameters
     ----------
     realisation : Realisation of Geometry
@@ -362,39 +349,87 @@ def moment_components(
     return sorted(components, key=min)
 
 
+def rigidity_weighted_areas(
+    realisation: Realisation[Geometry], medium: Medium
+) -> dict[str, float]:
+    """Sum ``mu * A`` over each segment's fault cells.
+
+    Parameters
+    ----------
+    realisation : Realisation of Geometry
+        The segments.
+    medium : Medium
+        The rock, which sets each cell's rigidity.
+
+    Returns
+    -------
+    dict of str to float
+        Each segment's rigidity-weighted area in pascal square kilometres, by name, in
+        the realisation's order.
+    """
+    return {
+        name: float(
+            np.sum(
+                (medium.rigidity_pa(chart.centres) * chart.areas_km2)[chart.occupied]
+            )
+        )
+        for name, chart in realisation.items()
+    }
+
+
+def component_weights(
+    realisation: Realisation[Geometry], segment_weights: dict[str, float]
+) -> dict[tuple[str, ...], float]:
+    """Weight each component by its segments' summed weight times its area to the half.
+
+    With :func:`rigidity_weighted_areas` as ``segment_weights``, a component ``c`` weighs
+    :math:`\\mu_c A_c^{3/2}`, Bradley & Faulkner's rule.
+
+    Parameters
+    ----------
+    realisation : Realisation of Geometry
+        The segments, grouped by :func:`moment_components`.
+    segment_weights : dict of str to float
+        Each segment's weight, by name.
+
+    Returns
+    -------
+    dict of tuple of str to float
+        Each component's weight, keyed by its segments' names, in the order of
+        :func:`moment_components`.
+    """
+    return {
+        names: sum(segment_weights[name] for name in names)
+        * math.sqrt(
+            sum(
+                float(np.sum(realisation[name].areas_km2[realisation[name].occupied]))
+                for name in names
+            )
+        )
+        for names in moment_components(realisation)
+    }
+
+
 def split_moment(
     moment_nm: float,
-    realisation: Realisation[Geometry],
-    medium: Medium,
+    component_weights: dict[tuple[str, ...], float],
+    segment_weights: dict[str, float],
     *,
     sigma_ln: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> dict[str, float]:
-    """Share one event's moment between its segments, by Bradley & Faulkner's rule.
-
-    The segments group into components (:func:`moment_components`). A component ``c``
-    takes the share :math:`\\mu_c A_c^{3/2} / \\sum_{c'} \\mu_{c'} A_{c'}^{3/2}` of the
-    moment, where :math:`A_c` is its fault area and :math:`\\mu_c A_c` the sum of
-    ``mu * A`` over its fault cells. Within a component, each segment's share is in
-    proportion to ``sum(mu * A)`` over its fault cells. Every segment of a component
-    then has one mean slip, however the segments divide the component. With one
-    component the rule is one mean slip across the whole event.
-
-    With a positive ``sigma_ln``, a factor :math:`e^{\\varepsilon_c}`,
-    :math:`\\varepsilon_c \\sim N(0, \\sigma^2)` independent for each component,
-    multiplies each component's moment, and the components rescale to ``moment_nm``.
-    The shares within a component don't change, so every segment of a component still
-    has one mean slip, and no segment's moment can reach zero. The draws go to the
-    components in their order from :func:`moment_components`.
+    """Split event moment between its segments, using Bradley & Faulkner (2026).
 
     Parameters
     ----------
     moment_nm : float
         The event's seismic moment in newton-metres.
-    realisation : Realisation of Geometry
-        The segments to share it between.
-    medium : Medium
-        The rock, which sets each cell's rigidity.
+    component_weights : dict of tuple of str to float
+        Each component's weight, keyed by its segments' names, as
+        :func:`component_weights` gives. The draws go to the components in this order.
+    segment_weights : dict of str to float
+        Each segment's weight within its component, by name, as
+        :func:`rigidity_weighted_areas` gives.
     sigma_ln : float
         The standard deviation of each component's moment about its share, in
         natural-log units. Zero gives the rule's own shares.
@@ -412,13 +447,6 @@ def split_moment(
     ------
     RuptureGeneratorError
         If ``sigma_ln`` is negative or not finite, or positive with no ``rng``.
-
-    Notes
-    -----
-    Bradley & Faulkner set out the rule in section 5.2, show in Supplement S2.3 that
-    only an exponent of one within a component leaves the mean slip independent of
-    how the segments divide it, give the rigidity-weighted form in S2.4, and calibrate
-    the departures in S2.6.
     """
     if not (math.isfinite(sigma_ln) and sigma_ln >= 0.0):
         raise RuptureGeneratorError(
@@ -428,24 +456,11 @@ def split_moment(
         raise RuptureGeneratorError(
             "a moment shared with a standard deviation needs a generator to draw from"
         )
-    weights, areas = {}, {}
-    for name, chart in realisation.items():
-        weights[name] = float(
-            np.sum(
-                (medium.rigidity_pa(chart.centres) * chart.areas_km2)[chart.occupied]
-            )
-        )
-        areas[name] = float(np.sum(chart.areas_km2[chart.occupied]))
-    components = moment_components(realisation)
-    component_weights = [sum(weights[name] for name in names) for names in components]
+    components = list(component_weights)
     if len(components) == 1:
-        # The whole moment, exactly, so one component shares as one mean slip does.
         component_moments = [moment_nm]
     else:
-        scaled = [
-            weight * math.sqrt(sum(areas[name] for name in names))
-            for names, weight in zip(components, component_weights, strict=True)
-        ]
+        scaled = list(component_weights.values())
         if sigma_ln > 0.0:
             assert rng is not None
             departures = np.exp(rng.normal(0.0, sigma_ln, len(components)))
@@ -453,13 +468,11 @@ def split_moment(
         total = sum(scaled)
         component_moments = [moment_nm * share / total for share in scaled]
     shares = {}
-    for names, component_nm, component_weight in zip(
-        components, component_moments, component_weights, strict=True
-    ):
+    for names, component_nm in zip(components, component_moments, strict=True):
+        component_weight = sum(segment_weights[name] for name in names)
         for name in names:
-            shares[name] = component_nm * weights[name] / component_weight
-    # In the realisation's order, as the segments are everywhere else.
-    return {name: shares[name] for name in realisation}
+            shares[name] = component_nm * segment_weights[name] / component_weight
+    return {name: shares[name] for name in segment_weights}
 
 
 __all__ = [
@@ -475,9 +488,11 @@ __all__ = [
     "CorrelationRelation",
     "SegmentSource",
     "as_genslip",
+    "component_weights",
     "magnitude_from_moment",
     "moment_components",
     "moment_from_magnitude",
+    "rigidity_weighted_areas",
     "segment_source",
     "split_moment",
 ]

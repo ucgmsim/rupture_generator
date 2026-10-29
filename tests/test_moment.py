@@ -14,7 +14,9 @@ from rupture_generator.rupture.generator import moment_rng
 from rupture_generator.rupture.medium import Layers, Medium, layered_medium
 from rupture_generator.rupture.source import (
     MOMENT_SIGMA_LN,
+    component_weights,
     moment_components,
+    rigidity_weighted_areas,
     split_moment,
 )
 
@@ -72,6 +74,19 @@ def master_split_moment(
     }
     total = sum(weights.values())
     return {name: moment_nm * weight / total for name, weight in weights.items()}
+
+
+def split(
+    moment_nm: float,
+    realisation: Realisation[Geometry],
+    medium: Medium,
+    **kwargs,
+) -> dict[str, float]:
+    """``split_moment`` with Bradley & Faulkner's rigidity-weighted weights."""
+    weights = rigidity_weighted_areas(realisation, medium)
+    return split_moment(
+        moment_nm, component_weights(realisation, weights), weights, **kwargs
+    )
 
 
 def mean_slip(
@@ -149,21 +164,29 @@ def test_one_component_shares_exactly_as_master_did():
         c=plane(34.0, 30.0, top_km=1.0),
     )
     assert len(moment_components(faults)) == 1
-    assert split_moment(MOMENT_NM, faults, MEDIUM) == master_split_moment(
+    assert split(MOMENT_NM, faults, MEDIUM) == master_split_moment(
         MOMENT_NM, faults, MEDIUM
     )
 
 
 def test_one_segment_takes_the_whole_moment():
     faults = system(a=plane(0.0, 20.0))
-    assert split_moment(MOMENT_NM, faults, MEDIUM) == {"a": MOMENT_NM}
+    assert split(MOMENT_NM, faults, MEDIUM) == {"a": MOMENT_NM}
 
 
 def test_components_share_by_area_to_the_three_halves():
     faults = system(a=plane(0.0, 40.0), b=plane(60.0, 10.0))
-    shares = split_moment(MOMENT_NM, faults, MEDIUM)
+    shares = split(MOMENT_NM, faults, MEDIUM)
     # Equal widths in one medium: mu_c A_c^(3/2) goes as length^(3/2).
     assert shares["a"] / shares["b"] == pytest.approx(4.0**1.5, rel=1e-12)
+
+
+def test_the_weights_are_swappable():
+    # Weighting by area alone ignores the rigidity: A^(3/2) between components.
+    faults = system(a=plane(0.0, 40.0), b=plane(60.0, 10.0, top_km=5.0, bottom_km=20.0))
+    areas = {name: float(np.sum(chart.areas_km2)) for name, chart in faults.items()}
+    shares = split_moment(MOMENT_NM, component_weights(faults, areas), areas)
+    assert shares["a"] / shares["b"] == pytest.approx((600.0 / 150.0) ** 1.5, rel=1e-12)
 
 
 lengths = st.integers(min_value=3, max_value=30).map(float)
@@ -192,9 +215,7 @@ def fault_systems(draw) -> Realisation[Geometry]:
     st.integers(0, 2**32),
 )
 def test_the_shares_are_positive_and_sum_to_the_moment(faults, sigma_ln, seed):
-    shares = split_moment(
-        MOMENT_NM, faults, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(seed)
-    )
+    shares = split(MOMENT_NM, faults, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(seed))
     assert list(shares) == list(faults)
     assert all(share > 0.0 for share in shares.values())
     assert math.fsum(shares.values()) == pytest.approx(MOMENT_NM, rel=1e-12)
@@ -205,9 +226,7 @@ def test_the_shares_are_positive_and_sum_to_the_moment(faults, sigma_ln, seed):
 def test_every_segment_of_a_component_has_one_mean_slip(faults, seed):
     for sigma_ln in (0.0, MOMENT_SIGMA_LN):
         slip = mean_slip(
-            split_moment(
-                MOMENT_NM, faults, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(seed)
-            ),
+            split(MOMENT_NM, faults, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(seed)),
             faults,
         )
         for names in moment_components(faults):
@@ -230,13 +249,11 @@ def test_cutting_a_segment_in_two_leaves_every_mean_slip_as_it_was():
     for sigma_ln in (0.0, MOMENT_SIGMA_LN):
         # Both systems' components fall in the same order, so they take the same draws.
         before = mean_slip(
-            split_moment(
-                MOMENT_NM, whole, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(3)
-            ),
+            split(MOMENT_NM, whole, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(3)),
             whole,
         )
         after = mean_slip(
-            split_moment(MOMENT_NM, cut, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(3)),
+            split(MOMENT_NM, cut, MEDIUM, sigma_ln=sigma_ln, rng=moment_rng(3)),
             cut,
         )
         assert after["x1"] == pytest.approx(before["x"], rel=1e-12)
@@ -257,8 +274,8 @@ THREE_COMPONENTS = system(
 
 
 def test_departures_scale_whole_components():
-    reference = split_moment(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
-    drawn = split_moment(
+    reference = split(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
+    drawn = split(
         MOMENT_NM,
         THREE_COMPONENTS,
         MEDIUM,
@@ -278,7 +295,7 @@ def test_departures_scale_whole_components():
 
 def test_departures_reproduce_from_the_seed():
     def draw(seed):
-        return split_moment(
+        return split(
             MOMENT_NM, THREE_COMPONENTS, MEDIUM, sigma_ln=0.85, rng=moment_rng(seed)
         )
 
@@ -287,17 +304,17 @@ def test_departures_reproduce_from_the_seed():
 
 
 def test_no_departure_is_the_reference():
-    assert split_moment(
+    assert split(
         MOMENT_NM, THREE_COMPONENTS, MEDIUM, sigma_ln=0.0, rng=moment_rng(5)
-    ) == split_moment(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
+    ) == split(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
 
 
 def test_departures_follow_the_lognormal_about_the_reference():
-    reference = split_moment(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
+    reference = split(MOMENT_NM, THREE_COMPONENTS, MEDIUM)
     rng = moment_rng(0)
     residuals = []
     for _ in range(1500):
-        drawn = split_moment(
+        drawn = split(
             MOMENT_NM, THREE_COMPONENTS, MEDIUM, sigma_ln=MOMENT_SIGMA_LN, rng=rng
         )
         ratio = np.log([drawn[name] / reference[name] for name in ("a", "c", "d")])
@@ -318,7 +335,7 @@ def test_departures_follow_the_lognormal_about_the_reference():
 )
 def test_a_departure_without_a_spread_or_generator_is_refused(kwargs, message):
     with pytest.raises(RuptureGeneratorError, match=message):
-        split_moment(MOMENT_NM, THREE_COMPONENTS, MEDIUM, **kwargs)
+        split(MOMENT_NM, THREE_COMPONENTS, MEDIUM, **kwargs)
 
 
 # ------------------------------------------------------------------- the config
@@ -356,7 +373,7 @@ def test_a_file_without_an_apportionment_takes_the_reference(tmp_path):
     assert isinstance(loaded.source, rupture_config.Finite)
     assert loaded.source.apportionment == rupture_config.ReferenceApportionment()
     scenario = rupture_config.build(loaded)
-    reference = split_moment(
+    reference = split(
         sum(source.moment_nm for source in scenario.sources.values()),
         scenario.realisation,
         scenario.medium,
@@ -380,7 +397,7 @@ def test_a_sampled_apportionment_draws_its_own_stream(tmp_path):
     assert sampled.sources != reference.sources
     # The moment's stream is its own: the tree drawn from the same seed is the same.
     assert sampled.realisation.tree == reference.realisation.tree
-    expected = split_moment(
+    expected = split(
         sum(source.moment_nm for source in reference.sources.values()),
         reference.realisation,
         reference.medium,

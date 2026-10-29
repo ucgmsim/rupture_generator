@@ -76,7 +76,9 @@ from rupture_generator.rupture.source import (
     MOMENT_SIGMA_LN,
     CorrelationRelation,
     SegmentSource,
+    component_weights,
     moment_from_magnitude,
+    rigidity_weighted_areas,
     segment_source,
     split_moment,
 )
@@ -925,22 +927,23 @@ def _sources(
                 for name in realisation
             }
         case Finite():
+            moment_nm = moment_from_magnitude(source.magnitude)
+            segment_weights = rigidity_weighted_areas(realisation, medium)
+            weights = component_weights(realisation, segment_weights)
             match source.apportionment:
                 case ReferenceApportionment():
-                    shares = split_moment(
-                        moment_from_magnitude(source.magnitude), realisation, medium
-                    )
+                    shares = split_moment(moment_nm, weights, segment_weights)
                 case SampledApportionment():
                     shares = split_moment(
-                        moment_from_magnitude(source.magnitude),
-                        realisation,
-                        medium,
+                        moment_nm,
+                        weights,
+                        segment_weights,
                         sigma_ln=source.apportionment.sigma_ln,
                         rng=moment_rng(seed),
                     )
             return {
-                name: SegmentSource(moment_nm, source.rake_deg)
-                for name, moment_nm in shares.items()
+                name: SegmentSource(share_nm, source.rake_deg)
+                for name, share_nm in shares.items()
             }
 
 
