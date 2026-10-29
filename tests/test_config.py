@@ -77,6 +77,17 @@ def test_defaults_are_the_librarys():
             "hypocentre: a hypocentre is strike_km and dip_km",
         ),
         ("seed = 7", "seed = = 7", "is not TOML"),
+        # The moment's coefficient, from before the mean slip set the rise time.
+        (
+            "[rise.slip_weight]\n",
+            "[rise]\ncoefficient = 1.6\n\n[rise.slip_weight]\n",
+            "rise: has unknown keys ['coefficient']",
+        ),
+        (
+            "[rise.slip_weight]\n",
+            "[rise]\nslip_coefficient = 0.0\n\n[rise.slip_weight]\n",
+            "rise: a rise time is a duration",
+        ),
     ],
 )
 def test_a_bad_file_names_the_key_at_fault(tmp_path, old, new, message):
@@ -213,7 +224,7 @@ def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):
     assert rise is not None
     assert rise.slip_weight == rupture_config.Constant(value=0.5)
     assert rise.factor == loaded.rise.factor
-    assert rise.coefficient == loaded.rise.coefficient
+    assert rise.slip_coefficient == loaded.rise.slip_coefficient
 
 
 def test_segment_tables_survive_the_record(tmp_path):

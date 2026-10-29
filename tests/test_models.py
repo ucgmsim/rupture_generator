@@ -13,12 +13,13 @@ from hypothesis.extra import numpy as hnp
 
 from rupture_generator import (
     Drawn,
+    Geometry,
     RuptureGeneratorError,
     SlipField,
     gaussian_anamorphosis,
     generate,
 )
-from rupture_generator.rupture.models import CUBE_ROOT_DYNE_CM
+from rupture_generator.rupture.models import mean_slip_scaling
 
 README = Path(__file__).parents[1] / "README.md"
 
@@ -54,12 +55,6 @@ def _with_slips(scenario, given_slip, slips):
             name: dataclasses.replace(scenario.model, slip=given_slip(slips[name]))
             for name in scenario.realisation
         },
-    )
-
-
-def _moment(rupture, slip_m):
-    return float(
-        np.sum(rupture.rigidity_pa * rupture.geometry.areas_km2 * 1e6 * slip_m)
     )
 
 
@@ -111,7 +106,14 @@ def test_a_given_slip_is_kept_and_the_rest_drawn_around_it(
         )
 
 
-def test_a_given_slip_sets_the_moment_the_kinematics_follow(
+def _mean_slip_m(rupture, slip_m):
+    areas_km2 = rupture.geometry.areas_km2[rupture.geometry.occupied]
+    return float(
+        np.sum(slip_m[rupture.geometry.occupied] * areas_km2) / np.sum(areas_km2)
+    )
+
+
+def test_a_given_slip_sets_the_mean_slip_the_rise_time_follows(
     scenario, given_slip, flipped
 ):
     once = _with_slips(scenario, given_slip, flipped)
@@ -119,17 +121,37 @@ def test_a_given_slip_sets_the_moment_the_kinematics_follow(
     larger = _with_slips(
         scenario, given_slip, {name: 1.1 * slip for name, slip in flipped.items()}
     )
-    coefficient = scenario.model.rise.coefficient * CUBE_ROOT_DYNE_CM
     for name, rupture in once.items():
         assert rupture.statistics["rise.mean_s"] == pytest.approx(
-            coefficient
-            * np.cbrt(_moment(rupture, flipped[name]))
+            scenario.model.rise.slip_coefficient
+            * _mean_slip_m(rupture, flipped[name])
             * rupture.statistics["rise.alpha_t"]
         )
-        # Normal scores ignore scale, so only the mean moves.
+        # Normal scores ignore scale, so only the mean moves, by slip's own factor.
         np.testing.assert_allclose(
-            larger[name].rise_time_s, rupture.rise_time_s * np.cbrt(1.1), rtol=1e-12
+            larger[name].rise_time_s, rupture.rise_time_s * 1.1, rtol=1e-12
         )
+
+
+def _plane(slip_m, occupied):
+    """A flat plane of 1 km cells, the shape of ``slip_m``."""
+    rows, columns = slip_m.shape
+    i, j = np.mgrid[0 : rows + 1, 0 : columns + 1].astype(float)
+    nodes = np.stack([j, i, np.zeros_like(i)], axis=-1)
+    return Geometry(nodes=nodes, occupied=occupied, plane_cells=(columns,))
+
+
+def test_the_mean_slip_scaling_is_genslips():
+    slip_m = np.array([[1.0, 2.0], [3.0, 4.0]])
+    geometry = _plane(slip_m, np.ones(slip_m.shape, bool))
+    # genslip v5.6.3: trise = risetime_coef_savg*(1.0e-02)*slp_avg, with slp_avg
+    # in centimetres: 1.1 * 0.01 * 250 cm.
+    assert mean_slip_scaling(1.1, slip_m, geometry) == pytest.approx(2.75)
+    # Off-fault cells don't count toward the mean.
+    occupied = np.array([[True, True], [True, False]])
+    assert mean_slip_scaling(1.1, slip_m, _plane(slip_m, occupied)) == pytest.approx(
+        1.1 * 2.0
+    )
 
 
 @pytest.mark.parametrize(
