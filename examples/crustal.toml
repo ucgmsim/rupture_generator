@@ -47,9 +47,9 @@ top_taper = 0.0
 bottom_taper = 0.0
 
 [rise]
-coefficient = 1.6
+slip_coefficient = 1.1
 correlation = 0.9
-slip_exponent = 0.5
+slip_exponent = 1.0
 coefficient_of_variation = 0.75
 
 [rise.factor]

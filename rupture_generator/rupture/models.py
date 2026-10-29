@@ -4,7 +4,7 @@
 segment's fields, in a fixed order:
 
 1. A :class:`SlipModel` gives slip, and the latent Gaussian field slip is monotone in.
-2. A :class:`RiseModel` gives rise time, from slip's latent and the moment.
+2. A :class:`RiseModel` gives rise time, from slip, its latent and the moment.
 3. A :class:`RakeModel` gives rake.
 4. A :class:`SpeedModel` gives the front's speed, from slip's latent.
 5. A :class:`PerturbationModel` gives the onset displacement, from slip's latent and
@@ -491,6 +491,30 @@ def cube_root_scaling(coefficient: float, moment_nm: float) -> float:
     return coefficient * CUBE_ROOT_DYNE_CM * float(np.cbrt(moment_nm))
 
 
+def mean_slip_scaling(
+    coefficient: float, slip_m: CellArray, geometry: Geometry
+) -> float:
+    """``coefficient * D``, where ``D`` is the area-weighted mean slip over the fault.
+
+    Parameters
+    ----------
+    coefficient : float
+        The coefficient, in seconds per metre of mean slip.
+    slip_m : CellArray
+        Slip, in metres.
+    geometry : Geometry
+        The chart ``slip_m`` lies on. The mean is over its fault cells.
+
+    Returns
+    -------
+    float
+        The scaled mean slip, in seconds for a coefficient in seconds per metre.
+    """
+    occupied = geometry.occupied
+    areas_km2 = geometry.areas_km2[occupied]
+    return coefficient * float(np.sum(slip_m[occupied] * areas_km2) / np.sum(areas_km2))
+
+
 def gaussian_anamorphosis(values: CellArray, occupied: CellMask) -> CellArray:
     """The standard normal scores of a field over the fault cells.
 
@@ -763,22 +787,36 @@ class DrawnSlip:
 
 @dataclasses.dataclass(frozen=True)
 class CorrelatedRise:
-    """Rise time correlated with slip, its mean following the moment.
+    """Rise time correlated with slip, its mean following the mean slip.
 
-    The fault-wide mean is ``coefficient * M0^(1/3) * alpha_T``, with ``alpha_T``
-    from :func:`geometric_correction`. The pattern is a power of a field
-    correlated with slip's latent, times a depth profile.
+    The fault-wide mean is ``slip_coefficient * D * alpha_T``. ``D``, in metres, is
+    the mean slip, and ``alpha_T`` comes from :func:`geometric_correction`. This is
+    genslip v5.6.3's ``trise = risetime_coef_savg*(1.0e-02)*slp_avg``, with
+    ``slp_avg`` in centimetres (SCEC BBP, ``src/gp/GenRandV5.0/genslip-v5.6.3.c``).
+    Rise time then scales with slip, as in Frankel (2009), so the mean peak slip rate
+    holds roughly constant across magnitudes and static stress drops. A rupture with
+    a high stress drop, and so a large mean slip for its moment, gets a longer rise
+    time than one with a low stress drop and the same moment. genslip before v5.6.3
+    took the mean from the moment instead, as
+    ``risetime_coef*1.0e-09*exp(log(mom)/3.0)``, which gave every rupture of one
+    magnitude the same mean rise time.
+
+    The pattern is a power of a field correlated with slip's latent, times a depth
+    profile.
 
     Attributes
     ----------
-    coefficient : float
-        The mean's coefficient in the published units, per cube-root dyne-centimetre
-        at ``1e-9``. Graves & Pitarka use 1.6.
+    slip_coefficient : float
+        The mean rise time per metre of mean slip, in seconds per metre. genslip
+        v5.6.3's ``risetime_coef_savg`` is 1.1, estimated from Leonard (2014) and
+        calibrated against Broadband Platform simulations.
     correlation : float
         The Gaussian-copula correlation of rise time with slip.
     slip_exponent : float
-        The power of slip that rise time follows. At 0.5, rise time goes as the square
-        root of slip.
+        The power of slip that rise time follows, genslip's ``rtime2slip_exp``. At 1,
+        genslip v5.6.3's default, rise time is proportional to slip, and slip rate is
+        constant across the fault. At 0.5, the default before v5.6.3, rise time goes
+        as the square root of slip.
     family : MarginalFamily
         The unit-mean distribution rise time values follow, a gamma by default.
     coefficient_of_variation : float
@@ -796,9 +834,9 @@ class CorrelatedRise:
         There, in the velocity-strengthening crust, the pulse length tracks the slip.
     """
 
-    coefficient: float = 1.6
+    slip_coefficient: float = 1.1
     correlation: float = 0.9
-    slip_exponent: float = 0.5
+    slip_exponent: float = 1.0
     family: MarginalFamily = "gamma"
     coefficient_of_variation: float = 0.75
     maximum: float = np.inf
@@ -807,6 +845,11 @@ class CorrelatedRise:
 
     def __post_init__(self) -> None:
         """Refuse a rise time the power law can't produce."""
+        if not self.slip_coefficient > 0.0:
+            raise RuptureGeneratorError(
+                "a rise time is a duration, so its coefficient must be positive, got "
+                f"{self.slip_coefficient} seconds per metre of slip"
+            )
         if self.slip_exponent <= 0.1:
             raise RuptureGeneratorError(
                 f"a slip exponent of {self.slip_exponent} abandons the correlated field "
@@ -838,7 +881,7 @@ class CorrelatedRise:
         slip : SlipField
             The segment's slip, and its latent.
         moment_nm : float
-            The segment's moment, which sets the mean.
+            The segment's moment, unused: the mean slip sets the mean.
         rng : numpy.random.Generator
             The rise time's own generator.
 
@@ -865,7 +908,9 @@ class CorrelatedRise:
             "weights in [0, 1]",
         )
         correction = geometric_correction(geometry, context.source.rake_deg)
-        mean_s = cube_root_scaling(self.coefficient, moment_nm) * correction
+        mean_s = (
+            mean_slip_scaling(self.slip_coefficient, slip.slip_m, geometry) * correction
+        )
         rho = self.correlation
         latent = mix(
             (slip_weight * rho + (1.0 - slip_weight), slip.latent),
