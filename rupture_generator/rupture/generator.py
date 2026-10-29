@@ -373,6 +373,13 @@ FIELDS_STREAM = 0
 JUMP_STREAM = 1
 """The spawn key's first element for the jump onto a segment."""
 
+MOMENT_STREAM = 2
+"""The spawn key, whole, for the departures of an event's moment between components.
+
+One stream serves the whole event, since a component's share depends on every other
+component's. Its key is one element where a segment's is two, so it can't collide with
+any segment's stream."""
+
 
 def _segment_rng(seed: int, stream: int, segment: str) -> np.random.Generator:
     """The generator one segment draws ``stream`` from, keyed by the segment's **name**.
@@ -391,6 +398,24 @@ def _segment_rng(seed: int, stream: int, segment: str) -> np.random.Generator:
     )
     return np.random.default_rng(
         np.random.SeedSequence(entropy=seed, spawn_key=(stream, key))
+    )
+
+
+def moment_rng(seed: int) -> np.random.Generator:
+    """Build the generator an event's moment departures draw from.
+
+    Parameters
+    ----------
+    seed : int
+        The seed every random draw derives from.
+
+    Returns
+    -------
+    numpy.random.Generator
+        The :data:`MOMENT_STREAM` generator, independent of every segment's.
+    """
+    return np.random.default_rng(
+        np.random.SeedSequence(entropy=check_seed(seed), spawn_key=(MOMENT_STREAM,))
     )
 
 
@@ -541,6 +566,7 @@ def generate(
 __all__ = [
     "CAUSAL_MARGIN",
     "MOMENT_MAGNITUDE_TOLERANCE",
+    "MOMENT_STREAM",
     "JumpRule",
     "JumpSeed",
     "SegmentRupture",
@@ -548,4 +574,5 @@ __all__ = [
     "first_arrival",
     "generate",
     "generate_segment",
+    "moment_rng",
 ]
