@@ -53,7 +53,11 @@ def test_points_round_trip(srf, ruptures):
     points = parsed.points
     assert points.vs is not None and points.density is not None
     slip_cm = column(ruptures, lambda r: r.slip_m) * 100.0
-    np.testing.assert_allclose(points.slip1, slip_cm, rtol=1e-6)
+    # The SRF records a point whose pulse has no samples as not slipping, and only slip
+    # too small to resolve leaves a pulse empty.
+    empty = np.diff(parsed.slip_rate.offsets) == 0
+    assert np.all(slip_cm[empty] < 0.1)
+    np.testing.assert_allclose(points.slip1, np.where(empty, 0.0, slip_cm), rtol=1e-6)
     np.testing.assert_allclose(
         points.tinit, column(ruptures, lambda r: r.onset_s), atol=1e-5
     )

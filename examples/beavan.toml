@@ -156,12 +156,6 @@ Charing_Cross = 66.5
 Fault_NNW = 6.23
 Fault_NE = 15.46
 
-[source.correlation]
-strike_exponent = 0.5
-strike_offset = 2.5
-dip_exponent = 0.3333333333333333
-dip_offset = 1.5
-
 [propagation]
 type = "predetermined"
 

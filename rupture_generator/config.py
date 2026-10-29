@@ -12,10 +12,9 @@ The file configures the default models alone. Any other model comes in through t
 library.
 
 A ``[segments.<name>]`` table overrides the global settings on one segment. Its
-``slip``, ``rise``, ``rake``, ``speed`` and ``perturbation`` tables, and its
-``correlation`` table for the source's, each start from the global table and replace
-the keys they give. A depth profile, one key of its table, replaces the global profile
-whole. :func:`load` does this merge. A loaded config stores each segment's tables in
+``slip``, ``rise``, ``rake``, ``speed`` and ``perturbation`` tables each start from the
+global table and replace the keys they give. A depth profile or a noise list, one key
+of its table, replaces the global one whole. :func:`load` does this merge. A loaded config stores each segment's tables in
 full.
 
 :func:`load` reads and checks a file, and :func:`build` turns it into a
@@ -64,6 +63,7 @@ from rupture_generator.rupture.models import (
     CorrelatedRise,
     DrawnSlip,
     GaussianRake,
+    NoiseFamily,
     PulseSettings,
     RuptureModel,
     ShearFractionSpeed,
@@ -71,9 +71,10 @@ from rupture_generator.rupture.models import (
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
+    GENSLIP_MAI_BEROZA,
+    GENSLIP_SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
-    magnitude_from_moment,
     moment_from_magnitude,
     segment_source,
     split_moment,
@@ -89,8 +90,21 @@ class _Strict(BaseConfig):
 
 @dataclasses.dataclass(frozen=True)
 class Correlation(CorrelationRelation):
-    """A source's ``correlation`` table, Mai & Beroza (2002) when absent."""
+    """A noise family's ``relation`` table, genslip's Mai & Beroza (2002) when absent.
 
+    The lengths are a von Karman correlation's. genslip's own lengths are ``2 pi``
+    longer than the patches it draws. Its offsets read here grown by ``log10(2 pi)``.
+
+    Parameters
+    ----------
+    strike_offset : float
+        The along-strike length's offset, genslip's grown by ``log10(2 pi)``.
+    dip_offset : float
+        The down-dip length's offset, genslip's grown by ``log10(2 pi)``.
+    """
+
+    strike_offset: float = GENSLIP_MAI_BEROZA.strike_offset
+    dip_offset: float = GENSLIP_MAI_BEROZA.dip_offset
     Config = _Strict
 
 
@@ -179,8 +193,8 @@ class Profile(_DepthProfile):
     """
 
     type: Literal["profile"] = "profile"
-    depth_km: list[float]
-    values: list[float]
+    depth_km: tuple[float, ...]
+    values: tuple[float, ...]
     Config = _Strict
 
     def field(self) -> SpatialField:
@@ -242,9 +256,46 @@ UNMODIFIED = Constant(value=1.0)
 
 
 @dataclasses.dataclass(frozen=True)
-class Slip(DrawnSlip):
-    """``[slip]``: :class:`~rupture_generator.rupture.models.DrawnSlip`."""
+class Family(NoiseFamily):
+    """``[[<model>.noise]]``: :class:`~rupture_generator.rupture.models.NoiseFamily`.
 
+    Parameters
+    ----------
+    relation : Correlation
+        ``relation``, the family's correlation lengths.
+    weight : DepthProfile
+        ``weight``, how much of the field the family is.
+    """
+
+    relation: Correlation = dataclasses.field(default_factory=Correlation)
+    weight: DepthProfile = UNMODIFIED
+    Config = _Strict
+
+
+STATIONARY = (Family(),)
+"""genslip's Mai & Beroza (2002) lengths everywhere: rake's and the perturbation's default."""
+
+GP_HYBRID = (
+    Family(
+        relation=Correlation(**dataclasses.asdict(GENSLIP_SUZUKI_2022)),
+        weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=1.0, deep=0.0),
+    ),
+    Family(weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=0.0, deep=1.0)),
+)
+"""Graves & Pitarka's hybrid as genslip v5.6.3 configures it: slip's default."""
+
+
+@dataclasses.dataclass(frozen=True)
+class Slip(DrawnSlip):
+    """``[slip]``: :class:`~rupture_generator.rupture.models.DrawnSlip`.
+
+    Parameters
+    ----------
+    noise : tuple of Family
+        ``[[slip.noise]]``, slip's noise.
+    """
+
+    noise: tuple[Family, ...] = GP_HYBRID
     Config = _Strict
 
 
@@ -268,8 +319,15 @@ class Rise(CorrelatedRise):
 
 @dataclasses.dataclass(frozen=True)
 class Rake(GaussianRake):
-    """``[rake]``: :class:`~rupture_generator.rupture.models.GaussianRake`."""
+    """``[rake]``: :class:`~rupture_generator.rupture.models.GaussianRake`.
 
+    Parameters
+    ----------
+    noise : tuple of Family
+        ``[[rake.noise]]``, rake's noise.
+    """
+
+    noise: tuple[Family, ...] = STATIONARY
     Config = _Strict
 
 
@@ -289,8 +347,16 @@ class Speed(ShearFractionSpeed):
 
 @dataclasses.dataclass(frozen=True)
 class Perturbation(CorrelatedPerturbation):
-    """``[perturbation]``: :class:`~rupture_generator.rupture.models.CorrelatedPerturbation`."""
+    """``[perturbation]``: :class:`~rupture_generator.rupture.models.CorrelatedPerturbation`.
 
+    Parameters
+    ----------
+    noise : tuple of Family, optional
+        ``[[perturbation.noise]]``, the displacement's own noise. Stationary when
+        absent.
+    """
+
+    noise: tuple[Family, ...] | None = STATIONARY
     Config = _Strict
 
 
@@ -434,14 +500,11 @@ class PerFault:
         Each segment's moment magnitude, by name.
     rakes : dict of str to float
         Each segment's mean rake in degrees, by name.
-    correlation : Correlation
-        How the slip correlation lengths follow each segment's magnitude.
     """
 
     type: Literal["per_fault"] = "per_fault"
     magnitudes: dict[str, float]
     rakes: dict[str, float]
-    correlation: Correlation = dataclasses.field(default_factory=Correlation)
     Config = _Strict
 
 
@@ -460,14 +523,11 @@ class Finite:
         The event's moment magnitude.
     rake_deg : float
         The mean rake in degrees, on every segment.
-    correlation : Correlation
-        How the slip correlation lengths follow each segment's magnitude.
     """
 
     type: Literal["finite"] = "finite"
     magnitude: float
     rake_deg: float
-    correlation: Correlation = dataclasses.field(default_factory=Correlation)
     Config = _Strict
 
 
@@ -556,8 +616,6 @@ class SegmentConfig:
         ``[segments.<name>.speed]``.
     perturbation : Perturbation, optional
         ``[segments.<name>.perturbation]``.
-    correlation : Correlation, optional
-        ``[segments.<name>.correlation]``, over the source's.
     """
 
     slip: Slip | None = None
@@ -565,7 +623,6 @@ class SegmentConfig:
     rake: Rake | None = None
     speed: Speed | None = None
     perturbation: Perturbation | None = None
-    correlation: Correlation | None = None
     Config = _Strict
 
 
@@ -680,7 +737,6 @@ def _merged(document: dict[str, Any], overrides: object) -> dict[str, Any]:
     if not isinstance(overrides, dict):
         raise RuptureGeneratorError(f"{overrides!r} is not a table")
     shared = {key: _table(document.get(key)) for key in overrides}
-    shared["correlation"] = _table(_table(document.get("source")).get("correlation"))
     return {
         key: {**shared[key], **table} if isinstance(table, dict) else table
         for key, table in overrides.items()
@@ -800,14 +856,8 @@ def _sources(
     source: PerFault | Finite,
     realisation: Realisation[Geometry],
     medium: Medium,
-    segments: dict[str, SegmentConfig],
 ) -> dict[str, SegmentSource]:
     names = set(realisation)
-    correlation = {name: source.correlation for name in realisation} | {
-        name: segment.correlation
-        for name, segment in segments.items()
-        if segment.correlation is not None
-    }
     match source:
         case PerFault():
             for what, given in (
@@ -820,9 +870,7 @@ def _sources(
                         f"{sorted(names - set(given))}, unknown {sorted(set(given) - names)}"
                     )
             return {
-                name: segment_source(
-                    source.magnitudes[name], source.rakes[name], correlation[name]
-                )
+                name: segment_source(source.magnitudes[name], source.rakes[name])
                 for name in realisation
             }
         case Finite():
@@ -830,11 +878,7 @@ def _sources(
                 moment_from_magnitude(source.magnitude), realisation, medium
             )
             return {
-                name: segment_source(
-                    magnitude_from_moment(moment_nm),
-                    source.rake_deg,
-                    correlation[name],
-                )
+                name: SegmentSource(moment_nm, source.rake_deg)
                 for name, moment_nm in shares.items()
             }
 
@@ -947,7 +991,7 @@ def build(config: RuptureConfig) -> Scenario:
             config.propagation, realisation, hypocentre, config.seed
         ),
         medium=medium,
-        sources=_sources(config.source, realisation, medium, config.segments),
+        sources=_sources(config.source, realisation, medium),
         model=_models(config, realisation),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,

@@ -8,7 +8,7 @@ import pytest
 import scipy as sp
 
 from rupture_generator import geometry_from_geojson, moment_from_magnitude
-from rupture_generator.rupture.source import segment_source
+from rupture_generator.rupture.source import MAI_BEROZA
 from rupture_generator.sampling import (
     Covariance,
     Grid,
@@ -130,7 +130,7 @@ def test_the_embedding_delivers_the_covariance_within_its_tolerances(shape, magn
     # The covariance the draws have is exactly the inverse transform of the clipped
     # spectrum, read at a grid lag h through the wrap as min(h, P - h), with no draws.
     grid = Grid(shape, (0.1, 0.1))
-    covariance = segment_source(magnitude, 90.0).covariance
+    covariance = Covariance(VonKarman(), MAI_BEROZA.lengths_km(magnitude))
     amplitudes, padded = _embed(grid, covariance)
     quadrant = sp.fft.idctn(amplitudes**2, type=1)
     wrapped = [

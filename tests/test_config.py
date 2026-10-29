@@ -6,6 +6,7 @@ import pytest
 
 from rupture_generator import RuptureGeneratorError
 from rupture_generator import config as rupture_config
+from rupture_generator.rupture.source import MAI_BEROZA
 
 from .conftest import EXAMPLE
 
@@ -39,9 +40,16 @@ def test_defaults_are_the_librarys():
         (loaded.perturbation, CorrelatedPerturbation()),
     ):
         for field in dataclasses.fields(theirs):
-            if field.name not in {"factor", "slip_weight"}:
+            if field.name not in {"factor", "slip_weight", "noise"}:
                 assert getattr(ours, field.name) == getattr(theirs, field.name)
     assert loaded.slip.side_taper == DrawnSlip().side_taper
+    for ours, theirs in zip(
+        (loaded.slip.noise, loaded.rake.noise),
+        (DrawnSlip().noise, GaussianRake().noise),
+    ):
+        assert [(dataclasses.astuple(f.relation), f.hurst) for f in ours] == [
+            (dataclasses.astuple(f.relation), f.hurst) for f in theirs
+        ]
     positions = np.zeros((2, 3))
     for profile in (rupture_config.Rise().factor, rupture_config.Speed().factor):
         np.testing.assert_array_equal(
@@ -194,6 +202,7 @@ def test_a_segment_table_overrides_the_global_one():
     assert isinstance(scenario.model, dict)
     bent, following = scenario.model["bent"], scenario.model["next"]
     assert bent.slip == loaded.slip and bent.speed == loaded.speed
+    assert isinstance(bent.slip, rupture_config.Slip)
     assert isinstance(following.slip, rupture_config.Slip)
     assert isinstance(following.speed, rupture_config.Speed)
     assert following.slip.coefficient_of_variation == 0.6
@@ -204,12 +213,8 @@ def test_a_segment_table_overrides_the_global_one():
     assert following.rise == bent.rise
     assert following.perturbation == bent.perturbation
 
-    default = rupture_config.build(rupture_config.load(EXAMPLE))
-    assert scenario.sources["bent"] == default.sources["bent"]
-    assert (
-        scenario.sources["next"].covariance.lengths_km[1]
-        > default.sources["next"].covariance.lengths_km[1]
-    )
+    (longer,) = following.slip.noise
+    assert longer.relation.lengths_km(7.0)[1] > MAI_BEROZA.lengths_km(7.0)[1]
 
 
 def test_a_profile_in_a_segment_table_replaces_the_global_one(tmp_path):

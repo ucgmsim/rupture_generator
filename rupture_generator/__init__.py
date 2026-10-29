@@ -14,9 +14,9 @@ and :func:`~rupture_generator.formats.fields.fields_to_srf` makes the SRF from t
 later.
 
 :mod:`rupture_generator.config` builds the same inputs from a TOML file, and the
-command line runs that file. :func:`rupture_generator.sampling.sampler` keeps the
-last 64 covariance embeddings, two per segment, so drawing a fault system of up to
-32 segments again reuses every one. ``sampler.cache_clear()`` releases them.
+command line runs that file. :func:`embed` keeps the last 128 noise embeddings, two
+or three per segment, so drawing a fault system again reuses every one.
+``embed.cache_clear()`` releases them.
 """
 
 from importlib.metadata import version
@@ -44,11 +44,14 @@ from rupture_generator.rupture.medium import (
     ramp_field,
 )
 from rupture_generator.rupture.models import (
+    GP_HYBRID,
+    STATIONARY,
     CorrelatedPerturbation,
     CorrelatedRise,
     Drawn,
     DrawnSlip,
     GaussianRake,
+    NoiseFamily,
     Perturbation,
     PerturbationModel,
     PulseSettings,
@@ -60,12 +63,16 @@ from rupture_generator.rupture.models import (
     SlipField,
     SlipModel,
     SpeedModel,
+    embed,
     gaussian_anamorphosis,
 )
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
+    GENSLIP_MAI_BEROZA,
+    GENSLIP_SUZUKI_2022,
     MAI_BEROZA,
+    SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
     magnitude_from_moment,
@@ -78,7 +85,12 @@ __version__ = version("rupture-generator")
 """The installed version, from the latest git tag when it was built."""
 
 __all__ = [
+    "GENSLIP_MAI_BEROZA",
+    "GENSLIP_SUZUKI_2022",
+    "GP_HYBRID",
     "MAI_BEROZA",
+    "STATIONARY",
+    "SUZUKI_2022",
     "CorrelatedPerturbation",
     "CorrelatedRise",
     "CorrelationRelation",
@@ -92,6 +104,7 @@ __all__ = [
     "JumpSeed",
     "Layers",
     "Medium",
+    "NoiseFamily",
     "Perturbation",
     "PerturbationModel",
     "PulseSettings",
@@ -110,6 +123,7 @@ __all__ = [
     "SpatialField",
     "SpeedModel",
     "constant_field",
+    "embed",
     "first_arrival",
     "gaussian_anamorphosis",
     "generate",

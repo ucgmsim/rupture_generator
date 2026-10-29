@@ -200,14 +200,14 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
             bottom_taper=srf["bot_taper"],
         ),
         rise=Rise(
-            factor=Profile(depth_km=transitions, values=[2.0, 1.0, 1.0, 2.0]),
+            factor=Profile(depth_km=tuple(transitions), values=(2.0, 1.0, 1.0, 2.0)),
             slip_weight=Ramp(centre_km=2.0, half_width_km=1.0, shallow=0.0, deep=1.0),
         ),
         speed=Speed(
             velocity_fraction=velocity["rvfrac"],
             factor=Profile(
-                depth_km=transitions,
-                values=[velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]],
+                depth_km=tuple(transitions),
+                values=(velocity["rvfrac_shal"], 1.0, 1.0, velocity["rvfrac_deep"]),
             ),
         ),
         pulse=PulseConfig(

@@ -184,7 +184,13 @@ import dataclasses
 
 import numpy as np
 
-from rupture_generator import SegmentContext, SlipField, gaussian_anamorphosis
+from rupture_generator import (
+    STATIONARY,
+    SegmentContext,
+    SlipField,
+    embed,
+    gaussian_anamorphosis,
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -197,9 +203,9 @@ class GivenSlip:
         return SlipField(
             slip_m=self.slip_m,
             latent=gaussian_anamorphosis(self.slip_m, context.geometry.occupied),
-            # The scores have no covariance of their own; the source's is the
+            # The scores have no noise of their own; the stationary one is the
             # nearest, and it is what the other models' draws use.
-            latent_covariance=context.source.covariance,
+            sampler=embed(STATIONARY, context.geometry, context.source.magnitude),
         )
 ```
 

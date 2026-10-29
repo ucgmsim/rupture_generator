@@ -20,7 +20,8 @@
 #
 # The parameters are not tuned to match the observations of this earthquake.
 #
-# The correlation relation is Mai & Beroza's, spelled out. The depth profiles' shallow
+# The noise is the default, Graves & Pitarka's hybrid. The plane lies wholly below its
+# ramp, so slip has Mai & Beroza's lengths throughout. The depth profiles' shallow
 # ramps end at 8 km and their deep ramps start at 197.5 km, so they are flat across the
 # fault.
 #
@@ -101,12 +102,6 @@ density_g_cm3 = [
 type = "finite"
 magnitude = 7.4
 rake_deg = 50.54
-
-[source.correlation]
-strike_exponent = 0.5
-strike_offset = 2.5
-dip_exponent = 0.3333
-dip_offset = 1.5
 
 [slip]
 coefficient_of_variation = 0.75

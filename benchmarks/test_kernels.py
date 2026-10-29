@@ -13,8 +13,8 @@ from rupture_generator._kernels import (
     eikonal_solve,
     synthesise_pulses,
 )
-from rupture_generator.rupture.source import segment_source
-from rupture_generator.sampling import Grid
+from rupture_generator.rupture.source import MAI_BEROZA
+from rupture_generator.sampling import Covariance, Grid, VonKarman
 from rupture_generator.sampling.field import _embed
 
 SPACING_KM = 0.1
@@ -34,7 +34,7 @@ def grid():
 
 @pytest.fixture(scope="module", params=MAGNITUDES, ids=lambda m: f"Mw{m}")
 def covariance(request):
-    return segment_source(request.param, 90.0).covariance
+    return Covariance(VonKarman(), MAI_BEROZA.lengths_km(request.param))
 
 
 def test_embed(benchmark, grid, covariance):
