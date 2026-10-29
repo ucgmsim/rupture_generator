@@ -4,10 +4,14 @@ A :class:`SegmentSource` is the part of a rupture that differs from segment to s
 A :class:`~rupture_generator.rupture.models.RuptureModel` draws the fields from
 it. The functions here derive sources from magnitudes, which is how a hazard model
 states them. A :class:`CorrelationRelation` gives a model's noise its lengths at a
-segment's magnitude.
+segment's magnitude. :func:`split_moment` shares one magnitude for a whole event between
+its segments, by Bradley & Faulkner's apportionment.
 
 References
 ----------
+Bradley, B. A., & Faulkner, J. A. M. A kinematic rupture generator for multi-segment
+fault geometries. Manuscript in preparation.
+
 Hanks, T. C., & Kanamori, H. (1979). A moment magnitude scale. *Journal of Geophysical
 Research*, 84(B5), 2348-2350.
 
@@ -20,9 +24,11 @@ Seismological Society of America*, 112(4), 1853-1870.
 """
 
 import dataclasses
+import itertools
 import math
 
 import numpy as np
+import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import Geometry
@@ -210,13 +216,176 @@ def segment_source(magnitude: float, rake_deg: float) -> SegmentSource:
     return SegmentSource(moment_from_magnitude(magnitude), rake_deg)
 
 
-def split_moment(
-    moment_nm: float, realisation: Realisation[Geometry], medium: Medium
-) -> dict[str, float]:
-    """Share one event's moment between its segments.
+COMPONENT_SEPARATION_KM = 5.0
+"""Two segments closer than this below :data:`COMPONENT_DEPTH_KM` may share a component."""
 
-    Each segment's share is in proportion to ``sum(mu * A)`` over its fault cells,
-    which is what one mean slip across the whole event would give it.
+COMPONENT_DIP_DELTA_DEG = 20.0
+"""Two segments whose dips differ by this much or more are never in one component."""
+
+COMPONENT_DEPTH_KM = 5.0
+"""The depth below which a component's separation is measured, in kilometres."""
+
+MOMENT_SIGMA_LN = 0.85
+"""The standard deviation of a component's moment about its share, natural-log units.
+
+Bradley & Faulkner calibrate it from 238 components of 54 multi-component SRCMOD
+ruptures, as the spread of ``ln(M_c / M_T)`` about the share of the rule in
+:func:`split_moment`, each rupture's residuals centred. It shows no dependence on the
+component's share of the area.
+"""
+
+
+def _occupied_nodes(chart: Geometry) -> np.ndarray:
+    """Flag the nodes that are a corner of at least one fault cell, ``(n_i+1, n_j+1)``."""
+    occupied = chart.occupied
+    nodes = np.zeros((occupied.shape[0] + 1, occupied.shape[1] + 1), dtype=bool)
+    for rows, columns in itertools.product((slice(None, -1), slice(1, None)), repeat=2):
+        nodes[rows, columns] |= occupied
+    return nodes
+
+
+def _points_beneath(chart: Geometry, depth_km: float) -> np.ndarray:
+    """Sample a chart's fault at and below a depth, ``(n, 3)`` positions in kilometres.
+
+    The samples are the fault's nodes below ``depth_km``, and the point where each
+    down-dip edge of a fault cell crosses ``depth_km``. The second set covers a cut-off
+    that falls between two rows of nodes.
+    """
+    nodes = chart.nodes
+    depth = nodes[..., 2]
+    below = nodes[_occupied_nodes(chart) & (depth >= depth_km)]
+    occupied = chart.occupied
+    # A down-dip edge is a fault edge if a fault cell lies on either side of it.
+    edge = np.zeros((occupied.shape[0], occupied.shape[1] + 1), dtype=bool)
+    edge[:, :-1] |= occupied
+    edge[:, 1:] |= occupied
+    upper, lower = depth[:-1], depth[1:]
+    crossing = edge & ((upper - depth_km) * (lower - depth_km) < 0.0)
+    fraction = (depth_km - upper[crossing]) / (lower[crossing] - upper[crossing])
+    cut = nodes[:-1][crossing] + fraction[:, None] * (
+        nodes[1:][crossing] - nodes[:-1][crossing]
+    )
+    return np.concatenate([below, cut])
+
+
+def _separation_km(
+    a: Geometry, b: Geometry, depth_km: float, within_km: float
+) -> float:
+    """The distance between the closest points of two charts' faults below a depth.
+
+    It caps the depth at 99% of the shallower chart's bottom, so a segment that stops
+    short of ``depth_km`` still has its deepest part to measure from. A separation of
+    ``within_km`` or more comes back as infinite, since a caller asks only whether the
+    two are closer than that.
+    """
+    bottom_km = min(
+        float(chart.nodes[..., 2][_occupied_nodes(chart)].max()) for chart in (a, b)
+    )
+    depth_km = min(depth_km, 0.99 * bottom_km)
+    points_a, points_b = _points_beneath(a, depth_km), _points_beneath(b, depth_km)
+    # Only points of a inside b's bounding box, grown by `within_km`, can lie that close
+    # to b. On a long fault they're a small fraction of it.
+    near = np.all(
+        (points_a > points_b.min(axis=0) - within_km)
+        & (points_a < points_b.max(axis=0) + within_km),
+        axis=1,
+    )
+    if not near.any():
+        return math.inf
+    distance_km = sp.spatial.cKDTree(points_b).query(
+        points_a[near], distance_upper_bound=within_km
+    )[0]
+    return float(distance_km.min())
+
+
+def _mean_dip_deg(chart: Geometry) -> float:
+    """The area-weighted mean dip of a chart's fault cells, in degrees."""
+    areas = chart.areas_km2[chart.occupied]
+    return float(np.sum(chart.dip_deg[chart.occupied] * areas) / np.sum(areas))
+
+
+def moment_components(
+    realisation: Realisation[Geometry],
+    *,
+    separation_km: float = COMPONENT_SEPARATION_KM,
+    dip_delta_deg: float = COMPONENT_DIP_DELTA_DEG,
+    depth_km: float = COMPONENT_DEPTH_KM,
+) -> list[tuple[str, ...]]:
+    """Group a fault system's segments into the components that share moment.
+
+    Segments join when the closest points of their faults below ``depth_km`` lie less
+    than ``separation_km`` apart, and their mean dips differ by less than
+    ``dip_delta_deg``. A component is a connected group of joined segments, so two
+    segments can share one through a third that joins both. Strike plays no part.
+
+    The rule is the one Bradley & Faulkner's moment partitioning uses, ported to charts
+    from ``find_connected_faults`` in the ``source_modelling`` package, without
+    depending on it. For a segment that stops short of ``depth_km``, the measurement
+    starts at 99% of its own bottom depth, or of its neighbour's if that's shallower.
+    The dip is the area-weighted mean over the fault cells, and the comparison takes
+    the plain difference of two dips, so two segments of equal dip and opposite dip
+    direction can join.
+
+    Parameters
+    ----------
+    realisation : Realisation of Geometry
+        The segments to group.
+    separation_km : float
+        The separation, in kilometres, below which two segments can join.
+    dip_delta_deg : float
+        The difference in dip, in degrees, below which two segments can join.
+    depth_km : float
+        The depth, in kilometres, below which the separation counts.
+
+    Returns
+    -------
+    list of tuple of str
+        Each component's segment names, in the realisation's order. The components are
+        in order of their alphabetically first segment, so the list's order doesn't
+        depend on the realisation's.
+    """
+    names = list(realisation)
+    dips = {name: _mean_dip_deg(realisation[name]) for name in names}
+    joined = sp.cluster.hierarchy.DisjointSet(names)
+    for a, b in itertools.combinations(names, 2):
+        # The dip test is cheap, so it goes first, and segments already joined skip both.
+        if abs(dips[a] - dips[b]) >= dip_delta_deg or joined.connected(a, b):
+            continue
+        if (
+            _separation_km(realisation[a], realisation[b], depth_km, separation_km)
+            < separation_km
+        ):
+            joined.merge(a, b)
+    components = [
+        tuple(name for name in names if name in subset) for subset in joined.subsets()
+    ]
+    return sorted(components, key=min)
+
+
+def split_moment(
+    moment_nm: float,
+    realisation: Realisation[Geometry],
+    medium: Medium,
+    *,
+    sigma_ln: float = 0.0,
+    rng: np.random.Generator | None = None,
+) -> dict[str, float]:
+    """Share one event's moment between its segments, by Bradley & Faulkner's rule.
+
+    The segments group into components (:func:`moment_components`). A component ``c``
+    takes the share :math:`\\mu_c A_c^{3/2} / \\sum_{c'} \\mu_{c'} A_{c'}^{3/2}` of the
+    moment, where :math:`A_c` is its fault area and :math:`\\mu_c A_c` the sum of
+    ``mu * A`` over its fault cells. Within a component, each segment's share is in
+    proportion to ``sum(mu * A)`` over its fault cells. Every segment of a component
+    then has one mean slip, however the segments divide the component. With one
+    component the rule is one mean slip across the whole event.
+
+    With a positive ``sigma_ln``, a factor :math:`e^{\\varepsilon_c}`,
+    :math:`\\varepsilon_c \\sim N(0, \\sigma^2)` independent for each component,
+    multiplies each component's moment, and the components rescale to ``moment_nm``.
+    The shares within a component don't change, so every segment of a component still
+    has one mean slip, and no segment's moment can reach zero. The draws go to the
+    components in their order from :func:`moment_components`.
 
     Parameters
     ----------
@@ -226,35 +395,88 @@ def split_moment(
         The segments to share it between.
     medium : Medium
         The rock, which sets each cell's rigidity.
+    sigma_ln : float
+        The standard deviation of each component's moment about its share, in
+        natural-log units. Zero gives the rule's own shares.
+    rng : numpy.random.Generator, optional
+        The generator to draw each component's departure from. Needed for a positive
+        ``sigma_ln``.
 
     Returns
     -------
     dict of str to float
         Each segment's moment in newton-metres, by name. The shares sum to
         ``moment_nm``.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If ``sigma_ln`` is negative or not finite, or positive with no ``rng``.
+
+    Notes
+    -----
+    Bradley & Faulkner set out the rule in section 5.2, show in Supplement S2.3 that
+    only an exponent of one within a component leaves the mean slip independent of
+    how the segments divide it, give the rigidity-weighted form in S2.4, and calibrate
+    the departures in S2.6.
     """
-    weights = {
-        name: float(
+    if not (math.isfinite(sigma_ln) and sigma_ln >= 0.0):
+        raise RuptureGeneratorError(
+            f"a moment's standard deviation is a non-negative number, got {sigma_ln}"
+        )
+    if sigma_ln > 0.0 and rng is None:
+        raise RuptureGeneratorError(
+            "a moment shared with a standard deviation needs a generator to draw from"
+        )
+    weights, areas = {}, {}
+    for name, chart in realisation.items():
+        weights[name] = float(
             np.sum(
                 (medium.rigidity_pa(chart.centres) * chart.areas_km2)[chart.occupied]
             )
         )
-        for name, chart in realisation.items()
-    }
-    total = sum(weights.values())
-    return {name: moment_nm * weight / total for name, weight in weights.items()}
+        areas[name] = float(np.sum(chart.areas_km2[chart.occupied]))
+    components = moment_components(realisation)
+    component_weights = [sum(weights[name] for name in names) for names in components]
+    if len(components) == 1:
+        # The whole moment, exactly, so one component shares as one mean slip does.
+        component_moments = [moment_nm]
+    else:
+        scaled = [
+            weight * math.sqrt(sum(areas[name] for name in names))
+            for names, weight in zip(components, component_weights, strict=True)
+        ]
+        if sigma_ln > 0.0:
+            assert rng is not None
+            departures = np.exp(rng.normal(0.0, sigma_ln, len(components)))
+            scaled = [float(s * d) for s, d in zip(scaled, departures, strict=True)]
+        total = sum(scaled)
+        component_moments = [moment_nm * share / total for share in scaled]
+    shares = {}
+    for names, component_nm, component_weight in zip(
+        components, component_moments, component_weights, strict=True
+    ):
+        for name in names:
+            shares[name] = component_nm * weights[name] / component_weight
+    # In the realisation's order, as the segments are everywhere else.
+    return {name: shares[name] for name in realisation}
 
 
 __all__ = [
+    "COMPONENT_DEPTH_KM",
+    "COMPONENT_DIP_DELTA_DEG",
+    "COMPONENT_SEPARATION_KM",
     "CYCLES_OFFSET",
     "GENSLIP_MAI_BEROZA",
     "GENSLIP_SUZUKI_2022",
     "MAI_BEROZA",
+    "MOMENT_SIGMA_LN",
     "SUZUKI_2022",
     "CorrelationRelation",
     "SegmentSource",
     "as_genslip",
     "magnitude_from_moment",
+    "moment_components",
     "moment_from_magnitude",
     "segment_source",
     "split_moment",

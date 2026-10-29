@@ -47,7 +47,7 @@ from rupture_generator.geometry import (
     geometry_from_geojson,
     projected_crs,
 )
-from rupture_generator.rupture.generator import check_seed
+from rupture_generator.rupture.generator import check_seed, moment_rng
 from rupture_generator.rupture.medium import (
     Layers,
     Medium,
@@ -73,6 +73,7 @@ from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
     GENSLIP_MAI_BEROZA,
     GENSLIP_SUZUKI_2022,
+    MOMENT_SIGMA_LN,
     CorrelationRelation,
     SegmentSource,
     moment_from_magnitude,
@@ -509,6 +510,51 @@ class PerFault:
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
+class ReferenceApportionment:
+    """Each component's moment its share by area and rigidity, the same every draw.
+
+    Parameters
+    ----------
+    type : {"reference"}
+        The apportionment's kind.
+    """
+
+    type: Literal["reference"] = "reference"
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class SampledApportionment:
+    """Each component's moment drawn about its share, lognormally, from the seed.
+
+    Parameters
+    ----------
+    type : {"sampled"}
+        The apportionment's kind.
+    sigma_ln : float
+        The standard deviation of each component's moment about its share, in
+        natural-log units. Bradley & Faulkner's calibration when absent.
+    """
+
+    type: Literal["sampled"] = "sampled"
+    sigma_ln: float = MOMENT_SIGMA_LN
+    Config = _Strict
+
+    def __post_init__(self) -> None:
+        """Refuse a standard deviation that isn't a non-negative number."""
+        if not (np.isfinite(self.sigma_ln) and self.sigma_ln >= 0.0):
+            raise RuptureGeneratorError(
+                f"sigma_ln is a non-negative number, got {self.sigma_ln}"
+            )
+
+
+type ApportionmentConfig = Annotated[
+    ReferenceApportionment | SampledApportionment,
+    Discriminator(field="type", include_supertypes=True),
+]
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class Finite:
     """One magnitude and rake for the whole event.
 
@@ -523,11 +569,15 @@ class Finite:
         The event's moment magnitude.
     rake_deg : float
         The mean rake in degrees, on every segment.
+    apportionment : ReferenceApportionment or SampledApportionment
+        ``[source.apportionment]``, how the moment shares between components.
+        ``reference`` when absent.
     """
 
     type: Literal["finite"] = "finite"
     magnitude: float
     rake_deg: float
+    apportionment: ApportionmentConfig = ReferenceApportionment()
     Config = _Strict
 
 
@@ -856,6 +906,7 @@ def _sources(
     source: PerFault | Finite,
     realisation: Realisation[Geometry],
     medium: Medium,
+    seed: int,
 ) -> dict[str, SegmentSource]:
     names = set(realisation)
     match source:
@@ -874,9 +925,19 @@ def _sources(
                 for name in realisation
             }
         case Finite():
-            shares = split_moment(
-                moment_from_magnitude(source.magnitude), realisation, medium
-            )
+            match source.apportionment:
+                case ReferenceApportionment():
+                    shares = split_moment(
+                        moment_from_magnitude(source.magnitude), realisation, medium
+                    )
+                case SampledApportionment():
+                    shares = split_moment(
+                        moment_from_magnitude(source.magnitude),
+                        realisation,
+                        medium,
+                        sigma_ln=source.apportionment.sigma_ln,
+                        rng=moment_rng(seed),
+                    )
             return {
                 name: SegmentSource(moment_nm, source.rake_deg)
                 for name, moment_nm in shares.items()
@@ -991,7 +1052,7 @@ def build(config: RuptureConfig) -> Scenario:
             config.propagation, realisation, hypocentre, config.seed
         ),
         medium=medium,
-        sources=_sources(config.source, realisation, medium),
+        sources=_sources(config.source, realisation, medium, config.seed),
         model=_models(config, realisation),
         jump_model=(Jump() if config.propagation is None else config.propagation.model),
         seed=config.seed,

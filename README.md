@@ -114,7 +114,7 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 | `[geometry]`                                              | Path to GeoJSON source definition, its projected CRS, and the grid spacing.                                                                   |
 | `[hypocentre]`                                            | Location of hypocentre.                                                                                                                       |
 | `[medium]`                                                | A 1-D velocity model: layer bottoms, shear speed, density. More complex media (e.g. 3D velocity models) are expressed through the python API. |
-| `[source]`                                                | `per_fault` magnitudes and rakes, or one `finite` magnitude split.                                                                            |
+| `[source]`                                                | `per_fault` magnitudes and rakes, or one `finite` magnitude shared between components (see below).                                            |
 | `[propagation]`                                           | Which fault triggers which: `predetermined`, `sampled`, `likeliest`.                                                                          |
 | `[slip]`, `[rise]`, `[rake]`, `[speed]`, `[perturbation]` | Each field model's settings.                                                                                                                  |
 | `[pulse]`                                                 | Slip-rate sampling and shape parameters.                                                                                                      |
@@ -122,6 +122,34 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 
 Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
 or `profile` tables.
+
+A `finite` source shares its moment between segments by the apportionment of Bradley
+& Faulkner, *A kinematic rupture generator for multi-segment fault geometries*.
+Segments group into components: two segments join when their faults come within 5 km
+of each other below 5 km depth and their dips differ by less than 20°, and a chain of
+joined segments forms one component. A component's share of the moment goes as
+`μ_c A_c^(3/2)`, its rigidity-weighted area times the square root of its area. Within
+a component, each segment's share goes as its own `μA`, so every segment of a
+component has the same mean slip. An event of one component gets one mean slip
+across all its segments.
+
+```toml
+[source]
+type = "finite"
+magnitude = 7.8
+rake_deg = 175.0
+
+# Left out, the apportionment is `reference`: the shares above, the same every run.
+[source.apportionment]
+type = "sampled"  # each component's moment drawn about its share from the seed
+sigma_ln = 0.85   # its standard deviation in natural-log units, the default
+```
+
+The `sampled` apportionment multiplies each component's moment by a log-normal factor
+and rescales the components to the event's moment. The shares within a component stay
+fixed, so the mean slip within a component stays the same and no segment's moment can
+reach zero. The draw has its own stream from the seed, so it leaves the random numbers
+of every other draw, such as a `sampled` propagation's tree, as they were.
 
 `[rise]` follows genslip v5.6.3. The mean rise time is `slip_coefficient` (1.1 s/m)
 times the mean slip, with Graves & Pitarka's dip-and-rake correction, and rise time is
