@@ -236,6 +236,95 @@ def test_a_reach_is_conditioned_on_the_gap_it_crossed(nearest_km):
         assert reaches.mean() == pytest.approx(floor + model.d0_km, rel=0.1)
 
 
+@pytest.mark.parametrize("nearest_km", [0.0, 0.5, 4.0, 13.0, 40.0])
+def test_a_reference_reach_is_the_mean_and_draws_nothing(nearest_km):
+    model = JumpModel(reach="reference")
+    rng = np.random.default_rng(1)
+    state = rng.bit_generator.state
+    reach_km = model.reach_km(nearest_km, rng)
+    assert rng.bit_generator.state == state
+    floor = max(model.delta_km, nearest_km)
+    assert reach_km == min(floor + model.d0_km, max(model.max_jump_km, nearest_km))
+
+
+def test_a_reference_reach_is_the_mean_of_the_sampled_one():
+    sampled = JumpModel(max_jump_km=1e6)
+    reference = dataclasses.replace(sampled, reach="reference")
+    rng = np.random.default_rng(2)
+    reaches = [sampled.reach_km(4.0, rng) for _ in range(20000)]
+    assert reference.reach_km(4.0, rng) == pytest.approx(np.mean(reaches), rel=0.02)
+
+
+def _jumping_with(seed):
+    """A jump rule that draws from its own seed, in place of the jump stream's."""
+
+    def rule(parent, child, medium, model, _):
+        return first_arrival(parent, child, medium, model, np.random.default_rng(seed))
+
+    return rule
+
+
+def test_a_reference_jump_is_the_same_whatever_its_generator(scenario):
+    model = JumpModel(reach="reference")
+    drawn = [
+        generate(
+            scenario.realisation,
+            scenario.medium,
+            scenario.sources,
+            scenario.model,
+            seed=scenario.seed,
+            jump_rule=_jumping_with(seed),
+            jump_propagation_model=model,
+        )
+        for seed in range(4)
+    ]
+    for name in scenario.realisation:
+        for other in drawn[1:]:
+            for field in FIELDS:
+                assert np.array_equal(
+                    getattr(drawn[0][name], field), getattr(other[name], field)
+                )
+
+
+def test_a_reference_jump_lands_at_the_first_arrival_within_the_mean_reach(
+    scenario, ruptures
+):
+    drawn, child = _first_jump(scenario, ruptures)
+    model = JumpModel(reach="reference")
+    landings, departures, gap_km = child.nearest_cells_to(drawn.geometry)
+    reach_km = model.reach_km(float(gap_km.min()), np.random.default_rng(0))
+    seeds = {
+        first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(k))
+        for k in range(10)
+    }
+    assert len(seeds) == 1
+    # The same generators move a sampled jump, so the test has something to fix.
+    sampled = {
+        first_arrival(
+            drawn, child, scenario.medium, JumpModel(), np.random.default_rng(k)
+        )
+        for k in range(10)
+    }
+    assert len(sampled) > 1
+    arrival_s = drawn.onset_s[departures] + scenario.medium.crossing_time_s(
+        drawn.geometry.centres[departures], child.centres[landings]
+    )
+    assert seeds.pop().time_s == float(arrival_s[gap_km <= reach_km].min())
+
+
+def test_the_default_reach_draws_as_before():
+    # By default a model draws the same distance it drew before it had a choice.
+    model = JumpModel()
+    assert model.reach == "sampled"
+    for nearest_km in (0.0, 4.0, 40.0):
+        exponential = np.random.default_rng(5).exponential(model.d0_km)
+        before = min(
+            max(model.delta_km, nearest_km) + exponential,
+            max(model.max_jump_km, nearest_km),
+        )
+        assert model.reach_km(nearest_km, np.random.default_rng(5)) == before
+
+
 def test_each_rupture_keeps_the_rock_it_read(scenario, ruptures):
     for rupture in ruptures.values():
         centres = rupture.geometry.centres

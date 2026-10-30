@@ -314,6 +314,11 @@ def test_a_segment_table_for_no_segment_is_refused(tmp_path):
         ("dt_s = 0.005", "dt_s = -1.0", "pulse: a sample interval of -1.0 s is none"),
         ("seed = 7\n", "seed = 7\nsegments = 3\n", "segments: 3 is not a table"),
         (
+            'type = "sampled"\n',
+            'type = "sampled"\n\n[propagation.model]\nreach = "mean"\n',
+            "propagation.model.reach: 'mean' is not 'sampled' or 'reference'",
+        ),
+        (
             "seed = 7\n",
             "seed = 7\nsegments = { next = 3 }\n",
             "segments.next: 3 is not a table",
@@ -362,3 +367,26 @@ def test_a_predetermined_tree_is_the_one_given():
         name: parent for name, parent, _ in scenario.realisation.in_causal_order()
     }
     assert parents == {"bent": None, "next": "bent"}
+
+
+def test_a_reference_reach_reaches_the_jump_model(tmp_path):
+    path = tmp_path / "reference.toml"
+    path.write_text(
+        BASE.replace(
+            'type = "sampled"\n',
+            'type = "sampled"\n\n[propagation.model]\nreach = "reference"\n',
+        ).replace("two_faults.geojson", str(EXAMPLE.with_name("two_faults.geojson")))
+    )
+    loaded = rupture_config.load(path)
+    assert loaded.propagation is not None
+    assert loaded.propagation.model.reach == "reference"
+    again = tmp_path / "again.toml"
+    again.write_text(rupture_config.dump(loaded))
+    assert rupture_config.load(again) == loaded
+    assert rupture_config.build(loaded).jump_model.reach == "reference"
+
+
+def test_the_reach_is_sampled_by_default():
+    propagation = rupture_config.load(EXAMPLE).propagation
+    assert propagation is not None
+    assert propagation.model.reach == "sampled"

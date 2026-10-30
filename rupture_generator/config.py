@@ -25,7 +25,7 @@ filled in, which records what a run used.
 import dataclasses
 import tomllib
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 import numpy as np
 from mashumaro.codecs import BasicDecoder
@@ -113,7 +113,9 @@ class Jump(JumpModel):
     """A propagation's ``model`` table, Shaw & Dieterich (2007) when absent.
 
     When the file doesn't give a tree, the model picks one. It also sets the distance each
-    jump can cover.
+    jump can cover. ``reach = "reference"`` takes that distance's mean in place of a draw,
+    so where and when each fault starts follows from its parent's rupture alone. The tree
+    a model picks is the same under either reach.
     """
 
     Config = _Strict
@@ -708,6 +710,12 @@ def _describe(error: Exception, within: str | None = None) -> RuptureGeneratorEr
                     f"has no variant with {link.discriminator_name} = "
                     f"{link.discriminator_value!r}"
                 )
+                break
+            case InvalidFieldValue() if get_origin(link.field_type) is Literal:
+                # Mashumaro's own reason for a value outside a Literal is the value.
+                path.append(link.field_name)
+                choices = " or ".join(map(repr, get_args(link.field_type)))
+                reason = f"{link.field_value!r} is not {choices}"
                 break
             case InvalidFieldValue():
                 path.append(link.field_name)
