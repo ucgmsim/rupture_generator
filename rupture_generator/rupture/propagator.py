@@ -30,6 +30,7 @@ time. *Proceedings of the Twenty-Eighth ACM Symposium on Theory of Computing*, 2
 
 import dataclasses
 import itertools
+from typing import Literal
 
 import numpy as np
 import scipy as sp
@@ -63,6 +64,13 @@ class JumpModel:
     faults that are close but don't intersect, it can cut through the wedge of rock
     between them rather than leave at an edge.
 
+    ``reach`` sets how :meth:`reach_km` finds the widest gap a jump crosses, and with
+    it where and when each child starts. ``"sampled"`` draws it, and the start is one
+    sample among many. ``"reference"`` takes the mean of that draw and uses no
+    generator. A fixed tree then gives one reference rupture. The tree itself doesn't
+    depend on ``reach``: :meth:`probability`, :func:`sample_path` and
+    :func:`likeliest_path` read the same jump probabilities under either.
+
     Attributes
     ----------
     d0_km : float
@@ -76,6 +84,8 @@ class JumpModel:
         The largest probability an edge may have, in ``(0, 1)``.
     interior : bool
         Measure gaps between any cells of two faults, not only their edge cells.
+    reach : {"sampled", "reference"}
+        Draw the widest gap a jump crosses, or take its mean.
     """
 
     d0_km: float = 3.0
@@ -83,6 +93,7 @@ class JumpModel:
     max_jump_km: float = 15.0
     probability_cap: float = 0.99
     interior: bool = False
+    reach: Literal["sampled", "reference"] = "sampled"
 
     def __post_init__(self) -> None:
         """Refuse parameters that make the model meaningless."""
@@ -103,6 +114,10 @@ class JumpModel:
             raise RuptureGeneratorError(
                 f"the probability cap lies in (0, 1), got {self.probability_cap}; at 1 "
                 "the sampler's weights are infinite"
+            )
+        if self.reach not in ("sampled", "reference"):
+            raise RuptureGeneratorError(
+                f"a reach is 'sampled' or 'reference', got {self.reach!r}"
             )
 
     def probability(self, distance_km: float) -> float:
@@ -130,29 +145,36 @@ class JumpModel:
         return float(min(decay, self.probability_cap))
 
     def reach_km(self, nearest_km: float, rng: np.random.Generator) -> float:
-        """Draw the widest gap a rupture that did jump can cross.
+        """Find the widest gap a rupture that did jump can cross.
 
         Read :meth:`probability` as a survival function: ``P(d)`` is the chance a
         rupture crosses a gap of at least ``d``, so the widest gap it crosses is
         ``delta_km`` plus an exponential of mean ``d0_km``. The tree says the rupture
         crossed the nearest gap, ``nearest_km``. The exponential has no memory, so
         with that crossing known the distance is the gap (or ``delta_km``, if wider)
-        plus a fresh exponential. This method caps the draw at ``max_jump_km``, but
+        plus a fresh exponential. This method caps the result at ``max_jump_km``, but
         never below the gap the rupture crossed.
+
+        A ``"sampled"`` reach draws the exponential from ``rng``. A ``"reference"``
+        reach takes its mean, ``d0_km``, and leaves ``rng`` untouched.
 
         Parameters
         ----------
         nearest_km : float
             The narrowest gap between the parent and the child, in kilometres.
         rng : numpy.random.Generator
-            The generator the exponential comes from.
+            The generator the exponential comes from. A ``"reference"`` reach doesn't
+            draw from it.
 
         Returns
         -------
         float
             The widest gap the jump can cross, in kilometres.
         """
-        reach = max(self.delta_km, nearest_km) + rng.exponential(self.d0_km)
+        beyond_km = (
+            self.d0_km if self.reach == "reference" else rng.exponential(self.d0_km)
+        )
+        reach = max(self.delta_km, nearest_km) + beyond_km
         return float(min(reach, max(self.max_jump_km, nearest_km)))
 
 

@@ -412,6 +412,13 @@ def first_arrival(
 ) -> JumpSeed:
     """Find where and when the front crosses from a drawn parent onto a child.
 
+    The front can cross between any pair of parent and child cells no farther apart
+    than :meth:`JumpModel.reach_km`, and the child starts at the pair with the earliest
+    arrival. A ``"sampled"`` model draws that distance from ``rng``. A ``"reference"``
+    model takes its mean and draws nothing. The start then depends only on the parent's
+    onsets and the medium. :func:`generate` gives each jump a generator of its own,
+    which draws nothing else.
+
     Parameters
     ----------
     parent : SegmentRupture
@@ -421,10 +428,10 @@ def first_arrival(
     medium : Medium
         The rock between the two, which sets the crossing time.
     model : JumpModel
-        How far a jump can land, and whether it pairs interior cells as well as edge
-        cells.
+        How far a jump can land, whether it draws that distance or takes its mean, and
+        whether it pairs interior cells as well as edge cells.
     rng : numpy.random.Generator
-        The jump's own generator.
+        The jump's own generator. A ``"reference"`` reach doesn't draw from it.
 
     Returns
     -------
@@ -482,7 +489,7 @@ def generate(
     jump_rule : JumpRule
         How to find a child's seed from its parent.
     jump_propagation_model : JumpModel
-        How far a jump can land.
+        How far a jump can land, drawn or its mean.
 
     Returns
     -------

@@ -47,6 +47,7 @@ def _far_copy(geometry, offset_km):
         ({"delta_km": -1.0}, "no sign"),
         ({"max_jump_km": 0.0}, "nothing can jump"),
         ({"probability_cap": 1.0}, "probability cap"),
+        ({"reach": "mean"}, "a reach is 'sampled' or 'reference'"),
     ],
 )
 def test_a_model_no_gap_answers_to_is_refused(kwargs, message):
@@ -169,3 +170,18 @@ def test_an_interior_jump_starts_the_splay_where_it_meets_the_interface(
     # The splay's bottom row lies on the interface.
     assert seeds[True].cell[0] == splayed["splay"].cells[0] - 1
     assert seeds[True].time_s < seeds[False].time_s
+
+
+@pytest.mark.parametrize("pick", ["likeliest", "sampled"])
+def test_the_reach_never_changes_the_tree(unpropagated, hypocentre, pick):
+    trees = []
+    for reach in ("sampled", "reference"):
+        model = JumpModel(reach=reach)
+        if pick == "likeliest":
+            realisation = likeliest_path(unpropagated, hypocentre, model=model)
+        else:
+            realisation = sample_path(
+                unpropagated, hypocentre, rng=np.random.default_rng(3), model=model
+            )
+        trees.append(realisation.tree)
+    assert trees[0] == trees[1]
