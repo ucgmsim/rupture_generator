@@ -150,6 +150,29 @@ and rescales the components to the event's moment. The shares within a component
 fixed, so the mean slip within a component stays the same and no segment's moment can
 reach zero. The draw has its own stream from the seed, so it leaves the random numbers
 of every other draw, such as a `sampled` propagation's tree, as they were.
+`[propagation.model]` is the jump model (Shaw & Dieterich, 2007). The model gives
+every gap a probability that the rupture jumps it, which picks a `sampled` or
+`likeliest` tree. It also sets the widest gap each jump can cross. Among the pairs of
+parent and child cells no farther apart than that, the child starts at the one the
+front gets to first. By default the generator draws this distance from the seed
+(`reach = "sampled"`). With `reach = "reference"` the distance is the draw's mean,
+`max(delta_km, gap) + d0_km`, capped at `max_jump_km`. Each child then starts at one
+place given its parent's rupture, which suits a reference scenario on a predetermined
+tree:
+
+```toml
+[propagation]
+type = "predetermined"
+
+[propagation.parents]
+next = "bent"
+
+[propagation.model]
+reach = "reference"
+```
+
+The `reach` key changes only where and when each child starts, never which tree a
+model picks.
 
 `[rise]` follows genslip v5.6.3. The mean rise time is `slip_coefficient` (1.1 s/m)
 times the mean slip, with Graves & Pitarka's dip-and-rake correction, and rise time is
