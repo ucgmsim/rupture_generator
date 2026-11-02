@@ -330,3 +330,47 @@ class Geometry:
             )
         distance_km, nearest = theirs.query(mine.data)
         return here, (there[0][nearest], there[1][nearest]), distance_km
+
+    def cells_within(
+        self, other: "Geometry", radius_km: float, *, interior: bool = False
+    ) -> tuple[CellSelection, CellSelection, np.ndarray]:
+        """Pair this chart's edge cells with every edge cell of another within a radius.
+
+        Unlike :meth:`nearest_cells_to`, a cell here can pair with many cells of
+        ``other``, or with none.
+
+        Parameters
+        ----------
+        other : Geometry
+            The chart to search.
+        radius_km : float
+            The farthest apart a pair's centres can be, in kilometres.
+        interior : bool
+            Pair every fault cell on both charts, not only edge cells. Intersecting
+            faults meet away from their edges.
+
+        Returns
+        -------
+        tuple[CellSelection, CellSelection, np.ndarray]
+            This chart's cell in each pair, the cell of ``other`` in it, and the
+            straight-line distance between the two in kilometres, as parallel arrays.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If either chart has no fault cells.
+        """
+        (here, mine), (there, theirs) = (
+            (self._fault, other._fault) if interior else (self._edge, other._edge)
+        )
+        if here[0].size == 0 or there[0].size == 0:
+            raise RuptureGeneratorError(
+                "a distance between charts needs fault on both sides, and one of these "
+                "charts is entirely unoccupied"
+            )
+        pairs = mine.sparse_distance_matrix(theirs, radius_km, output_type="ndarray")
+        return (
+            (here[0][pairs["i"]], here[1][pairs["i"]]),
+            (there[0][pairs["j"]], there[1][pairs["j"]]),
+            pairs["v"],
+        )

@@ -468,14 +468,26 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    landings, departures, gap_km = child.nearest_cells_to(
+    nearest, nearest_from, gap_km = child.nearest_cells_to(
         parent.geometry, interior=model.interior
     )
     reach_km = model.reach_km(float(gap_km.min()), rng)
+    within, within_from, _ = child.cells_within(
+        parent.geometry, reach_km, interior=model.interior
+    )
+    # The nearest pairs within reach come along too. The reach is never below the
+    # narrowest gap, but the two searches can round that gap differently.
+    crossing = gap_km <= reach_km
+    landings = tuple(
+        np.concatenate([a, b[crossing]]) for a, b in zip(within, nearest, strict=True)
+    )
+    departures = tuple(
+        np.concatenate([a, b[crossing]])
+        for a, b in zip(within_from, nearest_from, strict=True)
+    )
     arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
         parent.geometry.centres[departures], child.centres[landings]
     )
-    arrival_s = np.where(gap_km <= reach_km, arrival_s, np.inf)
     first = int(np.argmin(arrival_s))
     return JumpSeed(
         cell=(int(landings[0][first]), int(landings[1][first])),
