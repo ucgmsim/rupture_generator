@@ -314,6 +314,17 @@ def test_a_fault_system_is_a_collection_of_sections(document):
             "not finite",
         ),
         (lambda: ramp_field(2.0, 0.0, 1.0, 2.0), "is a step"),
+        (lambda: Layers(np.array([1.0, np.nan, 10.0])), "not all finite"),
+        (lambda: Layers(np.array([np.nan])), "not all finite"),
+        (lambda: Layers(np.array([1.0, np.inf])), "not all finite"),
+        (
+            lambda: interpolated_field(
+                np.array([1.0, np.nan, 10.0]), np.array([1.0, 2.0, 3.0])
+            ),
+            "not all finite",
+        ),
+        (lambda: ramp_field(5.0, np.inf, 1.0, 2.0), "not all finite"),
+        (lambda: ramp_field(np.nan, 1.0, 1.0, 2.0), "not all finite"),
     ],
 )
 def test_a_medium_or_profile_that_is_no_model_is_refused(build, message):

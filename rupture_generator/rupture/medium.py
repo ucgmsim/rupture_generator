@@ -178,7 +178,7 @@ def constant_field(value: float) -> SpatialField:
 
 
 def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
-    """Depths as a non-empty, strictly increasing 1-D array.
+    """Depths as a non-empty, finite, strictly increasing 1-D array.
 
     Raises
     ------
@@ -191,6 +191,8 @@ def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
         raise RuptureGeneratorError(
             f"the {what} are shaped {depths.shape}; they want a non-empty list of depths"
         )
+    if not np.all(np.isfinite(depths)):
+        raise RuptureGeneratorError(f"the {what} {depths.tolist()} are not all finite")
     if np.any(np.diff(depths) <= 0.0):
         raise RuptureGeneratorError(f"the {what} {depths.tolist()} do not increase")
     return depths
@@ -363,7 +365,7 @@ def ramp_field(
     Raises
     ------
     RuptureGeneratorError
-        If the ramp has no width.
+        If the ramp has no width, or its centre or width is not finite.
     """
     if not half_width_km > 0.0:
         raise RuptureGeneratorError(f"a ramp {half_width_km} km wide is a step")
