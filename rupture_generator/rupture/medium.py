@@ -365,7 +365,7 @@ def ramp_field(
     Raises
     ------
     RuptureGeneratorError
-        If the ramp has no width, or its centre or width is not finite.
+        If the ramp has no width, or its centre or width isn't finite.
     """
     if not half_width_km > 0.0:
         raise RuptureGeneratorError(f"a ramp {half_width_km} km wide is a step")
