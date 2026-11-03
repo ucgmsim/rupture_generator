@@ -272,8 +272,8 @@ class Geometry:
     # -------------------------------------------------------- between two charts
 
     @functools.cached_property
-    def _edge(self) -> tuple[CellSelection, sp.spatial.cKDTree]:
-        """tuple[CellSelection, sp.spatial.cKDTree]: Edge cells and a tree over them.
+    def _edge_cells(self) -> tuple[CellSelection, np.ndarray]:
+        """tuple[CellSelection, np.ndarray]: Edge cells and their centres.
 
         An edge cell is a fault cell with a neighbour off the fault or off the grid,
         where a front can leave this chart or arrive from another. The code averages
@@ -287,13 +287,37 @@ class Geometry:
         centres = 0.25 * (
             nodes[i, j] + nodes[i, j + 1] + nodes[i + 1, j + 1] + nodes[i + 1, j]
         )
-        return (i, j), sp.spatial.cKDTree(centres)
+        return (i, j), centres
+
+    @functools.cached_property
+    def _edge(self) -> tuple[CellSelection, sp.spatial.cKDTree]:
+        """tuple[CellSelection, sp.spatial.cKDTree]: Edge cells and a tree over them."""
+        cells, centres = self._edge_cells
+        return cells, sp.spatial.cKDTree(centres)
 
     @functools.cached_property
     def _fault(self) -> tuple[CellSelection, sp.spatial.cKDTree]:
         """tuple[CellSelection, sp.spatial.cKDTree]: Fault cells, a tree over them."""
         i, j = np.nonzero(self.occupied)
         return (i, j), sp.spatial.cKDTree(self.centres[i, j])
+
+    def jump_cells(self, *, interior: bool = False) -> tuple[CellSelection, np.ndarray]:
+        """The cells a jump can cross from or onto, and their centres.
+
+        Parameters
+        ----------
+        interior : bool
+            Every fault cell, not only edge cells.
+
+        Returns
+        -------
+        tuple[CellSelection, np.ndarray]
+            The cells, and their centres, ``(n, 3)``, in kilometres.
+        """
+        if not interior:
+            return self._edge_cells
+        i, j = np.nonzero(self.occupied)
+        return (i, j), self.centres[i, j]
 
     def nearest_cells_to(
         self, other: "Geometry", *, interior: bool = False

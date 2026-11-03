@@ -6,6 +6,7 @@ import scipy as sp
 
 from rupture_generator import (
     GaussianRake,
+    Geometry,
     Hypocentre,
     Realisation,
     RuptureGeneratorError,
@@ -16,10 +17,12 @@ from rupture_generator.rupture.generator import (
     FIELDS_STREAM,
     JUMP_STREAM,
     JumpSeed,
+    SegmentRupture,
     _segment_rng,
     _travel_times,
     first_arrival,
 )
+from rupture_generator.rupture.medium import Medium, constant_field
 from rupture_generator.rupture.models import embed
 from rupture_generator.rupture.propagator import JumpModel
 
@@ -116,17 +119,28 @@ def _first_jump(scenario, ruptures):
     return ruptures[parent], ruptures[name].geometry
 
 
+def _pairs_within(child, parent, reach_km):
+    """Every pair of edge cells within ``reach_km``, by brute force."""
+    landings, child_km = child.jump_cells()
+    departures, parent_km = parent.jump_cells()
+    distance_km = np.linalg.norm(child_km[:, None] - parent_km[None], axis=-1)
+    c, p = np.nonzero(distance_km <= reach_km)
+    return (landings[0][c], landings[1][c]), (departures[0][p], departures[1][p])
+
+
 def test_a_jump_crosses_the_nearest_gap_at_the_shear_speed(scenario, ruptures):
     # With a decay length near zero, the jump crosses only the nearest gap.
     drawn, child = _first_jump(scenario, ruptures)
     model = JumpModel(d0_km=1e-12, delta_km=0.0)
     seed = first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(0))
-    landings, departures, gap_km = child.nearest_cells_to(drawn.geometry)
-    nearest = gap_km <= gap_km.min() + 1e-9
+    _, _, gap_km = child.nearest_cells_to(drawn.geometry)
+    landings, departures = _pairs_within(
+        child, drawn.geometry, float(gap_km.min()) + 1e-9
+    )
     arrival_s = drawn.onset_s[departures] + scenario.medium.crossing_time_s(
         drawn.geometry.centres[departures], child.centres[landings]
     )
-    assert seed.time_s == pytest.approx(float(arrival_s[nearest].min()))
+    assert seed.time_s == pytest.approx(float(arrival_s.min()))
 
 
 def test_a_jump_lands_within_its_reach(scenario, ruptures):
@@ -291,8 +305,9 @@ def test_a_reference_jump_lands_at_the_first_arrival_within_the_mean_reach(
 ):
     drawn, child = _first_jump(scenario, ruptures)
     model = JumpModel(reach="reference")
-    landings, departures, gap_km = child.nearest_cells_to(drawn.geometry)
+    _, _, gap_km = child.nearest_cells_to(drawn.geometry)
     reach_km = model.reach_km(float(gap_km.min()), np.random.default_rng(0))
+    landings, departures = _pairs_within(child, drawn.geometry, reach_km)
     seeds = {
         first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(k))
         for k in range(10)
@@ -309,7 +324,57 @@ def test_a_reference_jump_lands_at_the_first_arrival_within_the_mean_reach(
     arrival_s = drawn.onset_s[departures] + scenario.medium.crossing_time_s(
         drawn.geometry.centres[departures], child.centres[landings]
     )
-    assert seeds.pop().time_s == float(arrival_s[gap_km <= reach_km].min())
+    assert seeds.pop().time_s == float(arrival_s.min())
+
+
+def _vertical(start, end, cells):
+    """A one-row vertical chart from ``start`` to ``end``, 1 km deep."""
+    t = np.linspace(0.0, 1.0, cells + 1)
+    xy = np.asarray(start) + t[:, None] * (np.asarray(end) - np.asarray(start))
+    nodes = np.stack(
+        [np.column_stack([xy, np.full(cells + 1, depth)]) for depth in (0.0, 1.0)]
+    )
+    return Geometry(nodes, np.ones((1, cells), bool), (cells,))
+
+
+@pytest.mark.parametrize(
+    "bound_km_s", [3.5, 7.0, np.inf], ids=["tight", "loose", "none"]
+)
+def test_a_jump_can_depart_from_any_parent_cell_within_reach(bound_km_s):
+    # A 40 km parent ruptures west to east at 0.8 Vs, and a short child runs north
+    # from 2 km off its middle. Cutting the corner from an earlier parent cell, at the
+    # full shear speed, beats crossing from the parent cell nearest any child cell.
+    # The speed bound only prunes. Every bound finds the same crossing.
+    vs = 3.5
+    medium = Medium(constant_field(vs), constant_field(2.7), bound_km_s)
+    geometry = _vertical((0.0, 0.0), (40.0, 0.0), 40)
+    onset = geometry.centres[..., 0] / (0.8 * vs)
+    zero = np.zeros_like(onset)
+    parent = SegmentRupture(
+        geometry=geometry,
+        slip_m=zero,
+        rise_time_s=zero,
+        rake_deg=zero,
+        onset_s=onset,
+        speed_km_s=zero + 0.8 * vs,
+        shear_speed_km_s=zero + vs,
+        density_g_cm3=zero + 2.7,
+        dt_s=0.05,
+        beta=None,
+    )
+    child = _vertical((20.5, 2.0), (20.5, 6.0), 4)
+    model = JumpModel(reach="reference")
+    seed = first_arrival(parent, child, medium, model, np.random.default_rng(0))
+
+    _, _, gap_km = child.nearest_cells_to(geometry)
+    reach_km = model.reach_km(float(gap_km.min()), np.random.default_rng(0))
+    p, c = geometry.centres.reshape(-1, 3), child.centres.reshape(-1, 3)
+    distance_km = np.linalg.norm(p[:, None] - c[None], axis=-1)
+    arrival_s = onset.reshape(-1)[:, None] + distance_km / vs
+    arrival_s[distance_km > reach_km] = np.inf
+    _, first = np.unravel_index(np.argmin(arrival_s), arrival_s.shape)
+    assert seed.time_s == pytest.approx(float(arrival_s.min()))
+    assert seed.cell == (0, int(first))
 
 
 def test_the_default_reach_draws_as_before():

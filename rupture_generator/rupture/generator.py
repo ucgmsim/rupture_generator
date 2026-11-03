@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from rupture_generator._kernels import eikonal_solve
+from rupture_generator._kernels import JumpSearch, eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.medium import Medium, rigidity_pa
@@ -444,6 +444,12 @@ def first_arrival(
     onsets and the medium. :func:`generate` gives each jump a generator of its own,
     which draws nothing else.
 
+    The search bounds each arrival from below by the parent cell's onset plus the
+    distance at :attr:`Medium.max_shear_speed_km_s`, which bounds every crossing's speed. It
+    reads the medium along the pair with the least bound, then only along the
+    pairs whose bound is no later than that arrival. The result is the same as reading
+    every pair (``crates/kernels/src/jump.rs``).
+
     Parameters
     ----------
     parent : SegmentRupture
@@ -468,17 +474,34 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    landings, departures, gap_km = child.nearest_cells_to(
-        parent.geometry, interior=model.interior
+    departures, parent_km = parent.geometry.jump_cells(interior=model.interior)
+    landings, child_km = child.jump_cells(interior=model.interior)
+    if departures[0].size == 0 or landings[0].size == 0:
+        raise RuptureGeneratorError(
+            "a jump needs fault on both charts, and one of them is entirely unoccupied"
+        )
+    onset_s = parent.onset_s[departures]
+    search = JumpSearch(parent_km, onset_s, child_km, medium.max_shear_speed_km_s)
+    reach_km = model.reach_km(search.min_gap_km(), rng)
+    least = search.least_bound(reach_km)
+    if least is None:
+        raise RuptureGeneratorError(
+            f"the reach, {reach_km} km, is shorter than the narrowest gap between the "
+            "charts"
+        )
+    p, c = least
+    threshold_s = onset_s[p] + float(medium.crossing_time_s(parent_km[p], child_km[c]))
+    # Only a pair whose bound is no later than a real arrival can arrive first. The
+    # pair that set it comes too, whatever its bound rounded to.
+    parents, children = search.pairs_below(reach_km, threshold_s)
+    parents, children = np.append(parents, p), np.append(children, c)
+    arrival_s = onset_s[parents] + medium.crossing_time_s(
+        parent_km[parents], child_km[children]
     )
-    reach_km = model.reach_km(float(gap_km.min()), rng)
-    arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
-        parent.geometry.centres[departures], child.centres[landings]
-    )
-    arrival_s = np.where(gap_km <= reach_km, arrival_s, np.inf)
     first = int(np.argmin(arrival_s))
+    landing = int(children[first])
     return JumpSeed(
-        cell=(int(landings[0][first]), int(landings[1][first])),
+        cell=(int(landings[0][landing]), int(landings[1][landing])),
         time_s=float(arrival_s[first]),
     )
 

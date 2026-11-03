@@ -1,9 +1,9 @@
 //! The rupture kernels, stateless and array-in/array-out.
 //!
 //! `rupture_generator._kernels` exposes `eikonal_solve` ([`eikonal::solve`]),
-//! `synthesise_pulses` ([`pulse::synthesise_pulses`]) and `circulant_draw`
-//! ([`field::draw`]) to Python. Parameters arrive as scalars and arrays, and Python
-//! sets every default. The maths is in [`eikonal`], [`pulse`] and [`field`] over
+//! `synthesise_pulses` ([`pulse::synthesise_pulses`]), `circulant_draw`
+//! ([`field::draw`]), and the class `JumpSearch` ([`jump::Search`]) to Python. Parameters arrive as scalars and arrays, and Python
+//! sets every default. The maths is in [`eikonal`], [`pulse`], [`field`] and [`jump`] over
 //! plain slices, where `tests/` can generate inputs for it. This file only marshals
 //! numpy arrays in and out, and releases the GIL around each computation.
 
@@ -26,6 +26,7 @@
 
 pub mod eikonal;
 pub mod field;
+pub mod jump;
 pub mod pulse;
 
 use numpy::ndarray::Array2;
@@ -45,6 +46,9 @@ type PyCsr<'py> = (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<f64>>);
 
 /// The pair of fields `circulant_draw` returns: real part, then imaginary.
 type PyFieldPair<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
+
+/// The pairs `JumpSearch.pairs_below` returns: parent cells, then child cells.
+type PyPairs<'py> = (Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<u32>>);
 
 /// First-arrival times over a fault chart, by factored fast sweeping.
 ///
@@ -145,11 +149,69 @@ fn circulant_draw<'py>(
     Ok((as_array(real), as_array(imaginary)))
 }
 
+/// The search between a jump's parent and child cells, built once per jump.
+///
+/// `parent_xyz` and `child_xyz` are `(n, 3)` cell centres in kilometres, `onset_s` the
+/// parent cells' onsets. The bound on a pair's arrival is
+/// `onset_s[p] + |p - c| / max_speed_km_s`, so `max_speed_km_s` must bound the shear
+/// speed anywhere a crossing passes, which infinity always does. [`jump`] has the method.
+#[pyclass(frozen)]
+struct JumpSearch(jump::Search);
+
+/// `(n, 3)` positions as triples.
+fn triples(xyz: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<[f64; 3]>> {
+    if xyz.shape()[1] != 3 {
+        return Err(PyValueError::new_err(format!(
+            "positions are shaped {:?}; they want (n, 3)",
+            xyz.shape()
+        )));
+    }
+    Ok(xyz.as_slice()?.as_chunks::<3>().0.to_vec())
+}
+
+#[pymethods]
+impl JumpSearch {
+    #[new]
+    fn new(
+        parent_xyz: PyReadonlyArray2<'_, f64>,
+        onset_s: PyReadonlyArray1<'_, f64>,
+        child_xyz: PyReadonlyArray2<'_, f64>,
+        max_speed_km_s: f64,
+    ) -> PyResult<Self> {
+        let search = jump::Search::new(
+            triples(&parent_xyz)?,
+            onset_s.as_slice()?.to_vec(),
+            triples(&child_xyz)?,
+            max_speed_km_s,
+        );
+        search.map(Self).or_else(value_error)
+    }
+
+    /// The narrowest gap between the two charts, in kilometres.
+    fn min_gap_km(&self, py: Python<'_>) -> f64 {
+        py.detach(|| self.0.min_gap_km())
+    }
+
+    /// The pair `reach_km` or less apart with the least bound, as `(parent, child)`,
+    /// or `None` if no pair is that close.
+    fn least_bound(&self, py: Python<'_>, reach_km: f64) -> Option<(u32, u32)> {
+        py.detach(|| self.0.least_bound(reach_km))
+    }
+
+    /// Every pair `reach_km` or less apart whose bound is at or below `threshold_s`, as
+    /// parallel `(parents, children)` index arrays.
+    fn pairs_below<'py>(&self, py: Python<'py>, reach_km: f64, threshold_s: f64) -> PyPairs<'py> {
+        let (parents, children) = py.detach(|| self.0.pairs_below(reach_km, threshold_s));
+        (parents.into_pyarray(py), children.into_pyarray(py))
+    }
+}
+
 #[pymodule]
 #[pyo3(name = "_kernels")]
 fn kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eikonal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(synthesise_pulses, m)?)?;
     m.add_function(wrap_pyfunction!(circulant_draw, m)?)?;
+    m.add_class::<JumpSearch>()?;
     Ok(())
 }

@@ -46,6 +46,10 @@ PA_PER_KM_S_SQUARED_G_CM3 = 1.0e9
 CROSSING_SAMPLES = 32
 """How many points along a crossing the midpoint rule reads the medium at."""
 
+CROSSING_CHUNK = 1 << 15
+"""How many crossings the medium is read along at once, which bounds the memory their
+sample points take."""
+
 
 def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.ndarray:
     """Compute rigidity, :math:`\\mu = \\rho v_s^2`, from a velocity model's units.
@@ -85,10 +89,16 @@ class Medium:
     density_g_cm3 : SpatialField
         Density in grams per cubic centimetre. With the shear speed it gives the
         rigidity that converts slip to moment.
+    max_shear_speed_km_s : float
+        No shear speed anywhere is faster. A jump's search prunes with it, and
+        :meth:`crossing_time_s` refuses a faster speed. :func:`layered_medium` sets
+        it. The default, infinity, is always true and only prunes by onset, which can
+        cost a great deal more on large charts.
     """
 
     shear_speed_km_s: SpatialField
     density_g_cm3: SpatialField
+    max_shear_speed_km_s: float = np.inf
 
     def rigidity_pa(self, positions_km: np.ndarray) -> np.ndarray:
         """Compute the rigidity, :math:`\\mu = \\rho v_s^2`, at each position.
@@ -138,20 +148,35 @@ class Medium:
         Raises
         ------
         RuptureGeneratorError
-            If the shear speed anywhere along a crossing isn't positive and finite.
+            If the shear speed anywhere along a crossing isn't positive and finite, or
+            is faster than :attr:`max_shear_speed_km_s`.
         """
         start = np.asarray(start_km, dtype=np.float64)
-        step = np.asarray(end_km, dtype=np.float64) - start
+        end = np.asarray(end_km, dtype=np.float64)
+        if start.ndim > 1 and start.shape[0] > CROSSING_CHUNK:
+            return np.concatenate(
+                [
+                    self.crossing_time_s(
+                        start[k : k + CROSSING_CHUNK],
+                        end[k : k + CROSSING_CHUNK],
+                        samples,
+                    )
+                    for k in range(0, start.shape[0], CROSSING_CHUNK)
+                ]
+            )
+        step = end - start
         fractions = (np.arange(samples) + 0.5) / samples
         points = start[..., None, :] + fractions[:, None] * step[..., None, :]
         speed = np.asarray(self.shear_speed_km_s(points), dtype=np.float64)
-        bad = ~(np.isfinite(speed) & (speed > 0.0))
+        bad = ~(
+            np.isfinite(speed) & (speed > 0.0) & (speed <= self.max_shear_speed_km_s)
+        )
         if np.any(bad):
             where = points[bad][0]
             raise RuptureGeneratorError(
                 f"the shear speed along a crossing is {float(speed[bad][0])} at "
                 f"{where[0]:.3f} km E, {where[1]:.3f} km N, {where[2]:.3f} km deep; "
-                "it wants positive values"
+                f"it wants positive values no faster than {self.max_shear_speed_km_s}"
             )
         slowness = 1.0 / speed
         return np.linalg.norm(step, axis=-1) * slowness.mean(axis=-1)
@@ -399,15 +424,16 @@ def layered_medium(
     RuptureGeneratorError
         Unless each property has exactly one positive, finite value per layer.
     """
+    shear_speed = layered_field(layers, shear_speed_km_s, name="shear_speed_km_s")
     return Medium(
-        shear_speed_km_s=layered_field(
-            layers, shear_speed_km_s, name="shear_speed_km_s"
-        ),
+        shear_speed_km_s=shear_speed,
         density_g_cm3=layered_field(layers, density_g_cm3, name="density_g_cm3"),
+        max_shear_speed_km_s=float(np.max(shear_speed_km_s)),
     )
 
 
 __all__ = [
+    "CROSSING_CHUNK",
     "CROSSING_SAMPLES",
     "DEPTH",
     "Layers",
