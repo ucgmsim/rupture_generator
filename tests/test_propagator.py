@@ -14,7 +14,13 @@ from rupture_generator import (
     sample_path,
     segment_source,
 )
-from rupture_generator.rupture.propagator import _jump_graph, _root_tree
+from rupture_generator.rupture.propagator import (
+    JumpGraph,
+    _jump_graph,
+    _maximum_likelihood_tree,
+    _root_tree,
+    _sample_tree,
+)
 
 
 @pytest.fixture
@@ -185,3 +191,58 @@ def test_the_reach_never_changes_the_tree(unpropagated, hypocentre, pick):
             )
         trees.append(realisation.tree)
     assert trees[0] == trees[1]
+
+
+@pytest.mark.parametrize("pick", ["likeliest", "sampled"])
+def test_a_disconnected_system_names_every_fault_and_the_remedies(pick):
+    graph = JumpGraph(("alpine", "hope", "kekerengu"), np.zeros((3, 3)))
+    with pytest.raises(RuptureGeneratorError) as raised:
+        if pick == "likeliest":
+            _maximum_likelihood_tree(graph)
+        else:
+            _sample_tree(graph, np.random.default_rng(0))
+    assert str(raised.value) == (
+        "alpine, hope, kekerengu do not form a connected system: at least one is "
+        "beyond reach of every other, so no single rupture gets to it. Drop it, widen "
+        "the model's maximum jump, or generate it as its own earthquake"
+    )
+
+
+def test_a_chain_has_only_one_spanning_tree_to_sample():
+    # a - c - b: the walk from b must pass through c, which then needs no walk of
+    # its own.
+    weights = np.zeros((3, 3))
+    weights[0, 2] = weights[2, 0] = 0.3
+    weights[1, 2] = weights[2, 1] = 0.6
+    graph = JumpGraph(("a", "b", "c"), weights)
+    for seed in range(5):
+        assert _sample_tree(graph, np.random.default_rng(seed)) == [(1, 2), (2, 0)]
+
+
+def test_sampled_trees_follow_the_product_of_jump_odds():
+    # Each tree of a triangle omits one edge, so P(tree) is proportional to the
+    # odds w / (1 - w) of the other two.
+    probabilities = {(0, 1): 0.2, (0, 2): 0.5, (1, 2): 0.8}
+    weights = np.zeros((3, 3))
+    for (u, v), p in probabilities.items():
+        weights[u, v] = weights[v, u] = p
+    graph = JumpGraph(("a", "b", "c"), weights)
+    odds = {edge: p / (1.0 - p) for edge, p in probabilities.items()}
+    expected = {
+        omitted: float(np.prod([o for edge, o in odds.items() if edge != omitted]))
+        for omitted in odds
+    }
+    total = sum(expected.values())
+
+    rng = np.random.default_rng(11)
+    draws = 20_000
+    counts = dict.fromkeys(odds, 0)
+    for _ in range(draws):
+        edges = {(min(u, v), max(u, v)) for u, v in _sample_tree(graph, rng)}
+        assert len(edges) == 2
+        (omitted,) = set(odds) - edges
+        counts[omitted] += 1
+    for omitted, weight in expected.items():
+        share = weight / total
+        spread = np.sqrt(share * (1.0 - share) / draws)
+        assert abs(counts[omitted] / draws - share) < 5.0 * spread
