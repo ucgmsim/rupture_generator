@@ -173,7 +173,14 @@ def test_the_speed_moves_only_a_forbidden_fraction(requested, lowest, highest):
         shear_speed_km_s=np.ones(shape),
         density_g_cm3=np.full(shape, 2.7),
     )
-    drawn = ShearFractionSpeed(velocity_fraction=requested)(context, None, None)
+    slip = SlipField(
+        np.ones(shape),
+        np.zeros(shape),
+        embed(STATIONARY, context.geometry, context.source.magnitude),
+    )
+    drawn = ShearFractionSpeed(velocity_fraction=requested)(
+        context, slip, np.random.default_rng(0)
+    )
     assert drawn.statistics["alpha_t"] == 1.0
     assert np.all(drawn.values >= lowest - 1e-12)
     assert np.all(drawn.values <= highest + 1e-12)

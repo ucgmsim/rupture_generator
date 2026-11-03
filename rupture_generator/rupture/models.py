@@ -983,7 +983,7 @@ class ShearFractionSpeed:
     The front moves at ``velocity_fraction / alpha_T`` of the shear speed, held to the
     sub-Rayleigh or supershear branch, times a depth profile. A fraction in the
     forbidden zone, between the Rayleigh fraction and 1, moves up by the zone's
-    width onto the supershear branch. A fraction outside it stays as it is.
+    width onto the supershear branch. A fraction outside it stays unchanged.
 
     Attributes
     ----------
