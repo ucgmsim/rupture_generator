@@ -119,14 +119,23 @@ def _first_jump(scenario, ruptures):
     return ruptures[parent], ruptures[name].geometry
 
 
+def _pairs_within(child, parent, reach_km):
+    """Every pair of edge cells within ``reach_km``, by brute force."""
+    landings, child_km = child.jump_cells()
+    departures, parent_km = parent.jump_cells()
+    distance_km = np.linalg.norm(child_km[:, None] - parent_km[None], axis=-1)
+    c, p = np.nonzero(distance_km <= reach_km)
+    return (landings[0][c], landings[1][c]), (departures[0][p], departures[1][p])
+
+
 def test_a_jump_crosses_the_nearest_gap_at_the_shear_speed(scenario, ruptures):
     # With a decay length near zero, the jump crosses only the nearest gap.
     drawn, child = _first_jump(scenario, ruptures)
     model = JumpModel(d0_km=1e-12, delta_km=0.0)
     seed = first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(0))
     _, _, gap_km = child.nearest_cells_to(drawn.geometry)
-    landings, departures, _ = child.cells_within(
-        drawn.geometry, float(gap_km.min()) + 1e-9
+    landings, departures = _pairs_within(
+        child, drawn.geometry, float(gap_km.min()) + 1e-9
     )
     arrival_s = drawn.onset_s[departures] + scenario.medium.crossing_time_s(
         drawn.geometry.centres[departures], child.centres[landings]
@@ -298,7 +307,7 @@ def test_a_reference_jump_lands_at_the_first_arrival_within_the_mean_reach(
     model = JumpModel(reach="reference")
     _, _, gap_km = child.nearest_cells_to(drawn.geometry)
     reach_km = model.reach_km(float(gap_km.min()), np.random.default_rng(0))
-    landings, departures, _ = child.cells_within(drawn.geometry, reach_km)
+    landings, departures = _pairs_within(child, drawn.geometry, reach_km)
     seeds = {
         first_arrival(drawn, child, scenario.medium, model, np.random.default_rng(k))
         for k in range(10)
@@ -328,33 +337,16 @@ def _vertical(start, end, cells):
     return Geometry(nodes, np.ones((1, cells), bool), (cells,))
 
 
-def test_cells_within_pairs_every_cell_within_the_radius():
-    here = _vertical((0.0, 0.0), (10.0, 0.0), 10)
-    there = _vertical((3.0, 0.0), (3.0, 5.0), 5)
-    landings, departures, distance_km = here.cells_within(there, 2.5)
-    found = {
-        (int(a), int(b), int(c), int(d))
-        for a, b, c, d in zip(*landings, *departures, strict=True)
-    }
-    expected = set()
-    for j in range(here.cells[1]):
-        for jj in range(there.cells[1]):
-            gap = np.linalg.norm(here.centres[0, j] - there.centres[0, jj])
-            if gap <= 2.5:
-                expected.add((0, j, 0, jj))
-    assert found == expected
-    assert np.allclose(
-        distance_km,
-        np.linalg.norm(here.centres[landings] - there.centres[departures], axis=-1),
-    )
-
-
-def test_a_jump_can_depart_from_any_parent_cell_within_reach():
+@pytest.mark.parametrize(
+    "bound_km_s", [3.5, 7.0, np.inf], ids=["tight", "loose", "none"]
+)
+def test_a_jump_can_depart_from_any_parent_cell_within_reach(bound_km_s):
     # A 40 km parent ruptures west to east at 0.8 Vs, and a short child runs north
     # from 2 km off its middle. Cutting the corner from an earlier parent cell, at the
     # full shear speed, beats crossing from the parent cell nearest any child cell.
+    # The speed bound only prunes, so every bound finds the same crossing.
     vs = 3.5
-    medium = Medium(constant_field(vs), constant_field(2.7))
+    medium = Medium(constant_field(vs), constant_field(2.7), bound_km_s)
     geometry = _vertical((0.0, 0.0), (40.0, 0.0), 40)
     onset = geometry.centres[..., 0] / (0.8 * vs)
     zero = np.zeros_like(onset)

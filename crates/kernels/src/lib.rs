@@ -2,8 +2,7 @@
 //!
 //! `rupture_generator._kernels` exposes `eikonal_solve` ([`eikonal::solve`]),
 //! `synthesise_pulses` ([`pulse::synthesise_pulses`]), `circulant_draw`
-//! ([`field::draw`]), and `jump_least_bound` and `jump_pairs_below`
-//! ([`jump::Search`]) to Python. Parameters arrive as scalars and arrays, and Python
+//! ([`field::draw`]), and the class `JumpSearch` ([`jump::Search`]) to Python. Parameters arrive as scalars and arrays, and Python
 //! sets every default. The maths is in [`eikonal`], [`pulse`], [`field`] and [`jump`] over
 //! plain slices, where `tests/` can generate inputs for it. This file only marshals
 //! numpy arrays in and out, and releases the GIL around each computation.
@@ -48,7 +47,7 @@ type PyCsr<'py> = (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<f64>>);
 /// The pair of fields `circulant_draw` returns: real part, then imaginary.
 type PyFieldPair<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
 
-/// The pairs `jump_pairs_below` returns: parent cells, then child cells.
+/// The pairs `JumpSearch.pairs_below` returns: parent cells, then child cells.
 type PyPairs<'py> = (Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<u32>>);
 
 /// First-arrival times over a fault chart, by factored fast sweeping.
@@ -150,62 +149,61 @@ fn circulant_draw<'py>(
     Ok((as_array(real), as_array(imaginary)))
 }
 
-/// The search between a jump's parent and child cells, from Python's arrays.
-fn jump_search<'a>(
-    parent_xyz: &'a PyReadonlyArray2<'_, f64>,
-    onset_s: &'a PyReadonlyArray1<'_, f64>,
-    child_xyz: &'a PyReadonlyArray2<'_, f64>,
-    reach_km: f64,
-    max_speed_km_s: f64,
-) -> PyResult<jump::Search<'a>> {
-    jump::Search::new(
-        parent_xyz.as_slice()?,
-        onset_s.as_slice()?,
-        child_xyz.as_slice()?,
-        reach_km,
-        max_speed_km_s,
-    )
-    .or_else(value_error)
-}
-
-/// The pair of a jump's parent and child cells with the least bound on its arrival.
+/// The search between a jump's parent and child cells, built once per jump.
 ///
 /// `parent_xyz` and `child_xyz` are `(n, 3)` cell centres in kilometres, `onset_s` the
-/// parent cells' onsets. The bound on a pair `reach_km` or less apart is
-/// `onset_s[p] + |p - c| / max_speed_km_s`, and `max_speed_km_s` must bound the
-/// shear speed anywhere a crossing passes (infinity always does). Returns
-/// `(parent, child, bound)`, or `None` if no pair is within reach.
-#[pyfunction]
-fn jump_least_bound<'py>(
-    py: Python<'py>,
-    parent_xyz: PyReadonlyArray2<'py, f64>,
-    onset_s: PyReadonlyArray1<'py, f64>,
-    child_xyz: PyReadonlyArray2<'py, f64>,
-    reach_km: f64,
-    max_speed_km_s: f64,
-) -> PyResult<Option<(usize, usize, f64)>> {
-    let search = jump_search(&parent_xyz, &onset_s, &child_xyz, reach_km, max_speed_km_s)?;
-    Ok(py.detach(|| search.least_bound()))
+/// parent cells' onsets. The bound on a pair's arrival is
+/// `onset_s[p] + |p - c| / max_speed_km_s`, so `max_speed_km_s` must bound the shear
+/// speed anywhere a crossing passes; infinity always does. [`jump`] has the method.
+#[pyclass(frozen)]
+struct JumpSearch(jump::Search);
+
+/// `(n, 3)` positions as triples.
+fn triples(xyz: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<[f64; 3]>> {
+    if xyz.shape()[1] != 3 {
+        return Err(PyValueError::new_err(format!(
+            "positions are shaped {:?}; they want (n, 3)",
+            xyz.shape()
+        )));
+    }
+    Ok(xyz.as_slice()?.as_chunks::<3>().0.to_vec())
 }
 
-/// Every pair of a jump's parent and child cells whose bound is at or below a time.
-///
-/// The arguments are [`jump_least_bound`]'s, and `threshold_s` is a real arrival.
-/// Returns `(parents, children)`, parallel index arrays into the two position arrays,
-/// which hold the earliest arrival whenever the threshold is one.
-#[pyfunction]
-fn jump_pairs_below<'py>(
-    py: Python<'py>,
-    parent_xyz: PyReadonlyArray2<'py, f64>,
-    onset_s: PyReadonlyArray1<'py, f64>,
-    child_xyz: PyReadonlyArray2<'py, f64>,
-    reach_km: f64,
-    max_speed_km_s: f64,
-    threshold_s: f64,
-) -> PyResult<PyPairs<'py>> {
-    let search = jump_search(&parent_xyz, &onset_s, &child_xyz, reach_km, max_speed_km_s)?;
-    let (parents, children) = py.detach(|| search.pairs_below(threshold_s));
-    Ok((parents.into_pyarray(py), children.into_pyarray(py)))
+#[pymethods]
+impl JumpSearch {
+    #[new]
+    fn new(
+        parent_xyz: PyReadonlyArray2<'_, f64>,
+        onset_s: PyReadonlyArray1<'_, f64>,
+        child_xyz: PyReadonlyArray2<'_, f64>,
+        max_speed_km_s: f64,
+    ) -> PyResult<Self> {
+        let search = jump::Search::new(
+            triples(&parent_xyz)?,
+            onset_s.as_slice()?.to_vec(),
+            triples(&child_xyz)?,
+            max_speed_km_s,
+        );
+        search.map(Self).or_else(value_error)
+    }
+
+    /// The narrowest gap between the two charts, in kilometres.
+    fn min_gap_km(&self, py: Python<'_>) -> f64 {
+        py.detach(|| self.0.min_gap_km())
+    }
+
+    /// The pair `reach_km` or less apart with the least bound, as `(parent, child)`,
+    /// or `None` if no pair is that close.
+    fn least_bound(&self, py: Python<'_>, reach_km: f64) -> Option<(u32, u32)> {
+        py.detach(|| self.0.least_bound(reach_km))
+    }
+
+    /// Every pair `reach_km` or less apart whose bound is at or below `threshold_s`, as
+    /// parallel `(parents, children)` index arrays.
+    fn pairs_below<'py>(&self, py: Python<'py>, reach_km: f64, threshold_s: f64) -> PyPairs<'py> {
+        let (parents, children) = py.detach(|| self.0.pairs_below(reach_km, threshold_s));
+        (parents.into_pyarray(py), children.into_pyarray(py))
+    }
 }
 
 #[pymodule]
@@ -214,7 +212,6 @@ fn kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eikonal_solve, m)?)?;
     m.add_function(wrap_pyfunction!(synthesise_pulses, m)?)?;
     m.add_function(wrap_pyfunction!(circulant_draw, m)?)?;
-    m.add_function(wrap_pyfunction!(jump_least_bound, m)?)?;
-    m.add_function(wrap_pyfunction!(jump_pairs_below, m)?)?;
+    m.add_class::<JumpSearch>()?;
     Ok(())
 }

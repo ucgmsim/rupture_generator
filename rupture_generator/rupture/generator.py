@@ -23,11 +23,7 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from rupture_generator._kernels import (
-    eikonal_solve,
-    jump_least_bound,
-    jump_pairs_below,
-)
+from rupture_generator._kernels import JumpSearch, eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.medium import Medium, rigidity_pa
@@ -50,10 +46,6 @@ part of the rectangle that is not fault."""
 CAUSAL_MARGIN = 1.05
 """How much room the causal clamp leaves past the weight that would tie with the seed.
 A tie-break, not a modelling choice: it keeps the seed the strict earliest cell."""
-
-CROSSING_CHUNK = 1 << 15
-"""How many crossings the medium is read along at once, which bounds the memory the
-32 sample points per crossing take."""
 
 MOMENT_MAGNITUDE_TOLERANCE = 0.05
 """How far a segment's slip may set its moment magnitude from its source's: the rounding
@@ -482,31 +474,29 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    _, _, gap_km = child.nearest_cells_to(parent.geometry, interior=model.interior)
-    reach_km = model.reach_km(float(gap_km.min()), rng)
     departures, parent_km = parent.geometry.jump_cells(interior=model.interior)
     landings, child_km = child.jump_cells(interior=model.interior)
-    onset_s = np.ascontiguousarray(parent.onset_s[departures])
-    search = (parent_km, onset_s, child_km, reach_km, medium.max_shear_speed_km_s)
-    # The pair with the least bound gives a real arrival, and only the pairs whose
-    # bound is no later than it can arrive first.
-    least = jump_least_bound(*search)
+    if departures[0].size == 0 or landings[0].size == 0:
+        raise RuptureGeneratorError(
+            "a jump needs fault on both charts, and one of them is entirely unoccupied"
+        )
+    onset_s = parent.onset_s[departures]
+    search = JumpSearch(parent_km, onset_s, child_km, medium.max_shear_speed_km_s)
+    reach_km = model.reach_km(search.min_gap_km(), rng)
+    least = search.least_bound(reach_km)
     if least is None:
         raise RuptureGeneratorError(
-            f"no child cell lies within the {reach_km:.3f} km reach of the parent"
+            f"the reach, {reach_km} km, is shorter than the narrowest gap between the "
+            "charts"
         )
-    p, c, _ = least
+    p, c = least
     threshold_s = onset_s[p] + float(medium.crossing_time_s(parent_km[p], child_km[c]))
-    parents, children = jump_pairs_below(*search, threshold_s)
-    arrival_s = np.concatenate(
-        [
-            onset_s[ps] + medium.crossing_time_s(parent_km[ps], child_km[cs])
-            for ps, cs in zip(
-                np.array_split(parents, -(-parents.size // CROSSING_CHUNK)),
-                np.array_split(children, -(-children.size // CROSSING_CHUNK)),
-                strict=True,
-            )
-        ]
+    # Only a pair whose bound is no later than a real arrival can arrive first. The
+    # pair that set it comes too, whatever its bound rounded to.
+    parents, children = search.pairs_below(reach_km, threshold_s)
+    parents, children = np.append(parents, p), np.append(children, c)
+    arrival_s = onset_s[parents] + medium.crossing_time_s(
+        parent_km[parents], child_km[children]
     )
     first = int(np.argmin(arrival_s))
     landing = int(children[first])

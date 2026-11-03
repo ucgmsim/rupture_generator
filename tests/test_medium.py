@@ -88,3 +88,24 @@ def test_a_crossing_through_no_rock_is_refused():
     medium = Medium(holey, constant_field(2.7))
     with pytest.raises(RuptureGeneratorError, match="along a crossing"):
         medium.crossing_time_s(np.array([0.0, 0.0, 5.0]), np.array([2.0, 0.0, 5.0]))
+
+
+def test_a_crossing_faster_than_the_bound_is_refused():
+    medium = Medium(constant_field(3.0), constant_field(2.7), max_shear_speed_km_s=2.0)
+    with pytest.raises(RuptureGeneratorError, match="no faster than 2.0"):
+        medium.crossing_time_s(np.array([0.0, 0.0, 5.0]), np.array([2.0, 0.0, 5.0]))
+
+
+def test_a_layered_medium_is_bounded_by_its_fastest_layer():
+    medium = layered_medium(Layers(np.array([2.0, 10.0])), [2.0, 4.0], [2.5, 2.7])
+    assert medium.max_shear_speed_km_s == 4.0
+
+
+def test_many_crossings_read_the_medium_in_chunks():
+    medium = layered_medium(Layers(np.array([2.0, 10.0])), [2.0, 4.0], [2.5, 2.7])
+    rng = np.random.default_rng(0)
+    start, end = rng.uniform(0.0, 6.0, (2, 70_000, 3))
+    whole = medium.crossing_time_s(start, end)
+    np.testing.assert_array_equal(
+        whole[-5:], medium.crossing_time_s(start[-5:], end[-5:])
+    )

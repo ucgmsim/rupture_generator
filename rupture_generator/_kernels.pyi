@@ -20,18 +20,17 @@ def circulant_draw(
     cell_counts: tuple[int, int],
     seed: int,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
-def jump_least_bound(
-    parent_xyz: NDArray[np.float64],
-    onset_s: NDArray[np.float64],
-    child_xyz: NDArray[np.float64],
-    reach_km: float,
-    max_speed_km_s: float,
-) -> tuple[int, int, float] | None: ...
-def jump_pairs_below(
-    parent_xyz: NDArray[np.float64],
-    onset_s: NDArray[np.float64],
-    child_xyz: NDArray[np.float64],
-    reach_km: float,
-    max_speed_km_s: float,
-    threshold_s: float,
-) -> tuple[NDArray[np.uint32], NDArray[np.uint32]]: ...
+
+class JumpSearch:
+    def __init__(
+        self,
+        parent_xyz: NDArray[np.float64],
+        onset_s: NDArray[np.float64],
+        child_xyz: NDArray[np.float64],
+        max_speed_km_s: float,
+    ) -> None: ...
+    def min_gap_km(self) -> float: ...
+    def least_bound(self, reach_km: float) -> tuple[int, int] | None: ...
+    def pairs_below(
+        self, reach_km: float, threshold_s: float
+    ) -> tuple[NDArray[np.uint32], NDArray[np.uint32]]: ...
