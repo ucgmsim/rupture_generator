@@ -209,7 +209,7 @@ def test_a_disconnected_system_names_every_fault_and_the_remedies(pick):
 
 
 def test_a_chain_has_only_one_spanning_tree_to_sample():
-    # a - c - b: the walk from b must pass through c, which then needs no walk of
+    # a - c - b: the walk from b must pass through c, which then doesn't need a walk of
     # its own.
     weights = np.zeros((3, 3))
     weights[0, 2] = weights[2, 0] = 0.3
