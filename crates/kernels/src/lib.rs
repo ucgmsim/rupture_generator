@@ -154,7 +154,7 @@ fn circulant_draw<'py>(
 /// `parent_xyz` and `child_xyz` are `(n, 3)` cell centres in kilometres, `onset_s` the
 /// parent cells' onsets. The bound on a pair's arrival is
 /// `onset_s[p] + |p - c| / max_speed_km_s`, so `max_speed_km_s` must bound the shear
-/// speed anywhere a crossing passes; infinity always does. [`jump`] has the method.
+/// speed anywhere a crossing passes, which infinity always does. [`jump`] has the method.
 #[pyclass(frozen)]
 struct JumpSearch(jump::Search);
 

@@ -444,9 +444,9 @@ def first_arrival(
     onsets and the medium. :func:`generate` gives each jump a generator of its own,
     which draws nothing else.
 
-    No crossing is faster than :attr:`Medium.max_shear_speed_km_s`, so a parent
-    cell's onset plus the distance at that speed bounds each arrival from below. The
-    search reads the medium along the pair with the least bound, then only along the
+    The search bounds each arrival from below by the parent cell's onset plus the
+    distance at :attr:`Medium.max_shear_speed_km_s`, which bounds every crossing's speed. It
+    reads the medium along the pair with the least bound, then only along the
     pairs whose bound is no later than that arrival. The result is the same as reading
     every pair (``crates/kernels/src/jump.rs``).
 

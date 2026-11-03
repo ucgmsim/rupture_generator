@@ -91,7 +91,7 @@ class Medium:
         rigidity that converts slip to moment.
     max_shear_speed_km_s : float
         No shear speed anywhere is faster. A jump's search prunes with it, and
-        :meth:`crossing_time_s` refuses a speed above it. :func:`layered_medium` sets
+        :meth:`crossing_time_s` refuses a faster speed. :func:`layered_medium` sets
         it. The default, infinity, is always true and only prunes by onset, which can
         cost a great deal more on large charts.
     """

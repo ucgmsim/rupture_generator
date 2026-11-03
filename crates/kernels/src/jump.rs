@@ -2,7 +2,7 @@
 //!
 //! A jump from a parent cell `p` onto a child cell `c` arrives at
 //! `onset[p] + T(p, c)`, and the child starts at the earliest arrival over every pair
-//! no farther apart than the reach. Reading the medium along every pair costs
+//! no farther apart than `reach_km`. Reading the medium along every pair costs
 //! `O(P C)`. A shear wave is never faster than the medium's largest shear speed, so
 //! `T(p, c) >= |p - c| / v_max`, and
 //!
@@ -10,17 +10,17 @@
 //! bound(p, c) = onset[p] + |p - c| / v_max  <=  arrival(p, c).
 //! ```
 //!
-//! The bound needs no medium, so it can prune before anything reads the rock. Any
+//! The bound doesn't read the medium, so it can prune before anything reads the rock. Any
 //! real arrival `t` rules out every pair whose bound exceeds `t`. The caller reads
 //! the medium along the pair with the least bound ([`Search::least_bound`]) and gets a
 //! real arrival from it. It then reads the medium only along the pairs whose bound is at
 //! or below that arrival ([`Search::pairs_below`]). The earliest arrival is among
-//! those pairs, so the search is exact. This is best-first search with an admissible
-//! heuristic, as in A*, except that a crossing is one straight line and not a path
+//! those pairs, so the search is exact. The search visits pairs in order of an admissible
+//! heuristic, as A* does, except that a crossing is one straight line and not a path
 //! through a graph.
 //!
 //! Visiting parent cells in onset order makes the search cheap. A parent cell whose
-//! onset alone exceeds the threshold cannot win, and the remaining ones only need the
+//! onset alone exceeds the threshold can't win, and the remaining ones only need the
 //! child cells within `(threshold - onset) v_max`, which a k-d tree finds. An
 //! infinite `v_max` is a valid bound that prunes by onset alone.
 
@@ -45,13 +45,13 @@ pub enum Error {
     /// Both charts need a cell to cross from or onto.
     #[error("a jump needs cells on both charts, and one has none")]
     NoCells,
-    /// A speed bound is positive. Infinity is a valid, weak bound, and NaN is not one.
+    /// A speed bound is positive. Infinity is a valid, weak bound, and NaN isn't one.
     #[error("a shear-speed bound of {max_speed_km_s} km/s; it must be positive")]
     BadSpeed { max_speed_km_s: f64 },
 }
 
-/// The one distance routine, so the gap a reach is drawn from and the test against
-/// that reach agree to the bit.
+/// The one distance routine, so the narrowest gap that sets `reach_km` and the test
+/// against `reach_km` agree to the bit.
 fn distance_km(a: &[f64; 3], b: &[f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
@@ -72,7 +72,7 @@ impl Search {
     /// Prepare a search between parent cells, with their onsets, and child cells.
     ///
     /// Positions are in kilometres. `max_speed_km_s` bounds the shear speed anywhere
-    /// a crossing can pass; infinity is always valid.
+    /// a crossing can pass, and infinity is always valid.
     ///
     /// # Errors
     ///
@@ -81,7 +81,7 @@ impl Search {
     ///
     /// # Panics
     ///
-    /// If either chart has more than `u32::MAX` cells.
+    /// A chart with more than `u32::MAX` cells panics, since the indices are `u32`.
     pub fn new(
         parent_km: Vec<[f64; 3]>,
         onset_s: Vec<f64>,
@@ -138,7 +138,7 @@ impl Search {
             self.onset_s[parent as usize],
         );
         // With an infinite bound or threshold the product is infinite or NaN, and
-        // `min` takes the reach either way.
+        // `min` takes `reach_km` either way.
         let radius_km = reach_km.min((threshold_s - onset_s) * self.max_speed_km_s);
         let squared = (radius_km * radius_km) * (1.0 + QUERY_MARGIN);
         self.child
@@ -154,8 +154,8 @@ impl Search {
             });
     }
 
-    /// The pair within reach with the least bound, as `(parent, child)`, or `None`
-    /// when no pair is within reach.
+    /// The pair no farther apart than `reach_km` with the least bound, as
+    /// `(parent, child)`, or `None` when no pair is that close.
     #[must_use]
     pub fn least_bound(&self, reach_km: f64) -> Option<(u32, u32)> {
         let mut best: Option<(u32, u32, f64)> = None;
@@ -173,8 +173,8 @@ impl Search {
         best.map(|(parent, child, _)| (parent, child))
     }
 
-    /// Every pair within reach whose bound is at or below `threshold_s`, as parallel
-    /// `(parents, children)`, in onset order of the parent.
+    /// Every pair no farther apart than `reach_km` with a bound at or below
+    /// `threshold_s`, as parallel `(parents, children)`, in onset order of the parent.
     #[must_use]
     pub fn pairs_below(&self, reach_km: f64, threshold_s: f64) -> (Vec<u32>, Vec<u32>) {
         let live = self

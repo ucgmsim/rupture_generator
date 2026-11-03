@@ -302,7 +302,7 @@ class Geometry:
         return (i, j), sp.spatial.cKDTree(self.centres[i, j])
 
     def jump_cells(self, *, interior: bool = False) -> tuple[CellSelection, np.ndarray]:
-        """The cells a jump can leave from or land on, and their centres.
+        """The cells a jump can cross from or onto, and their centres.
 
         Parameters
         ----------

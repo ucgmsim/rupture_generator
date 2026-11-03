@@ -14,7 +14,8 @@
 use _kernels::jump::Search;
 use proptest::prelude::*;
 
-/// Parent cells, their onsets, child cells, a speed bound, and a reach beyond the gap.
+/// Parent cells, their onsets, child cells, a speed bound, and how far `reach_km`
+/// exceeds the gap.
 type Inputs = (Vec<[f64; 3]>, Vec<f64>, Vec<[f64; 3]>, f64, f64);
 
 fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
