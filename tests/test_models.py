@@ -16,6 +16,9 @@ from rupture_generator import (
     Drawn,
     Geometry,
     RuptureGeneratorError,
+    SegmentContext,
+    SegmentSource,
+    ShearFractionSpeed,
     SlipField,
     embed,
     gaussian_anamorphosis,
@@ -154,6 +157,33 @@ def test_the_mean_slip_scaling_is_genslips():
     assert mean_slip_scaling(1.1, slip_m, _plane(slip_m, occupied)) == pytest.approx(
         1.1 * 2.0
     )
+
+
+@pytest.mark.parametrize(
+    ("requested", "lowest", "highest"),
+    [(0.8, 0.8, 0.8), (0.95, 1.0, np.sqrt(2.0)), (1.2, 1.2, 1.2), (1.4, 1.4, 1.4)],
+    ids=["sub-rayleigh", "forbidden", "supershear", "near-ceiling"],
+)
+def test_the_speed_moves_only_a_forbidden_fraction(requested, lowest, highest):
+    shape = (2, 2)
+    # Pure strike-slip, so there's no geometric correction: alpha_T is 1.
+    context = SegmentContext(
+        geometry=_plane(np.ones(shape), np.ones(shape, bool)),
+        source=SegmentSource(moment_nm=1.0e18, rake_deg=0.0),
+        shear_speed_km_s=np.ones(shape),
+        density_g_cm3=np.full(shape, 2.7),
+    )
+    slip = SlipField(
+        np.ones(shape),
+        np.zeros(shape),
+        embed(STATIONARY, context.geometry, context.source.magnitude),
+    )
+    drawn = ShearFractionSpeed(velocity_fraction=requested)(
+        context, slip, np.random.default_rng(0)
+    )
+    assert drawn.statistics["alpha_t"] == 1.0
+    assert np.all(drawn.values >= lowest - 1e-12)
+    assert np.all(drawn.values <= highest + 1e-12)
 
 
 @pytest.mark.parametrize(

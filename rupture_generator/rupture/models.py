@@ -981,7 +981,9 @@ class ShearFractionSpeed:
     """A front at a fraction of the shear speed, held off the forbidden zone.
 
     The front moves at ``velocity_fraction / alpha_T`` of the shear speed, held to the
-    sub-Rayleigh or supershear branch, times a depth profile.
+    sub-Rayleigh or supershear branch, times a depth profile. A fraction in the
+    forbidden zone, between the Rayleigh fraction and 1, moves up by the zone's
+    width onto the supershear branch.
 
     Attributes
     ----------
@@ -1037,7 +1039,7 @@ class ShearFractionSpeed:
         )
         correction = geometric_correction(context.geometry, context.source.rake_deg)
         fraction = self.velocity_fraction / correction
-        if fraction > RAYLEIGH_VELOCITY_FRACTION:
+        if RAYLEIGH_VELOCITY_FRACTION < fraction < 1.0:
             fraction += 1.0 - RAYLEIGH_VELOCITY_FRACTION
         fraction = min(
             max(fraction, MINIMUM_VELOCITY_FRACTION), MAXIMUM_VELOCITY_FRACTION
