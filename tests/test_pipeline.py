@@ -344,7 +344,7 @@ def test_a_jump_can_depart_from_any_parent_cell_within_reach(bound_km_s):
     # A 40 km parent ruptures west to east at 0.8 Vs, and a short child runs north
     # from 2 km off its middle. Cutting the corner from an earlier parent cell, at the
     # full shear speed, beats crossing from the parent cell nearest any child cell.
-    # The speed bound only prunes, so every bound finds the same crossing.
+    # The speed bound only prunes. Every bound finds the same crossing.
     vs = 3.5
     medium = Medium(constant_field(vs), constant_field(2.7), bound_km_s)
     geometry = _vertical((0.0, 0.0), (40.0, 0.0), 40)
