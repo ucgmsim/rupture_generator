@@ -47,6 +47,30 @@ CROSSING_SAMPLES = 32
 """How many points along a crossing the midpoint rule reads the medium at."""
 
 
+@dataclasses.dataclass(frozen=True)
+class BoundedField:
+    """A field that knows its largest value.
+
+    The jump search prunes with a bound on the shear speed, so the fields this module
+    builds carry one. Any other :data:`SpatialField` works too, and then there is no
+    bound and the search prunes by onset alone.
+
+    Attributes
+    ----------
+    field : SpatialField
+        The field itself.
+    maximum : float
+        No position gives a larger value.
+    """
+
+    field: SpatialField
+    maximum: float
+
+    def __call__(self, positions_km: np.ndarray) -> np.ndarray:
+        """Read the field at ``positions_km``."""
+        return self.field(positions_km)
+
+
 def rigidity_pa(shear_speed_km_s: np.ndarray, density_g_cm3: np.ndarray) -> np.ndarray:
     """Compute rigidity, :math:`\\mu = \\rho v_s^2`, from a velocity model's units.
 
@@ -106,6 +130,11 @@ class Medium:
         return rigidity_pa(
             self.shear_speed_km_s(positions_km), self.density_g_cm3(positions_km)
         )
+
+    @property
+    def max_shear_speed_km_s(self) -> float:
+        """float: The largest shear speed anywhere, or infinity if the field has no bound."""
+        return float(getattr(self.shear_speed_km_s, "maximum", np.inf))
 
     def crossing_time_s(
         self,
@@ -174,7 +203,7 @@ def constant_field(value: float) -> SpatialField:
     def field(positions_km: np.ndarray) -> np.ndarray:
         return np.full(np.shape(positions_km)[:-1], float(value), dtype=np.float64)
 
-    return field
+    return BoundedField(field, float(value))
 
 
 def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
@@ -286,7 +315,7 @@ def layered_field(layers: Layers, per_layer: ArrayLike, *, name: str) -> Spatial
     def field(positions_km: np.ndarray) -> np.ndarray:
         return values[layers._layer_for(positions_km[..., DEPTH])]
 
-    return field
+    return BoundedField(field, float(values.max()))
 
 
 def interpolated_field(depth_km: np.ndarray, values: np.ndarray) -> SpatialField:
@@ -335,7 +364,8 @@ def interpolated_field(depth_km: np.ndarray, values: np.ndarray) -> SpatialField
     def field(positions_km: np.ndarray) -> np.ndarray:
         return np.interp(positions_km[..., DEPTH], depths, heights)
 
-    return field
+    # Linear between the points and flat beyond them, so the largest point is the largest value.
+    return BoundedField(field, float(heights.max()))
 
 
 def ramp_field(
@@ -408,6 +438,7 @@ def layered_medium(
 __all__ = [
     "CROSSING_SAMPLES",
     "DEPTH",
+    "BoundedField",
     "Layers",
     "Medium",
     "SpatialField",

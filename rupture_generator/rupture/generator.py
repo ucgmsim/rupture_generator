@@ -23,7 +23,11 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from rupture_generator._kernels import eikonal_solve
+from rupture_generator._kernels import (
+    eikonal_solve,
+    jump_least_bound,
+    jump_pairs_below,
+)
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
 from rupture_generator.rupture.medium import Medium, rigidity_pa
@@ -46,6 +50,10 @@ part of the rectangle that is not fault."""
 CAUSAL_MARGIN = 1.05
 """How much room the causal clamp leaves past the weight that would tie with the seed.
 A tie-break, not a modelling choice: it keeps the seed the strict earliest cell."""
+
+CROSSING_CHUNK = 1 << 15
+"""How many crossings the medium is read along at once, which bounds the memory the
+32 sample points per crossing take."""
 
 MOMENT_MAGNITUDE_TOLERANCE = 0.05
 """How far a segment's slip may set its moment magnitude from its source's: the rounding
@@ -444,6 +452,12 @@ def first_arrival(
     onsets and the medium. :func:`generate` gives each jump a generator of its own,
     which draws nothing else.
 
+    No crossing is faster than :attr:`Medium.max_shear_speed_km_s`, so a parent
+    cell's onset plus the distance at that speed bounds each arrival from below. The
+    search reads the medium along the pair with the least bound, then only along the
+    pairs whose bound is no later than that arrival. The result is the same as reading
+    every pair (``crates/kernels/src/jump.rs``).
+
     Parameters
     ----------
     parent : SegmentRupture
@@ -468,29 +482,36 @@ def first_arrival(
     RuptureGeneratorError
         If either chart has no fault cells.
     """
-    nearest, nearest_from, gap_km = child.nearest_cells_to(
-        parent.geometry, interior=model.interior
-    )
+    _, _, gap_km = child.nearest_cells_to(parent.geometry, interior=model.interior)
     reach_km = model.reach_km(float(gap_km.min()), rng)
-    within, within_from, _ = child.cells_within(
-        parent.geometry, reach_km, interior=model.interior
-    )
-    # The nearest pairs within reach come along too. The sampled `reach_km` is never
-    # below the narrowest gap, but the two searches can round that gap differently.
-    crossing = gap_km <= reach_km
-    landings = tuple(
-        np.concatenate([a, b[crossing]]) for a, b in zip(within, nearest, strict=True)
-    )
-    departures = tuple(
-        np.concatenate([a, b[crossing]])
-        for a, b in zip(within_from, nearest_from, strict=True)
-    )
-    arrival_s = parent.onset_s[departures] + medium.crossing_time_s(
-        parent.geometry.centres[departures], child.centres[landings]
+    departures, parent_km = parent.geometry.jump_cells(interior=model.interior)
+    landings, child_km = child.jump_cells(interior=model.interior)
+    onset_s = np.ascontiguousarray(parent.onset_s[departures])
+    search = (parent_km, onset_s, child_km, reach_km, medium.max_shear_speed_km_s)
+    # The pair with the least bound gives a real arrival, and only the pairs whose
+    # bound is no later than it can arrive first.
+    least = jump_least_bound(*search)
+    if least is None:
+        raise RuptureGeneratorError(
+            f"no child cell lies within the {reach_km:.3f} km reach of the parent"
+        )
+    p, c, _ = least
+    threshold_s = onset_s[p] + float(medium.crossing_time_s(parent_km[p], child_km[c]))
+    parents, children = jump_pairs_below(*search, threshold_s)
+    arrival_s = np.concatenate(
+        [
+            onset_s[ps] + medium.crossing_time_s(parent_km[ps], child_km[cs])
+            for ps, cs in zip(
+                np.array_split(parents, -(-parents.size // CROSSING_CHUNK)),
+                np.array_split(children, -(-children.size // CROSSING_CHUNK)),
+                strict=True,
+            )
+        ]
     )
     first = int(np.argmin(arrival_s))
+    landing = int(children[first])
     return JumpSeed(
-        cell=(int(landings[0][first]), int(landings[1][first])),
+        cell=(int(landings[0][landing]), int(landings[1][landing])),
         time_s=float(arrival_s[first]),
     )
 

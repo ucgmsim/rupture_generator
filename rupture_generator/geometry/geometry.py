@@ -295,6 +295,22 @@ class Geometry:
         i, j = np.nonzero(self.occupied)
         return (i, j), sp.spatial.cKDTree(self.centres[i, j])
 
+    def jump_cells(self, *, interior: bool = False) -> tuple[CellSelection, np.ndarray]:
+        """The cells a jump can leave from or land on, and their centres.
+
+        Parameters
+        ----------
+        interior : bool
+            Every fault cell, not only edge cells.
+
+        Returns
+        -------
+        tuple[CellSelection, np.ndarray]
+            The cells, and their centres, ``(n, 3)``, in kilometres.
+        """
+        cells, tree = self._fault if interior else self._edge
+        return cells, tree.data
+
     def nearest_cells_to(
         self, other: "Geometry", *, interior: bool = False
     ) -> tuple[CellSelection, CellSelection, np.ndarray]:
