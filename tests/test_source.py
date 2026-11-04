@@ -1,4 +1,4 @@
-"""Segment sources, genslip's correlation relations, and how a fault is sampled for
+"""Segment sources, genslip's correlation relations, and the sampling of a fault for
 its separation from another."""
 
 import dataclasses
@@ -90,9 +90,9 @@ def test_a_moment_that_is_not_positive_is_refused(moment_nm):
 
 
 def chart_with_a_middle_column() -> Geometry:
-    """Three columns of cells, two rows 4 km deep, and only the middle column is fault.
+    """Build a chart of three columns of cells, two rows 4 km deep.
 
-    The fault slants east and north with depth, so a point cut from an edge differs
+    Only the middle column is fault. The fault slants east and north with depth, so a point cut from an edge differs
     from its nodes on every axis, and it bends at 4 km, so a cut is only right
     if it's taken on the edge that crosses the depth.
     """
@@ -127,8 +127,8 @@ def test_a_cut_off_between_rows_is_sampled_on_the_fault_edges_only():
 
 
 def test_a_cut_off_on_a_row_of_nodes_samples_each_node_once():
-    # At 4 km the cut-off falls on a row of nodes: those nodes are sampled, and no
-    # edge adds them a second time.
+    # At 4 km the cut-off falls on a row of nodes. The sampler takes those nodes, and
+    # no edge adds them a second time.
     points = _points_beneath(chart_with_a_middle_column(), 4.0)
     expected = np.array(
         [
