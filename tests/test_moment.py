@@ -166,7 +166,7 @@ def test_a_dip_difference_of_exactly_the_limit_keeps_segments_apart():
 
 
 def test_a_pair_kept_apart_by_dip_does_not_stop_later_pairs_joining():
-    # a and b are compared first and differ by 30 degrees; a and c are 3 km apart.
+    # a and b come first and differ by 30 degrees. a and c are 3 km apart.
     faults = system(
         a=plane(0.0, 20.0), b=plane(100.0, 20.0, dip_deg=60.0), c=plane(23.0, 20.0)
     )
