@@ -14,6 +14,8 @@ from rupture_generator.rupture.generator import moment_rng
 from rupture_generator.rupture.medium import Layers, Medium, layered_medium
 from rupture_generator.rupture.source import (
     MOMENT_SIGMA_LN,
+    _mean_dip_deg,
+    _separation_km,
     component_weights,
     moment_components,
     rigidity_weighted_areas,
@@ -152,6 +154,44 @@ def test_a_cut_off_between_rows_of_nodes_is_sampled_where_it_falls():
     nodes = np.stack(np.broadcast_arrays(east, 0.0, depth), axis=-1).astype(float)
     a = Geometry(nodes, np.ones((3, 20), bool), (20,))
     assert moment_components(system(a=a, b=plane(19.5, 10.0))) == [("a", "b")]
+
+
+def test_a_dip_difference_of_exactly_the_limit_keeps_segments_apart():
+    # Touching end to end, so only the dip can keep them apart.
+    faults = system(a=plane(0.0, 20.0), b=plane(20.0, 20.0, dip_deg=70.0))
+    delta = abs(_mean_dip_deg(faults["a"]) - _mean_dip_deg(faults["b"]))
+    assert delta == pytest.approx(20.0)
+    assert moment_components(faults, dip_delta_deg=delta) == [("a",), ("b",)]
+    assert moment_components(faults, dip_delta_deg=delta + 1e-9) == [("a", "b")]
+
+
+def test_a_pair_kept_apart_by_dip_does_not_stop_later_pairs_joining():
+    # a and b are compared first and differ by 30 degrees; a and c are 3 km apart.
+    faults = system(
+        a=plane(0.0, 20.0), b=plane(100.0, 20.0, dip_deg=60.0), c=plane(23.0, 20.0)
+    )
+    assert moment_components(faults) == [("a", "c"), ("b",)]
+
+
+def test_components_are_ordered_by_their_alphabetically_first_segment():
+    # The joined component lists z first, in the realisation's order, but it holds a,
+    # so it comes before m's.
+    faults = system(z=plane(0.0, 20.0), a=plane(23.0, 20.0), m=plane(100.0, 20.0))
+    assert moment_components(faults) == [("z", "a"), ("m",)]
+    reordered = system(m=plane(100.0, 20.0), a=plane(23.0, 20.0), z=plane(0.0, 20.0))
+    assert moment_components(reordered) == [("a", "z"), ("m",)]
+
+
+def test_the_separation_is_the_closest_distance_or_infinite_past_the_limit():
+    a = plane(0.0, 20.0)
+    assert _separation_km(a, plane(23.0, 20.0), 5.0, 5.0) == pytest.approx(3.0)
+    # 4 km east and 4 km north of a's end: inside b's bounding box grown by 5 km, but
+    # sqrt(32) km away, past the limit.
+    diagonal = plane(24.0, 20.0, north_km=4.0)
+    assert _separation_km(a, diagonal, 5.0, 5.0) == math.inf
+    assert _separation_km(a, diagonal, 5.0, 6.0) == pytest.approx(math.sqrt(32.0))
+    # Out of b's grown bounding box altogether.
+    assert _separation_km(a, plane(40.0, 20.0), 5.0, 5.0) == math.inf
 
 
 # -------------------------------------------------------------------- the shares
@@ -293,6 +333,23 @@ def test_departures_scale_whole_components():
     assert math.fsum(drawn.values()) == pytest.approx(MOMENT_NM, rel=1e-12)
 
 
+def test_departures_multiply_each_component_weight():
+    weights = rigidity_weighted_areas(THREE_COMPONENTS, MEDIUM)
+    by_component = component_weights(THREE_COMPONENTS, weights)
+    departures = np.exp(moment_rng(7).normal(0.0, MOMENT_SIGMA_LN, 3))
+    scaled = [w * d for w, d in zip(by_component.values(), departures, strict=True)]
+    expected = {}
+    for names, share in zip(by_component, scaled, strict=True):
+        component_nm = MOMENT_NM * share / sum(scaled)
+        component_weight = sum(weights[name] for name in names)
+        for name in names:
+            expected[name] = component_nm * weights[name] / component_weight
+    drawn = split_moment(
+        MOMENT_NM, by_component, weights, sigma_ln=MOMENT_SIGMA_LN, rng=moment_rng(7)
+    )
+    assert drawn == pytest.approx(expected, rel=1e-12)
+
+
 def test_departures_reproduce_from_the_seed():
     def draw(seed):
         return split(
@@ -330,7 +387,13 @@ def test_departures_follow_the_lognormal_about_the_reference():
     [
         ({"sigma_ln": -0.1}, "non-negative"),
         ({"sigma_ln": math.nan}, "non-negative"),
-        ({"sigma_ln": 0.5}, "needs a generator"),
+        (
+            {"sigma_ln": 0.5},
+            (
+                r"^a moment shared with a standard deviation needs a generator to "
+                r"draw from$"
+            ),
+        ),
     ],
 )
 def test_a_departure_without_a_spread_or_generator_is_refused(kwargs, message):
