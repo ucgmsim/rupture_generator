@@ -147,7 +147,7 @@ class Marginal:
             )
         if self.family in ("truncated_normal", "truncated_exponential"):
             # Fit now, so loading rejects a spread the fit can't reach instead of a
-            # draw failing partway through. The fit is cached.
+            # draw failing partway through. The code caches the fit.
             try:
                 _distribution(self)
             except ValueError as error:
