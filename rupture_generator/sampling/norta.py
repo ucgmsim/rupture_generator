@@ -146,8 +146,8 @@ class Marginal:
                 f"({TRUNCATED_EXPONENTIAL_MINIMUM_COV:.4f}, 1) and attains neither end"
             )
         if self.family in ("truncated_normal", "truncated_exponential"):
-            # Fit now, so a spread the fit cannot reach is refused on loading rather
-            # than partway through a draw. The fit is cached.
+            # Fit now, so loading rejects a spread the fit can't reach instead of a
+            # draw failing partway through. The fit is cached.
             try:
                 _distribution(self)
             except ValueError as error:
@@ -318,7 +318,7 @@ def _distribution(marginal: Marginal) -> Any:
                 return float(shifted.std() / shifted.mean())
 
             # A narrow target puts the cut many deviations below the mean, where the
-            # spread is about 1/alpha, so the upper bracket doubles until it passes.
+            # spread is about 1/alpha. The upper bracket doubles until it passes.
             upper = 60.0
             while spread_at(upper) > spread:
                 upper *= 2.0
