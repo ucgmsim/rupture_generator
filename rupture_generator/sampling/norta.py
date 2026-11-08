@@ -146,8 +146,8 @@ class Marginal:
                 f"({TRUNCATED_EXPONENTIAL_MINIMUM_COV:.4f}, 1) and attains neither end"
             )
         if self.family in ("truncated_normal", "truncated_exponential"):
-            # Fit now, so loading rejects a spread the fit can't reach instead of a
-            # draw failing partway through. The code caches the fit.
+            # Fit now, so loading rejects a spread the fit can't produce instead of
+            # a draw failing partway through. The code caches the fit.
             try:
                 _distribution(self)
             except ValueError as error:
