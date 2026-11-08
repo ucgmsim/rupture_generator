@@ -102,6 +102,32 @@ def test_a_marginal_its_family_cannot_have_is_refused(family, cov, maximum, mess
         Marginal(family, cov, maximum)
 
 
+@pytest.mark.parametrize(
+    ("family", "cov"),
+    [
+        ("truncated_normal", 1.0e-3),
+        ("truncated_normal", 0.01),
+        ("truncated_normal", 0.999),
+        ("truncated_exponential", 0.5775),
+        ("truncated_exponential", 0.999),
+    ],
+)
+def test_an_accepted_marginal_near_either_end_of_its_family_applies(family, cov):
+    values = Marginal(family, cov).apply(np.random.default_rng(0).standard_normal(4096))
+    assert np.all(np.isfinite(values))
+    np.testing.assert_allclose(values.mean(), 1.0, rtol=0.05)
+    np.testing.assert_allclose(values.std() / values.mean(), cov, rtol=0.1)
+
+
+@pytest.mark.parametrize(
+    ("family", "cov"),
+    [("truncated_normal", 0.9999), ("truncated_exponential", 0.57736)],
+)
+def test_a_marginal_the_fit_cannot_reach_is_refused_on_construction(family, cov):
+    with pytest.raises(RuptureGeneratorError, match=f"{family}.*{cov}"):
+        Marginal(family, cov)
+
+
 def test_slip_cannot_follow_a_normal():
     with pytest.raises(RuptureGeneratorError, match="slip values are positive"):
         DrawnSlip(family="normal")
