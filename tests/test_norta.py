@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 import scipy as sp
@@ -6,10 +8,12 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
 from rupture_generator import RuptureGeneratorError
-from rupture_generator.sampling import NORMAL, Marginal, latent_correlation
+from rupture_generator.sampling import NORMAL, Marginal, latent_correlation, norta
 from rupture_generator.sampling.norta import (
     NORTA_CORRELATION_SLACK,
     _correlation_series,
+    _distribution,
+    _doubly_truncated_normal,
     _doubly_truncated_normal_location,
     _doubly_truncated_normal_spread,
 )
@@ -131,3 +135,42 @@ def test_the_doubly_truncated_normal_stays_on_its_support():
     mean = weights @ transformed
     assert mean == pytest.approx(1.0, abs=1e-5)
     assert np.sqrt(weights @ (transformed - mean) ** 2) == pytest.approx(0.3, abs=1e-5)
+
+
+@pytest.mark.parametrize("scale", [0.1, 1.0, 7.0, 40.0])
+def test_a_maximum_of_two_leaves_the_parent_centred(scale):
+    # Cut symmetrically about 1, a parent centred on 1 already has unit mean.
+    assert _doubly_truncated_normal_location(scale, 2.0) == 1.0
+    assert _doubly_truncated_normal_spread(scale, 2.0) > 0.0
+
+
+def test_the_parent_search_is_quiet_far_past_the_tail():
+    # A parent hundreds of deviations from its nearer cut sends SciPy's
+    # truncated-normal mean through invalid powers on the way to the root; the
+    # search swallows those rather than warn.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with np.errstate(invalid="warn"):
+            location = _doubly_truncated_normal_location(3.0, 1.01)
+    assert location / 3.0 > 250.0
+    mean = float(_doubly_truncated_normal(location, 3.0, 1.01).mean())
+    assert mean == pytest.approx(1.0, abs=1e-8)
+
+
+def test_the_normal_family_is_the_standard_normal():
+    distribution = _distribution(NORMAL)
+    assert distribution.mean() == 0.0
+    assert distribution.std() == 1.0
+    np.testing.assert_allclose(
+        distribution.ppf([0.025, 0.5, 0.975]), [-1.959964, 0.0, 1.959964], atol=1e-6
+    )
+
+
+def test_a_correlation_map_that_is_not_increasing_is_refused(monkeypatch):
+    # Monotone transforms always give an increasing map (Price's theorem), so only a
+    # forged series reaches the guard: g(rho) = rho - rho^2 turns over at 1/2.
+    monkeypatch.setattr(
+        norta, "_correlation_series", lambda first, second: np.array([1.0, -1.0])
+    )
+    with pytest.raises(RuptureGeneratorError, match="gamma and a normal marginal"):
+        latent_correlation(GAMMA, NORMAL, np.array([0.1]))
