@@ -108,8 +108,8 @@ def write_fields(
     Raises
     ------
     RuptureGeneratorError
-        For a segment name containing ``/``, which separates groups, or one that
-        cannot name a group: ``""``, ``"."``, ``".."``, ``"segment"`` or
+        For a segment name containing ``/``, which separates groups, or one of
+        the unusable names ``""``, ``"."``, ``".."``, ``"segment"`` and
         ``"parent"``.
     OSError
         If writing the file fails.
