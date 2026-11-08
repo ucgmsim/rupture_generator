@@ -49,6 +49,8 @@ _FIELDS = {
 }
 """Each cell field of :class:`SegmentRupture`, with its units."""
 _COMPRESSION = {"zlib": True, "complevel": 4}
+_RESERVED_NAMES = frozenset({"", ".", "..", "segment", "parent"})
+"""Names a segment's group cannot take: path components and the root's variables."""
 
 RECORD_ATTRIBUTE = "run_record"
 """The root attribute that holds the record of the run that drew the fields."""
@@ -106,7 +108,9 @@ def write_fields(
     Raises
     ------
     RuptureGeneratorError
-        For a segment name containing ``/``, which separates groups.
+        For a segment name containing ``/``, which separates groups, or one that
+        cannot name a group: ``""``, ``"."``, ``".."``, ``"segment"`` or
+        ``"parent"``.
     OSError
         If writing the file fails.
     """
@@ -118,6 +122,12 @@ def write_fields(
     if awkward:
         raise RuptureGeneratorError(
             f"{awkward} contain '/', which separates the groups of {path}"
+        )
+    reserved = [name for name in names if name in _RESERVED_NAMES]
+    if reserved:
+        raise RuptureGeneratorError(
+            f"{reserved} cannot name groups of {path}: '', '.' and '..' are paths"
+            " and 'segment' and 'parent' are variables of the root"
         )
     root_attrs: dict[str, str | int | float] = {
         **(attrs or {}),
