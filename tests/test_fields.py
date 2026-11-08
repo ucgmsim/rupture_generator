@@ -77,6 +77,17 @@ def test_a_segment_name_with_a_slash_is_refused(tmp_path, ruptures):
         write_fields(tmp_path / "slash.h5", Realisation(renamed, ruptures.crs))
 
 
+@pytest.mark.parametrize("new", ["segment", "parent", "..", ".", ""])
+def test_a_segment_name_that_is_not_a_group_name_is_refused(tmp_path, ruptures, new):
+    name = ruptures.hypocentre.segment
+    hypocentre = dataclasses.replace(ruptures.hypocentre, segment=new)
+    alone = Realisation({new: ruptures[name]}, ruptures.crs, hypocentre, {new: None})
+    path = tmp_path / "reserved.h5"
+    with pytest.raises(RuptureGeneratorError, match="group"):
+        write_fields(path, alone)
+    assert not path.exists()
+
+
 def test_a_file_without_the_fields_is_a_rupture_error(tmp_path):
     path = tmp_path / "other.h5"
     xr.Dataset({"x": ("y", [1.0])}).to_netcdf(path, engine="h5netcdf")
