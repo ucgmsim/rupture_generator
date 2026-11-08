@@ -145,6 +145,16 @@ class Marginal:
                 f"variation of {value}: the family runs over "
                 f"({TRUNCATED_EXPONENTIAL_MINIMUM_COV:.4f}, 1) and attains neither end"
             )
+        if self.family in ("truncated_normal", "truncated_exponential"):
+            # Fit now, so loading rejects a spread the fit can't produce instead of
+            # a draw failing partway through. The code caches the fit.
+            try:
+                _distribution(self)
+            except ValueError as error:
+                raise RuptureGeneratorError(
+                    f"a unit-mean {self.family} with a coefficient of variation of "
+                    f"{value} lies too close to the edge of its family to fit"
+                ) from error
         if self.family == "doubly_truncated_normal":
             if not (1.0 < self.maximum < np.inf):
                 raise RuptureGeneratorError(
@@ -307,8 +317,13 @@ def _distribution(marginal: Marginal) -> Any:
                 shifted = truncnorm(a=-alpha, b=np.inf, loc=alpha, scale=1.0)
                 return float(shifted.std() / shifted.mean())
 
+            # A narrow target puts the cut many deviations below the mean, where the
+            # spread is about 1/alpha. The upper bracket doubles until it passes.
+            upper = 60.0
+            while spread_at(upper) > spread:
+                upper *= 2.0
             alpha = brentq(
-                lambda value: spread_at(value) - spread, -40.0, 60.0, xtol=1.0e-13
+                lambda value: spread_at(value) - spread, -40.0, upper, xtol=1.0e-13
             )
             mean = float(truncnorm(a=-alpha, b=np.inf, loc=alpha, scale=1.0).mean())
             return truncnorm(a=-alpha, b=np.inf, loc=alpha / mean, scale=1.0 / mean)
