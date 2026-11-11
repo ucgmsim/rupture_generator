@@ -482,6 +482,32 @@ def test_a_sampled_apportionment_round_trips(tmp_path):
     assert rupture_config.load(again) == loaded
 
 
+def test_a_sampled_apportionment_without_a_spread_is_the_reference(tmp_path):
+    # Zero is the least spread allowed. It draws no departure from the shares.
+    reference = rupture_config.build(finite_config(tmp_path))
+    loaded = finite_config(
+        tmp_path, '[source.apportionment]\ntype = "sampled"\nsigma_ln = 0.0\n'
+    )
+    assert isinstance(loaded.source, rupture_config.Finite)
+    assert loaded.source.apportionment == rupture_config.SampledApportionment(
+        sigma_ln=0.0
+    )
+    sampled = rupture_config.build(loaded)
+    assert {name: source.moment_nm for name, source in sampled.sources.items()} == (
+        pytest.approx(
+            {name: source.moment_nm for name, source in reference.sources.items()},
+            rel=1e-12,
+        )
+    )
+
+
+@pytest.mark.parametrize("sigma_ln", [-1e-9, -1.0, math.nan, math.inf, -math.inf])
+def test_a_spread_that_is_not_a_non_negative_number_is_refused(sigma_ln):
+    with pytest.raises(RuptureGeneratorError) as raised:
+        rupture_config.SampledApportionment(sigma_ln=sigma_ln)
+    assert str(raised.value) == f"sigma_ln is a non-negative number, got {sigma_ln}"
+
+
 @pytest.mark.parametrize(
     ("table", "message"),
     [
