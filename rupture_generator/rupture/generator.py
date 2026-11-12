@@ -1,4 +1,4 @@
-"""Drawing a rupture: slip, rise time, rake and onset, on one segment or many.
+"""Drawing a rupture: slip, rise time, rake, onset and roughness, on one segment or many.
 
 :func:`generate_segment` is the whole per-segment pipeline. It takes a chart, the
 :class:`~rupture_generator.rupture.medium.Medium`, the segment's
@@ -25,7 +25,7 @@ import numpy as np
 
 from rupture_generator._kernels import JumpSearch, eikonal_solve
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import CellArray, Geometry
+from rupture_generator.geometry import CellArray, Geometry, NodeArray
 from rupture_generator.rupture.medium import Medium, rigidity_pa
 from rupture_generator.rupture.models import (
     MODELS,
@@ -99,6 +99,10 @@ class SegmentRupture:
         The slip-rate sample interval, in seconds.
     beta : CellArray or None
         The pulse's rising fraction, or ``None`` for single-sample impulses.
+    roughness_km : NodeArray
+        Each node's displacement off the chart onto the rough fault,
+        ``(n_i+1, n_j+1, 3)`` in kilometres. :attr:`rough_geometry` is the displaced
+        chart.
     """
 
     geometry: Geometry
@@ -111,12 +115,18 @@ class SegmentRupture:
     density_g_cm3: CellArray
     dt_s: float
     beta: CellArray | None
+    roughness_km: NodeArray
     statistics: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
     @property
     def rigidity_pa(self) -> CellArray:
         """CellArray: Rigidity in pascals, from the rock this segment read."""
         return rigidity_pa(self.shear_speed_km_s, self.density_g_cm3)
+
+    @property
+    def rough_geometry(self) -> Geometry:
+        """Geometry: The rough fault surface, the chart with every node displaced."""
+        return self.geometry.displaced(self.roughness_km)
 
 
 # --------------------------------------------------------------------- the front
@@ -217,10 +227,10 @@ def generate_segment(
     seed: JumpSeed,
     rng: np.random.Generator,
 ) -> SegmentRupture:
-    """Draw one segment's slip, rise time, rake and onset.
+    """Draw one segment's slip, rise time, rake, onset and roughness.
 
-    The models come in a fixed order: slip, rise time, rake, speed, then the onset
-    displacement. ``rng`` spawns one generator per model in that order, so a model's
+    The models come in a fixed order: slip, rise time, rake, speed, the onset
+    displacement, then roughness. ``rng`` spawns one generator per model in that order, so a model's
     draws depend on ``rng`` alone and never on another model's draws. Replacing one
     model leaves every other field it doesn't read bit-identical.
 
@@ -320,8 +330,23 @@ def generate_segment(
             "is not a duration"
         )
 
+    roughness = model.roughness(context, streams["roughness"])
+    roughness_km = check_cells(
+        geometry,
+        "roughness",
+        roughness.values,
+        np.isfinite,
+        "finite values",
+        at_nodes=True,
+    )
+    if roughness_km.shape != geometry.nodes.shape:
+        raise RuptureGeneratorError(
+            f"roughness is shaped {roughness_km.shape}; it displaces the chart's "
+            f"nodes, {geometry.nodes.shape}"
+        )
+
     travel_s = _travel_times(geometry, speed_km_s, seed)
-    drawn = (slip, rise, rake, speed, perturbation)
+    drawn = (slip, rise, rake, speed, perturbation, roughness)
     return SegmentRupture(
         geometry=geometry,
         slip_m=slip_m,
@@ -333,6 +358,7 @@ def generate_segment(
         density_g_cm3=context.density_g_cm3,
         dt_s=model.pulse.dt_s,
         beta=beta,
+        roughness_km=roughness_km,
         statistics={
             f"{name}.{key}": float(value)
             for name, model in zip(MODELS, drawn, strict=True)

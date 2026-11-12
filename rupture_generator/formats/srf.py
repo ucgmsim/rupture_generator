@@ -10,6 +10,10 @@ Every plane of every segment is one SRF plane, in the order :func:`generate` dre
 segments. Its points run down dip in rows, with the along-strike index varying first,
 as the format orders them. A plane's strike is the geodesic azimuth along its top
 edge, so the projection's grid convergence never reaches the file.
+
+A point is its cell's centre on the rough fault surface, with that cell's strike and
+dip. The header keeps the chart's plane, and area stays the chart's cell's, as the
+moment does.
 """
 
 import dataclasses
@@ -24,7 +28,7 @@ import srf
 
 from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import CellArray, Geometry
+from rupture_generator.geometry import CellArray, Geometry, NodeArray
 from rupture_generator.rupture.generator import SegmentRupture
 from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
@@ -111,9 +115,31 @@ def _planes(
     return headers, strikes
 
 
+def _rough_cells(rupture: SegmentRupture) -> tuple[NodeArray, CellArray, CellArray]:
+    """Each cell of the rough surface: its centre, its turn off the chart's strike, dip.
+
+    The turn is the angle the cell's normal turns through about the vertical, which
+    grid convergence leaves alone. A cell whose normal has turned back on the
+    chart's has rolled over: genslip v5.6.3 then turns the strike back by 180 degrees
+    and gives the dip a negative sign, which keeps the rake's sense of slip.
+    """
+    chart, rough = rupture.geometry, rupture.rough_geometry
+    # Up, or horizontal, as the chart's: positions are depth positive down.
+    up = np.where(chart.normals[..., 2:] > 0.0, -1.0, 1.0)
+    flat, tilted = up * chart.normals, up * rough.normals
+    dot = np.sum(flat[..., :2] * tilted[..., :2], axis=-1)
+    cross = flat[..., 0] * tilted[..., 1] - flat[..., 1] * tilted[..., 0]
+    rolled = np.where(dot < 0.0, -1.0, 1.0)
+    # Azimuths run clockwise, and the cross product's angle anticlockwise.
+    turn_deg = -np.degrees(np.arctan2(rolled * cross, rolled * dot))
+    dip_deg = rolled * np.degrees(np.arccos(np.clip(-tilted[..., 2], -1.0, 1.0)))
+    return rough.centres, turn_deg, dip_deg
+
+
 def _plane_points(
     name: str,
     rupture: SegmentRupture,
+    rough: tuple[NodeArray, CellArray, CellArray],
     columns: slice,
     strike_deg: float,
     transformer: pyproj.Transformer,
@@ -131,7 +157,8 @@ def _plane_points(
     def cells(field: CellArray) -> np.ndarray:
         return np.ascontiguousarray(field[:, columns]).ravel()
 
-    centres = geometry.centres[:, columns]
+    centres, turn_deg, dip_deg = rough
+    centres = centres[:, columns]
     lon, lat = _to_lon_lat(
         transformer, centres[..., 0].ravel(), centres[..., 1].ravel()
     )
@@ -154,8 +181,8 @@ def _plane_points(
         lon=single(lon),
         lat=single(lat),
         dep=single(centres[..., 2].ravel()),
-        stk=np.full(lon.size, strike_deg, dtype=np.float32),
-        dip=single(cells(geometry.dip_deg)),
+        stk=single((strike_deg + cells(turn_deg)) % 360.0),
+        dip=single(cells(dip_deg)),
         area=single(cells(geometry.areas_km2) * CM2_PER_KM2),
         tinit=single(cells(rupture.onset_s)),
         dt=np.full(lon.size, dt_s, dtype=np.float32),
@@ -217,11 +244,14 @@ def write_rupture(
     try:
         with srf.Writer(partial, planes, comments=comments) as writer:
             for name, rupture in realisation.items():
+                rough = _rough_cells(rupture)
                 for columns, strike_deg in zip(
                     _plane_slices(rupture.geometry), strikes[name], strict=True
                 ):
                     writer.write(
-                        *_plane_points(name, rupture, columns, strike_deg, transformer)
+                        *_plane_points(
+                            name, rupture, rough, columns, strike_deg, transformer
+                        )
                     )
         partial.replace(path)
     except srf.SrfError as error:

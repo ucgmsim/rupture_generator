@@ -1,6 +1,6 @@
 """The models a rupture draws its fields with, and what the generator gives them.
 
-:func:`~rupture_generator.rupture.generator.generate_segment` asks five models for a
+:func:`~rupture_generator.rupture.generator.generate_segment` asks six models for a
 segment's fields, in a fixed order:
 
 1. A :class:`SlipModel` gives slip, and the latent Gaussian field slip is monotone in.
@@ -9,6 +9,8 @@ segment's fields, in a fixed order:
 4. A :class:`SpeedModel` gives the front's speed, from slip's latent.
 5. A :class:`PerturbationModel` gives the onset displacement, from slip's latent and
    the moment, and how far from the seed it takes to grow in.
+6. A :class:`RoughnessModel` gives each node's displacement off the chart: the
+   rough fault surface, which the SRF's points and facets lie on and nothing else reads.
 
 Slip's latent is the one dependency between models. A model that correlates with slip
 mixes its own draw into :attr:`SlipField.latent`. Its draw comes from
@@ -23,7 +25,8 @@ mean the same whatever slip's marginal is, a drawn slip's or a given one's.
 :func:`gaussian_anamorphosis` gives any slip such a latent.
 
 The defaults are Graves & Pitarka's model: :class:`DrawnSlip`, :class:`CorrelatedRise`,
-:class:`GaussianRake`, :class:`ShearFractionSpeed` and :class:`CorrelatedPerturbation`.
+:class:`GaussianRake`, :class:`ShearFractionSpeed`, :class:`CorrelatedPerturbation` and
+:class:`SelfAffineRoughness`.
 """
 
 import dataclasses
@@ -35,7 +38,7 @@ import numpy as np
 import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import CellArray, CellMask, Geometry
+from rupture_generator.geometry import CellArray, CellMask, Geometry, NodeArray
 from rupture_generator.rupture.medium import (
     SpatialField,
     constant_field,
@@ -164,13 +167,13 @@ class Drawn:
 
     Attributes
     ----------
-    values : CellArray
-        The field, on the chart's cells.
+    values : CellArray or NodeArray
+        The field on the chart's cells. Roughness gives it on the nodes.
     statistics : Mapping of str to float
         Numbers the model reports about its draw, such as a mean it scaled to.
     """
 
-    values: CellArray
+    values: CellArray | NodeArray
     statistics: Mapping[str, float] = dataclasses.field(default_factory=dict)
 
 
@@ -323,15 +326,38 @@ class PerturbationModel(Protocol):
         ...
 
 
+class RoughnessModel(Protocol):
+    """Draws the rough fault surface, as each node's displacement off the chart."""
+
+    def __call__(self, context: SegmentContext, rng: np.random.Generator) -> Drawn:
+        """Draw the rough fault on a segment.
+
+        Parameters
+        ----------
+        context : SegmentContext
+            The segment.
+        rng : numpy.random.Generator
+            The model's own generator.
+
+        Returns
+        -------
+        Drawn
+            Each node's displacement, ``(n_i+1, n_j+1, 3)``, in kilometres.
+        """
+        ...
+
+
 # -------------------------------------------------------------------- helpers
 
 
 def check_cells(
     geometry: Geometry,
     name: str,
-    values: CellArray,
-    accept: Callable[[CellArray], np.ndarray],
+    values: np.ndarray,
+    accept: Callable[[np.ndarray], np.ndarray],
     wanted: str,
+    *,
+    at_nodes: bool = False,
 ) -> CellArray:
     """Check that a field matches a chart's cells and that ``accept`` takes every value.
 
@@ -347,6 +373,9 @@ def check_cells(
         Whether each value is acceptable, cell by cell.
     wanted : str
         What ``accept`` wants, for an error.
+    at_nodes : bool, optional
+        Match the chart's nodes, ``(n_i+1, n_j+1)`` and any trailing axes, not its
+        cells.
 
     Returns
     -------
@@ -359,9 +388,11 @@ def check_cells(
         If the field has the wrong shape, or a value ``accept`` refuses.
     """
     values = np.asarray(values, dtype=np.float64)
-    if values.shape != geometry.cells:
+    shape = geometry.nodes.shape[:2] if at_nodes else geometry.cells
+    if values.shape[:2] != shape or (values.ndim > 2 and not at_nodes):
+        where = "nodes" if at_nodes else "cells"
         raise RuptureGeneratorError(
-            f"{name} is shaped {values.shape} and the chart has {geometry.cells} cells"
+            f"{name} is shaped {values.shape} and the chart has {shape} {where}"
         )
     if not np.all(accept(values)):
         raise RuptureGeneratorError(
@@ -604,7 +635,12 @@ km, genslip's ``hyb_corlen_dep`` and ``hyb_corlen_dep_range``.
 
 @functools.lru_cache(maxsize=128)
 def embed(
-    noise: Noise, geometry: Geometry, magnitude: float, marginal: Marginal = NORMAL
+    noise: Noise,
+    geometry: Geometry,
+    magnitude: float,
+    marginal: Marginal = NORMAL,
+    *,
+    at_nodes: bool = False,
 ) -> Sampler:
     """Embed a noise on a chart, or return the embedding already made.
 
@@ -622,6 +658,8 @@ def embed(
         The segment's moment magnitude, which sets each family's lengths.
     marginal : Marginal, optional
         The marginal the drawn field takes. Normal by default.
+    at_nodes : bool, optional
+        Draw at the chart's nodes, ``(n_i+1, n_j+1)``, not its cell centres.
 
     Returns
     -------
@@ -634,8 +672,20 @@ def embed(
         If a weight reads out of ``[0, 1]``, or a family doesn't embed on the chart.
     """
     strike_km, dip_km = geometry.spacing_km
+    positions = geometry.nodes if at_nodes else geometry.centres
+    weights = [
+        check_cells(
+            geometry,
+            "a noise weight",
+            family.weight(positions),
+            np.isfinite,
+            "finite values",
+            at_nodes=at_nodes,
+        )
+        for family in noise
+    ]
     return sampler(
-        Grid(geometry.cells, (dip_km, strike_km)),
+        Grid(positions.shape[:2], (dip_km, strike_km)),
         [
             Covariance(
                 PreCorrected(VonKarman(family.hurst), marginal),
@@ -643,12 +693,7 @@ def embed(
             )
             for family in noise
         ],
-        [
-            read_at_centres(
-                geometry, "a noise weight", family.weight, np.isfinite, "finite values"
-            )
-            for family in noise
-        ],
+        weights,
     )
 
 
@@ -1137,6 +1182,117 @@ class CorrelatedPerturbation:
         )
 
 
+# ------------------------------------------------------------------- roughness
+
+
+def _detrended(surface: np.ndarray) -> np.ndarray:
+    """A node field with its least-squares plane in ``(i, j)`` removed."""
+    i, j = np.indices(surface.shape)
+    design = np.stack([np.ones(surface.size), i.ravel(), j.ravel()], axis=1)
+    plane, *_ = np.linalg.lstsq(design, surface.ravel())
+    return surface - (design @ plane).reshape(surface.shape)
+
+
+@dataclasses.dataclass(frozen=True)
+class SelfAffineRoughness:
+    """A self-affine rough fault, independent of every other field.
+
+    The offset off the chart is von Karman noise at the chart's nodes, at Hurst
+    exponent ``H`` and correlation length ``a = maximum_wavelength_km / 2 pi``. Its
+    power spectrum ``(1 + 4 pi^2 k^2 a^2)^-(H+1)``, ``k`` in cycles per kilometre, is a
+    power law past the corner wavelength ``2 pi a``: Shi & Day's (2013, JGR 118,
+    1122-1141) self-affine fault. Its standard deviation is
+    ``amplitude_ratio * maximum_wavelength_km``, their amplitude-to-wavelength ratio
+    ``alpha``. The defaults are those the SCEC Broadband Platform runs genslip
+    v5.6.3 with, ``alpha_rough=0.005``, ``lambda_max=25`` and genslip's ``H = 1``.
+    The grid is the short-wavelength edge.
+
+    The model removes the offset's least-squares plane, so the chart is the plane
+    the rough fault scatters about and roughness turns no segment as a whole. Each
+    node moves by the offset along its normal, or with ``keep_depth`` horizontally by
+    as much as makes the same offset along the normal, which keeps every point at its
+    chart depth. That takes ``1 / sin(dip)`` of the offset, too much for a shallow
+    megathrust, but no point near the ground rises out of it.
+
+    Attributes
+    ----------
+    amplitude_ratio : float
+        Shi & Day's ``alpha``. Zero draws a flat fault.
+    maximum_wavelength_km : float
+        The corner wavelength ``2 pi a``, in kilometres.
+    hurst : float
+        The Hurst exponent, in ``(0, 1]``. One is self-similar.
+    keep_depth : bool
+        Move nodes horizontally, keeping their depth.
+    """
+
+    amplitude_ratio: float = 0.005
+    maximum_wavelength_km: float = 25.0
+    hurst: float = 1.0
+    keep_depth: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse a negative ratio, a wavelength of no length, or an unusable Hurst."""
+        if not self.amplitude_ratio >= 0.0:
+            raise RuptureGeneratorError(
+                f"an amplitude ratio is non-negative, got {self.amplitude_ratio}"
+            )
+        if not self.maximum_wavelength_km > 0.0:
+            raise RuptureGeneratorError(
+                f"a wavelength of {self.maximum_wavelength_km} km is no length"
+            )
+        VonKarman(self.hurst)
+
+    @property
+    def noise(self) -> Noise:
+        """Noise: The offset's one stationary family."""
+        length_km = self.maximum_wavelength_km / (2.0 * np.pi)
+        return (NoiseFamily(CorrelationRelation.constant(length_km), self.hurst),)
+
+    def __call__(self, context: SegmentContext, rng: np.random.Generator) -> Drawn:
+        """Draw the rough fault on a segment.
+
+        Parameters
+        ----------
+        context : SegmentContext
+            The segment.
+        rng : numpy.random.Generator
+            The roughness's own generator.
+
+        Returns
+        -------
+        Drawn
+            Each node's displacement in kilometres, and the offset's standard
+            deviation over the nodes as ``rms_km``.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            If a chart with a horizontal node asks to keep depth: no horizontal
+            move takes that node off its plane.
+        """
+        geometry = context.geometry
+        if self.amplitude_ratio == 0.0:
+            return Drawn(np.zeros_like(geometry.nodes), {"rms_km": 0.0})
+        noise = embed(self.noise, geometry, context.source.magnitude, at_nodes=True)
+        surface, _ = noise.draw(rng)
+        scale_km = self.amplitude_ratio * self.maximum_wavelength_km
+        offset_km = scale_km * _detrended(surface)
+        normal = geometry.node_normals
+        direction = normal
+        if self.keep_depth:
+            direction = normal * np.array([1.0, 1.0, 0.0])
+            reach = np.sum(direction * normal, axis=-1, keepdims=True)
+            if not np.all(reach > 0.0):
+                raise RuptureGeneratorError(
+                    "a horizontal node can't keep its depth and leave the chart"
+                )
+            direction = direction / reach
+        return Drawn(
+            offset_km[..., None] * direction, {"rms_km": float(offset_km.std())}
+        )
+
+
 # ----------------------------------------------------------------- the model
 
 
@@ -1178,6 +1334,8 @@ class RuptureModel:
         The front's speed.
     perturbation : PerturbationModel
         The onset displacement off the coherent front.
+    roughness : RoughnessModel
+        The rough fault's displacement off the chart.
     pulse : PulseSettings
         The slip-rate pulse's sampling and shape.
     """
@@ -1189,6 +1347,7 @@ class RuptureModel:
     perturbation: PerturbationModel = dataclasses.field(
         default_factory=CorrelatedPerturbation
     )
+    roughness: RoughnessModel = dataclasses.field(default_factory=SelfAffineRoughness)
     pulse: PulseSettings = dataclasses.field(default_factory=PulseSettings)
 
 
