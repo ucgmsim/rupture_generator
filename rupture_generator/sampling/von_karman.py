@@ -22,15 +22,15 @@ class VonKarman:
     Attributes
     ----------
     hurst : float
-        The Hurst exponent ``H``, in ``(0, 1)``.
+        The Hurst exponent ``H``, in ``(0, 1]``.
     """
 
     hurst: float = HURST
 
     def __post_init__(self) -> None:
-        """Refuse a Hurst exponent outside ``(0, 1)``."""
-        if not 0.0 < self.hurst < 1.0:
-            raise RuptureGeneratorError(f"hurst must be in (0, 1), got {self.hurst}")
+        """Refuse a Hurst exponent outside ``(0, 1]``."""
+        if not 0.0 < self.hurst <= 1.0:
+            raise RuptureGeneratorError(f"hurst must be in (0, 1], got {self.hurst}")
 
     def __call__(self, lag: np.ndarray) -> np.ndarray:
         """Evaluate the correlation at a lag in correlation lengths.

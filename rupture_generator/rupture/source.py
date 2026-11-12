@@ -104,6 +104,23 @@ class CorrelationRelation:
     strike_saturation: float = np.inf
     dip_saturation: float = np.inf
 
+    @classmethod
+    def constant(cls, length_km: float) -> "CorrelationRelation":
+        """Build a relation that gives one length at every magnitude, on both axes.
+
+        Parameters
+        ----------
+        length_km : float
+            The correlation length, in kilometres.
+
+        Returns
+        -------
+        CorrelationRelation
+            The relation, with no growth and the length's decades as its offsets.
+        """
+        offset = -math.log10(length_km)
+        return cls(0.0, offset, 0.0, offset)
+
     def lengths_km(self, magnitude: float) -> tuple[float, float]:
         """Compute the correlation lengths for a magnitude.
 
