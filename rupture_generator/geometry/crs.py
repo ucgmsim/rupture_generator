@@ -162,7 +162,10 @@ def _span(points: np.ndarray) -> str:
 
 def _utm_zone(points: np.ndarray) -> str:
     """The WGS84 UTM zone at the points' centre, as an EPSG code."""
-    lon, lat = (float(value) for value in points.mean(axis=0))
+    # The circular mean, so faults across the antimeridian centre near 180, not 0.
+    lon_rad = np.radians(points[:, 0])
+    lon = float(np.degrees(np.arctan2(np.sin(lon_rad).mean(), np.cos(lon_rad).mean())))
+    lat = float(points[:, 1].mean())
     zone = int((lon + 180.0) // 6.0) % 60 + 1
     hemisphere = "N" if lat >= 0.0 else "S"
     code = (32600 if lat >= 0.0 else 32700) + zone
