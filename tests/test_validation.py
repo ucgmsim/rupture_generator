@@ -408,6 +408,16 @@ def test_a_crs_made_for_elsewhere_is_refused():
     assert set(charts) == {"wasatch"}
 
 
+def test_a_crs_made_for_elsewhere_advises_the_zone_across_the_antimeridian():
+    # The Kermadec arc straddles 180 degrees; its longitudes do not average to 0.
+    section = _section()
+    section["geometry"]["coordinates"] = [[179.8, -30.0], [-179.8, -29.9]]
+    with pytest.raises(
+        RuptureGeneratorError, match=r"EPSG:(32760|32701) \(UTM zone (60|1)S\)"
+    ):
+        _read(section)
+
+
 def test_a_crs_that_stretches_the_faults_is_refused():
     # Web Mercator covers the world, and stretches lengths by a third at 42 S.
     with pytest.raises(RuptureGeneratorError, match="stretches lengths by up to 3"):
