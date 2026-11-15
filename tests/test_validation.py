@@ -428,7 +428,8 @@ def test_an_offshore_fault_near_the_area_of_use_is_accepted():
     assert set(_read(section)) == {"a"}
 
 
-# NZCS2000 (EPSG:3851) is made for longitude 160.6 east, across 180, to 171.2 west.
+# NZCS2000 (EPSG:3851) has an area of use from longitude 160.6 east, across 180,
+# to 171.2 west.
 _ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
 
 
@@ -459,7 +460,7 @@ _ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
         (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -23.8), False),
         (_ACROSS_THE_ANTIMERIDIAN, (179.9, -57.9), True),
         (_ACROSS_THE_ANTIMERIDIAN, (179.9, -58.0), False),
-        # A box around the world has no width modulo 360, yet covers every longitude.
+        # A box around the world has no width modulo 360, yet contains the points below.
         ((-180.0, -90.0, 180.0, 90.0), (-180.0, 0.0), True),
         ((-180.0, -90.0, 180.0, 90.0), (0.0, -45.0), True),
         ((-180.0, -90.0, 180.0, 90.0), (90.0, 45.0), True),
