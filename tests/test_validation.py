@@ -409,7 +409,7 @@ def test_a_crs_made_for_elsewhere_is_refused():
 
 
 def test_a_crs_made_for_elsewhere_advises_the_zone_across_the_antimeridian():
-    # The Kermadec arc straddles 180 degrees; its longitudes do not average to 0.
+    # The Kermadec arc straddles 180 degrees, so its longitudes don't average to 0.
     section = _section()
     section["geometry"]["coordinates"] = [[179.8, -30.0], [-179.8, -29.9]]
     with pytest.raises(
