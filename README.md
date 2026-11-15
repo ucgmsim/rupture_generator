@@ -116,7 +116,7 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 | `[medium]`                                                | A 1-D velocity model: layer bottoms, shear speed, density. More complex media (e.g. 3D velocity models) are expressed through the python API. |
 | `[source]`                                                | `per_fault` magnitudes and rakes, or one `finite` magnitude shared between components (see below).                                            |
 | `[propagation]`                                           | Which fault triggers which: `predetermined`, `sampled`, `likeliest`.                                                                          |
-| `[slip]`, `[rise]`, `[rake]`, `[speed]`, `[perturbation]` | Each field model's settings.                                                                                                                  |
+| `[slip]`, `[rise]`, `[rake]`, `[speed]`, `[perturbation]`, `[roughness]` | Each field model's settings.                                                                                                                  |
 | `[pulse]`                                                 | Slip-rate sampling and shape parameters.                                                                                                      |
 | `[segments.<name>]`                                       | Per-segment rupture field models.                                                                                                     |
 
@@ -206,8 +206,9 @@ write_rupture(path, ruptures)
 
 ### Extending
 
-A `RuptureModel` is five field models: `slip`, `rise`, `rake`, `speed` and
-`perturbation`, the onset's displacement off the coherent front. Each is any
+A `RuptureModel` is six field models: `slip`, `rise`, `rake`, `speed`,
+`perturbation`, the onset's displacement off the coherent front, and `roughness`,
+the rough fault's displacement off the chart. Each is any
 callable with the arguments its protocol in `rupture_generator.rupture.models`
 states. The defaults are the Graves & Pitarka model, which the TOML file
 configures. Its `pulse` holds the slip-rate sample interval and the pulse's
@@ -295,5 +296,9 @@ pull request against the base branch and posts the comparison.
   can arrive sooner along a fast layer than along the chord. Ray traced jumps
   are a planned addition.
 - The plumbing for curved rupture exists but is as-yet unimplemented. This is implemented in an upcoming release.
-- Aspects of the Graves and Pitarka method aren't yet implemented. The main
-  holdout is roughness which is implemented in an upcoming release.
+- Roughness displaces the SRF's points onto the rough surface and nothing else:
+  the front, the moment and the rise time read the flat chart, as in genslip
+  v5.6.3. Its roughness-correlated rupture and rise time perturbations (`tsfac2`,
+  `rtime2`), off by default there, aren't implemented.
+- Roughness along the normal can lift a point near the ground out of it, as
+  genslip's can. `[roughness] keep_depth = true` moves points horizontally instead.

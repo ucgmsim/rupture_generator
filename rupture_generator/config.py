@@ -12,7 +12,8 @@ The file configures the default models alone. Any other model comes in through t
 library.
 
 A ``[segments.<name>]`` table overrides the global settings on one segment. Its
-``slip``, ``rise``, ``rake``, ``speed`` and ``perturbation`` tables each start from the
+``slip``, ``rise``, ``rake``, ``speed``, ``perturbation`` and ``roughness`` tables each
+start from the
 global table and replace the keys they give. A depth profile or a noise list, one key
 of its table, replaces the global one whole. :func:`load` does this merge. A loaded config stores each segment's tables in
 full.
@@ -66,6 +67,7 @@ from rupture_generator.rupture.models import (
     NoiseFamily,
     PulseSettings,
     RuptureModel,
+    SelfAffineRoughness,
     ShearFractionSpeed,
 )
 from rupture_generator.rupture.propagator import JumpModel, likeliest_path, sample_path
@@ -362,6 +364,13 @@ class Perturbation(CorrelatedPerturbation):
     """
 
     noise: tuple[Family, ...] | None = STATIONARY
+    Config = _Strict
+
+
+@dataclasses.dataclass(frozen=True)
+class Roughness(SelfAffineRoughness):
+    """``[roughness]``: :class:`~rupture_generator.rupture.models.SelfAffineRoughness`."""
+
     Config = _Strict
 
 
@@ -670,6 +679,8 @@ class SegmentConfig:
         ``[segments.<name>.speed]``.
     perturbation : Perturbation, optional
         ``[segments.<name>.perturbation]``.
+    roughness : Roughness, optional
+        ``[segments.<name>.roughness]``.
     """
 
     slip: Slip | None = None
@@ -677,6 +688,7 @@ class SegmentConfig:
     rake: Rake | None = None
     speed: Speed | None = None
     perturbation: Perturbation | None = None
+    roughness: Roughness | None = None
     Config = _Strict
 
 
@@ -708,6 +720,8 @@ class RuptureConfig:
         ``[speed]``.
     perturbation : Perturbation
         ``[perturbation]``.
+    roughness : Roughness
+        ``[roughness]``.
     pulse : PulseConfig
         ``[pulse]``.
     segments : dict of str to SegmentConfig
@@ -725,6 +739,7 @@ class RuptureConfig:
     rake: Rake = dataclasses.field(default_factory=Rake)
     speed: Speed = dataclasses.field(default_factory=Speed)
     perturbation: Perturbation = dataclasses.field(default_factory=Perturbation)
+    roughness: Roughness = dataclasses.field(default_factory=Roughness)
     pulse: PulseConfig = dataclasses.field(default_factory=PulseConfig)
     segments: dict[str, SegmentConfig] = dataclasses.field(default_factory=dict)
     Config = _Strict

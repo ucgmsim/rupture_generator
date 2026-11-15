@@ -150,6 +150,41 @@ class Geometry:
         return np.cross(p[1:, 1:] - p[:-1, :-1], p[1:, :-1] - p[:-1, 1:])
 
     @functools.cached_property
+    def normals(self) -> NodeArray:
+        """NodeArray: Cell unit normals, ``(n_i, n_j, 3)``, along ``AC x BD``.
+
+        A chart's nodes run the same way in every cell, so its normals all point to
+        the same side, and so do those of a chart displaced from it.
+        """
+        normal = self._diagonal_normals
+        return normal / np.linalg.norm(normal, axis=-1, keepdims=True)
+
+    @functools.cached_property
+    def node_normals(self) -> NodeArray:
+        """NodeArray: Node unit normals, ``(n_i+1, n_j+1, 3)``.
+
+        Each is the sum of its cells' ``AC x BD``, so a larger cell weighs more.
+        """
+        padded = np.pad(self._diagonal_normals, ((1, 1), (1, 1), (0, 0)))
+        normal = padded[:-1, :-1] + padded[:-1, 1:] + padded[1:, :-1] + padded[1:, 1:]
+        return normal / np.linalg.norm(normal, axis=-1, keepdims=True)
+
+    def displaced(self, displacement_km: NodeArray) -> "Geometry":
+        """Move every node by its own displacement.
+
+        Parameters
+        ----------
+        displacement_km : NodeArray
+            Each node's displacement, ``(n_i+1, n_j+1, 3)``, in kilometres.
+
+        Returns
+        -------
+        Geometry
+            The chart with its nodes moved, and the same cells and planes.
+        """
+        return Geometry(self.nodes + displacement_km, self.occupied, self.plane_cells)
+
+    @functools.cached_property
     def areas_km2(self) -> CellArray:
         """CellArray: Cell areas in square kilometres, ``(n_i, n_j)``.
 

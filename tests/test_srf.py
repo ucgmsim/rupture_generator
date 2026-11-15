@@ -96,16 +96,18 @@ def test_pulses_integrate_to_slip(srf, scenario):
     np.testing.assert_allclose(integral, parsed.points.slip1[rows > 0], rtol=1e-5)
 
 
-def test_positions_are_the_charts(srf, scenario, ruptures):
+def test_positions_are_the_rough_surfaces(srf, scenario, ruptures):
     _, parsed = srf
     to_lon_lat = pyproj.Transformer.from_crs(
         scenario.realisation.crs, "EPSG:4326", always_xy=True
     )
-    east = column(ruptures, lambda r: r.geometry.centres[..., 0])
-    north = column(ruptures, lambda r: r.geometry.centres[..., 1])
+    east = column(ruptures, lambda r: r.rough_geometry.centres[..., 0])
+    north = column(ruptures, lambda r: r.rough_geometry.centres[..., 1])
     lon, lat = to_lon_lat.transform(east * 1000, north * 1000)
     np.testing.assert_allclose(parsed.points.lon, lon, atol=1e-4)
     np.testing.assert_allclose(parsed.points.lat, lat, atol=1e-4)
+    depth = column(ruptures, lambda r: r.rough_geometry.centres[..., 2])
+    np.testing.assert_allclose(parsed.points.dep, depth, atol=1e-5)
 
 
 def test_the_reader_returns_si(srf_path, srf, scenario):
