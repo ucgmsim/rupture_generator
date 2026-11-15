@@ -24,6 +24,7 @@ from rupture_generator import (
     ramp_field,
 )
 from rupture_generator.geometry import NSHM_ALIASES
+from rupture_generator.geometry.crs import _within
 from rupture_generator.sampling import Marginal
 
 NZTM = pyproj.CRS("EPSG:2193")
@@ -435,6 +436,49 @@ def test_an_offshore_fault_near_the_area_of_use_is_accepted():
     # fault.
     section["geometry"]["coordinates"] = [[165.55, -46.0], [165.6, -45.9]]
     assert set(_read(section)) == {"a"}
+
+
+# NZCS2000 (EPSG:3851) has an area of use from longitude 160.6 east, across 180,
+# to 171.2 west.
+_ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
+
+
+@pytest.mark.parametrize(
+    ("bounds", "point", "inside"),
+    [
+        (_ACROSS_THE_ANTIMERIDIAN, (175.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-175.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (180.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-180.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -40.0), True),
+        # Within the margin past the west edge, and beyond it.
+        (_ACROSS_THE_ANTIMERIDIAN, (160.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (158.7, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (158.5, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (150.0, -40.0), False),
+        # Within the margin past the east edge, and beyond it.
+        (_ACROSS_THE_ANTIMERIDIAN, (-170.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-169.3, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-169.1, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (-160.0, -40.0), False),
+        # The longitudes the box leaves out, far from either edge.
+        (_ACROSS_THE_ANTIMERIDIAN, (0.0, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (-90.0, -40.0), False),
+        # Across 180 but past the latitudes, within the margin and beyond it.
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -24.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -23.8), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -57.9), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -58.0), False),
+        # A box around the world has no width modulo 360, yet contains the points below.
+        ((-180.0, -90.0, 180.0, 90.0), (-180.0, 0.0), True),
+        ((-180.0, -90.0, 180.0, 90.0), (0.0, -45.0), True),
+        ((-180.0, -90.0, 180.0, 90.0), (90.0, 45.0), True),
+        ((-180.0, -90.0, 180.0, 90.0), (180.0, 89.0), True),
+    ],
+)
+def test_an_area_of_use_across_the_antimeridian_wraps(bounds, point, inside):
+    assert _within(np.array([point]), bounds).tolist() == [inside]
 
 
 def test_a_hypocentre_off_the_fault_is_refused():
