@@ -24,7 +24,7 @@ from rupture_generator import (
     ramp_field,
 )
 from rupture_generator.geometry import NSHM_ALIASES
-from rupture_generator.geometry.crs import _within
+from rupture_generator.geometry.crs import _within, check_coverage, projected_crs
 from rupture_generator.sampling import Marginal
 
 NZTM = pyproj.CRS("EPSG:2193")
@@ -512,3 +512,42 @@ def test_a_realisation_reads_as_its_segments():
     realisation = Realisation({"a": _plane()}, NZTM)
     assert "a" in repr(realisation)
     assert len(realisation) == 1
+
+
+def test_a_crs_without_an_exact_code_is_named_by_its_closest_one():
+    # A UTM zone written as a PROJ string matches EPSG:32759 closely but not exactly;
+    # the error should name the code a reader can look up, not the PROJ string.
+    crs = pyproj.CRS("+proj=utm +zone=59 +south +datum=WGS84 +units=m")
+    utah = {"wasatch": np.array([[-111.9, 40.7], [-111.8, 40.9]])}
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"^EPSG:32759 \(unknown\) stretches lengths by up to 48\.1% at the "
+        r"faults, most at 'wasatch', past the 1% tolerance; .* EPSG:32612 ",
+    ):
+        check_coverage(crs, utah)
+
+
+def test_a_crs_with_no_code_is_named_by_its_proj_string():
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"^\+proj=merc \+ellps=sphere \+units=ft \+type=crs \(unknown\) "
+        r"measures its axes in foot;",
+    ):
+        projected_crs("+proj=merc +ellps=sphere +units=ft")
+
+
+@pytest.mark.parametrize(
+    ("count", "named"),
+    [
+        (5, "'f0', 'f1', 'f2', 'f3', 'f4' lie"),
+        (6, "'f0', 'f1', 'f2', 'f3', 'f4' and 1 more lie"),
+        (7, "'f0', 'f1', 'f2', 'f3', 'f4' and 2 more lie"),
+    ],
+)
+def test_an_error_names_five_faults_outside_the_area_and_counts_the_rest(count, named):
+    traces = {f"f{i}": np.array([[-111.9, 40.7], [-111.8, 40.9]]) for i in range(count)}
+    with pytest.raises(RuptureGeneratorError) as raised:
+        check_coverage(NZTM, traces)
+    assert f"the faults {named} outside it, at longitude -111.9 to -111.8" in str(
+        raised.value
+    )
