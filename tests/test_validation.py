@@ -516,7 +516,7 @@ def test_a_realisation_reads_as_its_segments():
 
 def test_a_crs_without_an_exact_code_is_named_by_its_closest_one():
     # A UTM zone written as a PROJ string matches EPSG:32759 closely but not exactly;
-    # the error should name the code a reader can look up, not the PROJ string.
+    # the error reports the code a reader can look up, not the PROJ string.
     crs = pyproj.CRS("+proj=utm +zone=59 +south +datum=WGS84 +units=m")
     utah = {"wasatch": np.array([[-111.9, 40.7], [-111.8, 40.9]])}
     with pytest.raises(
