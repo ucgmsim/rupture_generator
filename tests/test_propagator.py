@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -52,6 +54,9 @@ def _far_copy(geometry, offset_km):
         ({"d0_km": 0.0}, "decay length"),
         ({"delta_km": -1.0}, "no sign"),
         ({"max_jump_km": 0.0}, "nothing can jump"),
+        ({"d0_km": math.nan}, "decay length"),
+        ({"delta_km": math.nan}, "no sign"),
+        ({"max_jump_km": math.nan}, "nothing can jump"),
         ({"probability_cap": 1.0}, "probability cap"),
         ({"reach": "mean"}, "a reach is 'sampled' or 'reference'"),
     ],
