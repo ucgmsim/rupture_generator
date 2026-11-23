@@ -288,7 +288,8 @@ def test_cells_on_a_curved_surface_keep_the_requested_size():
 @pytest.mark.parametrize("spacing_km", [0.0, -1.0, np.nan, np.inf])
 def test_a_spacing_that_is_not_a_length_is_refused(spacing_km):
     points, triangles = _grid(2, 2)
-    vertices_km = _plane(*_axes(90.0, 45.0), points)
+    strike, down = _axes(90.0, 45.0)
+    vertices_km = _plane(strike, down, points)
     with pytest.raises(RuptureGeneratorError, match="not a positive length"):
         surface_chart(vertices_km, triangles, spacing_km)
 
@@ -302,7 +303,8 @@ def test_a_level_surface_is_refused():
 
 def test_a_folded_flattening_is_refused(monkeypatch):
     points, triangles = _grid(4, 4)
-    vertices_km = _plane(*_axes(90.0, 45.0), points)
+    strike, down = _axes(90.0, 45.0)
+    vertices_km = _plane(strike, down, points)
     # Flattening folds no mesh this test can build. The test puts the fold in its
     # result instead: an interior vertex pushed past its neighbours turns triangles.
     folded = points.copy()
@@ -327,7 +329,8 @@ def test_a_spacing_coarser_than_the_surface_is_refused():
     # A V whose notch holds the bounding box's centre.
     points = np.array([[0.0, 2.0], [1.0, 0.0], [1.0, 0.5], [2.0, 2.0]])
     triangles = np.array([[0, 1, 2], [2, 1, 3]])
-    vertices_km = _plane(*_axes(90.0, 45.0), points[:, ::-1])
+    strike, down = _axes(90.0, 45.0)
+    vertices_km = _plane(strike, down, points[:, ::-1])
     with pytest.raises(RuptureGeneratorError, match="too coarse"):
         surface_chart(vertices_km, triangles, 10.0)
 

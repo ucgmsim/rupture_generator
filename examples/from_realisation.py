@@ -171,7 +171,7 @@ def rupture(realisation: dict, geometry: Path) -> RuptureConfig:
     return RuptureConfig(
         seed=realisation["seeds"]["genslip_seed"] % (2**31),
         geometry=GeometryConfig(
-            path=geometry, crs="EPSG:2193", spacing_km=srf["resolution"]
+            path=(geometry,), crs="EPSG:2193", spacing_km=srf["resolution"]
         ),
         hypocentre=HypocentreConfig(
             segment=root, strike_fraction=hypocentre["s"], dip_fraction=hypocentre["d"]
