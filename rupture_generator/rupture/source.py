@@ -32,6 +32,7 @@ import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import Geometry
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.medium import Medium
 from rupture_generator.rupture.realisation import Realisation
 
@@ -235,15 +236,6 @@ the component's share of the area.
 """
 
 
-def _occupied_nodes(chart: Geometry) -> np.ndarray:
-    """Flag the nodes that are a corner of at least one fault cell, ``(n_i+1, n_j+1)``."""
-    occupied = chart.occupied
-    nodes = np.zeros((occupied.shape[0] + 1, occupied.shape[1] + 1), dtype=bool)
-    for rows, columns in itertools.product((slice(None, -1), slice(1, None)), repeat=2):
-        nodes[rows, columns] |= occupied
-    return nodes
-
-
 def _points_beneath(chart: Geometry, depth_km: float) -> np.ndarray:
     """Sample a chart's fault at and below a depth, ``(n, 3)`` positions in kilometres.
 
@@ -253,12 +245,8 @@ def _points_beneath(chart: Geometry, depth_km: float) -> np.ndarray:
     """
     nodes = chart.nodes
     depth = nodes[..., 2]
-    below = nodes[_occupied_nodes(chart) & (depth >= depth_km)]
-    occupied = chart.occupied
-    # A down-dip edge is a fault edge if a fault cell lies on either side of it.
-    edge = np.zeros((occupied.shape[0], occupied.shape[1] + 1), dtype=bool)
-    edge[:, :-1] |= occupied
-    edge[:, 1:] |= occupied
+    below = nodes[bordering(chart.occupied, (0, 1)) & (depth >= depth_km)]
+    edge = bordering(chart.occupied, (1,))
     upper, lower = depth[:-1], depth[1:]
     crossing = edge & ((upper - depth_km) * (lower - depth_km) < 0.0)
     fraction = (depth_km - upper[crossing]) / (lower[crossing] - upper[crossing])
@@ -279,7 +267,8 @@ def _separation_km(
     two are closer than that.
     """
     bottom_km = min(
-        float(chart.nodes[..., 2][_occupied_nodes(chart)].max()) for chart in (a, b)
+        float(chart.nodes[..., 2][bordering(chart.occupied, (0, 1))].max())
+        for chart in (a, b)
     )
     depth_km = min(depth_km, 0.99 * bottom_km)
     points_a, points_b = _points_beneath(a, depth_km), _points_beneath(b, depth_km)

@@ -46,11 +46,9 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
     Geometry,
-    check_coverage,
     geometry_from_geojson,
+    geometry_from_tsurf,
     projected_crs,
-    read_tsurf,
-    surface_chart,
 )
 from rupture_generator.rupture.generator import check_seed, moment_rng
 from rupture_generator.rupture.medium import (
@@ -1053,44 +1051,6 @@ def _models(
     return models
 
 
-def _surface_charts(
-    path: Path, crs: pyproj.CRS, spacing_km: float
-) -> dict[str, Geometry]:
-    """Chart every mesh in a TSurf file, its vertices checked against the frame.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        If the file isn't a TSurf of sheets, :func:`surface_chart` refuses a mesh, or
-        the frame fails to cover one.
-    """
-    opener = gzip.open if path.name.endswith(".gz") else open
-    with opener(path, "rt", encoding="utf-8") as handle:
-        try:
-            surfaces = read_tsurf(handle)
-        except RuptureGeneratorError as error:
-            raise RuptureGeneratorError(f"{path}: {error}") from error
-    to_lon_lat = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-    check_coverage(
-        crs,
-        {
-            name: np.column_stack(
-                to_lon_lat.transform(
-                    vertices_km[:, 0] * 1000.0, vertices_km[:, 1] * 1000.0
-                )
-            )
-            for name, (vertices_km, _) in surfaces.items()
-        },
-    )
-    charts = {}
-    for name, (vertices_km, triangles) in surfaces.items():
-        try:
-            charts[name] = surface_chart(vertices_km, triangles, spacing_km)
-        except RuptureGeneratorError as error:
-            raise RuptureGeneratorError(f"{path}: {name}: {error}") from error
-    return charts
-
-
 def _charts(geometry: GeometryConfig, crs: pyproj.CRS) -> dict[str, Geometry]:
     """Chart every fault in every file ``[geometry]`` names.
 
@@ -1103,7 +1063,12 @@ def _charts(geometry: GeometryConfig, crs: pyproj.CRS) -> dict[str, Geometry]:
     charts: dict[str, Geometry] = {}
     for path in geometry.path:
         if path.name.endswith(SURFACE_SUFFIXES):
-            found = _surface_charts(path, crs, geometry.spacing_km)
+            opener = gzip.open if path.name.endswith(".gz") else open
+            with opener(path, "rt", encoding="utf-8") as handle:
+                try:
+                    found = geometry_from_tsurf(handle, crs, geometry.spacing_km)
+                except RuptureGeneratorError as error:
+                    raise RuptureGeneratorError(f"{path}: {error}") from error
         else:
             with path.open(encoding="utf-8") as handle:
                 coarse = geometry_from_geojson(handle, crs, aliases=aliases)
@@ -1151,12 +1116,8 @@ def _hypocentre(
             assert spec.longitude_deg is not None and spec.latitude_deg is not None
             to_frame = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
             east_m, north_m = to_frame.transform(spec.longitude_deg, spec.latitude_deg)
-            i, j = chart.cell_near(east_m / 1000.0, north_m / 1000.0)
-            hypocentre = Hypocentre(
-                spec.segment,
-                0.5 * float(chart.strike_arc_km[j] + chart.strike_arc_km[j + 1]),
-                0.5 * float(chart.dip_arc_km[i] + chart.dip_arc_km[i + 1]),
-            )
+            cell = chart.cell_near(east_m / 1000.0, north_m / 1000.0)
+            hypocentre = Hypocentre(spec.segment, *chart.centre_arc_km(*cell))
         chart.cell_at(hypocentre.strike_km, hypocentre.dip_km)
     except RuptureGeneratorError as error:
         raise RuptureGeneratorError(f"hypocentre: {error}") from error

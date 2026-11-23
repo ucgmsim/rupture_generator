@@ -12,6 +12,7 @@ from hypothesis.extra import numpy as hnp
 
 from rupture_generator import Geometry, geometry_from_geojson, moment_from_magnitude
 from rupture_generator.geometry.crs import true_azimuth_deg
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.source import MAI_BEROZA
 from rupture_generator.sampling import (
     Covariance,
@@ -27,6 +28,8 @@ from rupture_generator.sampling.field import (
     _embed,
     sampler,
 )
+
+from .conftest import NZTM, ORIGIN_KM, holed, tilted
 
 TRACE = [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]]
 
@@ -94,22 +97,6 @@ def test_subdivided_planes_keep_their_area_and_dip():
     assert fine.plane_cells == (70, 67)
 
 
-NZTM = pyproj.CRS("EPSG:2193")
-
-ORIGIN_KM = np.array([1600.0, 5300.0, 0.0])
-"""Near the Alpine fault in NZTM, so positions carry NZTM's rounding."""
-
-
-def _tilted(strike_deg, dip_deg, cells=(3, 4)):
-    """A flat chart of 1 km cells along a frame strike, dipping to its right."""
-    s, d = np.radians(strike_deg), np.radians(dip_deg)
-    along = np.array([np.sin(s), np.cos(s), 0.0])
-    down = np.array([np.cos(d) * np.cos(s), -np.cos(d) * np.sin(s), np.sin(d)])
-    i, j = np.mgrid[0 : cells[0] + 1, 0 : cells[1] + 1].astype(float)
-    nodes = ORIGIN_KM + i[..., None] * down + j[..., None] * along
-    return Geometry(nodes, np.ones(cells, bool), (cells[1],)), along[:2]
-
-
 def _reversed(chart):
     """The same cells with ``j`` running the other way."""
     return Geometry(
@@ -121,7 +108,7 @@ def _reversed(chart):
 def test_strike_keeps_the_fault_to_its_right_whichever_way_the_grid_runs(
     strike_deg, dip_deg
 ):
-    chart, along = _tilted(strike_deg, dip_deg)
+    chart, along = tilted(strike_deg, dip_deg)
     for grid in (chart, _reversed(chart)):
         np.testing.assert_allclose(
             grid.strike, np.broadcast_to(along, (3, 4, 2)), atol=1e-9
@@ -130,7 +117,7 @@ def test_strike_keeps_the_fault_to_its_right_whichever_way_the_grid_runs(
 
 @pytest.mark.parametrize("dip_deg", [90.0, 90.0 - 1e-9, 0.0])
 def test_a_cell_that_dips_to_no_side_takes_its_strike_from_its_j_edges(dip_deg):
-    chart, along = _tilted(30.0, dip_deg)
+    chart, along = tilted(30.0, dip_deg)
     np.testing.assert_allclose(
         chart.strike, np.broadcast_to(along, (3, 4, 2)), atol=1e-9
     )
@@ -173,24 +160,14 @@ def test_a_chart_that_is_fault_everywhere_averages_every_step(offsets_km):
 def test_the_spacing_ignores_nodes_off_the_fault(offsets_km, data):
     chart = _wobbled(offsets_km)
     occupied = data.draw(hnp.arrays(bool, chart.cells).filter(np.any))
-    touched = np.zeros(chart.nodes.shape[:2], dtype=bool)
-    for rows, columns in itertools.product((slice(None, -1), slice(1, None)), repeat=2):
-        touched[rows, columns] |= occupied
+    touched = bordering(occupied, (0, 1))
     far = np.where(touched[..., None], chart.nodes, chart.nodes * 7.0 + 1.0e3)
     partial = Geometry(chart.nodes, occupied, chart.plane_cells)
     assert Geometry(far, occupied, chart.plane_cells).spacing_km == partial.spacing_km
 
 
-def _holed():
-    """A 3 x 4 chart of 1 km cells with its top-left and bottom-right cells off."""
-    chart, _ = _tilted(0.0, 45.0)
-    occupied = np.ones((3, 4), bool)
-    occupied[0, 0] = occupied[2, 3] = False
-    return Geometry(chart.nodes, occupied, (4,))
-
-
 def test_the_cell_near_a_position_is_the_nearest_occupied_one():
-    chart = _holed()
+    chart = holed()
     # From the unoccupied top-left cell's centre, the cell below lies 0.71 km away in
     # plan, the 45 degree dip's horizontal step, and the cell beside it 1 km.
     east_km, north_km, _ = chart.centres[0, 0]
@@ -198,11 +175,9 @@ def test_the_cell_near_a_position_is_the_nearest_occupied_one():
 
 
 def test_the_cell_near_a_position_is_the_cell_its_centre_distances_name():
-    chart = _holed()
-    i, j = chart.cell_near(*chart.centres[2, 1, :2])
-    strike_km = 0.5 * (chart.strike_arc_km[j] + chart.strike_arc_km[j + 1])
-    dip_km = 0.5 * (chart.dip_arc_km[i] + chart.dip_arc_km[i + 1])
-    assert chart.cell_at(float(strike_km), float(dip_km)) == (i, j) == (2, 1)
+    chart = holed()
+    cell = chart.cell_near(*chart.centres[2, 1, :2])
+    assert chart.cell_at(*chart.centre_arc_km(*cell)) == cell == (2, 1)
 
 
 def test_frame_north_is_true_north_turned_by_the_meridian_convergence():

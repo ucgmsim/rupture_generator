@@ -5,15 +5,19 @@ GOCAD TSurf file, the format of the NZ Community Fault Model's subduction
 interfaces. :func:`flatten` unrolls a sheet onto a plane with as little stretch as
 it can, and :func:`surface_chart` lays a regular grid on the unrolled sheet and maps
 each node back onto the mesh. The result is an ordinary :class:`Geometry`, whose
-``occupied`` mask records the mesh's outline.
+``occupied`` mask records the mesh's outline. :func:`geometry_from_tsurf` does all
+three for a file, as :func:`~rupture_generator.geometry.geojson.geometry_from_geojson`
+does for fault sections.
 """
 
 from typing import TextIO
 
 import numpy as np
+import pyproj
 import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
+from rupture_generator.geometry.crs import check_coverage, projected_crs, to_lon_lat
 from rupture_generator.geometry.geometry import Geometry
 
 PASSES = 50
@@ -57,6 +61,12 @@ temporary arrays at a few hundred megabytes."""
 
 _EDGES = ((0, 1, 2), (1, 2, 0), (2, 0, 1))
 """A triangle's edges as ``(start, end, opposite)`` corner indices."""
+
+_AXIS_UNITS_KM = {"m": 1e-3, "km": 1.0}
+"""Kilometres per unit, for each ``AXIS_UNIT`` a TSurf may state."""
+
+_DEPTH_SIGNS = {"Elevation": -1.0, "Depth": 1.0}
+"""The sign that turns a TSurf's third coordinate into depth, by its ``ZPOSITIVE``."""
 
 
 # ------------------------------------------------------------------------ reading
@@ -251,21 +261,20 @@ def read_tsurf(handle: TextIO) -> dict[str, tuple[np.ndarray, np.ndarray]]:
             current["name"] = text.strip().removeprefix("name:").strip()
         elif keyword == "AXIS_UNIT":
             units = [word.strip('"') for word in words[1:]]
-            scales = {"m": 1e-3, "km": 1.0}
-            if len(units) != 3 or not all(unit in scales for unit in units):
+            if len(units) != 3 or not all(unit in _AXIS_UNITS_KM for unit in units):
                 raise RuptureGeneratorError(
                     f"line {line}: AXIS_UNIT {' '.join(words[1:])} is not three of "
-                    f"{sorted(scales)}"
+                    f"{sorted(_AXIS_UNITS_KM)}"
                 )
-            current["units_km"] = [scales[unit] for unit in units]
+            current["units_km"] = [_AXIS_UNITS_KM[unit] for unit in units]
         elif keyword == "ZPOSITIVE":
-            signs = {"Elevation": -1.0, "Depth": 1.0}
-            if words[1:2] == [] or words[1] not in signs:
+            sign = _DEPTH_SIGNS.get(words[1] if len(words) > 1 else "")
+            if sign is None:
                 raise RuptureGeneratorError(
                     f"line {line}: ZPOSITIVE {' '.join(words[1:])} is neither "
                     "Elevation nor Depth"
                 )
-            current["depth_sign"] = signs[words[1]]
+            current["depth_sign"] = sign
         elif keyword in ("VRTX", "PVRTX"):
             identifier, *position = _numbers(words, (int, float, float, float), line)
             current["ids"].append(identifier)
@@ -304,16 +313,37 @@ def _local_frames(
     return frames, 0.5 * length * across
 
 
-def _jacobians(
-    frames: np.ndarray, flat: np.ndarray, triangles: np.ndarray
-) -> np.ndarray:
-    """Each triangle's flattening as a linear map from its own frame, ``(m, 2, 2)``."""
-    source = np.stack([frames[:, 1] - frames[:, 0], frames[:, 2] - frames[:, 0]], -1)
-    corners = flat[triangles]
-    target = np.stack(
-        [corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]], -1
-    )
-    return target @ np.linalg.inv(source)
+def _edges(corners: np.ndarray) -> np.ndarray:
+    """Each triangle's two edges from its first corner, as columns, ``(m, d, 2)``."""
+    return np.stack([corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]], -1)
+
+
+def _linear_maps(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Each triangle's linear map taking its ``source`` corners to its ``target`` ones."""
+    return _edges(target) @ np.linalg.inv(_edges(source))
+
+
+def _area_quantile(values: np.ndarray, areas: np.ndarray, quantile: float) -> float:
+    """The value below which ``quantile`` of the total area lies.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        One value per element.
+    areas : np.ndarray
+        Each element's area, the weight it carries.
+    quantile : float
+        The fraction of the area, in ``[0, 1]``.
+
+    Returns
+    -------
+    float
+        The area-weighted quantile.
+    """
+    order = np.argsort(values, axis=None)
+    cumulative = np.cumsum(np.ravel(areas)[order])
+    index = np.searchsorted(cumulative, quantile * cumulative[-1])
+    return float(np.ravel(values)[order][min(int(index), order.size - 1)])
 
 
 def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
@@ -353,7 +383,7 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     centred = vertices - vertices.mean(axis=0)
     _, _, axes = np.linalg.svd(centred, full_matrices=False)
     flat = centred @ axes[:2].T
-    if np.linalg.det(_jacobians(frames, flat, triangles)).sum() < 0.0:
+    if np.linalg.det(_linear_maps(frames, flat[triangles])).sum() < 0.0:
         flat[:, 1] *= -1.0
 
     cotangents = np.empty((len(triangles), 3))
@@ -380,13 +410,17 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     solve = sp.sparse.linalg.factorized(laplacian[1:, 1:])
     pinned = laplacian[1:, [0]].toarray()
 
+    # Each edge of each triangle's own flat copy, weighted by its cotangent: fixed
+    # across passes, so built once.
+    sides = [
+        cotangents[:, k, None] * (frames[:, a] - frames[:, b])
+        for k, (a, b, _) in enumerate(_EDGES)
+    ]
     for _ in range(PASSES):
         covariance = np.zeros((len(triangles), 2, 2))
-        for k, (a, b, _) in enumerate(_EDGES):
-            covariance += cotangents[:, k, None, None] * np.einsum(
-                "ti,tj->tij",
-                flat[triangles[:, a]] - flat[triangles[:, b]],
-                frames[:, a] - frames[:, b],
+        for side, (a, b, _) in zip(sides, _EDGES, strict=True):
+            covariance += np.einsum(
+                "ti,tj->tij", flat[triangles[:, a]] - flat[triangles[:, b]], side
             )
         angle = np.arctan2(
             covariance[:, 1, 0] - covariance[:, 0, 1],
@@ -395,10 +429,8 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         cos, sin = np.cos(angle), np.sin(angle)
         rotations = np.stack([np.stack([cos, -sin], -1), np.stack([sin, cos], -1)], 1)
         load = np.zeros((n, 2))
-        for k, (a, b, _) in enumerate(_EDGES):
-            target = cotangents[:, k, None] * np.einsum(
-                "tij,tj->ti", rotations, frames[:, a] - frames[:, b]
-            )
+        for side, (a, b, _) in zip(sides, _EDGES, strict=True):
+            target = np.einsum("tij,tj->ti", rotations, side)
             for axis in (0, 1):
                 load[:, axis] += np.bincount(triangles[:, a], target[:, axis], n)
                 load[:, axis] -= np.bincount(triangles[:, b], target[:, axis], n)
@@ -424,8 +456,7 @@ def _rasterise(
     :data:`_RASTER_BLOCK` candidates.
     """
     corners = flat[triangles]
-    edges = np.stack([corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]], -1)
-    inverse = np.linalg.inv(edges)
+    inverse = np.linalg.inv(_edges(corners))
     low = np.ceil((corners.min(axis=1) - origin) / spacing_km - _ROUNDING).astype(
         np.int64
     )
@@ -440,22 +471,58 @@ def _rasterise(
         np.cumsum(counts),
         np.arange(1, -(-counts.sum() // _RASTER_BLOCK)) * _RASTER_BLOCK,
     )
+    # A point's barycentric coordinates are affine in its lattice offset from the low
+    # corner of its triangle's box: ``base + step @ (di, dj)``.
+    base = np.einsum("tab,tb->ta", inverse, origin + spacing_km * low - corners[:, 0])
+    step = spacing_km * inverse
 
-    covering = np.full(shape, -1, dtype=np.int64)
-    for block in np.split(np.arange(len(triangles)), cuts):
+    covering = np.full(shape, -1, dtype=np.int32)
+    for block in np.split(np.arange(len(triangles), dtype=np.int32), cuts):
         owner = np.repeat(block, counts[block])
         offset = np.arange(owner.size) - np.repeat(
             np.cumsum(counts[block]) - counts[block], counts[block]
         )
-        i = low[owner, 0] + offset // extent[owner, 1]
-        j = low[owner, 1] + offset % extent[owner, 1]
-        point = origin + spacing_km * np.column_stack([i, j]) - corners[owner, 0]
-        weights = np.einsum("tab,tb->ta", inverse[owner], point)
+        di, dj = np.divmod(offset, extent[owner, 1])
+        weights = (
+            base[owner]
+            + step[owner, :, 0] * di[:, None]
+            + step[owner, :, 1] * dj[:, None]
+        )
         inside = (weights >= -_ROUNDING).all(axis=1) & (
             weights.sum(axis=1) <= 1.0 + _ROUNDING
         )
-        covering[i[inside], j[inside]] = owner[inside]
+        owner = owner[inside]
+        covering[low[owner, 0] + di[inside], low[owner, 1] + dj[inside]] = owner
     return covering
+
+
+def _orient(flat: np.ndarray, vertices_km: np.ndarray) -> np.ndarray:
+    """Turn a flat sheet so depth increases along axis 0 and the fault dips to the
+    right of axis 1.
+
+    The direction of axis 0 is the least-squares gradient of depth over the flat
+    coordinates. The sheet reflects if needed, which leaves it centred on its mean.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        For a level mesh, which has no down-dip direction.
+    """
+    centred = flat - flat.mean(axis=0)
+    design = np.column_stack([np.ones(len(flat)), centred])
+    # The rows of ``slope`` are the 3D rates of change along each flat axis.
+    slope = np.linalg.lstsq(design, vertices_km, rcond=None)[0][1:]
+    gradient = slope[:, 2]
+    if np.hypot(*gradient) < _LEVEL_GRADIENT:
+        raise RuptureGeneratorError(
+            "the mesh is level, so it has no down-dip direction to chart it by"
+        )
+    down = gradient / np.hypot(*gradient)
+    along = np.array([-down[1], down[0]])
+    dip, strike = down @ slope, along @ slope
+    if strike[0] * dip[1] - strike[1] * dip[0] > 0.0:
+        along = -along
+    return centred @ np.column_stack([down, along])
 
 
 def surface_chart(
@@ -511,7 +578,7 @@ def surface_chart(
 
     # Check, on the sheet as flatten returns it, wound anticlockwise.
     frames, areas_km2 = _local_frames(vertices_km, triangles)
-    jacobians = _jacobians(frames, flat, triangles)
+    jacobians = _linear_maps(frames, flat[triangles])
     folded = int(np.count_nonzero(np.linalg.det(jacobians) <= 0.0))
     if folded:
         raise RuptureGeneratorError(
@@ -519,32 +586,14 @@ def surface_chart(
             "over the rest"
         )
     stretch = np.abs(np.log(np.linalg.svd(jacobians, compute_uv=False))).max(axis=1)
-    order = np.argsort(stretch)
-    cumulative = np.cumsum(areas_km2[order])
-    percentile = float(
-        stretch[order][np.searchsorted(cumulative, 0.95 * cumulative[-1])]
-    )
+    percentile = _area_quantile(stretch, areas_km2, 0.95)
     if percentile > MAXIMUM_STRETCH:
         raise RuptureGeneratorError(
             f"flattening stretches the mesh by {percentile:.1%} at the 95th "
             f"percentile of area, beyond the {MAXIMUM_STRETCH:.0%} a chart may have"
         )
 
-    # Orient: the rows of ``slope`` are the 3D rates of change along each flat axis.
-    centred = flat - flat.mean(axis=0)
-    design = np.column_stack([np.ones(len(flat)), centred])
-    slope = np.linalg.lstsq(design, vertices_km, rcond=None)[0][1:]
-    gradient = slope[:, 2]
-    if np.hypot(*gradient) < _LEVEL_GRADIENT:
-        raise RuptureGeneratorError(
-            "the mesh is level, so it has no down-dip direction to chart it by"
-        )
-    down = gradient / np.hypot(*gradient)
-    along = np.array([-down[1], down[0]])
-    dip, strike = down @ slope, along @ slope
-    if strike[0] * dip[1] - strike[1] * dip[0] > 0.0:
-        along = -along
-    flat = centred @ np.column_stack([down, along])
+    flat = _orient(flat, vertices_km)
 
     # Grid.
     low, high = flat.min(axis=0), flat.max(axis=0)
@@ -567,21 +616,65 @@ def surface_chart(
         covering < 0, return_distances=False, return_indices=True
     )
     owner = covering[tuple(nearest)]
+    del covering, nearest
 
-    # Each triangle's affine map from the flat sheet back onto the mesh.
-    corners = flat[triangles]
-    edges = np.stack([corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]], -1)
-    spatial = vertices_km[triangles]
-    spans = np.stack([spatial[:, 1] - spatial[:, 0], spatial[:, 2] - spatial[:, 0]], -1)
-    affine = spans @ np.linalg.inv(edges)
+    # Each triangle's affine map from the flat sheet back onto the mesh, built one
+    # coordinate at a time into the node array.
+    corners, spatial = flat[triangles], vertices_km[triangles]
+    affine = _linear_maps(corners, spatial)
     offset = spatial[:, 0] - np.einsum("tcd,td->tc", affine, corners[:, 0])
     u = (origin[0] + spacing_km * np.arange(n_i + 1))[:, None]
     v = (origin[1] + spacing_km * np.arange(n_j + 1))[None, :]
-    positions = np.stack(
-        [
-            offset[owner, c] + affine[owner, c, 0] * u + affine[owner, c, 1] * v
-            for c in range(3)
-        ],
-        axis=-1,
-    )
+    positions = np.empty((n_i + 1, n_j + 1, 3))
+    for c in range(3):
+        out = positions[..., c]
+        np.multiply(affine[owner, c, 0], u, out=out)
+        out += affine[owner, c, 1] * v
+        out += offset[owner, c]
     return Geometry(nodes=positions, occupied=occupied, plane_cells=(n_j,))
+
+
+def geometry_from_tsurf(
+    handle: TextIO, crs: pyproj.CRS | str, spacing_km: float
+) -> dict[str, Geometry]:
+    """Read every sheet in a GOCAD TSurf file into a chart, keyed by name.
+
+    Parameters
+    ----------
+    handle : TextIO
+        The open TSurf file, as text, with its coordinates in ``crs``.
+    crs : pyproj.CRS or str
+        The projected frame the file's coordinates are in, which must measure in
+        metres and cover the sheets' region, as
+        :func:`~rupture_generator.geometry.crs.check_coverage` checks.
+    spacing_km : float
+        The cell size, as :func:`surface_chart` takes it.
+
+    Returns
+    -------
+    dict[str, Geometry]
+        One chart per sheet, keyed by name in file order.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If :func:`read_tsurf` or :func:`surface_chart` refuses a sheet, naming it, or
+        the frame fails to cover one.
+    """
+    frame = projected_crs(crs)
+    surfaces = read_tsurf(handle)
+    to_wgs84 = pyproj.Transformer.from_crs(frame, "EPSG:4326", always_xy=True)
+    check_coverage(
+        frame,
+        {
+            name: np.column_stack(to_lon_lat(to_wgs84, vertices[:, 0], vertices[:, 1]))
+            for name, (vertices, _) in surfaces.items()
+        },
+    )
+    charts = {}
+    for name, (vertices_km, triangles) in surfaces.items():
+        try:
+            charts[name] = surface_chart(vertices_km, triangles, spacing_km)
+        except RuptureGeneratorError as error:
+            raise RuptureGeneratorError(f"{name}: {error}") from error
+    return charts

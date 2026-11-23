@@ -16,7 +16,7 @@ from rupture_generator.formats.fields import (
     write_fields,
 )
 
-from .conftest import EXAMPLE
+from .conftest import CFM, EXAMPLE
 
 
 def test_the_version_is_the_installed_one():
@@ -42,7 +42,7 @@ def test_a_record_states_the_config_and_what_ran_it():
 def test_a_record_digests_every_geometry_file_in_order(tmp_path):
     loaded = rupture_config.load(EXAMPLE)
     (sections,) = loaded.geometry.path
-    surface = EXAMPLE.parent / "cfm" / "Hikurangi.ts.gz"
+    surface = CFM / "Hikurangi.ts.gz"
     geometry = dataclasses.replace(loaded.geometry, path=(surface, sections))
     stated = run_record.provenance(
         EXAMPLE, dataclasses.replace(loaded, geometry=geometry)

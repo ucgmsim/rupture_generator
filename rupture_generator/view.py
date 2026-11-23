@@ -24,7 +24,8 @@ import pyproj
 from numpy.typing import ArrayLike
 
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.formats.srf import M_PER_KM, SrfRupture, read_rupture
+from rupture_generator.formats.srf import SrfRupture, read_rupture
+from rupture_generator.geometry.crs import M_PER_KM
 from rupture_generator.rupture.source import magnitude_from_moment
 
 if TYPE_CHECKING:

@@ -16,13 +16,13 @@ from rupture_generator import config as rupture_config
 from rupture_generator.cli import main
 from rupture_generator.formats.fields import read_fields
 from rupture_generator.formats.srf import read_rupture
-from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.source import moment_from_magnitude
 
-from .conftest import EXAMPLE
+from .conftest import CFM, EXAMPLE, NZTM
 
 EXAMPLES = EXAMPLE.parent
-CFM = EXAMPLES / "cfm"
+
+TO_NZTM = pyproj.Transformer.from_crs("EPSG:4326", NZTM, always_xy=True)
 
 SPACING_KM = 10.0
 """Coarse enough to be cheap: measured at 0.3 s and 140 MB to chart and draw
@@ -32,20 +32,36 @@ INTERFACES = {"hikurangi": "Hikurangi", "puysegur": "Puyseguer"}
 """Each example, and the segment the fault model names its surface."""
 
 
-def _coarse(tmp_path, example, **changes):
-    """The example's config at :data:`SPACING_KM`, with ``changes`` to its tables."""
+def _loaded(example, **geometry):
+    """The example's config at :data:`SPACING_KM`, with ``geometry`` changes to its
+    ``[geometry]``."""
     loaded = rupture_config.load(EXAMPLES / f"{example}.toml")
-    geometry = dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM)
-    loaded = dataclasses.replace(loaded, geometry=geometry, **changes)
-    path = tmp_path / f"{example}.toml"
+    return dataclasses.replace(
+        loaded,
+        geometry=dataclasses.replace(
+            loaded.geometry, spacing_km=SPACING_KM, **geometry
+        ),
+    )
+
+
+def _written(directory, name, loaded):
+    """A config written as a rupture file."""
+    path = directory / f"{name}.toml"
     path.write_text(rupture_config.dump(loaded))
     return path
+
+
+def _moment_nm(rupture):
+    """A drawn segment's moment, in newton metres."""
+    return np.sum(
+        rupture.rigidity_pa * rupture.geometry.areas_km2 * 1e6 * rupture.slip_m
+    )
 
 
 @pytest.fixture(scope="module", params=sorted(INTERFACES))
 def drawn(request, tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp(request.param)
-    path = _coarse(tmp_path, request.param)
+    path = _written(tmp_path, request.param, _loaded(request.param))
     srf_path, fields_path = tmp_path / "out.srf", tmp_path / "out.h5"
     assert main([str(path), str(srf_path)]) == 0
     assert main([str(path), str(fields_path)]) == 0
@@ -57,8 +73,7 @@ def test_the_moment_delivered_is_the_target(drawn):
     loaded, fields, srf = drawn
     target_nm = moment_from_magnitude(loaded.source.magnitude)
     (rupture,) = fields.values()
-    rigidity = rigidity_pa(rupture.shear_speed_km_s, rupture.density_g_cm3)
-    fields_nm = np.sum(rigidity * rupture.geometry.areas_km2 * 1e6 * rupture.slip_m)
+    fields_nm = _moment_nm(rupture)
     srf_nm = np.sum(srf.rigidity_pa * srf.area_m2 * srf.slip_m)
     assert fields_nm == pytest.approx(target_nm, rel=1e-9)
     # The SRF holds single precision.
@@ -87,14 +102,15 @@ def test_slip_is_zero_off_the_fault_and_onsets_are_causal_on_it(drawn):
 
 
 @pytest.mark.parametrize("example", sorted(INTERFACES))
-def test_an_unperturbed_front_never_outruns_its_fastest_speed(example, tmp_path):
+def test_an_unperturbed_front_never_outruns_its_fastest_speed(example):
     # Without the timing perturbation the onset is the eikonal solve's travel time,
     # which no straight line from the hypocentre at the greatest front speed can beat. A
     # chart that let the front cut across its unoccupied cells, or that shrank the
     # fault, would.
     still = rupture_config.Perturbation(offset_s=0.0, coefficient=0.0)
-    loaded = rupture_config.load(_coarse(tmp_path, example, perturbation=still))
-    scenario = rupture_config.build(loaded)
+    scenario = rupture_config.build(
+        dataclasses.replace(_loaded(example), perturbation=still)
+    )
     (rupture,) = generate(
         scenario.realisation,
         scenario.medium,
@@ -115,19 +131,14 @@ def test_an_unperturbed_front_never_outruns_its_fastest_speed(example, tmp_path)
 
 @pytest.mark.parametrize("example", sorted(INTERFACES))
 def test_a_longitude_and_latitude_lands_on_the_cell_beneath_it(example):
-    loaded = rupture_config.load(EXAMPLES / f"{example}.toml")
-    loaded = dataclasses.replace(
-        loaded,
-        geometry=dataclasses.replace(loaded.geometry, spacing_km=SPACING_KM),
-    )
+    loaded = _loaded(example)
     scenario = rupture_config.build(loaded)
     hypocentre = scenario.realisation.hypocentre
     assert hypocentre is not None
     assert hypocentre.segment == INTERFACES[example]
     chart = scenario.realisation[hypocentre.segment]
     cell = chart.cell_at(hypocentre.strike_km, hypocentre.dip_km)
-    to_frame = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=True)
-    east_m, north_m = to_frame.transform(
+    east_m, north_m = TO_NZTM.transform(
         loaded.hypocentre.longitude_deg, loaded.hypocentre.latitude_deg
     )
     centre = chart.centres[cell]
@@ -153,13 +164,12 @@ def test_the_files_read_back_with_the_hypocentre_where_it_was_asked(drawn):
     assert srf.slip_m.shape == (n_i * n_j,)
     assert srf.hypocentre is not None
     lon, lat, depth_km = srf.hypocentre
-    to_frame = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=True)
     asked = np.array(
-        to_frame.transform(
+        TO_NZTM.transform(
             loaded.hypocentre.longitude_deg, loaded.hypocentre.latitude_deg
         )
     )
-    read = np.array(to_frame.transform(lon, lat))
+    read = np.array(TO_NZTM.transform(lon, lat))
     assert np.hypot(*(read - asked)) / 1000.0 <= 0.5 * np.hypot(
         *rupture.geometry.spacing_km
     )
@@ -194,19 +204,11 @@ SECTION = {
 def test_a_curved_surface_and_a_planar_section_rupture_together(tmp_path):
     sections = tmp_path / "section.geojson"
     sections.write_text(json.dumps(SECTION))
-    loaded = rupture_config.load(EXAMPLES / "hikurangi.toml")
-    geometry = dataclasses.replace(
-        loaded.geometry,
-        path=(CFM / "Hikurangi.ts.gz", sections),
-        spacing_km=SPACING_KM,
-    )
     loaded = dataclasses.replace(
-        loaded,
-        geometry=geometry,
+        _loaded("hikurangi", path=(CFM / "Hikurangi.ts.gz", sections)),
         propagation=rupture_config.Predetermined(parents={"upper plate": "Hikurangi"}),
     )
-    path = tmp_path / "joint.toml"
-    path.write_text(rupture_config.dump(loaded))
+    path = _written(tmp_path, "joint", loaded)
     fields_path = tmp_path / "joint.h5"
     assert main([str(path), str(fields_path)]) == 0
     assert main([str(path), str(tmp_path / "joint.srf")]) == 0
@@ -216,15 +218,7 @@ def test_a_curved_surface_and_a_planar_section_rupture_together(tmp_path):
     section = fields["upper plate"]
     assert section.geometry.occupied.all()
     assert section.onset_s.min() > 0.0
-    total_nm = sum(
-        np.sum(
-            rigidity_pa(r.shear_speed_km_s, r.density_g_cm3)
-            * r.geometry.areas_km2
-            * 1e6
-            * r.slip_m
-        )
-        for r in fields.values()
-    )
+    total_nm = sum(_moment_nm(rupture) for rupture in fields.values())
     assert total_nm == pytest.approx(
         moment_from_magnitude(loaded.source.magnitude), rel=1e-9
     )
@@ -232,27 +226,19 @@ def test_a_curved_surface_and_a_planar_section_rupture_together(tmp_path):
     assert len(srf.planes) == 1 + section.geometry.planes
 
 
-def test_one_name_in_two_files_is_refused(tmp_path):
-    loaded = rupture_config.load(EXAMPLES / "hikurangi.toml")
+def test_one_name_in_two_files_is_refused():
     surface = CFM / "Hikurangi.ts.gz"
-    geometry = dataclasses.replace(
-        loaded.geometry, path=(surface, surface), spacing_km=SPACING_KM
-    )
     with pytest.raises(
         RuptureGeneratorError,
         match=r"^geometry\.path: .*Hikurangi\.ts\.gz names \['Hikurangi'\], which an "
         "earlier file names too",
     ):
-        rupture_config.build(dataclasses.replace(loaded, geometry=geometry))
+        rupture_config.build(_loaded("hikurangi", path=(surface, surface)))
 
 
 def test_a_surface_outside_the_frame_is_refused():
-    loaded = rupture_config.load(EXAMPLES / "hikurangi.toml")
     # Read in a frame for Utah, NZTM's coordinates land far from its area of use.
-    geometry = dataclasses.replace(
-        loaded.geometry, crs="EPSG:32612", spacing_km=SPACING_KM
-    )
     with pytest.raises(
         RuptureGeneratorError, match=r"EPSG:32612 .* the faults 'Hikurangi' lie outside"
     ):
-        rupture_config.build(dataclasses.replace(loaded, geometry=geometry))
+        rupture_config.build(_loaded("hikurangi", crs="EPSG:32612"))

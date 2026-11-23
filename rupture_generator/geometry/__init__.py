@@ -13,7 +13,12 @@ from rupture_generator.geometry.geometry import (
     Geometry,
     NodeArray,
 )
-from rupture_generator.geometry.surface import flatten, read_tsurf, surface_chart
+from rupture_generator.geometry.surface import (
+    flatten,
+    geometry_from_tsurf,
+    read_tsurf,
+    surface_chart,
+)
 
 __all__ = [
     "NSHM_ALIASES",
@@ -26,6 +31,7 @@ __all__ = [
     "check_coverage",
     "flatten",
     "geometry_from_geojson",
+    "geometry_from_tsurf",
     "projected_crs",
     "read_tsurf",
     "surface_chart",

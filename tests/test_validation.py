@@ -24,10 +24,15 @@ from rupture_generator import (
     ramp_field,
 )
 from rupture_generator.geometry import NSHM_ALIASES
-from rupture_generator.geometry.crs import _within, check_coverage, projected_crs
+from rupture_generator.geometry.crs import (
+    AREA_MARGIN_DEG,
+    _within,
+    check_coverage,
+    projected_crs,
+)
 from rupture_generator.sampling import Marginal
 
-NZTM = pyproj.CRS("EPSG:2193")
+from .conftest import NZTM
 
 
 def _plane(cells=(1, 1)):
@@ -213,7 +218,7 @@ def test_a_position_too_far_from_the_fault_is_refused_with_its_distance():
 @pytest.mark.parametrize(
     ("ask", "message"),
     [
-        (lambda chart: chart.cell_near(0.5, 0.5), "no cell near it"),
+        (lambda chart: chart.cell_near(0.5, 0.5), "no spacing"),
         (lambda chart: chart.spacing_km, "no spacing"),
     ],
 )
@@ -474,7 +479,7 @@ def test_an_offshore_fault_near_the_area_of_use_is_accepted():
 
 # NZCS2000 (EPSG:3851) has an area of use from longitude 160.6 east, across 180,
 # to 171.2 west.
-_ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
+_ACROSS_THE_ANTIMERIDIAN = WEST, SOUTH, EAST, NORTH = (160.6, -55.95, -171.2, -25.88)
 
 
 @pytest.mark.parametrize(
@@ -488,22 +493,22 @@ _ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
         (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -40.0), True),
         # Within the margin past the west edge, and beyond it.
         (_ACROSS_THE_ANTIMERIDIAN, (159.0, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (157.7, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (157.5, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (WEST - AREA_MARGIN_DEG + 0.1, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (WEST - AREA_MARGIN_DEG - 0.1, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (150.0, -40.0), False),
         # Within the margin past the east edge, and beyond it.
         (_ACROSS_THE_ANTIMERIDIAN, (-169.0, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-168.3, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-168.1, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (EAST + AREA_MARGIN_DEG - 0.1, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (EAST + AREA_MARGIN_DEG + 0.1, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (-160.0, -40.0), False),
         # The longitudes the box leaves out, far from either edge.
         (_ACROSS_THE_ANTIMERIDIAN, (0.0, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (-90.0, -40.0), False),
         # Across 180 but past the latitudes, within the margin and beyond it.
-        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -23.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -22.8), False),
-        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -58.9), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -59.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, NORTH + AREA_MARGIN_DEG - 0.1), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, NORTH + AREA_MARGIN_DEG + 0.1), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, SOUTH - AREA_MARGIN_DEG + 0.1), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, SOUTH - AREA_MARGIN_DEG - 0.1), False),
         # A box around the world has no width modulo 360, yet contains the points below.
         ((-180.0, -90.0, 180.0, 90.0), (-180.0, 0.0), True),
         ((-180.0, -90.0, 180.0, 90.0), (0.0, -45.0), True),

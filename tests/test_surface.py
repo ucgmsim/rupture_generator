@@ -2,7 +2,6 @@
 
 import gzip
 import io
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -11,9 +10,9 @@ from hypothesis import strategies as st
 
 from rupture_generator import RuptureGeneratorError
 from rupture_generator.geometry import flatten, read_tsurf, surface, surface_chart
-from rupture_generator.geometry.surface import MAXIMUM_STRETCH
+from rupture_generator.geometry.surface import MAXIMUM_STRETCH, _area_quantile
 
-CFM = Path(__file__).parents[1] / "examples" / "cfm"
+from .conftest import CFM
 
 
 def _grid(rows, columns, keep=None):
@@ -70,9 +69,7 @@ def _chart_stretch(chart, spacing_km):
     jacobian = np.stack([down, along], axis=-1)[chart.occupied]
     sigma = np.linalg.svd(jacobian, compute_uv=False)
     stretch = np.abs(np.log(sigma)).max(axis=1)
-    order = np.argsort(stretch)
-    cumulative = np.cumsum(chart.areas_km2[chart.occupied][order])
-    return float(stretch[order][np.searchsorted(cumulative, 0.95 * cumulative[-1])])
+    return _area_quantile(stretch, chart.areas_km2[chart.occupied], 0.95)
 
 
 # ----------------------------------------------------------------------- flatten

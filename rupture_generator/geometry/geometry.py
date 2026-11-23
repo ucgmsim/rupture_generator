@@ -46,6 +46,33 @@ cell's normal can tilt by about 2e-10 from rounding alone. The tolerance is fift
 that, 6e-7 degrees."""
 
 
+def bordering(mask: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
+    """Flag the nodes or node steps that border a flagged cell.
+
+    Each axis in ``axes`` grows the mask by one: an entry is flagged when the cell on
+    either side of it along that axis is. ``(0, 1)`` gives the nodes cornering a
+    flagged cell, ``(n_i+1, n_j+1)``; ``(0,)`` the steps along strike that border one,
+    ``(n_i+1, n_j)``; and ``(1,)`` the steps down dip, ``(n_i, n_j+1)``.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        One flag per cell, ``(n_i, n_j)``.
+    axes : tuple of int
+        The axes to grow along.
+
+    Returns
+    -------
+    np.ndarray
+        The grown mask.
+    """
+    for axis in axes:
+        before, after = [(0, 0), (0, 0)], [(0, 0), (0, 0)]
+        before[axis], after[axis] = (1, 0), (0, 1)
+        mask = np.pad(mask, before) | np.pad(mask, after)
+    return mask
+
+
 def _position_to_cell_index(
     position_km: float, arc_km: np.ndarray, *, axis: str
 ) -> int:
@@ -199,19 +226,19 @@ class Geometry:
         with neither reads as east, ``(1, 0)``, as :attr:`dip_deg` reads 0 for a
         degenerate cell.
         """
-        p = self.nodes
         normal = self._diagonal_normals
-        length = np.linalg.norm(normal, axis=-1, keepdims=True)
+        tolerance = VERTICAL_TOLERANCE * 2.0 * self.areas_km2
         # With depth positive down, an upward normal's horizontal part points down dip;
         # a quarter turn anticlockwise of the dip direction is the strike.
-        along = np.sign(normal[..., 2:]) * np.stack(
+        direction = np.sign(normal[..., 2:]) * np.stack(
             [normal[..., 1], -normal[..., 0]], -1
         )
-        decided = (np.abs(normal[..., 2:]) > VERTICAL_TOLERANCE * length) & (
-            np.linalg.norm(along, axis=-1, keepdims=True) > VERTICAL_TOLERANCE * length
+        undecided = (np.abs(normal[..., 2]) <= tolerance) | (
+            np.hypot(direction[..., 0], direction[..., 1]) <= tolerance
         )
-        edges = (p[:-1, 1:] - p[:-1, :-1] + p[1:, 1:] - p[1:, :-1])[..., :2]
-        direction = np.where(decided, along, edges)
+        i, j = np.nonzero(undecided)
+        p = self.nodes[..., :2]
+        direction[i, j] = p[i, j + 1] - p[i, j] + p[i + 1, j + 1] - p[i + 1, j]
         size = np.linalg.norm(direction, axis=-1, keepdims=True)
         east = np.broadcast_to([1.0, 0.0], direction.shape)
         return np.divide(direction, size, out=east.copy(), where=size > 0)
@@ -235,17 +262,12 @@ class Geometry:
             raise RuptureGeneratorError(
                 "a chart with no occupied cell has no spacing on the fault"
             )
-        # A step along strike borders the cells on either side of it down dip, and a
-        # step down dip the cells on either side of it along strike.
-        strike_steps = np.zeros((occupied.shape[0] + 1, occupied.shape[1]), dtype=bool)
-        strike_steps[:-1] |= occupied
-        strike_steps[1:] |= occupied
-        dip_steps = np.zeros((occupied.shape[0], occupied.shape[1] + 1), dtype=bool)
-        dip_steps[:, :-1] |= occupied
-        dip_steps[:, 1:] |= occupied
         strike = np.linalg.norm(np.diff(self.nodes, axis=1), axis=-1)
         dip = np.linalg.norm(np.diff(self.nodes, axis=0), axis=-1)
-        return float(strike[strike_steps].mean()), float(dip[dip_steps].mean())
+        return (
+            float(np.mean(strike, where=bordering(occupied, (0,)))),
+            float(np.mean(dip, where=bordering(occupied, (1,)))),
+        )
 
     @functools.cached_property
     def strike_arc_km(self) -> np.ndarray:
@@ -298,6 +320,23 @@ class Geometry:
             )
         return cell
 
+    def centre_arc_km(self, i: int, j: int) -> tuple[float, float]:
+        """The distances that name a cell's centre, the inverse of :meth:`cell_at`.
+
+        Parameters
+        ----------
+        i, j : int
+            The cell's 0-based row and column.
+
+        Returns
+        -------
+        tuple[float, float]
+            Its centre's distance along strike and down dip, in kilometres, measured
+            as :meth:`cell_at` measures them.
+        """
+        strike, dip = self.strike_arc_km, self.dip_arc_km
+        return 0.5 * float(strike[j] + strike[j + 1]), 0.5 * float(dip[i] + dip[i + 1])
+
     def cell_near(self, east_km: float, north_km: float) -> tuple[int, int]:
         """Find the occupied cell whose centre is nearest a position in plan.
 
@@ -316,23 +355,19 @@ class Geometry:
         Raises
         ------
         RuptureGeneratorError
-            For a chart with no occupied cell, or a position farther in plan from
-            every occupied cell's centre than half the diagonal of a cell of
-            :attr:`spacing_km` and :data:`MAXIMUM_HYPOCENTRE_OFFSET_KM` together,
-            naming the distance.
+            For a chart with no occupied cell, which has no spacing, or a position
+            farther in plan from every occupied cell's centre than half the diagonal
+            of a cell of :attr:`spacing_km` and :data:`MAXIMUM_HYPOCENTRE_OFFSET_KM`
+            together, naming the distance.
         """
-        i, j = np.nonzero(self.occupied)
-        if i.size == 0:
-            raise RuptureGeneratorError(
-                f"({east_km}, {north_km}) km has no cell near it on a chart with no "
-                "occupied cell"
-            )
-        centres = self.centres[i, j]
-        distance_km = np.hypot(centres[:, 0] - east_km, centres[:, 1] - north_km)
-        nearest = int(np.argmin(distance_km))
+        # The spacing refuses a chart with no occupied cell.
         reach_km = MAXIMUM_HYPOCENTRE_OFFSET_KM + 0.5 * float(
             np.hypot(*self.spacing_km)
         )
+        centres = self.centres
+        distance_km = np.hypot(centres[..., 0] - east_km, centres[..., 1] - north_km)
+        distance_km[~self.occupied] = np.inf
+        nearest = np.unravel_index(np.argmin(distance_km), distance_km.shape)
         if not distance_km[nearest] <= reach_km:
             raise RuptureGeneratorError(
                 f"({east_km}, {north_km}) km lies {distance_km[nearest]:.3f} km in plan "
@@ -340,7 +375,7 @@ class Geometry:
                 "position may be moved onto it: half a cell's diagonal and "
                 f"{MAXIMUM_HYPOCENTRE_OFFSET_KM} km more"
             )
-        return int(i[nearest]), int(j[nearest])
+        return int(nearest[0]), int(nearest[1])
 
     def subdivide(self, spacing_km: float) -> "Geometry":
         """Recut this chart into cells of about ``spacing_km`` on a side.

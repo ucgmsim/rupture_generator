@@ -30,7 +30,8 @@ import srf
 from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry, NodeArray
-from rupture_generator.geometry.crs import true_azimuth_deg
+from rupture_generator.geometry.crs import to_lon_lat, true_azimuth_deg
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.generator import SegmentRupture
 from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
@@ -38,7 +39,6 @@ from rupture_generator.rupture.realisation import Hypocentre, Realisation
 CM_PER_M = 100.0
 CM_PER_KM = 1.0e5
 CM2_PER_KM2 = 1.0e10
-M_PER_KM = 1000.0
 
 NO_HYPOCENTRE = -999.0
 """``shyp`` and ``dhyp`` on a plane the rupture did not start on."""
@@ -48,13 +48,6 @@ def _plane_slices(geometry: Geometry) -> list[slice]:
     """Each plane's cell columns, in trace order."""
     edges = np.cumsum([0, *geometry.plane_cells])
     return [slice(int(a), int(b)) for a, b in itertools.pairwise(edges)]
-
-
-def _to_lon_lat(
-    transformer: pyproj.Transformer, east_km: np.ndarray, north_km: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    lon, lat = transformer.transform(east_km * M_PER_KM, north_km * M_PER_KM)
-    return np.asarray(lon), np.asarray(lat)
 
 
 def _top_centre_km(nodes: NodeArray, occupied: CellMask) -> np.ndarray:
@@ -128,20 +121,23 @@ def _planes(
                 "plane header to summarise"
             )
         start_km, end_km = float(arc_km[columns.start]), float(arc_km[columns.stop])
-        centre_lon, centre_lat = _to_lon_lat(
+        centre_lon, centre_lat = to_lon_lat(
             transformer, *_top_centre_km(plane, occupied)
         )
-        on_nodes = np.zeros((occupied.shape[0] + 1, occupied.shape[1] + 1), dtype=bool)
-        for rows, cols in itertools.product(
-            (slice(None, -1), slice(1, None)), repeat=2
-        ):
-            on_nodes[rows, cols] |= occupied
         azimuth_rad = np.radians(strike_deg[:, columns][occupied])
         mean_strike_deg = np.degrees(
             np.arctan2(np.sin(azimuth_rad).sum(), np.cos(azimuth_rad).sum())
         )
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
         nstk = columns.stop - columns.start
+        shyp, dhyp = (
+            (
+                ((strike_cells - columns.start) / nstk - 0.5) * (end_km - start_km),
+                dip_cells / geometry.cells[0] * width_km,
+            )
+            if on_plane
+            else (NO_HYPOCENTRE, NO_HYPOCENTRE)
+        )
         headers.append(
             srf.Plane(
                 elon=float(centre_lon),
@@ -152,17 +148,9 @@ def _planes(
                 wid=width_km,
                 stk=float(mean_strike_deg % 360.0),
                 dip=float(geometry.dip_deg[:, columns][occupied].mean()),
-                dtop=float(plane[..., 2][on_nodes].min()),
-                shyp=(
-                    ((strike_cells - columns.start) / nstk - 0.5) * (end_km - start_km)
-                    if on_plane
-                    else NO_HYPOCENTRE
-                ),
-                dhyp=(
-                    dip_cells / geometry.cells[0] * width_km
-                    if on_plane
-                    else NO_HYPOCENTRE
-                ),
+                dtop=float(plane[..., 2][bordering(occupied, (0, 1))].min()),
+                shyp=shyp,
+                dhyp=dhyp,
             )
         )
         if on_plane:
@@ -191,9 +179,7 @@ def _plane_points(
         return np.ascontiguousarray(field[:, columns]).ravel()
 
     centres = geometry.centres[:, columns]
-    lon, lat = _to_lon_lat(
-        transformer, centres[..., 0].ravel(), centres[..., 1].ravel()
-    )
+    lon, lat = to_lon_lat(transformer, centres[..., 0].ravel(), centres[..., 1].ravel())
     slip_m, rise_s = cells(rupture.slip_m), cells(rupture.rise_time_s)
     try:
         row_offsets, rates = synthesise_pulses(

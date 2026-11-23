@@ -26,6 +26,8 @@ reaches 2.8 degrees west and 2.4 degrees south of it. NZTM stretches lengths the
 MAXIMUM_SCALE_ERROR = 0.01
 """How far the CRS may stretch a length at any trace point, as a fraction."""
 
+M_PER_KM = 1000.0
+
 AZIMUTH_STEP_KM = 1.0
 """How far :func:`true_azimuth_deg` steps along a direction before measuring it.
 
@@ -162,16 +164,38 @@ def true_azimuth_deg(
         The azimuths in ``[0, 360)`` degrees, shaped as the positions without their
         last axis.
     """
-    start_km = np.asarray(positions_km, dtype=np.float64)
-    end_km = start_km + AZIMUTH_STEP_KM * np.asarray(directions, dtype=np.float64)
-    lon0, lat0 = transformer.transform(
-        start_km[..., 0].ravel() * 1000.0, start_km[..., 1].ravel() * 1000.0
+    start_km = np.asarray(positions_km, dtype=np.float64).reshape(-1, 2)
+    end_km = start_km + AZIMUTH_STEP_KM * np.asarray(
+        directions, dtype=np.float64
+    ).reshape(-1, 2)
+    both_km = np.concatenate([start_km, end_km])
+    lon, lat = to_lon_lat(transformer, both_km[:, 0], both_km[:, 1])
+    count = len(start_km)
+    azimuth_deg, _, _ = _GEOD.inv(lon[:count], lat[:count], lon[count:], lat[count:])
+    return (np.asarray(azimuth_deg) % 360.0).reshape(np.shape(positions_km)[:-1])
+
+
+def to_lon_lat(
+    transformer: pyproj.Transformer, east_km: np.ndarray, north_km: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Turn positions in the projected frame, in kilometres, into WGS84 degrees.
+
+    Parameters
+    ----------
+    transformer : pyproj.Transformer
+        Takes the projected CRS, in metres, to WGS84 longitude and latitude.
+    east_km, north_km : np.ndarray
+        Easting and northing in kilometres.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Longitude and latitude in degrees.
+    """
+    lon, lat = transformer.transform(
+        np.asarray(east_km) * M_PER_KM, np.asarray(north_km) * M_PER_KM
     )
-    lon1, lat1 = transformer.transform(
-        end_km[..., 0].ravel() * 1000.0, end_km[..., 1].ravel() * 1000.0
-    )
-    azimuth_deg, _, _ = _GEOD.inv(lon0, lat0, lon1, lat1)
-    return (np.asarray(azimuth_deg) % 360.0).reshape(start_km.shape[:-1])
+    return np.asarray(lon), np.asarray(lat)
 
 
 def _describe(crs: pyproj.CRS) -> str:
@@ -228,5 +252,6 @@ __all__ = [
     "MAXIMUM_SCALE_ERROR",
     "check_coverage",
     "projected_crs",
+    "to_lon_lat",
     "true_azimuth_deg",
 ]

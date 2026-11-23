@@ -27,6 +27,9 @@ def srf(srf_path):
     return srf_path, srf_format.read(srf_path)
 
 
+from .conftest import NZTM, ORIGIN_KM, holed, tilted
+
+
 def column(ruptures, pick):
     return np.concatenate(
         [
@@ -293,9 +296,7 @@ def test_a_rise_time_under_half_a_sample_slips_within_one_sample(tmp_path):
 
 # ------------------------------------------------------------ charts in part fault
 
-NZTM = pyproj.CRS("EPSG:2193")
 TO_LON_LAT = pyproj.Transformer.from_crs(NZTM, "EPSG:4326", always_xy=True)
-ORIGIN_KM = np.array([1600.0, 5300.0, 0.0])
 
 
 def _drawn(chart, cell=None):
@@ -316,22 +317,13 @@ def _drawn(chart, cell=None):
     )
     hypocentre = None
     if cell is not None:
-        i, j = cell
-        hypocentre = Hypocentre(
-            "a",
-            0.5 * float(chart.strike_arc_km[j] + chart.strike_arc_km[j + 1]),
-            0.5 * float(chart.dip_arc_km[i] + chart.dip_arc_km[i + 1]),
-        )
+        hypocentre = Hypocentre("a", *chart.centre_arc_km(*cell))
     return Realisation({"a": rupture}, NZTM, hypocentre=hypocentre)
 
 
 def _north_dipping_east(occupied):
     """1 km cells along frame north, dipping 45 degrees east, ``occupied`` as given."""
-    rows, columns = occupied.shape
-    i, j = np.mgrid[0 : rows + 1, 0 : columns + 1].astype(float)
-    step = np.sqrt(0.5)
-    nodes = ORIGIN_KM + np.stack([step * i, j, step * i], axis=-1)
-    return Geometry(nodes, occupied, (columns,))
+    return tilted(0.0, 45.0, occupied.shape, occupied)[0]
 
 
 def test_a_header_summarises_only_the_occupied_cells(tmp_path):
@@ -380,9 +372,8 @@ def test_a_header_summarises_only_the_occupied_cells(tmp_path):
 
 
 def test_nodes_off_the_fault_leave_the_header_alone(tmp_path):
-    occupied = np.ones((3, 4), bool)
-    occupied[0, 0] = occupied[2, 3] = False
-    chart = _north_dipping_east(occupied)
+    chart = holed()
+    occupied = chart.occupied
     # Corners (0, 0) and (3, 4) belong to no occupied cell.
     nodes = chart.nodes.copy()
     nodes[0, 0] += [-5.0, -5.0, -3.0]
