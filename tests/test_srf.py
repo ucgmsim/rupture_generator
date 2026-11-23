@@ -7,7 +7,13 @@ import pyproj
 import pytest
 import srf as srf_format
 
-from rupture_generator import RuptureGeneratorError
+from rupture_generator import (
+    Geometry,
+    Hypocentre,
+    Realisation,
+    RuptureGeneratorError,
+    SegmentRupture,
+)
 from rupture_generator.formats.srf import (
     NO_HYPOCENTRE,
     _plane_slices,
@@ -283,3 +289,164 @@ def test_a_rise_time_under_half_a_sample_slips_within_one_sample(tmp_path):
         assert parsed.points.slip1[point] == pytest.approx(
             slip_m[point] * 100.0, rel=1e-6
         )
+
+
+# ------------------------------------------------------------ charts in part fault
+
+NZTM = pyproj.CRS("EPSG:2193")
+TO_LON_LAT = pyproj.Transformer.from_crs(NZTM, "EPSG:4326", always_xy=True)
+ORIGIN_KM = np.array([1600.0, 5300.0, 0.0])
+
+
+def _drawn(chart, cell=None):
+    """A rupture slipping 1 m on every occupied cell, starting at ``cell``'s centre."""
+    cells = chart.cells
+    ones = np.ones(cells)
+    rupture = SegmentRupture(
+        geometry=chart,
+        slip_m=np.where(chart.occupied, 1.0, 0.0),
+        rise_time_s=ones,
+        rake_deg=np.full(cells, 90.0),
+        onset_s=np.zeros(cells),
+        speed_km_s=2.8 * ones,
+        shear_speed_km_s=3.5 * ones,
+        density_g_cm3=2.7 * ones,
+        dt_s=0.05,
+        beta=None,
+    )
+    hypocentre = None
+    if cell is not None:
+        i, j = cell
+        hypocentre = Hypocentre(
+            "a",
+            0.5 * float(chart.strike_arc_km[j] + chart.strike_arc_km[j + 1]),
+            0.5 * float(chart.dip_arc_km[i] + chart.dip_arc_km[i + 1]),
+        )
+    return Realisation({"a": rupture}, NZTM, hypocentre=hypocentre)
+
+
+def _north_dipping_east(occupied):
+    """1 km cells along frame north, dipping 45 degrees east, ``occupied`` as given."""
+    rows, columns = occupied.shape
+    i, j = np.mgrid[0 : rows + 1, 0 : columns + 1].astype(float)
+    step = np.sqrt(0.5)
+    nodes = ORIGIN_KM + np.stack([step * i, j, step * i], axis=-1)
+    return Geometry(nodes, occupied, (columns,))
+
+
+def test_a_header_summarises_only_the_occupied_cells(tmp_path):
+    occupied = np.array(
+        [
+            [False, False, False, False],
+            [False, True, True, True],
+            [True, True, True, False],
+        ]
+    )
+    chart = _north_dipping_east(occupied)
+    path = tmp_path / "holed.srf"
+    write_rupture(path, _drawn(chart, cell=(1, 2)))
+    parsed = srf_format.read(path)
+    (plane,) = parsed.planes
+    step = np.sqrt(0.5)
+    assert plane.dtop == pytest.approx(step, abs=1e-6)
+    assert plane.dip == pytest.approx(45.0, abs=1e-4)
+    assert (plane.nstk, plane.ndip) == (4, 3)
+    # The top outline runs 1 km along row 2, 0.71 km up to row 1 and 3 km along it,
+    # so its middle lies on row 1.
+    half_km = 0.5 * (4.0 + step)
+    lon, lat = TO_LON_LAT.transform(
+        (ORIGIN_KM[0] + step) * 1000.0, (ORIGIN_KM[1] + half_km - step) * 1000.0
+    )
+    assert (plane.elon, plane.elat) == pytest.approx((lon, lat), abs=1e-5)
+    # Every cell strikes along frame north, which is true north turned by the
+    # meridian convergence. The header's strike is their mean over the fault.
+    convergence_deg = (
+        pyproj.Proj(NZTM)
+        .get_factors(parsed.points.lon, parsed.points.lat)
+        .meridian_convergence
+    )
+    np.testing.assert_allclose(parsed.points.stk, convergence_deg % 360.0, atol=1e-3)
+    on_fault = parsed.points.stk[occupied.ravel()].astype(float)
+    assert plane.stk == pytest.approx(on_fault.mean(), abs=1e-4)
+    # Only the occupied cells slip, and the hypocentre reads back at its cell.
+    assert np.array_equal(parsed.points.slip1 > 0, occupied.ravel())
+    east, north, depth_km = chart.centres[1, 2]
+    found = read_rupture(path).hypocentre
+    assert found is not None
+    centre = TO_LON_LAT.transform(east * 1000.0, north * 1000.0)
+    _, _, distance_m = pyproj.Geod(ellps="WGS84").inv(*centre, found[0], found[1])
+    assert distance_m < 1.0
+    assert found[2] == pytest.approx(depth_km, abs=1e-3)
+
+
+def test_nodes_off_the_fault_leave_the_header_alone(tmp_path):
+    occupied = np.ones((3, 4), bool)
+    occupied[0, 0] = occupied[2, 3] = False
+    chart = _north_dipping_east(occupied)
+    # Corners (0, 0) and (3, 4) belong to no occupied cell.
+    nodes = chart.nodes.copy()
+    nodes[0, 0] += [-5.0, -5.0, -3.0]
+    nodes[3, 4] += [5.0, 5.0, 30.0]
+    moved = Geometry(nodes, occupied, chart.plane_cells)
+    headers = []
+    for name, geometry in [("still", chart), ("moved", moved)]:
+        write_rupture(tmp_path / name, _drawn(geometry))
+        headers.append(srf_format.read(tmp_path / name).planes[0])
+    for field in ("elon", "elat", "dtop", "dip", "stk"):
+        assert getattr(headers[0], field) == getattr(headers[1], field), field
+
+
+def test_each_point_strikes_along_its_own_cell(tmp_path):
+    # A chart hung from an arc of 10 km radius, turning through 60 degrees, with its
+    # rows dipping 60 degrees in toward the arc's centre.
+    turn_rad = np.radians(np.linspace(0.0, 60.0, 9))
+    rim = np.stack([np.sin(turn_rad), np.cos(turn_rad), np.zeros_like(turn_rad)], -1)
+    down = -np.tan(np.radians(30.0)) * rim + [0.0, 0.0, 1.0]
+    nodes = ORIGIN_KM + 10.0 * rim + np.arange(3.0)[:, None, None] * down
+    chart = Geometry(nodes, np.ones((2, 8), bool), (8,))
+    path = tmp_path / "arc.srf"
+    write_rupture(path, _drawn(chart))
+    stk = srf_format.read(path).points.stk.reshape(2, 8)
+
+    geod = pyproj.Geod(ellps="WGS84")
+    lon, lat = TO_LON_LAT.transform(nodes[0, :, 0] * 1000.0, nodes[0, :, 1] * 1000.0)
+    forward, back, _ = geod.inv(lon[:-1], lat[:-1], lon[1:], lat[1:])
+    # The geodesic's azimuth halfway along each cell's top edge.
+    turn = (np.asarray(back) + 180.0 - forward + 180.0) % 360.0 - 180.0
+    expected = (np.asarray(forward) + 0.5 * turn) % 360.0
+    assert np.ptp(expected) > 50.0
+    for row in stk:
+        np.testing.assert_allclose(
+            (row - expected + 180.0) % 360.0 - 180.0, 0.0, atol=0.01
+        )
+
+
+def test_a_plane_with_no_fault_is_refused(tmp_path):
+    occupied = np.ones((1, 4), bool)
+    occupied[:, 2:] = False
+    whole = _north_dipping_east(occupied)
+    chart = Geometry(whole.nodes, occupied, (2, 2))
+    with pytest.raises(RuptureGeneratorError, match="^a: plane 1 has no occupied"):
+        write_rupture(tmp_path / "empty.srf", _drawn(chart))
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_chart_that_is_fault_everywhere_heads_each_plane_from_its_top_edge(
+    srf, ruptures
+):
+    _, parsed = srf
+    planes = iter(parsed.planes)
+    for rupture in ruptures.values():
+        geometry = rupture.geometry
+        assert geometry.occupied.all()
+        for columns, nodes in zip(
+            _plane_slices(geometry), geometry.plane_nodes(), strict=True
+        ):
+            plane = next(planes)
+            middle = 0.5 * (nodes[0, 0] + nodes[0, -1])
+            lon, lat = TO_LON_LAT.transform(middle[0] * 1000.0, middle[1] * 1000.0)
+            assert (plane.elon, plane.elat) == pytest.approx((lon, lat), abs=1e-5)
+            assert plane.dtop == pytest.approx(nodes[0, 0, 2], abs=1e-5)
+            assert plane.dip == pytest.approx(
+                geometry.dip_deg[:, columns].mean(), abs=1e-4
+            )

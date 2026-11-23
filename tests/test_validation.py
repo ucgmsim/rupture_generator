@@ -189,6 +189,40 @@ def test_a_partial_outline_cannot_be_resampled():
         holed.subdivide(0.5)
 
 
+def test_a_position_in_an_unoccupied_cell_is_refused():
+    chart = _plane((2, 2))
+    holed = Geometry(chart.nodes, np.array([[True, False], [True, True]]), (2,))
+    assert holed.cell_at(0.5, 0.5) == (0, 0)
+    with pytest.raises(
+        RuptureGeneratorError, match=r"^1\.5 km along strike and 0\.5 km .* \(0, 1\)"
+    ):
+        holed.cell_at(1.5, 0.5)
+
+
+def test_a_position_too_far_from_the_fault_is_refused_with_its_distance():
+    chart = _plane((2, 2))
+    # The nearest centre, (0.5, 0.5), is 1.9 km off in plan, past half the diagonal of
+    # the 1 by 1.414 km cell and a kilometre more, 1.866 km.
+    assert chart.cell_near(-1.3, 0.5) == (0, 0)
+    with pytest.raises(
+        RuptureGeneratorError, match=r"lies 1\.900 km in plan .* past the 1\.866 km"
+    ):
+        chart.cell_near(-1.4, 0.5)
+
+
+@pytest.mark.parametrize(
+    ("ask", "message"),
+    [
+        (lambda chart: chart.cell_near(0.5, 0.5), "no cell near it"),
+        (lambda chart: chart.spacing_km, "no spacing"),
+    ],
+)
+def test_a_chart_with_no_fault_has_no_spacing_and_no_cell_near_anything(ask, message):
+    chart = _plane()
+    with pytest.raises(RuptureGeneratorError, match=message):
+        ask(Geometry(chart.nodes, np.zeros((1, 1), bool), (1,)))
+
+
 def test_an_empty_chart_has_no_distance_to_anything():
     chart = _plane()
     empty = Geometry(chart.nodes, np.zeros((1, 1), bool), (1,))
@@ -453,23 +487,23 @@ _ACROSS_THE_ANTIMERIDIAN = (160.6, -55.95, -171.2, -25.88)
         (_ACROSS_THE_ANTIMERIDIAN, (-180.0, -40.0), True),
         (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -40.0), True),
         # Within the margin past the west edge, and beyond it.
-        (_ACROSS_THE_ANTIMERIDIAN, (160.0, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (158.7, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (158.5, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (159.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (157.7, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (157.5, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (150.0, -40.0), False),
         # Within the margin past the east edge, and beyond it.
-        (_ACROSS_THE_ANTIMERIDIAN, (-170.0, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-169.3, -40.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-169.1, -40.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (-169.0, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-168.3, -40.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-168.1, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (-160.0, -40.0), False),
         # The longitudes the box leaves out, far from either edge.
         (_ACROSS_THE_ANTIMERIDIAN, (0.0, -40.0), False),
         (_ACROSS_THE_ANTIMERIDIAN, (-90.0, -40.0), False),
         # Across 180 but past the latitudes, within the margin and beyond it.
-        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -24.0), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -23.8), False),
-        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -57.9), True),
-        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -58.0), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -23.0), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (-179.9, -22.8), False),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -58.9), True),
+        (_ACROSS_THE_ANTIMERIDIAN, (179.9, -59.0), False),
         # A box around the world has no width modulo 360, yet contains the points below.
         ((-180.0, -90.0, 180.0, 90.0), (-180.0, 0.0), True),
         ((-180.0, -90.0, 180.0, 90.0), (0.0, -45.0), True),
