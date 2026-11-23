@@ -105,9 +105,35 @@ def test_a_cylinder_unrolls_to_its_developed_rectangle():
     chord_km = 2.0 * radius_km * np.sin(0.5 * sweep / steps)
     developed = np.column_stack([points[:, 0] * chord_km, points[:, 1]])
     flat = flatten(vertices, triangles)
-    # A fixed number of passes leaves this quarter turn under a millimetre from its
-    # development, across 36 km.
-    np.testing.assert_allclose(_aligned(flat, developed), developed, atol=1e-5)
+    np.testing.assert_allclose(_aligned(flat, developed), developed, atol=1e-9)
+
+
+def test_a_triangle_with_no_area_is_refused():
+    vertices = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    triangles = np.array([[0, 1, 2], [0, 3, 1]])
+    with pytest.raises(
+        RuptureGeneratorError, match="1 of the mesh's triangles have no"
+    ):
+        flatten(vertices, triangles)
+
+
+def test_a_start_that_faces_down_is_turned_over(monkeypatch):
+    points, triangles = _grid(4, 4)
+    strike, down = _axes(90.0, 45.0)
+    vertices = _plane(strike, down, points)
+    # The conformal start faces up on every sheet this test can build. The test
+    # mirrors it instead, which flatten must turn back.
+    mirrored = surface._conformal
+    monkeypatch.setattr(
+        surface,
+        "_conformal",
+        lambda *arguments: mirrored(*arguments) * [1.0, -1.0],
+    )
+    corners = flatten(vertices, triangles)[triangles]
+    first, second = corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+    assert np.all(first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0] > 0.0)
 
 
 # -------------------------------------------------------------------- read_tsurf

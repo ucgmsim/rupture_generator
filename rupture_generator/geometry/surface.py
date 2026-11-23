@@ -20,14 +20,25 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry.crs import check_coverage, projected_crs, to_lon_lat
 from rupture_generator.geometry.geometry import Geometry
 
-PASSES = 50
-"""Local/global passes :func:`flatten` runs.
+CONVERGENCE = 1e-4
+"""When :func:`flatten` stops: the first pass that lowers the energy by less than this
+fraction of it.
 
-On the NZ Community Fault Model's Hikurangi and Puysegur interfaces meshed at 2 km,
-50 passes reach a 95th-percentile stretch of 0.78% and 1.40%, against 0.78% and
-1.33% at convergence after 135 and 455 passes. Each pass costs about 0.06 s on the
-43,421-vertex Hikurangi mesh.
+The 95th-percentile stretch has then settled to within about 0.04 percentage points
+of its converged value. On the NZ Community Fault Model's Hikurangi and Puysegur
+meshes it stops after 20-40 and 80-160 passes, against 160 and 640 to converge in
+the energy's seventh digit. On the 3,000-6,000 km Slab2 interfaces the energy goes on
+falling for thousands of passes as the whole sheet bends slowly, which moves vertices
+by kilometres but leaves every triangle's shape, and so the stretch, nearly as it is.
 """
+
+ENERGY_FLOOR = 1e-12
+"""An energy below this fraction of the sheet's area also stops :func:`flatten`: the
+sheet has unrolled without stretch, to round-off."""
+
+MAXIMUM_PASSES = 1000
+"""The most local/global passes :func:`flatten` runs before returning the layout it
+has reached."""
 
 MAXIMUM_STRETCH = 0.05
 """The largest 95th-percentile stretch a flattened mesh may have and be charted.
@@ -47,13 +58,6 @@ _ROUNDING = 1e-9
 counting cells and testing which triangle covers a lattice point. It keeps a sheet an
 exact number of cells long at that many cells, and a point on an edge two triangles
 share covered by one of them."""
-
-_MINIMUM_COTANGENT = 1e-3
-"""The least weight an edge has in :func:`flatten`.
-
-An obtuse angle has a negative cotangent, which can make the system singular or
-indefinite. Clamping keeps the matrix positive definite once a vertex is pinned.
-"""
 
 _RASTER_BLOCK = 1 << 22
 """Candidate lattice points tested per block while rasterising, which bounds the
@@ -346,20 +350,70 @@ def _area_quantile(values: np.ndarray, areas: np.ndarray, quantile: float) -> fl
     return float(np.ravel(values)[order][min(int(index), order.size - 1)])
 
 
+def _conformal(
+    frames: np.ndarray, triangles: np.ndarray, vertices: np.ndarray
+) -> np.ndarray:
+    """The least-squares conformal map of a sheet onto a plane, ``(n, 2)``.
+
+    Each triangle's map is as close to a similarity as least squares allows, the
+    energy Lévy, B., Petitjean, S., Ray, N. & Maillot, J. (2002), "Least squares
+    conformal maps for automatic texture atlas generation", *ACM Transactions on
+    Graphics* 21(3), 362-371, minimise, and which Liu et al. (2008) recover as their
+    as-similar-as-possible case. Two vertices far apart, the extremes along the
+    vertices' principal axis, are held where the projection onto the least-squares
+    plane puts them, which fixes the similarity the energy leaves free.
+    """
+    n, m = len(vertices), len(triangles)
+    double_area = frames[:, 1, 0] * frames[:, 2, 1] - frames[:, 1, 1] * frames[:, 2, 0]
+    # The gradient of corner k's hat function is its opposite edge turned a quarter,
+    # over twice the area; each residual row is weighted by the root of the area.
+    weight = np.sqrt(0.5 * double_area)
+    rows, columns, values = [], [], []
+    for k in range(3):
+        edge = frames[:, (k + 2) % 3] - frames[:, (k + 1) % 3]
+        gx, gy = -edge[:, 1] / double_area * weight, edge[:, 0] / double_area * weight
+        u, v, t = triangles[:, k], n + triangles[:, k], np.arange(m)
+        # u_x - v_y on the first m rows, u_y + v_x on the next m: Cauchy-Riemann.
+        rows += [t, t, m + t, m + t]
+        columns += [u, v, u, v]
+        values += [gx, -gy, gy, gx]
+    system = sp.sparse.csc_array(
+        (np.concatenate(values), (np.concatenate(rows), np.concatenate(columns))),
+        shape=(2 * m, 2 * n),
+    )
+    centred = vertices - vertices.mean(axis=0)
+    axes = np.linalg.svd(centred, full_matrices=False)[2]
+    projected = centred @ axes[:2].T
+    ends = [int(np.argmin(projected[:, 0])), int(np.argmax(projected[:, 0]))]
+    held = np.array([ends[0], ends[1], n + ends[0], n + ends[1]])
+    free = np.setdiff1d(np.arange(2 * n), held)
+    known = np.concatenate([projected[ends, 0], projected[ends, 1]])
+    matrix = system[:, free]
+    solved = sp.sparse.linalg.spsolve(
+        (matrix.T @ matrix).tocsc(), -(matrix.T @ (system[:, held] @ known))
+    )
+    flat = np.empty(2 * n)
+    flat[free], flat[held] = solved, known
+    return flat.reshape(2, n).T
+
+
 def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     """Unroll a triangulated sheet onto a plane, stretching it as little as possible.
 
     The method is the local/global as-rigid-as-possible parameterisation of Liu, L.,
     Zhang, L., Xu, Y., Gotsman, C. & Gortler, S. J. (2008), "A local/global approach
-    to mesh parameterization", *Computer Graphics Forum* 27(5), 1495-1504. It lays
-    each triangle flat on its own. Each pass then finds, per triangle and in closed
-    form, the least-squares rotation of its flat copy onto the current layout
-    (local), and moves every vertex in one sparse solve so each edge matches its
-    rotated copy (global), with edges weighted by the cotangent of the angle opposite.
-    It factorises the matrix once. The start is the projection onto the vertices'
-    least-squares plane, and :data:`PASSES` passes follow.
+    to mesh parameterization", *Computer Graphics Forum* 27(5), 1495-1504. It
+    minimises their energy (1), each triangle's flattening against the nearest
+    rotation, with each edge weighted by the cotangent of the angle opposite it. Each
+    pass finds, per triangle and in closed form, the least-squares rotation of its
+    flat copy onto the current layout (local), then moves every vertex in one sparse
+    solve so each edge matches its rotated copy (global). The matrix is factorised
+    once. The start is the least-squares conformal map, as the paper recommends, and
+    passes run until one lowers the energy by less than :data:`CONVERGENCE` of it,
+    the energy falls below :data:`ENERGY_FLOOR`, or :data:`MAXIMUM_PASSES` have run.
 
-    A developable sheet, one that unrolls without stretch, unrolls exactly.
+    A developable sheet, one that unrolls without stretch, unrolls exactly, to the
+    energy floor.
 
     Parameters
     ----------
@@ -374,16 +428,27 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         Flat coordinates, ``(n, 2)``, in the units of ``vertices``, facing the way
         that makes the triangles' summed signed area positive, so a sheet that
         unrolls without folding winds anticlockwise.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        For a triangle with no area, which has no shape to keep.
     """
     vertices = np.asarray(vertices, dtype=np.float64)
     triangles = np.asarray(triangles, dtype=np.int64)
     n = len(vertices)
-    frames, _ = _local_frames(vertices, triangles)
+    frames, areas = _local_frames(vertices, triangles)
+    floor = ENERGY_FLOOR * float(areas.sum())
+    if not np.all(areas > 0.0):
+        raise RuptureGeneratorError(
+            f"{int(np.count_nonzero(areas <= 0.0))} of the mesh's triangles have no "
+            "area, so they have no shape to keep"
+        )
 
-    centred = vertices - vertices.mean(axis=0)
-    _, _, axes = np.linalg.svd(centred, full_matrices=False)
-    flat = centred @ axes[:2].T
-    if np.linalg.det(_linear_maps(frames, flat[triangles])).sum() < 0.0:
+    flat = _conformal(frames, triangles, vertices)
+    corners = flat[triangles]
+    first, second = corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+    if (first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]).sum() < 0.0:
         flat[:, 1] *= -1.0
 
     cotangents = np.empty((len(triangles), 3))
@@ -393,7 +458,6 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         cotangents[:, k] = np.einsum("ij,ij->i", p, q) / np.abs(
             p[:, 0] * q[:, 1] - p[:, 1] * q[:, 0]
         )
-    cotangents = np.maximum(cotangents, _MINIMUM_COTANGENT)
 
     rows, columns, values = [], [], []
     for k, (a, b, _) in enumerate(_EDGES):
@@ -405,18 +469,19 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         (np.concatenate(values), (np.concatenate(rows), np.concatenate(columns))),
         shape=(n, n),
     )
-    # Pinning vertex 0 where the start put it removes the translation the energy
-    # leaves free, and makes the rest of the system positive definite.
+    # The cotangent Laplacian is positive semidefinite on a connected sheet, with
+    # only the constants in its kernel, so pinning vertex 0 where the start put it
+    # removes the translation the energy leaves free and leaves the rest positive
+    # definite, obtuse angles and negative weights included.
     solve = sp.sparse.linalg.factorized(laplacian[1:, 1:])
     pinned = laplacian[1:, [0]].toarray()
 
-    # Each edge of each triangle's own flat copy, weighted by its cotangent: fixed
-    # across passes, so built once.
-    sides = [
-        cotangents[:, k, None] * (frames[:, a] - frames[:, b])
-        for k, (a, b, _) in enumerate(_EDGES)
-    ]
-    for _ in range(PASSES):
+    # Each edge of each triangle's own flat copy, bare and weighted by its cotangent:
+    # fixed across passes, so built once.
+    copies = [frames[:, a] - frames[:, b] for a, b, _ in _EDGES]
+    sides = [cotangents[:, k, None] * copy for k, copy in enumerate(copies)]
+    previous = np.inf
+    for _ in range(MAXIMUM_PASSES):
         covariance = np.zeros((len(triangles), 2, 2))
         for side, (a, b, _) in zip(sides, _EDGES, strict=True):
             covariance += np.einsum(
@@ -428,6 +493,25 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         )
         cos, sin = np.cos(angle), np.sin(angle)
         rotations = np.stack([np.stack([cos, -sin], -1), np.stack([sin, cos], -1)], 1)
+        # Energy (1) of the current layout, with each triangle's best rotation.
+        energy = sum(
+            float(
+                cotangents[:, k]
+                @ np.sum(
+                    (
+                        flat[triangles[:, a]]
+                        - flat[triangles[:, b]]
+                        - np.einsum("tij,tj->ti", rotations, copy)
+                    )
+                    ** 2,
+                    axis=1,
+                )
+            )
+            for k, (copy, (a, b, _)) in enumerate(zip(copies, _EDGES, strict=True))
+        )
+        if energy <= floor or previous - energy < CONVERGENCE * previous:
+            break
+        previous = energy
         load = np.zeros((n, 2))
         for side, (a, b, _) in zip(sides, _EDGES, strict=True):
             target = np.einsum("tij,tj->ti", rotations, side)
