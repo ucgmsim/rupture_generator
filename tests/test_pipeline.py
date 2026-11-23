@@ -361,6 +361,7 @@ def test_a_jump_can_depart_from_any_parent_cell_within_reach(bound_km_s):
         density_g_cm3=zero + 2.7,
         dt_s=0.05,
         beta=None,
+        roughness_km=np.zeros_like(geometry.nodes),
     )
     child = _vertical((20.5, 2.0), (20.5, 6.0), 4)
     model = JumpModel(reach="reference")
@@ -471,6 +472,6 @@ def test_a_second_draw_reuses_every_embedding(scenario):
             seed=scenario.seed,
         )
         misses.append(embed.cache_info().misses)
-    # Slip's latent and rake each embed once per segment; rise time and the onset
-    # displacement draw from slip's embedding.
-    assert misses == [2 * len(scenario.realisation)] * 2
+    # Slip's latent, rake and roughness each embed once per segment; rise time and
+    # the onset displacement draw from slip's embedding.
+    assert misses == [3 * len(scenario.realisation)] * 2

@@ -78,6 +78,7 @@ def test_each_statistic_names_its_model(ruptures):
             "rise.alpha_t",
             "speed.alpha_t",
             "perturbation.scale_s",
+            "roughness.rms_km",
         }
 
 

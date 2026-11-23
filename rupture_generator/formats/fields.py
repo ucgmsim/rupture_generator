@@ -11,8 +11,8 @@ The root group stores the projection as WKT in ``crs``, the hypocentre in
 ``segment`` variable names the segments in drawing order, the order the SRF writes
 them in, and ``parent`` names the segment that triggered each one, empty for the
 hypocentre's. Each segment is a group of its own name. Its cell fields are on
-``(dip, strike)`` with their units in ``units``, its chart's nodes on ``(node_dip,
-node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its pulse's
+``(dip, strike)`` with their units in ``units``, its chart's nodes and its roughness's
+displacement of them on ``(node_dip, node_strike, axis)``, its cell centres on ``(dip, strike, axis)``, and its pulse's
 ``dt_s`` and the statistics its models reported in attributes.
 """
 
@@ -74,6 +74,11 @@ def _segment(rupture: SegmentRupture) -> "tuple[xr.Dataset, dict[str, dict]]":
         {"units": "km"},
     )
     variables["centres_km"] = (_CELL + ("axis",), geometry.centres, {"units": "km"})
+    variables["roughness_km"] = (
+        ("node_dip", "node_strike", "axis"),
+        rupture.roughness_km,
+        {"units": "km"},
+    )
     variables["plane_cells"] = ("plane", np.asarray(geometry.plane_cells))
     dataset = xr.Dataset(
         variables,
@@ -203,6 +208,7 @@ def _read(path: Path | str) -> tuple[Realisation[SegmentRupture], str | None]:
                     **values,
                     dt_s=attrs.pop("dt_s"),
                     beta=group["beta"].values if "beta" in group else None,
+                    roughness_km=group["roughness_km"].values,
                     statistics=attrs,
                 )
             parents = (
