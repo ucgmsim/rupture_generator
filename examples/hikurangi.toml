@@ -1,0 +1,113 @@
+# A hypothetical Mw 8.9 rupture of the whole Hikurangi subduction interface, from off
+# East Cape to beneath Marlborough and from the trench to 75 km down. It is not a past
+# earthquake, and its parameters are not tuned to match any observations.
+#
+# The interface is the triangulated surface of the NZ Community Fault Model v1.0, given
+# in NZTM, which the generator charts by unrolling it onto a flat sheet:
+#
+#   Seebeck, H. et al. (2024). The New Zealand Community Fault Model - version 1.0: an
+#   improved geological foundation for seismic hazard modelling. New Zealand Journal
+#   of Geology and Geophysics 67(2), 209-229. https://doi.org/10.1080/00288306.2023.2181362
+#
+# The magnitude is the interface relation of Strasser et al. (2010),
+# Mw = 4.441 + 0.846 log10(A), at the charted area A of 180,856 km2, rounded:
+#
+#   Strasser, F. O., Arango, M. C. and Bommer, J. J. (2010). Scaling of the source
+#   dimensions of interface and intraslab subduction-zone earthquakes with moment
+#   magnitude. Seismological Research Letters 81(6), 941-950.
+#   https://doi.org/10.1785/gssrl.81.6.941
+#
+# The rake is pure thrust, 90 degrees. The hypocentre is a longitude and latitude
+# offshore southern Hawke's Bay, which moves to the nearest cell of the interface in
+# plan, 15 km down. The medium and the pulse shape are alpine_hope.toml's, and every
+# field model is the library's default.
+#
+# Cut at 5 km, about 1.3 seconds and 0.22 GB of memory to generate (`just bench`
+# measures both). The cells are coarser than the 4.7 km along-strike correlation length
+# of slip at this magnitude, so the example shows the geometry, not resolved slip.
+
+seed = 20261123
+
+[geometry]
+path = "cfm/Hikurangi.ts.gz"
+crs = "EPSG:2193"
+spacing_km = 5
+
+[hypocentre]
+segment = "Hikurangi"
+longitude_deg = 176.42
+latitude_deg = -40.42
+
+[medium]
+bottom_depth_km = [
+    2.8,
+    3.0,
+    3.2,
+    3.4,
+    3.6,
+    3.8,
+    4.0,
+    4.2,
+    4.4,
+    4.6,
+    4.8,
+    5.0,
+    8.0,
+    12.0,
+    27.0,
+    39.0,
+    1038.0,
+]
+shear_speed_km_s = [
+    2.49,
+    2.7,
+    2.77,
+    2.84,
+    2.91,
+    2.98,
+    3.05,
+    3.12,
+    3.19,
+    3.26,
+    3.33,
+    3.4,
+    3.6,
+    3.6,
+    3.7,
+    4.3,
+    4.6,
+]
+density_g_cm3 = [
+    2.44,
+    2.48,
+    2.49,
+    2.51,
+    2.52,
+    2.54,
+    2.56,
+    2.58,
+    2.6,
+    2.61,
+    2.63,
+    2.66,
+    2.72,
+    2.72,
+    2.83,
+    3.12,
+    3.33,
+]
+
+[source]
+type = "finite"
+magnitude = 8.9
+rake_deg = 90.0
+
+[pulse]
+dt_s = 0.005
+
+[pulse.beta]
+type = "ramp"
+centre_km = 2.0
+half_width_km = 1.0
+shallow = 0.5
+deep = 0.13

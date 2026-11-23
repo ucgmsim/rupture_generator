@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import importlib.metadata
 import tomllib
@@ -32,10 +33,24 @@ def test_a_record_states_the_config_and_what_ran_it():
     assert provenance["seed"] == loaded.seed
     assert provenance["rupture_generator"] == rupture_generator.__version__
     assert set(provenance["dependencies"]) == set(run_record.DEPENDENCIES)
-    read = [EXAMPLE, loaded.geometry.path]
+    read = [EXAMPLE, *loaded.geometry.path]
     for given, path in zip(provenance["inputs"], read, strict=True):
         assert given["path"] == str(path.resolve())
         assert given["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_record_digests_every_geometry_file_in_order(tmp_path):
+    loaded = rupture_config.load(EXAMPLE)
+    (sections,) = loaded.geometry.path
+    surface = EXAMPLE.parent / "cfm" / "Hikurangi.ts.gz"
+    geometry = dataclasses.replace(loaded.geometry, path=(surface, sections))
+    stated = run_record.provenance(
+        EXAMPLE, dataclasses.replace(loaded, geometry=geometry)
+    )
+    assert [given.path for given in stated.inputs] == [
+        str(path.resolve()) for path in (EXAMPLE, surface, sections)
+    ]
+    assert stated.inputs[1].sha256 == hashlib.sha256(surface.read_bytes()).hexdigest()
 
 
 def test_the_srf_of_a_fields_file_keeps_the_draws_record(tmp_path, coarse_example):

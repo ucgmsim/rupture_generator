@@ -23,11 +23,13 @@ filled in, which records what a run used.
 """
 
 import dataclasses
+import gzip
 import tomllib
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args, get_origin
 
 import numpy as np
+import pyproj
 from mashumaro.codecs import BasicDecoder
 from mashumaro.codecs.toml import TOMLEncoder
 from mashumaro.config import BaseConfig
@@ -44,8 +46,11 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
     Geometry,
+    check_coverage,
     geometry_from_geojson,
     projected_crs,
+    read_tsurf,
+    surface_chart,
 )
 from rupture_generator.rupture.generator import check_seed, moment_rng
 from rupture_generator.rupture.medium import (
@@ -368,15 +373,40 @@ class Perturbation(CorrelatedPerturbation):
 # ----------------------------------------------------------------------- tables
 
 
+SURFACE_SUFFIXES = (".ts", ".ts.gz")
+"""The endings of a ``[geometry] path`` read as GOCAD TSurf surfaces, gzipped or not.
+A path ending otherwise is a GeoJSON file of sections."""
+
+
+def _paths(value: object) -> tuple[Path, ...]:
+    """Read ``[geometry] path``, one path or a non-empty list of them.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        For anything else.
+    """
+    paths = [value] if isinstance(value, str) else value
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or not all(isinstance(path, str) for path in paths)
+    ):
+        raise RuptureGeneratorError(f"{value!r} is not a path or a list of paths")
+    return tuple(Path(path) for path in paths)
+
+
 @dataclasses.dataclass(frozen=True)
 class GeometryConfig:
-    """``[geometry]``: where the fault sections are, and how to grid them.
+    """``[geometry]``: where the faults are, and how to grid them.
 
     Parameters
     ----------
-    path : Path
-        The GeoJSON file of fault sections. A relative path is relative to the config
-        file.
+    path : tuple of Path
+        The fault files, one path or a list of them. A path ending in one of
+        :data:`SURFACE_SUFFIXES` is a GOCAD TSurf file of curved surfaces, each one
+        segment named by its header, with coordinates in ``crs``. Any other path is a
+        GeoJSON file of fault sections. A relative path is relative to the config file.
     crs : str
         The projected frame to build the charts in, as an EPSG code or anything else
         :class:`pyproj.CRS` reads. It has no default. It must measure in metres and
@@ -387,7 +417,7 @@ class GeometryConfig:
         Read the sections' properties under the New Zealand NSHM's names.
     """
 
-    path: Path
+    path: tuple[Path, ...] = dataclasses.field(metadata={"deserialize": _paths})
     crs: str
     spacing_km: float
     aliases: Literal["nshm"] | None = None
@@ -398,8 +428,13 @@ class GeometryConfig:
 class HypocentreConfig:
     """``[hypocentre]``: a segment, and a position on it.
 
-    Give the position as arc lengths or as fractions of the segment's extent, one
-    complete pair of either.
+    Give the position as one complete pair of keys below, never two pairs. The arc lengths
+    and fractions run along the chart's top row and down its first column, which on a
+    curved interface's chart lie partly off the fault. A longitude and latitude moves to
+    the fault cell whose centre is nearest it in plan, as
+    :meth:`~rupture_generator.geometry.Geometry.cell_near` finds it, so suits a
+    curved surface better. A near-vertical fault stacks its cells in plan, so its
+    hypocentre is better given as arc lengths or fractions.
 
     Parameters
     ----------
@@ -413,6 +448,10 @@ class HypocentreConfig:
         The position along strike, as a fraction of the segment's length.
     dip_fraction : float, optional
         The position down dip, as a fraction of the segment's width.
+    longitude_deg : float, optional
+        The epicentre's WGS84 longitude, in degrees.
+    latitude_deg : float, optional
+        The epicentre's WGS84 latitude, in degrees.
     """
 
     segment: str
@@ -420,19 +459,24 @@ class HypocentreConfig:
     dip_km: float | None = None
     strike_fraction: float | None = None
     dip_fraction: float | None = None
+    longitude_deg: float | None = None
+    latitude_deg: float | None = None
     Config = _Strict
 
     def __post_init__(self) -> None:
         """Refuse anything but exactly one complete pair."""
-        lengths = (self.strike_km, self.dip_km)
-        fractions = (self.strike_fraction, self.dip_fraction)
-        given = [None not in pair for pair in (lengths, fractions)]
+        pairs = (
+            (self.strike_km, self.dip_km),
+            (self.strike_fraction, self.dip_fraction),
+            (self.longitude_deg, self.latitude_deg),
+        )
+        given = [None not in pair for pair in pairs]
         if given.count(True) != 1 or any(
-            (None in pair) and pair != (None, None) for pair in (lengths, fractions)
+            (None in pair) and pair != (None, None) for pair in pairs
         ):
             raise RuptureGeneratorError(
-                "a hypocentre is strike_km and dip_km, or strike_fraction and "
-                "dip_fraction: one pair, complete"
+                "a hypocentre is strike_km and dip_km, strike_fraction and "
+                "dip_fraction, or longitude_deg and latitude_deg: one pair, complete"
             )
 
 
@@ -839,7 +883,7 @@ def load(path: str | Path) -> RuptureConfig:
     Returns
     -------
     RuptureConfig
-        The file's contents, with the geometry's path resolved against the file's
+        The file's contents, with each geometry path resolved against the file's
         directory.
 
     Raises
@@ -859,7 +903,8 @@ def load(path: str | Path) -> RuptureConfig:
     except (InvalidFieldValue, MissingField, ExtraKeysError) as error:
         raise _describe(error) from None
     geometry = dataclasses.replace(
-        config.geometry, path=(path.parent / config.geometry.path).resolve()
+        config.geometry,
+        path=tuple((path.parent / given).resolve() for given in config.geometry.path),
     )
     return dataclasses.replace(config, geometry=geometry, segments=_segments(document))
 
@@ -1008,6 +1053,116 @@ def _models(
     return models
 
 
+def _surface_charts(
+    path: Path, crs: pyproj.CRS, spacing_km: float
+) -> dict[str, Geometry]:
+    """Chart every mesh in a TSurf file, its vertices checked against the frame.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the file isn't a TSurf of sheets, :func:`surface_chart` refuses a mesh, or
+        the frame fails to cover one.
+    """
+    opener = gzip.open if path.name.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as handle:
+        try:
+            surfaces = read_tsurf(handle)
+        except RuptureGeneratorError as error:
+            raise RuptureGeneratorError(f"{path}: {error}") from error
+    to_lon_lat = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    check_coverage(
+        crs,
+        {
+            name: np.column_stack(
+                to_lon_lat.transform(
+                    vertices_km[:, 0] * 1000.0, vertices_km[:, 1] * 1000.0
+                )
+            )
+            for name, (vertices_km, _) in surfaces.items()
+        },
+    )
+    charts = {}
+    for name, (vertices_km, triangles) in surfaces.items():
+        try:
+            charts[name] = surface_chart(vertices_km, triangles, spacing_km)
+        except RuptureGeneratorError as error:
+            raise RuptureGeneratorError(f"{path}: {name}: {error}") from error
+    return charts
+
+
+def _charts(geometry: GeometryConfig, crs: pyproj.CRS) -> dict[str, Geometry]:
+    """Chart every fault in every file ``[geometry]`` names.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a file describes no fault system, or two faults share a name.
+    """
+    aliases = NSHM_ALIASES if geometry.aliases == "nshm" else None
+    charts: dict[str, Geometry] = {}
+    for path in geometry.path:
+        if path.name.endswith(SURFACE_SUFFIXES):
+            found = _surface_charts(path, crs, geometry.spacing_km)
+        else:
+            with path.open(encoding="utf-8") as handle:
+                coarse = geometry_from_geojson(handle, crs, aliases=aliases)
+            found = {
+                name: chart.subdivide(geometry.spacing_km)
+                for name, chart in coarse.items()
+            }
+        repeated = sorted(set(found) & set(charts))
+        if repeated:
+            raise RuptureGeneratorError(
+                f"geometry.path: {path} names {repeated}, which an earlier file "
+                "names too, and every fault needs a name of its own"
+            )
+        charts |= found
+    return charts
+
+
+def _hypocentre(
+    spec: HypocentreConfig, charts: dict[str, Geometry], crs: pyproj.CRS
+) -> Hypocentre:
+    """Turn ``[hypocentre]`` into distances on its segment's chart, checked on the fault.
+
+    A longitude and latitude becomes the distances of the centre of the fault cell
+    nearest it in plan, which name that cell again.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the segment is none of the charts, or the position lies off the fault.
+    """
+    if spec.segment not in charts:
+        raise RuptureGeneratorError(
+            f"hypocentre.segment: {spec.segment!r} is not one of {sorted(charts)}"
+        )
+    chart = charts[spec.segment]
+    try:
+        # `HypocentreConfig` refuses anything but exactly one complete pair.
+        if spec.strike_km is not None and spec.dip_km is not None:
+            hypocentre = Hypocentre(spec.segment, spec.strike_km, spec.dip_km)
+        elif spec.strike_fraction is not None and spec.dip_fraction is not None:
+            hypocentre = Hypocentre.from_fractions(
+                spec.segment, chart, spec.strike_fraction, spec.dip_fraction
+            )
+        else:
+            assert spec.longitude_deg is not None and spec.latitude_deg is not None
+            to_frame = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+            east_m, north_m = to_frame.transform(spec.longitude_deg, spec.latitude_deg)
+            i, j = chart.cell_near(east_m / 1000.0, north_m / 1000.0)
+            hypocentre = Hypocentre(
+                spec.segment,
+                0.5 * float(chart.strike_arc_km[j] + chart.strike_arc_km[j + 1]),
+                0.5 * float(chart.dip_arc_km[i] + chart.dip_arc_km[i + 1]),
+            )
+        chart.cell_at(hypocentre.strike_km, hypocentre.dip_km)
+    except RuptureGeneratorError as error:
+        raise RuptureGeneratorError(f"hypocentre: {error}") from error
+    return hypocentre
+
+
 def build(config: RuptureConfig) -> Scenario:
     """Read the geometry a config names, and build every input a rupture needs.
 
@@ -1024,36 +1179,17 @@ def build(config: RuptureConfig) -> Scenario:
     Raises
     ------
     RuptureGeneratorError
-        If the parts of the config are inconsistent, or the geometry describes no
-        fault system.
+        If the parts of the config are inconsistent, the geometry describes no
+        fault system, two faults share a name, or the hypocentre lies off the fault.
     OSError
-        If reading the geometry file fails.
+        If reading a geometry file fails.
     """
     try:
         crs = projected_crs(config.geometry.crs)
     except RuptureGeneratorError as error:
         raise RuptureGeneratorError(f"geometry.crs: {error}") from error
-    aliases = NSHM_ALIASES if config.geometry.aliases == "nshm" else None
-    with Path(config.geometry.path).open(encoding="utf-8") as handle:
-        coarse = geometry_from_geojson(handle, crs, aliases=aliases)
-    charts = {
-        name: chart.subdivide(config.geometry.spacing_km)
-        for name, chart in coarse.items()
-    }
-
-    spec = config.hypocentre
-    if spec.segment not in charts:
-        raise RuptureGeneratorError(
-            f"hypocentre.segment: {spec.segment!r} is not one of {sorted(charts)}"
-        )
-    # `HypocentreConfig` refuses anything but exactly one complete pair.
-    if spec.strike_km is not None and spec.dip_km is not None:
-        hypocentre = Hypocentre(spec.segment, spec.strike_km, spec.dip_km)
-    else:
-        assert spec.strike_fraction is not None and spec.dip_fraction is not None
-        hypocentre = Hypocentre.from_fractions(
-            spec.segment, charts[spec.segment], spec.strike_fraction, spec.dip_fraction
-        )
+    charts = _charts(config.geometry, crs)
+    hypocentre = _hypocentre(config.hypocentre, charts, crs)
     realisation = Realisation(charts, crs, hypocentre=hypocentre)
 
     medium = config.medium.medium()

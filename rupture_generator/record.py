@@ -65,7 +65,7 @@ class Provenance:
     created : datetime.datetime
         When the run started, in UTC.
     inputs : list of Input
-        The rupture file and the geometry it names.
+        The rupture file and every geometry file it names, in its order.
     """
 
     rupture_generator: str
@@ -101,7 +101,7 @@ def provenance(source: Path, config: rupture_config.RuptureConfig) -> Provenance
         If reading an input fails.
     """
     inputs = []
-    for path in (Path(source), config.geometry.path):
+    for path in (Path(source), *config.geometry.path):
         with path.open("rb") as handle:
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
         inputs.append(Input(str(path.resolve()), digest))

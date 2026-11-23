@@ -47,3 +47,8 @@ Gerstenberger
 Seebeck
 Somerville
 Catia
+Hikurangi
+Puysegur
+Puyseguer
+TSurf
+GeoJSON
