@@ -19,7 +19,9 @@ from rupture_generator.sampling import (
 from rupture_generator.sampling.field import (
     MAXIMUM_VARIANCE_DEFICIT,
     WRAP_TOLERANCE,
+    _decay_length,
     _embed,
+    sampler,
 )
 
 TRACE = [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]]
@@ -109,6 +111,23 @@ def test_the_dct_embedding_is_the_wrapped_fft():
         np.maximum(spectrum[: padded[0] // 2 + 1, : padded[1] // 2 + 1], 0.0),
         atol=1e-12 * spectrum.max(),
     )
+
+
+@pytest.mark.parametrize(
+    "correlation",
+    [lambda lag: np.exp(-10.0 * lag), VonKarman(0.005), VonKarman(0.001)],
+    ids=["exp(-10r)", "VonKarman(0.005)", "VonKarman(0.001)"],
+)
+def test_a_correlation_below_tolerance_by_half_a_length_still_embeds(correlation):
+    # Below the tolerance already at half a correlation length, so the bracket for
+    # the decay length has to move down from [1/2, 1].
+    decay = _decay_length(correlation, WRAP_TOLERANCE)
+    assert 0.0 < decay < 0.5
+    np.testing.assert_allclose(correlation(np.array([decay]))[0], WRAP_TOLERANCE)
+
+    grid = Grid((32, 32), (0.5, 0.5))
+    field = sampler(grid, [Covariance(correlation, (2.0, 2.0))])
+    assert all(p >= e for p, e in zip(field.padded, grid.shape))
 
 
 def _target(covariance, grid, scale=(1.0, 1.0)):

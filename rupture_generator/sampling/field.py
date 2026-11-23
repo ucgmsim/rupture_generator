@@ -90,10 +90,15 @@ def _decay_length(correlation: Correlation, tolerance: float) -> float:
                 f"the correlation function has not decayed below {tolerance:.0e} by "
                 f"{upper:.0e} correlation lengths"
             )
+    # A correlation already below the tolerance at half a length needs the bracket
+    # moved down. This stops, since a correlation is 1 at lag 0.
+    lower = upper / 2.0
+    while correlation(np.array([lower]))[0] <= tolerance:
+        upper, lower = lower, lower / 2.0
     return float(
         sp.optimize.brentq(
             lambda lag: correlation(np.array([lag]))[0] - tolerance,
-            upper / 2.0,
+            lower,
             upper,
         )
     )
