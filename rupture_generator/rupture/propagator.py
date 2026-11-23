@@ -97,16 +97,16 @@ class JumpModel:
 
     def __post_init__(self) -> None:
         """Refuse parameters that make the model meaningless."""
-        if self.d0_km <= 0.0:
+        if not self.d0_km > 0.0:
             raise RuptureGeneratorError(
                 f"the decay length is a length, got {self.d0_km} km; at zero every gap "
                 "is impassable and the system is never connected"
             )
-        if self.delta_km < 0.0:
+        if not self.delta_km >= 0.0:
             raise RuptureGeneratorError(
                 f"a gap width has no sign, got {self.delta_km} km"
             )
-        if self.max_jump_km <= 0.0:
+        if not self.max_jump_km > 0.0:
             raise RuptureGeneratorError(
                 f"nothing can jump {self.max_jump_km} km, so no fault triggers any other"
             )
