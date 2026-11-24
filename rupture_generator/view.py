@@ -3,8 +3,10 @@
 Reads the version 2 SRF ``rupture-generator`` writes, through
 :func:`~rupture_generator.formats.srf.read_rupture`. The viewer draws each point as
 its own quadrilateral, sized from its plane's cells and turned by its own strike and
-dip, in metres east, north and **up** from the rupture's centre. Up, because a
-viewer's vertical axis points up.
+dip, in kilometres east, north and **up** from the rupture's centre. Up, because a
+viewer's vertical axis points up. Kilometres, because where the browser has no WebGPU
+Rerun's web viewer falls back to WebGL and a 24-bit depth buffer, and a subduction
+rupture logged in metres is far enough across that its far half breaks into specks.
 
 The slip view accumulates on ``hot``, integrating each point's pulse from its own
 onset. Onset and pulse duration appear whole on viridis, and rake as arrows along each
@@ -94,7 +96,7 @@ TARGET_CONTOURS = 10
 """How many isochrones a fault can carry before they stop being separable."""
 
 UI_POINTS = -1.0
-"""Rerun reads a negative radius as a width in screen points rather than metres, so a
+"""Rerun reads a negative radius as a width in screen points rather than kilometres, so a
 contour stays visible however far the camera is zoomed out."""
 
 TABS = {
@@ -128,7 +130,7 @@ def _histogram(values: np.ndarray, low: float, high: float) -> "rr.BarChart":
     )
 
 
-def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
+def _positions_km(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
     """Each point's cell, ``(points, 4, 3)``, and the hypocentre, in the viewer's frame."""
     frame = pyproj.Transformer.from_crs(
         "EPSG:4326",
@@ -141,13 +143,19 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
 
     def local(lon: ArrayLike, lat: ArrayLike, depth_km: ArrayLike) -> np.ndarray:
         east, north = frame.transform(lon, lat)
-        return np.stack([east, north, -M_PER_KM * np.asarray(depth_km)], axis=-1)
+        return np.stack(
+            [
+                np.asarray(east) / M_PER_KM,
+                np.asarray(north) / M_PER_KM,
+                -np.asarray(depth_km),
+            ],
+            axis=-1,
+        )
 
     planes = rupture.planes
     counts = [plane.nstk * plane.ndip for plane in planes]
-    half_m = 0.5 * M_PER_KM
-    half_length = np.repeat([half_m * p.len / p.nstk for p in planes], counts)[:, None]
-    half_width = np.repeat([half_m * p.wid / p.ndip for p in planes], counts)[:, None]
+    half_length = np.repeat([0.5 * p.len / p.nstk for p in planes], counts)[:, None]
+    half_width = np.repeat([0.5 * p.wid / p.ndip for p in planes], counts)[:, None]
     centres = local(rupture.lon_deg, rupture.lat_deg, rupture.depth_km)
     # The file's strike is from true north, and the frame's north is true only at its
     # centre: across a long rupture the meridians lean by degrees, and every cell would
@@ -178,8 +186,8 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
         if plane.ndip > 1:
             down[cells] = 0.5 * np.asarray(np.gradient(grid, axis=0)).reshape(-1, 3)
         start += count
-    drawn_m2 = 4.0 * np.linalg.norm(np.cross(along, down), axis=-1)
-    scale = np.sqrt(rupture.area_m2 / drawn_m2)[:, None]
+    drawn_km2 = 4.0 * np.linalg.norm(np.cross(along, down), axis=-1)
+    scale = np.sqrt(rupture.area_m2 / M_PER_KM**2 / drawn_km2)[:, None]
     along, down = along * scale, down * scale
     corners = np.stack(
         [
@@ -250,11 +258,11 @@ def _isochrones(values: np.ndarray, positions: np.ndarray, level: float) -> np.n
 
 
 def _onset_contours(
-    rupture: SrfRupture, corners: np.ndarray, lift_m: float
+    rupture: SrfRupture, corners: np.ndarray, lift_km: float
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Isochrones of onset, plane by plane, and one labelled anchor per line.
 
-    Each line goes on both faces of its plane, ``lift_m`` clear of it. Drawn on the
+    Each line goes on both faces of its plane, ``lift_km`` clear of it. Drawn on the
     plane itself, a line z-fights the mesh, and on one face it vanishes from half the
     views.
     """
@@ -268,7 +276,7 @@ def _onset_contours(
         onset, positions = rupture.onset_s[start:stop], centres[start:stop]
         first = corners[start]
         normal = np.cross(first[1] - first[0], first[3] - first[0])
-        lift = lift_m * normal / (np.linalg.norm(normal) or 1.0)
+        lift = lift_km * normal / (np.linalg.norm(normal) or 1.0)
         start = stop
         for level in levels:
             crossings = _isochrones(
@@ -287,7 +295,7 @@ def _onset_contours(
 
 def _slip_directions(rupture: SrfRupture, corners: np.ndarray) -> np.ndarray:
     """Unit vectors each point slipped along: ``cos(rake)`` along strike plus
-    ``sin(rake)`` up dip, read off the cells :func:`_positions_m` draws.
+    ``sin(rake)`` up dip, read off the cells :func:`_positions_km` draws.
 
     Up dip is square to strike in the cell's plane. A sheared cell's side leans along
     strike. Its strike component comes off first.
@@ -391,7 +399,7 @@ def _log(rupture: SrfRupture, step_s: float) -> None:
     """Log the static fields once, then slip and moment on the rupture's timeline."""
     import rerun as rr
 
-    corners, hypocentre = _positions_m(rupture)
+    corners, hypocentre = _positions_km(rupture)
     count = corners.shape[0]
     positions = corners.reshape(-1, 3).astype(np.float32)
     first = 4 * np.arange(count, dtype=np.uint32)[:, None]
@@ -447,14 +455,14 @@ def _log(rupture: SrfRupture, step_s: float) -> None:
     # the same map the slip view uses.
     peak = float(rupture.slip_m.max())
     shown = np.arange(0, count, -(-count // MAX_ARROWS))
-    cell_m = np.linalg.norm(corners[shown, 1] - corners[shown, 0], axis=-1)
+    cell_km = np.linalg.norm(corners[shown, 1] - corners[shown, 0], axis=-1)
     slip = rupture.slip_m[shown]
     rr.log(
         "/fault/rake",
         rr.Arrows3D(
             origins=corners[shown].mean(axis=1),
             vectors=_slip_directions(rupture, corners)[shown]
-            * (6.0 * cell_m * slip / (peak or 1.0))[:, None],
+            * (6.0 * cell_km * slip / (peak or 1.0))[:, None],
             colors=_colours(slip, 0.0, peak, HOT),
         ),
         static=True,
