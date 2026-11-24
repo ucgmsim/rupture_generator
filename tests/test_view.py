@@ -17,7 +17,7 @@ from rupture_generator.view import (
     _isochrones,
     _onset_contours,
     _packed,
-    _positions_m,
+    _positions_km,
     _positive_seconds,
     _slip_by,
     _slip_directions,
@@ -32,11 +32,11 @@ def rupture(srf_path):
 
 
 def test_quads_have_the_files_areas(rupture):
-    corners, _ = _positions_m(rupture)
-    areas_m2 = 0.5 * np.linalg.norm(
+    corners, _ = _positions_km(rupture)
+    areas_km2 = 0.5 * np.linalg.norm(
         np.cross(corners[:, 2] - corners[:, 0], corners[:, 3] - corners[:, 1]), axis=-1
     )
-    np.testing.assert_allclose(areas_m2, rupture.area_m2, rtol=1e-5)
+    np.testing.assert_allclose(areas_km2 * 1.0e6, rupture.area_m2, rtol=1e-5)
 
 
 def test_slip_accumulates_to_the_files(rupture):
@@ -47,7 +47,7 @@ def test_slip_accumulates_to_the_files(rupture):
 
 
 def test_the_hypocentre_is_drawn(rupture):
-    assert _positions_m(rupture)[1] is not None
+    assert _positions_km(rupture)[1] is not None
 
 
 def test_a_recording_is_written(srf_path, tmp_path):
@@ -70,7 +70,7 @@ def test_an_isochrone_lies_on_its_level():
 
 
 def test_slip_directions_are_unit_and_in_plane(rupture):
-    corners, _ = _positions_m(rupture)
+    corners, _ = _positions_km(rupture)
     directions = _slip_directions(rupture, corners)
     normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 3] - corners[:, 0])
     np.testing.assert_allclose(np.linalg.norm(directions, axis=-1), 1.0, rtol=1e-6)
@@ -134,7 +134,7 @@ def test_a_level_nothing_reaches_draws_no_isochrone():
 
 def test_a_rupture_that_starts_everywhere_at_once_has_no_isochrones(rupture):
     sudden = dataclasses.replace(rupture, onset_s=np.full_like(rupture.onset_s, 2.0))
-    corners, _ = _positions_m(sudden)
+    corners, _ = _positions_km(sudden)
     lines, anchors, labels = _onset_contours(sudden, corners, 1.0)
     assert lines.shape == (0, 2, 3)
     assert anchors.shape == (0, 3)

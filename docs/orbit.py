@@ -36,9 +36,9 @@ DEPTH_EXAGGERATION = 3.0
 """How many times depth is stretched against the horizontal."""
 ELEVATION_DEG = 45.0
 """How far above the horizon the camera looks down."""
-FRAMES = 90
+FRAMES = 180
 """How many frames make one turn."""
-FPS = 15
+FPS = 12
 """The turntable's frame rate: a turn takes ``FRAMES / FPS`` seconds."""
 WINDOW_PX = (960, 640)
 """The animation's size."""
