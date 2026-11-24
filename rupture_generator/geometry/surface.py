@@ -229,62 +229,66 @@ def read_tsurf(handle: TextIO) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     current: dict | None = None
     for line, text in enumerate(handle, start=1):
         words = text.split()
-        if not words:
-            continue
-        keyword = words[0]
-        if keyword == "GOCAD":
-            if current is not None:
-                raise RuptureGeneratorError(
-                    f"line {line}: a GOCAD object starts before the last one's END"
-                )
-            if words[1:2] != ["TSurf"]:
-                raise RuptureGeneratorError(
-                    f"line {line}: {text.strip()!r} is not a TSurf, the one GOCAD "
-                    "object this reads"
-                )
-            current = {
-                "name": None,
-                "units_km": None,
-                "depth_sign": None,
-                "ids": [],
-                "positions": [],
-                "corners": [],
-            }
-            continue
+        match words:
+            case []:
+                continue
+            case ["GOCAD", *kind]:
+                if current is not None:
+                    raise RuptureGeneratorError(
+                        f"line {line}: a GOCAD object starts before the last one's END"
+                    )
+                if kind[:1] != ["TSurf"]:
+                    raise RuptureGeneratorError(
+                        f"line {line}: {text.strip()!r} is not a TSurf, the one GOCAD "
+                        "object this reads"
+                    )
+                current = {
+                    "name": None,
+                    "units_km": None,
+                    "depth_sign": None,
+                    "ids": [],
+                    "positions": [],
+                    "corners": [],
+                }
+                continue
         if current is None:
             raise RuptureGeneratorError(
                 f"line {line}: {text.strip()!r} lies outside any GOCAD TSurf object"
             )
-        if keyword == "END":
-            name, surface = _surface(**current)
-            if name in surfaces:
-                raise RuptureGeneratorError(f"two sheets are named {name!r}")
-            surfaces[name] = surface
-            current = None
-        elif keyword.startswith("name:") and current["name"] is None:
-            current["name"] = text.strip().removeprefix("name:").strip()
-        elif keyword == "AXIS_UNIT":
-            units = [word.strip('"') for word in words[1:]]
-            if len(units) != 3 or not all(unit in _AXIS_UNITS_KM for unit in units):
+        match words:
+            case ["END", *_]:
+                name, surface = _surface(**current)
+                if name in surfaces:
+                    raise RuptureGeneratorError(f"two sheets are named {name!r}")
+                surfaces[name] = surface
+                current = None
+            case [keyword, *_] if (
+                keyword.startswith("name:") and current["name"] is None
+            ):
+                current["name"] = text.strip().removeprefix("name:").strip()
+            case ["AXIS_UNIT", *quoted]:
+                units = [word.strip('"') for word in quoted]
+                if len(units) != 3 or not all(unit in _AXIS_UNITS_KM for unit in units):
+                    raise RuptureGeneratorError(
+                        f"line {line}: AXIS_UNIT {' '.join(quoted)} is not three of "
+                        f"{sorted(_AXIS_UNITS_KM)}"
+                    )
+                current["units_km"] = [_AXIS_UNITS_KM[unit] for unit in units]
+            case ["ZPOSITIVE", positive, *_] if positive in _DEPTH_SIGNS:
+                current["depth_sign"] = _DEPTH_SIGNS[positive]
+            case ["ZPOSITIVE", *rest]:
                 raise RuptureGeneratorError(
-                    f"line {line}: AXIS_UNIT {' '.join(words[1:])} is not three of "
-                    f"{sorted(_AXIS_UNITS_KM)}"
-                )
-            current["units_km"] = [_AXIS_UNITS_KM[unit] for unit in units]
-        elif keyword == "ZPOSITIVE":
-            sign = _DEPTH_SIGNS.get(words[1] if len(words) > 1 else "")
-            if sign is None:
-                raise RuptureGeneratorError(
-                    f"line {line}: ZPOSITIVE {' '.join(words[1:])} is neither "
+                    f"line {line}: ZPOSITIVE {' '.join(rest)} is neither "
                     "Elevation nor Depth"
                 )
-            current["depth_sign"] = sign
-        elif keyword in ("VRTX", "PVRTX"):
-            identifier, *position = _numbers(words, (int, float, float, float), line)
-            current["ids"].append(identifier)
-            current["positions"].append(position)
-        elif keyword == "TRGL":
-            current["corners"].append(_numbers(words, (int, int, int), line))
+            case ["VRTX" | "PVRTX", *_]:
+                identifier, *position = _numbers(
+                    words, (int, float, float, float), line
+                )
+                current["ids"].append(identifier)
+                current["positions"].append(position)
+            case ["TRGL", *_]:
+                current["corners"].append(_numbers(words, (int, int, int), line))
     if current is not None:
         raise RuptureGeneratorError(
             f"the file ends inside sheet {current['name']!r}, before its END"
