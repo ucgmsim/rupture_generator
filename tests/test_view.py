@@ -74,6 +74,7 @@ def test_slip_directions_are_unit_and_in_plane(rupture):
     directions = _slip_directions(rupture, corners)
     normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 3] - corners[:, 0])
     np.testing.assert_allclose(np.linalg.norm(directions, axis=-1), 1.0, rtol=1e-6)
+    # ij,ij -> i is np.vecdot: each direction's component along its unit normal.
     np.testing.assert_allclose(
         np.einsum(
             "ij,ij->i", directions, normals / np.linalg.norm(normals, axis=-1)[:, None]

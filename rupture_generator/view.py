@@ -293,6 +293,7 @@ def _slip_directions(rupture: SrfRupture, corners: np.ndarray) -> np.ndarray:
     along = corners[:, 1] - corners[:, 0]
     along /= np.linalg.norm(along, axis=-1, keepdims=True)
     up_dip = corners[:, 0] - corners[:, 3]
+    # ij,ij -> i is np.vecdot(up_dip, along), and faster on these 3-vectors.
     up_dip -= np.einsum("ij,ij->i", up_dip, along)[:, None] * along
     up_dip /= np.linalg.norm(up_dip, axis=-1, keepdims=True)
     rake = np.radians(rupture.rake_deg)[:, None]
