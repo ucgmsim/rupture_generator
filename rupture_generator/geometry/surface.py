@@ -301,6 +301,27 @@ def read_tsurf(handle: TextIO) -> dict[str, tuple[np.ndarray, np.ndarray]]:
 # --------------------------------------------------------------------- flattening
 
 
+# einsum beats the ufuncs these name on ~86,000 rows, the Hikurangi mesh's triangles,
+# at no more memory: 1.5x np.vecdot, 2x the broadcast product, 2-3x np.matvec.
+
+
+def _dot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Row-wise dot products of ``(m, d)`` arrays, ``(m,)``: ``np.vecdot(a, b)``."""
+    return np.einsum("ij,ij->i", a, b)
+
+
+def _outer(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Row-wise outer products of ``(m, d)`` and ``(m, e)`` arrays, ``(m, d, e)``:
+    ``a[:, :, None] * b[:, None, :]``."""
+    return np.einsum("ti,tj->tij", a, b)
+
+
+def _matvec(matrices: np.ndarray, vectors: np.ndarray) -> np.ndarray:
+    """Each ``(d, e)`` matrix of ``(m, d, e)`` times its row of ``(m, e)``, ``(m, d)``:
+    ``np.matvec(matrices, vectors)``."""
+    return np.einsum("tij,tj->ti", matrices, vectors)
+
+
 def _local_frames(
     vertices: np.ndarray, triangles: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -312,8 +333,8 @@ def _local_frames(
     first = vertices[triangles[:, 1]] - vertices[triangles[:, 0]]
     second = vertices[triangles[:, 2]] - vertices[triangles[:, 0]]
     length = np.linalg.norm(first, axis=1)
-    along = np.einsum("ij,ij->i", second, first) / length
-    across = np.sqrt(np.maximum(np.einsum("ij,ij->i", second, second) - along**2, 0.0))
+    along = _dot(second, first) / length
+    across = np.sqrt(np.maximum(_dot(second, second) - along**2, 0.0))
     frames = np.zeros((len(triangles), 3, 2))
     frames[:, 1, 0] = length
     frames[:, 2, 0] = along
@@ -459,9 +480,7 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     for k, (a, b, opposite) in enumerate(_EDGES):
         p = frames[:, a] - frames[:, opposite]
         q = frames[:, b] - frames[:, opposite]
-        cotangents[:, k] = np.einsum("ij,ij->i", p, q) / np.abs(
-            p[:, 0] * q[:, 1] - p[:, 1] * q[:, 0]
-        )
+        cotangents[:, k] = _dot(p, q) / np.abs(p[:, 0] * q[:, 1] - p[:, 1] * q[:, 0])
 
     rows, columns, values = [], [], []
     for k, (a, b, _) in enumerate(_EDGES):
@@ -488,9 +507,7 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     for _ in range(MAXIMUM_PASSES):
         covariance = np.zeros((len(triangles), 2, 2))
         for side, (a, b, _) in zip(sides, _EDGES, strict=True):
-            covariance += np.einsum(
-                "ti,tj->tij", flat[triangles[:, a]] - flat[triangles[:, b]], side
-            )
+            covariance += _outer(flat[triangles[:, a]] - flat[triangles[:, b]], side)
         angle = np.arctan2(
             covariance[:, 1, 0] - covariance[:, 0, 1],
             covariance[:, 0, 0] + covariance[:, 1, 1],
@@ -505,7 +522,7 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
                     (
                         flat[triangles[:, a]]
                         - flat[triangles[:, b]]
-                        - np.einsum("tij,tj->ti", rotations, copy)
+                        - _matvec(rotations, copy)
                     )
                     ** 2,
                     axis=1,
@@ -518,7 +535,7 @@ def flatten(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         previous = energy
         load = np.zeros((n, 2))
         for side, (a, b, _) in zip(sides, _EDGES, strict=True):
-            target = np.einsum("tij,tj->ti", rotations, side)
+            target = _matvec(rotations, side)
             for axis in (0, 1):
                 load[:, axis] += np.bincount(triangles[:, a], target[:, axis], n)
                 load[:, axis] -= np.bincount(triangles[:, b], target[:, axis], n)
@@ -561,7 +578,7 @@ def _rasterise(
     )
     # A point's barycentric coordinates are affine in its lattice offset from the low
     # corner of its triangle's box: ``base + step @ (di, dj)``.
-    base = np.einsum("tab,tb->ta", inverse, origin + spacing_km * low - corners[:, 0])
+    base = _matvec(inverse, origin + spacing_km * low - corners[:, 0])
     step = spacing_km * inverse
 
     covering = np.full(shape, -1, dtype=np.int32)
@@ -710,7 +727,7 @@ def surface_chart(
     # coordinate at a time into the node array.
     corners, spatial = flat[triangles], vertices_km[triangles]
     affine = _linear_maps(corners, spatial)
-    offset = spatial[:, 0] - np.einsum("tcd,td->tc", affine, corners[:, 0])
+    offset = spatial[:, 0] - _matvec(affine, corners[:, 0])
     u = (origin[0] + spacing_km * np.arange(n_i + 1))[:, None]
     v = (origin[1] + spacing_km * np.arange(n_j + 1))[None, :]
     positions = np.empty((n_i + 1, n_j + 1, 3))
