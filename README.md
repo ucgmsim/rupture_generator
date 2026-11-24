@@ -68,11 +68,19 @@ match the observations of its earthquake.
 | `alpine_hope.toml` | Alpine-Hope Mw 8.31 scenario, rupture 71072 of the 2022 NZ NSHM | [Gerstenberger et al. (2024)](https://doi.org/10.1785/0120230165), on the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
 | `hikurangi.toml`   | Hypothetical Mw 8.9 rupture of the whole Hikurangi subduction interface | The triangulated interface of the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
 | `puysegur.toml`    | Hypothetical Mw 8.5 rupture of the whole Puysegur subduction interface | The triangulated interface of the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
+| `maule.toml`       | 2010 Mw 8.8 Maule, Chile, earthquake     | Slab2 of [Hayes et al. (2018)](https://doi.org/10.1126/science.aat4723), cut to the outline of SRCMOD s2010MAULEC02HAYE of [Hayes (2017)](https://doi.org/10.1016/j.epsl.2017.04.003) by `examples/maule_surface.py` |
 
 `crustal.toml` is a scenario Mw 6.2 on the Hope fault, and `two_faults.toml` and
 `two_faults_segments.toml` are small made-up systems for testing.
 
 `examples/from_realisation.py` converts a [workflow](https://github.com/ucgmsim/workflow) `realisation.json` into inputs for this repository.
+
+[![Slip on the curved Maule interface beneath the Chilean coast, the camera circling it](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/maule_orbit.gif)](https://app.rerun.io/version/0.38.1/?url=https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/maule.rrd)
+
+*The 2010 Mw 8.8 Maule earthquake on the Slab2
+interface, at 5 km resolution for visualisation purposes, with depth stretched three times and Chile's coastline from
+[Natural Earth](https://www.naturalearthdata.com) at sea level. The black lines are the
+rupture front every ten seconds. [Open it in Rerun's web viewer](https://app.rerun.io/version/0.38.1/?url=https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/maule.rrd) to see an interactive 3D model. Rupture definition is in `examples/maule.toml`*
 
 ---
 

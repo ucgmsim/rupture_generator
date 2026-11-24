@@ -20,11 +20,21 @@
 # The rake is pure thrust, 90 degrees. The hypocentre is a longitude and latitude
 # offshore southern Hawke's Bay, which moves to the nearest cell of the interface in
 # plan, 15 km down. The medium and the pulse shape are alpine_hope.toml's, and every
-# field model is the library's default.
+# other field model is the library's default.
+#
+# Slip's noise is one family on the interface relation of Skarlatoudis et al. (2016),
+# in place of the default crustal hybrid, as Bayless ran genslip v5.4.0-asp for
+# Hikurangi (KMODEL = -1): 10^(Mw/2 - 1.75) km along strike and 10^(Mw/2 - 1.59) km
+# down dip, each offset grown by log10(2 pi) as genslip's are, so 80 km along strike
+# and 115 km down dip at this magnitude:
+#
+#   Skarlatoudis, A. A., Somerville, P. G. and Thio, H. K. (2016). Source-scaling
+#   relations of interface subduction earthquakes for strong ground motion and tsunami
+#   simulation. Bulletin of the Seismological Society of America 106(4), 1652-1662.
+#   https://doi.org/10.1785/0120150320
 #
 # Cut at 5 km, about 1.3 seconds and 0.22 GB of memory to generate (`just bench`
-# measures both). The cells are coarser than the 4.7 km along-strike correlation length
-# of slip at this magnitude, so the example shows the geometry, not resolved slip.
+# measures both), which resolves those lengths.
 
 seed = 20261123
 
@@ -101,6 +111,9 @@ density_g_cm3 = [
 type = "finite"
 magnitude = 8.9
 rake_deg = 90.0
+
+[[slip.noise]]
+relation = { strike_exponent = 0.5, strike_offset = 2.5482, dip_exponent = 0.5, dip_offset = 2.3882 }
 
 [pulse]
 dt_s = 0.005

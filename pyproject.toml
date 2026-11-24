@@ -66,14 +66,15 @@ find = { where = [
 ] }
 
 # docs/ holds the README picture's script, which needs pyvista and matplotlib that
-# the package doesn't, so the type checker leaves it out as deptry does.
+# the package doesn't, and examples/maule_surface.py needs shapely, so the type
+# checker leaves both out as deptry does.
 [tool.ty.src]
-exclude = ["docs", ".claude"]
+exclude = ["docs", ".claude", "examples/maule_surface.py"]
 
 [tool.deptry]
 optional_dependencies_dev_groups = ["test", "bench"]
 # Like tests/, which deptry leaves out by default: development code, not the package.
-extend_exclude = ["benchmarks", "docs", ".claude"]
+extend_exclude = ["benchmarks", "docs", ".claude", "examples/maule_surface.py"]
 
 [tool.deptry.per_rule_ignores]
 # xarray's engine for HDF5, which formats/fields.py names rather than imports.

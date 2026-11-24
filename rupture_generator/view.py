@@ -164,14 +164,16 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
     along, down = along * half_length, down * half_width
     # A plane may lean toward its dip direction, which no header records. Its points
     # are its geometry. A cell's half-steps come from its neighbours, and from the
-    # header only along an axis one point wide. Single-precision longitudes quantise
-    # to a metre or so. The steps fix each cell's shape, and the file's exact area
-    # fixes its size.
+    # header only along an axis one point wide. A plane one row deep may be a curved
+    # surface's occupied cells end to end, whose neighbours along the row need not
+    # neighbour on the fault, so its steps come from the header too. Single-precision
+    # longitudes quantise to a metre or so. The steps fix each cell's shape, and the
+    # file's exact area fixes its size.
     start = 0
     for plane, count in zip(planes, counts, strict=True):
         grid = centres[start : start + count].reshape(plane.ndip, plane.nstk, 3)
         cells = slice(start, start + count)
-        if plane.nstk > 1:
+        if plane.nstk > 1 and plane.ndip > 1:
             along[cells] = 0.5 * np.asarray(np.gradient(grid, axis=1)).reshape(-1, 3)
         if plane.ndip > 1:
             down[cells] = 0.5 * np.asarray(np.gradient(grid, axis=0)).reshape(-1, 3)

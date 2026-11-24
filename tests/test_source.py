@@ -11,8 +11,10 @@ from rupture_generator import Geometry, RuptureGeneratorError
 from rupture_generator.rupture.source import (
     CYCLES_OFFSET,
     GENSLIP_MAI_BEROZA,
+    GENSLIP_SKARLATOUDIS_2016,
     GENSLIP_SUZUKI_2022,
     MAI_BEROZA,
+    SKARLATOUDIS_2016,
     SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
@@ -29,6 +31,7 @@ from rupture_generator.rupture.source import (
     [
         MAI_BEROZA,
         SUZUKI_2022,
+        SKARLATOUDIS_2016,
         CorrelationRelation(
             strike_exponent=0.4,
             strike_offset=-0.3,
@@ -139,3 +142,11 @@ def test_a_cut_off_on_a_row_of_nodes_samples_each_node_once():
         ]
     )
     np.testing.assert_allclose(sorted_rows(points), sorted_rows(expected))
+
+
+def test_skarlatoudis_in_genslip_is_baylesss_hikurangi_corners():
+    # KX_CORNER and KY_CORNER of the genslip v5.4.0-asp Hikurangi runs, KMODEL = -1.
+    relation = GENSLIP_SKARLATOUDIS_2016
+    assert (relation.strike_exponent, relation.dip_exponent) == (0.5, 0.5)
+    assert relation.strike_offset == pytest.approx(2.5482, abs=1e-4)
+    assert relation.dip_offset == pytest.approx(2.3882, abs=1e-4)

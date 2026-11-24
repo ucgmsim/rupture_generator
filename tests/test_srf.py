@@ -342,7 +342,8 @@ def test_a_header_summarises_only_the_occupied_cells(tmp_path):
     step = np.sqrt(0.5)
     assert plane.dtop == pytest.approx(step, abs=1e-6)
     assert plane.dip == pytest.approx(45.0, abs=1e-4)
-    assert (plane.nstk, plane.ndip) == (4, 3)
+    # The plane writes only its six occupied cells, as one row.
+    assert (plane.nstk, plane.ndip) == (6, 1)
     # The top outline runs 1 km along row 2, 0.71 km up to row 1 and 3 km along it,
     # so its middle lies on row 1.
     half_km = 0.5 * (4.0 + step)
@@ -358,10 +359,14 @@ def test_a_header_summarises_only_the_occupied_cells(tmp_path):
         .meridian_convergence
     )
     np.testing.assert_allclose(parsed.points.stk, convergence_deg % 360.0, atol=1e-3)
-    on_fault = parsed.points.stk[occupied.ravel()].astype(float)
-    assert plane.stk == pytest.approx(on_fault.mean(), abs=1e-4)
-    # Only the occupied cells slip, and the hypocentre reads back at its cell.
-    assert np.array_equal(parsed.points.slip1 > 0, occupied.ravel())
+    assert plane.stk == pytest.approx(parsed.points.stk.astype(float).mean(), abs=1e-4)
+    # Every point is an occupied cell, in row order, and the hypocentre reads back at
+    # its cell.
+    centres = chart.centres[occupied]
+    lon, lat = TO_LON_LAT.transform(centres[:, 0] * 1000.0, centres[:, 1] * 1000.0)
+    np.testing.assert_allclose(parsed.points.lon, lon, atol=1e-5)
+    np.testing.assert_allclose(parsed.points.lat, lat, atol=1e-5)
+    assert np.all(parsed.points.slip1 > 0)
     east, north, depth_km = chart.centres[1, 2]
     found = read_rupture(path).hypocentre
     assert found is not None

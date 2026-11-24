@@ -8,7 +8,10 @@ and latitude.
 
 Every plane of every segment is one SRF plane, in the order :func:`generate` drew the
 segments. Its points run down dip in rows, with the along-strike index varying first,
-as the format orders them, unoccupied cells included as points that never slip.
+as the format orders them. A plane with cells off the fault, as a curved surface's
+chart has, writes only its occupied cells, in that order, as one row: ``ndip`` is 1
+and ``nstk`` counts them. The simulation codes read the points alone, so the header
+need not hold a grid.
 
 Each point's strike is its cell's own, which
 :func:`~rupture_generator.geometry.crs.true_azimuth_deg` turns from
@@ -86,6 +89,11 @@ def _planes(
     geometry and the plane headers only summarise it, so a header need not describe a
     rectangle.
 
+    A plane with cells off the fault is one row of its occupied cells instead.
+    ``len / nstk`` and ``wid`` are then their mean steps along strike and down dip,
+    and ``shyp`` names the hypocentre's cell, at its centre, with ``dhyp`` half of
+    ``wid``.
+
     ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
     it gets a ``shyp`` and ``dhyp`` in the chart's coordinates, along the top row from
     the plane's middle and down the first column, and every other plane gets neither.
@@ -129,23 +137,36 @@ def _planes(
             np.arctan2(np.sin(azimuth_rad).sum(), np.cos(azimuth_rad).sum())
         )
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
-        nstk = columns.stop - columns.start
-        shyp, dhyp = (
-            (
-                ((strike_cells - columns.start) / nstk - 0.5) * (end_km - start_km),
-                dip_cells / geometry.cells[0] * width_km,
+        if occupied.all():
+            nstk, ndip = columns.stop - columns.start, geometry.cells[0]
+            length_km, wid_km = end_km - start_km, width_km
+            shyp, dhyp = (
+                (
+                    ((strike_cells - columns.start) / nstk - 0.5) * length_km,
+                    dip_cells / ndip * wid_km,
+                )
+                if on_plane
+                else (NO_HYPOCENTRE, NO_HYPOCENTRE)
             )
-            if on_plane
-            else (NO_HYPOCENTRE, NO_HYPOCENTRE)
-        )
+        else:
+            nstk, ndip = int(occupied.sum()), 1
+            along = np.linalg.norm(np.diff(plane, axis=1), axis=-1)
+            down = np.linalg.norm(np.diff(plane, axis=0), axis=-1)
+            length_km = nstk * float((0.5 * (along[:-1] + along[1:]))[occupied].mean())
+            wid_km = float((0.5 * (down[:, :-1] + down[:, 1:]))[occupied].mean())
+            shyp, dhyp = NO_HYPOCENTRE, NO_HYPOCENTRE
+            if on_plane and hypocentre is not None:
+                i, j = geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km)
+                k = int(occupied[:i].sum() + occupied[i, : j - columns.start].sum())
+                shyp, dhyp = ((k + 0.5) / nstk - 0.5) * length_km, 0.5 * wid_km
         headers.append(
             srf.Plane(
                 elon=float(centre_lon),
                 elat=float(centre_lat),
                 nstk=nstk,
-                ndip=geometry.cells[0],
-                len=end_km - start_km,
-                wid=width_km,
+                ndip=ndip,
+                len=length_km,
+                wid=wid_km,
                 stk=float(mean_strike_deg % 360.0),
                 dip=float(geometry.dip_deg[:, columns][occupied].mean()),
                 dtop=float(plane[..., 2][bordering(occupied, (0, 1))].min()),
@@ -167,6 +188,8 @@ def _plane_points(
 ) -> tuple[srf.Points, srf.SlipRate]:
     """One plane's points and slip-rate rows, in SRF order and SRF units.
 
+    Only the plane's occupied cells, which is all of them on a plane without holes.
+
     Raises
     ------
     RuptureGeneratorError
@@ -175,11 +198,13 @@ def _plane_points(
     """
     geometry, dt_s, beta = rupture.geometry, rupture.dt_s, rupture.beta
 
-    def cells(field: CellArray) -> np.ndarray:
-        return np.ascontiguousarray(field[:, columns]).ravel()
+    occupied = geometry.occupied[:, columns]
 
-    centres = geometry.centres[:, columns]
-    lon, lat = to_lon_lat(transformer, centres[..., 0].ravel(), centres[..., 1].ravel())
+    def cells(field: CellArray) -> np.ndarray:
+        return np.ascontiguousarray(field[:, columns][occupied])
+
+    centres = geometry.centres[:, columns][occupied]
+    lon, lat = to_lon_lat(transformer, centres[:, 0], centres[:, 1])
     slip_m, rise_s = cells(rupture.slip_m), cells(rupture.rise_time_s)
     try:
         row_offsets, rates = synthesise_pulses(
@@ -198,7 +223,7 @@ def _plane_points(
     points = srf.Points(
         lon=single(lon),
         lat=single(lat),
-        dep=single(centres[..., 2].ravel()),
+        dep=single(centres[:, 2]),
         stk=single(cells(strike_deg)),
         dip=single(cells(geometry.dip_deg)),
         area=single(cells(geometry.areas_km2) * CM2_PER_KM2),

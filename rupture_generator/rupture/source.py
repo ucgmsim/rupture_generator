@@ -135,6 +135,19 @@ SUZUKI_2022 = CorrelationRelation(
 """Suzuki et al. (2022): ``10^(Mw/2 - 1.67)`` along strike, ``10^(min(Mw, 6.3)/2 - 1.69)``
 down dip. Smoother than Mai & Beroza, the shallow slip of Graves & Pitarka's hybrid."""
 
+SKARLATOUDIS_2016 = CorrelationRelation(
+    strike_offset=1.75, dip_exponent=0.5, dip_offset=1.59
+)
+"""Skarlatoudis et al. (2016), for subduction interfaces: ``10^(Mw/2 - 1.75)`` along
+strike, ``10^(Mw/2 - 1.59)`` down dip. The coefficients are those Bayless used with
+genslip v5.4.0-asp for their Hikurangi simulations (J. Bayless, pers. comm.).
+
+    Skarlatoudis, A. A., Somerville, P. G. and Thio, H. K. (2016). Source-scaling
+    relations of interface subduction earthquakes for strong ground motion and tsunami
+    simulation. Bulletin of the Seismological Society of America 106(4), 1652-1662.
+    https://doi.org/10.1785/0120150320
+"""
+
 CYCLES_OFFSET = math.log10(2.0 * math.pi)
 """How many decades genslip's lengths overstate its patches by.
 
@@ -169,6 +182,11 @@ GENSLIP_MAI_BEROZA = as_genslip(MAI_BEROZA)
 
 GENSLIP_SUZUKI_2022 = as_genslip(SUZUKI_2022)
 """Suzuki et al. (2022) as genslip applies it, ``2 pi`` shorter than published."""
+
+GENSLIP_SKARLATOUDIS_2016 = as_genslip(SKARLATOUDIS_2016)
+"""Skarlatoudis et al. (2016) as genslip applies it, ``2 pi`` shorter than published:
+offsets of 2.5482 and 2.3882, genslip's ``KX_CORNER`` and ``KY_CORNER`` under
+``KMODEL = -1``."""
 
 
 @dataclasses.dataclass(frozen=True)
