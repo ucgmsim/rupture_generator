@@ -70,9 +70,11 @@ from rupture_generator.rupture.propagator import JumpModel, likeliest_path, samp
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
 from rupture_generator.rupture.source import (
     GENSLIP_MAI_BEROZA,
+    GENSLIP_SKARLATOUDIS_2016,
     GENSLIP_SUZUKI_2022,
     MAI_BEROZA,
     MOMENT_SIGMA_LN,
+    SKARLATOUDIS_2016,
     SUZUKI_2022,
     CorrelationRelation,
     SegmentSource,
@@ -90,10 +92,12 @@ __version__ = version("rupture-generator")
 
 __all__ = [
     "GENSLIP_MAI_BEROZA",
+    "GENSLIP_SKARLATOUDIS_2016",
     "GENSLIP_SUZUKI_2022",
     "GP_HYBRID",
     "MAI_BEROZA",
     "MOMENT_SIGMA_LN",
+    "SKARLATOUDIS_2016",
     "STATIONARY",
     "SUZUKI_2022",
     "CorrelatedPerturbation",

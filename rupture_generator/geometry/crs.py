@@ -2,7 +2,9 @@
 
 Positions are kilometres east and north in a projected CRS. The CRS has to measure in
 metres and keep lengths true where the faults are. There's no default frame: a frame
-made for one region distorts another, and nothing downstream would notice.
+made for one region distorts another, and nothing downstream would notice. A direction
+in the frame becomes a true azimuth through :func:`true_azimuth_deg`, so the frame's
+grid convergence and angular distortion never reach a strike or a dip direction.
 """
 
 from collections.abc import Mapping
@@ -12,17 +14,31 @@ import pyproj
 
 from rupture_generator.errors import RuptureGeneratorError
 
-AREA_MARGIN_DEG = 2.0
+AREA_MARGIN_DEG = 3.0
 """How far past its area of use, in degrees, a CRS may still place a fault.
 
 An area of use follows the land the CRS was made for, and offshore faults lie past it:
-the Puysegur end of the Alpine fault is 0.8 degrees west of NZTM's."""
+the Puysegur end of the Alpine fault is 0.8 degrees west of NZTM's, and the NZ
+Community Fault Model's Puysegur subduction interface, which the model gives in NZTM,
+reaches 2.8 degrees west and 2.4 degrees south of it. NZTM stretches lengths there by
+0.53%, inside :data:`MAXIMUM_SCALE_ERROR`."""
 
 MAXIMUM_SCALE_ERROR = 0.01
 """How far the CRS may stretch a length at any trace point, as a fraction."""
 
+M_PER_KM = 1000.0
+
+AZIMUTH_STEP_KM = 1.0
+"""How far :func:`true_azimuth_deg` steps along a direction before measuring it.
+
+A straight line in a transverse Mercator frame bends away from the geodesic by about
+``x / R**2`` per kilometre at ``x`` from the central meridian, so the chord's azimuth
+departs from the line's own by under 1e-3 degrees at 500 km from it."""
+
 _LISTED = 5
 """How many faults an error names before it summarises the rest."""
+
+_GEOD = pyproj.Geod(ellps="WGS84")
 
 
 def projected_crs(crs: pyproj.CRS | str | None) -> pyproj.CRS:
@@ -124,6 +140,64 @@ def check_coverage(crs: pyproj.CRS, traces: Mapping[str, np.ndarray]) -> None:
         )
 
 
+def true_azimuth_deg(
+    transformer: pyproj.Transformer, positions_km: np.ndarray, directions: np.ndarray
+) -> np.ndarray:
+    """Turn directions in the projected frame into true azimuths.
+
+    Each position steps :data:`AZIMUTH_STEP_KM` along its direction. Both ends are
+    inverse-projected, and the azimuth is the geodesic's from the first to the second,
+    in degrees clockwise from north.
+
+    Parameters
+    ----------
+    transformer : pyproj.Transformer
+        Takes the projected CRS, in metres, to WGS84 longitude and latitude.
+    positions_km : np.ndarray
+        Where each direction starts, ``(..., 2)``, east and north in kilometres.
+    directions : np.ndarray
+        Unit vectors, ``(..., 2)``, east and north in the projected CRS.
+
+    Returns
+    -------
+    np.ndarray
+        The azimuths in ``[0, 360)`` degrees, shaped as the positions without their
+        last axis.
+    """
+    start_km = np.asarray(positions_km, dtype=np.float64).reshape(-1, 2)
+    end_km = start_km + AZIMUTH_STEP_KM * np.asarray(
+        directions, dtype=np.float64
+    ).reshape(-1, 2)
+    both_km = np.concatenate([start_km, end_km])
+    lon, lat = to_lon_lat(transformer, both_km[:, 0], both_km[:, 1])
+    count = len(start_km)
+    azimuth_deg, _, _ = _GEOD.inv(lon[:count], lat[:count], lon[count:], lat[count:])
+    return (np.asarray(azimuth_deg) % 360.0).reshape(np.shape(positions_km)[:-1])
+
+
+def to_lon_lat(
+    transformer: pyproj.Transformer, east_km: np.ndarray, north_km: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Turn positions in the projected frame, in kilometres, into WGS84 degrees.
+
+    Parameters
+    ----------
+    transformer : pyproj.Transformer
+        Takes the projected CRS, in metres, to WGS84 longitude and latitude.
+    east_km, north_km : np.ndarray
+        Easting and northing in kilometres.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Longitude and latitude in degrees.
+    """
+    lon, lat = transformer.transform(
+        np.asarray(east_km) * M_PER_KM, np.asarray(north_km) * M_PER_KM
+    )
+    return np.asarray(lon), np.asarray(lat)
+
+
 def _describe(crs: pyproj.CRS) -> str:
     """A CRS as its code and name, for an error message."""
     authority = crs.to_authority()
@@ -174,7 +248,10 @@ def _utm_zone(points: np.ndarray) -> str:
 
 __all__ = [
     "AREA_MARGIN_DEG",
+    "AZIMUTH_STEP_KM",
     "MAXIMUM_SCALE_ERROR",
     "check_coverage",
     "projected_crs",
+    "to_lon_lat",
+    "true_azimuth_deg",
 ]

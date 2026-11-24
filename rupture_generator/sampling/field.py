@@ -302,9 +302,12 @@ def sampler(
     amplitudes = np.array([amplitudes for amplitudes, _ in embedded])
     amplitudes.setflags(write=False)
     mirror = np.outer(*(_mirror_weights(extent) for extent in padded))
+    # ikl,jkl,kl -> ij: the Gram matrix of the fields' amplitudes, each product
+    # summed over the padded cells with the mirror weights.
     cross = np.einsum("ikl,jkl,kl->ij", amplitudes, amplitudes, mirror)
     cross /= padded[0] * padded[1]
     gains /= np.sqrt(power)
+    # ikl,ij,jkl -> kl: per cell, the quadratic form of the gains with ``cross``.
     variance = np.einsum("ikl,ij,jkl->kl", gains, cross, gains)
     return Sampler(grid.shape, padded, amplitudes, gains / np.sqrt(variance))
 

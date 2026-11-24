@@ -1,5 +1,5 @@
 # yamllint's defaults are written for hand-authored documents, and every YAML
-# file in this repo but the hook and Vale configs is a GitHub Actions workflow.
+# file in this repo but the hook config is a GitHub Actions workflow.
 # Without this the pre-push yamllint hook fires on the workflows for things
 # Actions requires.
 extends: default

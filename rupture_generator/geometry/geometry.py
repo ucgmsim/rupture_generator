@@ -3,7 +3,9 @@
 Positions are east, north and depth in kilometres in the realisation's projected CRS,
 depth positive down. ``i`` runs down dip and ``j`` along strike. A chart is one or more
 planes laid side by side along strike, each sharing its junction column of nodes with
-the next, so the chart is one continuous grid.
+the next, so the chart is one continuous grid. Its ``occupied`` mask says which cells
+are fault. The spacing and the cell a position names come from occupied cells only,
+so nodes off the fault need only be finite.
 """
 
 import dataclasses
@@ -26,6 +28,49 @@ type CellMask = np.ndarray[tuple[int, int], np.dtype[np.bool_]]
 
 type CellSelection = tuple[np.ndarray, np.ndarray]
 """Some cells named as two index arrays, ``(i, j)``: what indexing a field wants."""
+
+MAXIMUM_HYPOCENTRE_OFFSET_KM = 1.0
+"""How far in plan, past half a cell's diagonal, a hypocentre given as a position may
+lie from the centre of the fault cell :meth:`Geometry.cell_near` moves it to.
+
+A position on the fault lies within half a diagonal of its own cell's centre, so the
+half diagonal admits every point of the fault at any spacing, and the kilometre past it
+admits a position just beyond the fault's outline."""
+
+VERTICAL_TOLERANCE = 1e-8
+"""How near vertical, as ``|cos(dip)|``, or horizontal, as ``sin(dip)``, a cell's
+normal leaves its strike to the cell's ``j`` edge.
+
+Projected positions reach 1e4 km, where double precision rounds to 2e-12 km, so a 10 m
+cell's normal can tilt by about 2e-10 from rounding alone. The tolerance is fifty times
+that, 6e-7 degrees."""
+
+
+def bordering(mask: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
+    """Flag the nodes or node steps that border a flagged cell.
+
+    Each axis in ``axes`` grows the mask by one: an entry is flagged when the cell on
+    either side of it along that axis is. ``(0, 1)`` gives the nodes cornering a
+    flagged cell, ``(n_i+1, n_j+1)``; ``(0,)`` the steps along strike that border one,
+    ``(n_i+1, n_j)``; and ``(1,)`` the steps down dip, ``(n_i, n_j+1)``.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        One flag per cell, ``(n_i, n_j)``.
+    axes : tuple of int
+        The axes to grow along.
+
+    Returns
+    -------
+    np.ndarray
+        The grown mask.
+    """
+    for axis in axes:
+        before, after = [(0, 0), (0, 0)], [(0, 0), (0, 0)]
+        before[axis], after[axis] = (1, 0), (0, 1)
+        mask = np.pad(mask, before) | np.pad(mask, after)
+    return mask
 
 
 def _position_to_cell_index(
@@ -170,17 +215,59 @@ class Geometry:
         return np.degrees(np.arccos(np.clip(cosine, 0.0, 1.0)))
 
     @functools.cached_property
+    def strike(self) -> np.ndarray:
+        """np.ndarray: Unit horizontal vectors, ``(n_i, n_j, 2)``, along each strike.
+
+        Each is east and north in the projected CRS. It's the horizontal direction in
+        the plane the cell's diagonals span, oriented so the fault dips to its right.
+        Where that plane lies within :data:`VERTICAL_TOLERANCE` of vertical,
+        which dips to neither side, or of horizontal, which has no strike line, the
+        vector follows the horizontal part of the cell's ``j`` edges instead. A cell
+        with neither reads as east, ``(1, 0)``, as :attr:`dip_deg` reads 0 for a
+        degenerate cell.
+        """
+        normal = self._diagonal_normals
+        tolerance = VERTICAL_TOLERANCE * 2.0 * self.areas_km2
+        # With depth positive down, an upward normal's horizontal part points down dip;
+        # a quarter turn anticlockwise of the dip direction is the strike.
+        direction = np.sign(normal[..., 2:]) * np.stack(
+            [normal[..., 1], -normal[..., 0]], -1
+        )
+        undecided = (np.abs(normal[..., 2]) <= tolerance) | (
+            np.hypot(direction[..., 0], direction[..., 1]) <= tolerance
+        )
+        i, j = np.nonzero(undecided)
+        p = self.nodes[..., :2]
+        direction[i, j] = p[i, j + 1] - p[i, j] + p[i + 1, j + 1] - p[i + 1, j]
+        size = np.linalg.norm(direction, axis=-1, keepdims=True)
+        east = np.broadcast_to([1.0, 0.0], direction.shape)
+        return np.divide(direction, size, out=east.copy(), where=size > 0)
+
+    @functools.cached_property
     def spacing_km(self) -> tuple[float, float]:
         """tuple[float, float]: The chart's ``(strike, dip)`` spacing in kilometres.
 
         The sampler and the eikonal solve both take this one spacing. It averages
-        every along-strike and every down-dip step rather than reading one edge,
-        because a plane hung from a bent trace is a trapezoid, whose steps vary from
-        one edge to the other.
+        every along-strike and every down-dip node step that borders an occupied cell,
+        rather than reading one edge, because a plane hung from a bent trace is a
+        trapezoid, whose steps vary from one edge to the other.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a chart with no occupied cell, which has no step on the fault.
         """
+        occupied = self.occupied
+        if not occupied.any():
+            raise RuptureGeneratorError(
+                "a chart with no occupied cell has no spacing on the fault"
+            )
         strike = np.linalg.norm(np.diff(self.nodes, axis=1), axis=-1)
         dip = np.linalg.norm(np.diff(self.nodes, axis=0), axis=-1)
-        return float(strike.mean()), float(dip.mean())
+        return (
+            float(np.mean(strike, where=bordering(occupied, (0,)))),
+            float(np.mean(dip, where=bordering(occupied, (1,)))),
+        )
 
     @functools.cached_property
     def strike_arc_km(self) -> np.ndarray:
@@ -201,6 +288,9 @@ class Geometry:
     def cell_at(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """Find the cell containing a position on the fault.
 
+        The distances run along the chart's top row and first column, which lie off
+        the fault where the chart leaves those cells unoccupied.
+
         Parameters
         ----------
         strike_km : float
@@ -216,12 +306,76 @@ class Geometry:
         Raises
         ------
         RuptureGeneratorError
-            For a position off the fault, naming the axis and the fault's extent.
+            For a position off the chart, naming the axis and the chart's extent, or
+            one in a cell off the fault.
         """
-        return (
+        cell = (
             _position_to_cell_index(dip_km, self.dip_arc_km, axis="dip"),
             _position_to_cell_index(strike_km, self.strike_arc_km, axis="strike"),
         )
+        if not self.occupied[cell]:
+            raise RuptureGeneratorError(
+                f"{strike_km} km along strike and {dip_km} km down dip is cell {cell}, "
+                "which is off the fault"
+            )
+        return cell
+
+    def centre_arc_km(self, i: int, j: int) -> tuple[float, float]:
+        """The distances that name a cell's centre, the inverse of :meth:`cell_at`.
+
+        Parameters
+        ----------
+        i, j : int
+            The cell's 0-based row and column.
+
+        Returns
+        -------
+        tuple[float, float]
+            Its centre's distance along strike and down dip, in kilometres, measured
+            as :meth:`cell_at` measures them.
+        """
+        strike, dip = self.strike_arc_km, self.dip_arc_km
+        return 0.5 * float(strike[j] + strike[j + 1]), 0.5 * float(dip[i] + dip[i + 1])
+
+    def cell_near(self, east_km: float, north_km: float) -> tuple[int, int]:
+        """Find the occupied cell whose centre is nearest a position in plan.
+
+        Parameters
+        ----------
+        east_km : float
+            Easting in the projected CRS, in kilometres.
+        north_km : float
+            Northing in the projected CRS, in kilometres.
+
+        Returns
+        -------
+        tuple[int, int]
+            The cell's 0-based ``(i, j)``.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a chart with no occupied cell, which has no spacing, or a position
+            farther in plan from every occupied cell's centre than half the diagonal
+            of a cell of :attr:`spacing_km` and :data:`MAXIMUM_HYPOCENTRE_OFFSET_KM`
+            together, naming the distance.
+        """
+        # The spacing refuses a chart with no occupied cell.
+        reach_km = MAXIMUM_HYPOCENTRE_OFFSET_KM + 0.5 * float(
+            np.hypot(*self.spacing_km)
+        )
+        centres = self.centres
+        distance_km = np.hypot(centres[..., 0] - east_km, centres[..., 1] - north_km)
+        distance_km[~self.occupied] = np.inf
+        nearest = np.unravel_index(np.argmin(distance_km), distance_km.shape)
+        if not distance_km[nearest] <= reach_km:
+            raise RuptureGeneratorError(
+                f"({east_km}, {north_km}) km lies {distance_km[nearest]:.3f} km in plan "
+                f"from the nearest fault cell's centre, past the {reach_km:.3f} km a "
+                "position may be moved onto it: half a cell's diagonal and "
+                f"{MAXIMUM_HYPOCENTRE_OFFSET_KM} km more"
+            )
+        return int(nearest[0]), int(nearest[1])
 
     def subdivide(self, spacing_km: float) -> "Geometry":
         """Recut this chart into cells of about ``spacing_km`` on a side.

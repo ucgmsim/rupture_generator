@@ -390,3 +390,205 @@ def test_the_reach_is_sampled_by_default():
     propagation = rupture_config.load(EXAMPLE).propagation
     assert propagation is not None
     assert propagation.model.reach == "sampled"
+
+
+# ------------------------------------------------- geometry files and hypocentres
+
+ONE_PAIR = (
+    "hypocentre: a hypocentre is strike_km and dip_km, strike_fraction and "
+    "dip_fraction, or longitude_deg and latitude_deg: one pair, complete"
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            'path = "two_faults.geojson"',
+            "path = 3",
+            "geometry.path: 3 is not a path or a list of paths",
+        ),
+        (
+            'path = "two_faults.geojson"',
+            "path = []",
+            "geometry.path: [] is not a path or a list of paths",
+        ),
+        (
+            'path = "two_faults.geojson"',
+            'path = ["two_faults.geojson", 3]',
+            "geometry.path: ['two_faults.geojson', 3] is not a path or a list of paths",
+        ),
+        (
+            "dip_fraction = 0.5\n",
+            "dip_fraction = 0.5\nlongitude_deg = 172.3\nlatitude_deg = -41.8\n",
+            ONE_PAIR,
+        ),
+        (
+            "strike_fraction = 0.3\ndip_fraction = 0.5\n",
+            "longitude_deg = 172.3\n",
+            ONE_PAIR,
+        ),
+    ],
+)
+def test_a_bad_geometry_or_hypocentre_gives_exactly_this_message(
+    tmp_path, old, new, message
+):
+    assert old in BASE
+    path = tmp_path / "bad.toml"
+    path.write_text(BASE.replace(old, new))
+    with pytest.raises(RuptureGeneratorError) as raised:
+        rupture_config.load(path)
+    assert str(raised.value) == message
+
+
+def test_a_path_is_one_file_or_a_list_resolved_against_the_config(tmp_path):
+    one = rupture_config.load(EXAMPLE)
+    path = EXAMPLE.with_name("_test_list.toml")
+    path.write_text(BASE.replace('"two_faults.geojson"', '["two_faults.geojson"]'))
+    try:
+        listed = rupture_config.load(path)
+    finally:
+        path.unlink()
+    assert listed.geometry.path == one.geometry.path
+    assert one.geometry.path == (EXAMPLE.with_name("two_faults.geojson").resolve(),)
+    again = tmp_path / "again.toml"
+    again.write_text(rupture_config.dump(listed))
+    assert rupture_config.load(again) == listed
+
+
+def _with_hypocentre(**position) -> rupture_config.RuptureConfig:
+    loaded = rupture_config.load(EXAMPLE)
+    hypocentre = rupture_config.HypocentreConfig(segment="bent", **position)
+    return dataclasses.replace(loaded, hypocentre=hypocentre)
+
+
+def test_a_longitude_and_latitude_on_a_planar_section_names_its_cell():
+    # A point of the trace, at the top of the 60 degree section.
+    scenario = rupture_config.build(
+        _with_hypocentre(longitude_deg=172.3, latitude_deg=-41.8)
+    )
+    hypocentre = scenario.realisation.hypocentre
+    assert hypocentre is not None
+    chart = scenario.realisation["bent"]
+    i, j = chart.cell_at(hypocentre.strike_km, hypocentre.dip_km)
+    assert i == 0
+    # The recorded distances are the cell centre's.
+    assert hypocentre.strike_km == pytest.approx(
+        0.5 * (chart.strike_arc_km[j] + chart.strike_arc_km[j + 1])
+    )
+    assert hypocentre.dip_km == pytest.approx(0.5 * chart.dip_arc_km[1])
+
+
+@pytest.mark.parametrize(
+    ("position", "message"),
+    [
+        (
+            {"longitude_deg": 175.0, "latitude_deg": -40.0},
+            r"^hypocentre: \(.*\) km lies .* km in plan from the nearest fault cell",
+        ),
+        (
+            {"strike_km": 1000.0, "dip_km": 1.0},
+            r"^hypocentre: 1000\.0 km is off the fault along strike",
+        ),
+        (
+            {"strike_fraction": 1.5, "dip_fraction": 0.5},
+            r"^hypocentre: a hypocentre at fractions \(1\.5, 0\.5\) is off the fault",
+        ),
+    ],
+)
+def test_a_hypocentre_off_the_fault_is_refused_when_built(position, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        rupture_config.build(_with_hypocentre(**position))
+
+
+def test_a_hypocentre_in_a_cell_off_a_curved_fault_is_refused_when_built():
+    loaded = rupture_config.load(EXAMPLE.with_name("hikurangi.toml"))
+    loaded = dataclasses.replace(
+        loaded,
+        geometry=dataclasses.replace(loaded.geometry, spacing_km=10.0),
+        hypocentre=rupture_config.HypocentreConfig(
+            segment="Hikurangi", strike_fraction=0.0, dip_fraction=0.0
+        ),
+    )
+    with pytest.raises(
+        RuptureGeneratorError,
+        match=r"^hypocentre: 0\.0 km along strike and 0\.0 km down dip is cell "
+        r"\(0, 0\), which is off the fault",
+    ):
+        rupture_config.build(loaded)
+
+
+def _tsurf(name: str, corners_m: list[tuple[float, float, float]]) -> str:
+    """A TSurf of two triangles on four corners, in NZTM metres, elevation up."""
+    vertices = "".join(
+        f"VRTX {k} {x} {y} {z}\n" for k, (x, y, z) in enumerate(corners_m, start=1)
+    )
+    return (
+        f"GOCAD TSurf 1\nHEADER {{\nname:{name}\n}}\n"
+        'AXIS_UNIT "m" "m" "m"\nZPOSITIVE Elevation\nTFACE\n'
+        f"{vertices}TRGL 1 2 3\nTRGL 2 4 3\nEND\n"
+    )
+
+
+EAST_M, NORTH_M = 1_570_000.0, 5_180_000.0
+"""A point in NZTM near Christchurch, where the made-up surfaces lie."""
+
+
+def _surface_config(path) -> rupture_config.RuptureConfig:
+    loaded = rupture_config.load(EXAMPLE)
+    return dataclasses.replace(
+        loaded,
+        geometry=dataclasses.replace(loaded.geometry, path=(path,), spacing_km=2.0),
+        hypocentre=rupture_config.HypocentreConfig(
+            segment="plane", strike_fraction=0.5, dip_fraction=0.5
+        ),
+        source=rupture_config.Finite(magnitude=6.0, rake_deg=90.0),
+        propagation=None,
+    )
+
+
+def test_an_uncompressed_tsurf_builds_a_surface_chart(tmp_path):
+    # 20 km along strike and 10 km down a 45 degree dip: 10 by 5 cells of 2 km.
+    path = tmp_path / "plane.ts"
+    step_m = 10_000.0 / np.sqrt(2.0)
+    path.write_text(
+        _tsurf(
+            "plane",
+            [
+                (EAST_M, NORTH_M, 0.0),
+                (EAST_M + 20_000.0, NORTH_M, 0.0),
+                (EAST_M, NORTH_M + step_m, -step_m),
+                (EAST_M + 20_000.0, NORTH_M + step_m, -step_m),
+            ],
+        )
+    )
+    scenario = rupture_config.build(_surface_config(path))
+    chart = scenario.realisation["plane"]
+    assert chart.plane_cells == (chart.cells[1],)
+    assert chart.occupied.all() and chart.cells == (5, 10)
+    assert chart.areas_km2.sum() == pytest.approx(200.0)
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("GOCAD Voxet 1\n", r"bad\.ts: line 1: 'GOCAD Voxet 1' is not a TSurf"),
+        (
+            _tsurf(
+                "plane",
+                [
+                    (EAST_M, NORTH_M, -5_000.0),
+                    (EAST_M + 20_000.0, NORTH_M, -5_000.0),
+                    (EAST_M, NORTH_M + 10_000.0, -5_000.0),
+                    (EAST_M + 20_000.0, NORTH_M + 10_000.0, -5_000.0),
+                ],
+            ),
+            r"bad\.ts: plane: the mesh is level",
+        ),
+    ],
+)
+def test_a_surface_file_that_does_not_chart_names_the_file(tmp_path, text, message):
+    path = tmp_path / "bad.ts"
+    path.write_text(text)
+    with pytest.raises(RuptureGeneratorError, match=message):
+        rupture_config.build(_surface_config(path))

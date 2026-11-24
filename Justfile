@@ -47,3 +47,19 @@ demo:
 hero:
     uv run rupture-generator examples/beavan.toml /tmp/beavan.h5
     uv run --with pyvista --with matplotlib python docs/hero.py /tmp/beavan.h5 docs/images/beavan_slip.png
+
+# The README's turntable: one draw of the Maule example, circled, with Natural Earth's
+# coastline, which is fetched once to /tmp/naturalearth.
+orbit:
+    uv run rupture-generator examples/maule.toml /tmp/maule.h5
+    mkdir -p /tmp/naturalearth
+    test -f /tmp/naturalearth/ne_10m_coastline.zip || curl -sSfL -o /tmp/naturalearth/ne_10m_coastline.zip https://naciscdn.org/naturalearth/10m/physical/ne_10m_coastline.zip
+    uv run --with pyvista --with matplotlib --with imageio --with pyshp python docs/orbit.py /tmp/maule.h5 docs/images/maule_orbit.gif /tmp/naturalearth/ne_10m_coastline.zip
+
+# The recording the turntable links to: the same draw of the Maule example in Rerun.
+# The README opens it in Rerun's web viewer at the installed rerun-sdk's version,
+# so bump the link's version whenever this recording is remade under a new one.
+maule-rrd:
+    uv run rupture-generator examples/maule.toml /tmp/maule.srf
+    uv run --extra vis rupture-view /tmp/maule.srf --save docs/maule.rrd
+    @uv run --extra vis python -c "import rerun; print('README link version:', rerun.__version__)"

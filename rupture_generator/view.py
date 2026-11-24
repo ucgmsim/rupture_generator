@@ -24,7 +24,8 @@ import pyproj
 from numpy.typing import ArrayLike
 
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.formats.srf import M_PER_KM, SrfRupture, read_rupture
+from rupture_generator.formats.srf import SrfRupture, read_rupture
+from rupture_generator.geometry.crs import M_PER_KM
 from rupture_generator.rupture.source import magnitude_from_moment
 
 if TYPE_CHECKING:
@@ -163,14 +164,16 @@ def _positions_m(rupture: SrfRupture) -> tuple[np.ndarray, np.ndarray | None]:
     along, down = along * half_length, down * half_width
     # A plane may lean toward its dip direction, which no header records. Its points
     # are its geometry. A cell's half-steps come from its neighbours, and from the
-    # header only along an axis one point wide. Single-precision longitudes quantise
-    # to a metre or so. The steps fix each cell's shape, and the file's exact area
-    # fixes its size.
+    # header only along an axis one point wide. A plane one row deep may be a curved
+    # surface's occupied cells end to end, whose neighbours along the row need not
+    # neighbour on the fault, so its steps come from the header too. Single-precision
+    # longitudes quantise to a metre or so. The steps fix each cell's shape, and the
+    # file's exact area fixes its size.
     start = 0
     for plane, count in zip(planes, counts, strict=True):
         grid = centres[start : start + count].reshape(plane.ndip, plane.nstk, 3)
         cells = slice(start, start + count)
-        if plane.nstk > 1:
+        if plane.nstk > 1 and plane.ndip > 1:
             along[cells] = 0.5 * np.asarray(np.gradient(grid, axis=1)).reshape(-1, 3)
         if plane.ndip > 1:
             down[cells] = 0.5 * np.asarray(np.gradient(grid, axis=0)).reshape(-1, 3)
@@ -292,6 +295,7 @@ def _slip_directions(rupture: SrfRupture, corners: np.ndarray) -> np.ndarray:
     along = corners[:, 1] - corners[:, 0]
     along /= np.linalg.norm(along, axis=-1, keepdims=True)
     up_dip = corners[:, 0] - corners[:, 3]
+    # ij,ij -> i is np.vecdot(up_dip, along), and faster on these 3-vectors.
     up_dip -= np.einsum("ij,ij->i", up_dip, along)[:, None] * along
     up_dip /= np.linalg.norm(up_dip, axis=-1, keepdims=True)
     rake = np.radians(rupture.rake_deg)[:, None]

@@ -6,8 +6,13 @@ import numpy as np
 import pyproj
 import pytest
 import scipy as sp
+from hypothesis import given
+from hypothesis import strategies as st
+from hypothesis.extra import numpy as hnp
 
-from rupture_generator import geometry_from_geojson, moment_from_magnitude
+from rupture_generator import Geometry, geometry_from_geojson, moment_from_magnitude
+from rupture_generator.geometry.crs import true_azimuth_deg
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.source import MAI_BEROZA
 from rupture_generator.sampling import (
     Covariance,
@@ -23,6 +28,8 @@ from rupture_generator.sampling.field import (
     _embed,
     sampler,
 )
+
+from .conftest import NZTM, ORIGIN_KM, holed, tilted
 
 TRACE = [[172.0, -42.0], [172.3, -41.8], [172.7, -41.7]]
 
@@ -88,6 +95,104 @@ def test_subdivided_planes_keep_their_area_and_dip():
             fine.dip_deg[:, start:stop], coarse.dip_deg[0, plane], atol=1e-9
         )
     assert fine.plane_cells == (70, 67)
+
+
+def _reversed(chart):
+    """The same cells with ``j`` running the other way."""
+    return Geometry(
+        chart.nodes[:, ::-1].copy(), chart.occupied[:, ::-1], (chart.cells[1],)
+    )
+
+
+@given(st.floats(0.0, 360.0), st.floats(1.0, 89.0))
+def test_strike_keeps_the_fault_to_its_right_whichever_way_the_grid_runs(
+    strike_deg, dip_deg
+):
+    chart, along = tilted(strike_deg, dip_deg)
+    for grid in (chart, _reversed(chart)):
+        np.testing.assert_allclose(
+            grid.strike, np.broadcast_to(along, (3, 4, 2)), atol=1e-9
+        )
+
+
+@pytest.mark.parametrize("dip_deg", [90.0, 90.0 - 1e-9, 0.0])
+def test_a_cell_that_dips_to_no_side_takes_its_strike_from_its_j_edges(dip_deg):
+    chart, along = tilted(30.0, dip_deg)
+    np.testing.assert_allclose(
+        chart.strike, np.broadcast_to(along, (3, 4, 2)), atol=1e-9
+    )
+    np.testing.assert_allclose(
+        _reversed(chart).strike, np.broadcast_to(-along, (3, 4, 2)), atol=1e-9
+    )
+
+
+def test_a_degenerate_cell_strikes_east():
+    nodes = np.broadcast_to(ORIGIN_KM, (2, 2, 3)).copy()
+    chart = Geometry(nodes, np.ones((1, 1), bool), (1,))
+    np.testing.assert_array_equal(chart.strike, [[[1.0, 0.0]]])
+    assert chart.dip_deg[0, 0] == 0.0
+
+
+def _wobbled(offsets_km):
+    """A chart of 1 km cells, each node moved by its offset."""
+    rows, columns = offsets_km.shape[0] - 1, offsets_km.shape[1] - 1
+    i, j = np.mgrid[0 : rows + 1, 0 : columns + 1].astype(float)
+    nodes = ORIGIN_KM + np.stack([i, j, i], axis=-1) + offsets_km
+    return Geometry(nodes, np.ones((rows, columns), bool), (columns,))
+
+
+OFFSETS = hnp.arrays(
+    np.float64,
+    st.tuples(st.integers(2, 6), st.integers(2, 6), st.just(3)),
+    elements=st.floats(-0.3, 0.3),
+)
+
+
+@given(OFFSETS)
+def test_a_chart_that_is_fault_everywhere_averages_every_step(offsets_km):
+    chart = _wobbled(offsets_km)
+    strike = np.linalg.norm(np.diff(chart.nodes, axis=1), axis=-1).mean()
+    dip = np.linalg.norm(np.diff(chart.nodes, axis=0), axis=-1).mean()
+    assert chart.spacing_km == (float(strike), float(dip))
+
+
+@given(OFFSETS, st.data())
+def test_the_spacing_ignores_nodes_off_the_fault(offsets_km, data):
+    chart = _wobbled(offsets_km)
+    occupied = data.draw(hnp.arrays(bool, chart.cells).filter(np.any))
+    touched = bordering(occupied, (0, 1))
+    far = np.where(touched[..., None], chart.nodes, chart.nodes * 7.0 + 1.0e3)
+    partial = Geometry(chart.nodes, occupied, chart.plane_cells)
+    assert Geometry(far, occupied, chart.plane_cells).spacing_km == partial.spacing_km
+
+
+def test_the_cell_near_a_position_is_the_nearest_occupied_one():
+    chart = holed()
+    # From the unoccupied top-left cell's centre, the cell below lies 0.71 km away in
+    # plan, the 45 degree dip's horizontal step, and the cell beside it 1 km.
+    east_km, north_km, _ = chart.centres[0, 0]
+    assert chart.cell_near(east_km, north_km) == (1, 0)
+
+
+def test_the_cell_near_a_position_is_the_cell_its_centre_distances_name():
+    chart = holed()
+    cell = chart.cell_near(*chart.centres[2, 1, :2])
+    assert chart.cell_at(*chart.centre_arc_km(*cell)) == cell == (2, 1)
+
+
+def test_frame_north_is_true_north_turned_by_the_meridian_convergence():
+    to_lon_lat = pyproj.Transformer.from_crs(NZTM, "EPSG:4326", always_xy=True)
+    to_frame = pyproj.Transformer.from_crs("EPSG:4326", NZTM, always_xy=True)
+    lon, lat = np.array([[168.0, 173.0, 177.0], [-45.0, -41.0, -38.0]])
+    east_m, north_m = to_frame.transform(lon, lat)
+    positions_km = np.stack([east_m, north_m], axis=-1).reshape(1, 3, 2) / 1000.0
+    azimuth_deg = true_azimuth_deg(to_lon_lat, positions_km, np.array([0.0, 1.0]))
+    convergence_deg = pyproj.Proj(NZTM).get_factors(lon, lat).meridian_convergence
+    assert azimuth_deg.shape == (1, 3)
+    # AZIMUTH_STEP_KM's chord error, at up to 400 km from the central meridian.
+    np.testing.assert_allclose(
+        (azimuth_deg[0] - convergence_deg + 180.0) % 360.0 - 180.0, 0.0, atol=1e-3
+    )
 
 
 def test_the_dct_embedding_is_the_wrapped_fft():

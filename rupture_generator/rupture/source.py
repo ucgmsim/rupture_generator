@@ -32,6 +32,7 @@ import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import Geometry
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.medium import Medium
 from rupture_generator.rupture.realisation import Realisation
 
@@ -134,6 +135,19 @@ SUZUKI_2022 = CorrelationRelation(
 """Suzuki et al. (2022): ``10^(Mw/2 - 1.67)`` along strike, ``10^(min(Mw, 6.3)/2 - 1.69)``
 down dip. Smoother than Mai & Beroza, the shallow slip of Graves & Pitarka's hybrid."""
 
+SKARLATOUDIS_2016 = CorrelationRelation(
+    strike_offset=1.75, dip_exponent=0.5, dip_offset=1.59
+)
+"""Skarlatoudis et al. (2016), for subduction interfaces: ``10^(Mw/2 - 1.75)`` along
+strike, ``10^(Mw/2 - 1.59)`` down dip. The coefficients are those Bayless used with
+genslip v5.4.0-asp for their Hikurangi simulations (J. Bayless, pers. comm.).
+
+    Skarlatoudis, A. A., Somerville, P. G. and Thio, H. K. (2016). Source-scaling
+    relations of interface subduction earthquakes for strong ground motion and tsunami
+    simulation. Bulletin of the Seismological Society of America 106(4), 1652-1662.
+    https://doi.org/10.1785/0120150320
+"""
+
 CYCLES_OFFSET = math.log10(2.0 * math.pi)
 """How many decades genslip's lengths overstate its patches by.
 
@@ -168,6 +182,11 @@ GENSLIP_MAI_BEROZA = as_genslip(MAI_BEROZA)
 
 GENSLIP_SUZUKI_2022 = as_genslip(SUZUKI_2022)
 """Suzuki et al. (2022) as genslip applies it, ``2 pi`` shorter than published."""
+
+GENSLIP_SKARLATOUDIS_2016 = as_genslip(SKARLATOUDIS_2016)
+"""Skarlatoudis et al. (2016) as genslip applies it, ``2 pi`` shorter than published:
+offsets of 2.5482 and 2.3882, genslip's ``KX_CORNER`` and ``KY_CORNER`` under
+``KMODEL = -1``."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,15 +254,6 @@ the component's share of the area.
 """
 
 
-def _occupied_nodes(chart: Geometry) -> np.ndarray:
-    """Flag the nodes that are a corner of at least one fault cell, ``(n_i+1, n_j+1)``."""
-    occupied = chart.occupied
-    nodes = np.zeros((occupied.shape[0] + 1, occupied.shape[1] + 1), dtype=bool)
-    for rows, columns in itertools.product((slice(None, -1), slice(1, None)), repeat=2):
-        nodes[rows, columns] |= occupied
-    return nodes
-
-
 def _points_beneath(chart: Geometry, depth_km: float) -> np.ndarray:
     """Sample a chart's fault at and below a depth, ``(n, 3)`` positions in kilometres.
 
@@ -253,12 +263,8 @@ def _points_beneath(chart: Geometry, depth_km: float) -> np.ndarray:
     """
     nodes = chart.nodes
     depth = nodes[..., 2]
-    below = nodes[_occupied_nodes(chart) & (depth >= depth_km)]
-    occupied = chart.occupied
-    # A down-dip edge is a fault edge if a fault cell lies on either side of it.
-    edge = np.zeros((occupied.shape[0], occupied.shape[1] + 1), dtype=bool)
-    edge[:, :-1] |= occupied
-    edge[:, 1:] |= occupied
+    below = nodes[bordering(chart.occupied, (0, 1)) & (depth >= depth_km)]
+    edge = bordering(chart.occupied, (1,))
     upper, lower = depth[:-1], depth[1:]
     crossing = edge & ((upper - depth_km) * (lower - depth_km) < 0.0)
     fraction = (depth_km - upper[crossing]) / (lower[crossing] - upper[crossing])
@@ -279,7 +285,8 @@ def _separation_km(
     two are closer than that.
     """
     bottom_km = min(
-        float(chart.nodes[..., 2][_occupied_nodes(chart)].max()) for chart in (a, b)
+        float(chart.nodes[..., 2][bordering(chart.occupied, (0, 1))].max())
+        for chart in (a, b)
     )
     depth_km = min(depth_km, 0.99 * bottom_km)
     points_a, points_b = _points_beneath(a, depth_km), _points_beneath(b, depth_km)

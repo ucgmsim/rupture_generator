@@ -8,8 +8,16 @@ and latitude.
 
 Every plane of every segment is one SRF plane, in the order :func:`generate` drew the
 segments. Its points run down dip in rows, with the along-strike index varying first,
-as the format orders them. A plane's strike is the geodesic azimuth along its top
-edge, so the projection's grid convergence never reaches the file.
+as the format orders them. A plane with cells off the fault, as a curved surface's
+chart has, writes only its occupied cells, in that order, as one row: ``ndip`` is 1
+and ``nstk`` counts them. The simulation codes read the points alone, so the header
+need not hold a grid.
+
+Each point's strike is its cell's own, which
+:func:`~rupture_generator.geometry.crs.true_azimuth_deg` turns from
+:attr:`Geometry.strike` into a true azimuth. Rake, measured from strike, means the same
+however the chart's grid lies, and no strike includes the projection's grid
+convergence.
 """
 
 import dataclasses
@@ -24,7 +32,9 @@ import srf
 
 from rupture_generator._kernels import synthesise_pulses
 from rupture_generator.errors import RuptureGeneratorError
-from rupture_generator.geometry import CellArray, Geometry
+from rupture_generator.geometry import CellArray, CellMask, Geometry, NodeArray
+from rupture_generator.geometry.crs import to_lon_lat, true_azimuth_deg
+from rupture_generator.geometry.geometry import bordering
 from rupture_generator.rupture.generator import SegmentRupture
 from rupture_generator.rupture.medium import rigidity_pa
 from rupture_generator.rupture.realisation import Hypocentre, Realisation
@@ -32,12 +42,9 @@ from rupture_generator.rupture.realisation import Hypocentre, Realisation
 CM_PER_M = 100.0
 CM_PER_KM = 1.0e5
 CM2_PER_KM2 = 1.0e10
-M_PER_KM = 1000.0
 
 NO_HYPOCENTRE = -999.0
 """``shyp`` and ``dhyp`` on a plane the rupture did not start on."""
-
-_GEOD = pyproj.Geod(ellps="WGS84")
 
 
 def _plane_slices(geometry: Geometry) -> list[slice]:
@@ -46,79 +53,142 @@ def _plane_slices(geometry: Geometry) -> list[slice]:
     return [slice(int(a), int(b)) for a, b in itertools.pairwise(edges)]
 
 
-def _to_lon_lat(
-    transformer: pyproj.Transformer, east_km: np.ndarray, north_km: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    lon, lat = transformer.transform(east_km * M_PER_KM, north_km * M_PER_KM)
-    return np.asarray(lon), np.asarray(lat)
+def _top_centre_km(nodes: NodeArray, occupied: CellMask) -> np.ndarray:
+    """The point halfway along the top outline of a plane's occupied cells, in plan.
+
+    The outline runs along the top edge of each column's shallowest occupied cell, in
+    column order, joined from one column to the next.
+    """
+    columns = np.flatnonzero(occupied.any(axis=0))
+    rows = occupied[:, columns].argmax(axis=0)
+    corners = np.stack([nodes[rows, columns], nodes[rows, columns + 1]], axis=1)
+    outline = corners.reshape(-1, 3)[:, :2]
+    steps_km = np.linalg.norm(np.diff(outline, axis=0), axis=-1)
+    arc_km = np.concatenate([[0.0], np.cumsum(steps_km)])
+    half_km = 0.5 * arc_km[-1]
+    k = min(int(np.searchsorted(arc_km, half_km, side="right")) - 1, len(steps_km) - 1)
+    fraction = (half_km - arc_km[k]) / steps_km[k] if steps_km[k] > 0 else 0.0
+    return outline[k] + fraction * (outline[k + 1] - outline[k])
 
 
 def _planes(
+    name: str,
     geometry: Geometry,
+    strike_deg: CellArray,
     hypocentre: Hypocentre | None,
     transformer: pyproj.Transformer,
-) -> tuple[list[srf.Plane], list[float]]:
-    """One header per plane, and each plane's strike for its points.
+) -> list[srf.Plane]:
+    """One header per plane, summarising the plane's occupied cells.
 
-    A header describes the plane in its own coordinates, the parallelogram hung toward
-    the dip direction rather than a rectangle: ``len`` runs along its top edge and
-    ``wid`` down its sheared side, and ``dip`` is the true dip its points record. In an
-    SRF the points record the geometry and the plane headers only summarise it, so a
-    header need not describe a rectangle.
+    A header's ``dtop`` is the shallowest depth of an occupied cell's node, and its
+    centre lies halfway along the occupied cells' top outline. Its ``dip`` is their
+    mean dip and its ``stk`` their circular mean strike. ``nstk`` and
+    ``ndip`` count every cell, as the points do, and ``len`` and ``wid`` are the
+    chart's own extents along its top row and first column, so ``len / nstk`` and
+    ``wid / ndip`` are the steps between points. In an SRF the points record the
+    geometry and the plane headers only summarise it, so a header need not describe a
+    rectangle.
+
+    A plane with cells off the fault is one row of its occupied cells instead.
+    ``len / nstk`` and ``wid`` are then their mean steps along strike and down dip,
+    and ``shyp`` names the hypocentre's cell, at its centre, with ``dhyp`` half of
+    ``wid``.
 
     ``hypocentre`` is the realisation's if it lies on this segment. The plane holding
-    it gets a ``shyp`` and ``dhyp`` in those same coordinates, along the top edge from
-    its centre and down the sheared side, and every other plane gets neither.
+    it gets a ``shyp`` and ``dhyp`` in the chart's coordinates, along the top row from
+    the plane's middle and down the first column, and every other plane gets neither.
+    A reader places them in steps of ``len / nstk`` and ``wid / ndip``, so each is
+    the hypocentre's fractional cell index times that step. Off the fault a curved
+    chart's top row and first column step unevenly, and the distances along them
+    would name another cell.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        For a plane with no occupied cell, which has no fault to summarise.
     """
     arc_km = geometry.strike_arc_km
     width_km = float(geometry.dip_arc_km[-1])
-    headers, strikes = [], []
-    for columns, plane in zip(
-        _plane_slices(geometry), geometry.plane_nodes(), strict=True
-    ):
-        start_km, end_km = float(arc_km[columns.start]), float(arc_km[columns.stop])
-        (lon0, lon1), (lat0, lat1) = _to_lon_lat(
-            transformer, plane[0, [0, -1], 0], plane[0, [0, -1], 1]
+    if hypocentre is not None:
+        strike_cells = float(
+            np.interp(hypocentre.strike_km, arc_km, np.arange(arc_km.size))
         )
-        strike_deg, _, _ = _GEOD.inv(lon0, lat0, lon1, lat1)
-        strike_deg %= 360.0
-        centre_lon, centre_lat = _to_lon_lat(
-            transformer, plane[0, [0, -1], 0].mean(), plane[0, [0, -1], 1].mean()
+        dip_cells = float(
+            np.interp(
+                hypocentre.dip_km, geometry.dip_arc_km, np.arange(geometry.cells[0] + 1)
+            )
+        )
+    headers = []
+    for number, (columns, plane) in enumerate(
+        zip(_plane_slices(geometry), geometry.plane_nodes(), strict=True)
+    ):
+        occupied = geometry.occupied[:, columns]
+        if not occupied.any():
+            raise RuptureGeneratorError(
+                f"{name}: plane {number} has no occupied cell, so no fault for an SRF "
+                "plane header to summarise"
+            )
+        start_km, end_km = float(arc_km[columns.start]), float(arc_km[columns.stop])
+        centre_lon, centre_lat = to_lon_lat(
+            transformer, *_top_centre_km(plane, occupied)
+        )
+        azimuth_rad = np.radians(strike_deg[:, columns][occupied])
+        mean_strike_deg = np.degrees(
+            np.arctan2(np.sin(azimuth_rad).sum(), np.cos(azimuth_rad).sum())
         )
         on_plane = hypocentre is not None and start_km <= hypocentre.strike_km <= end_km
+        if occupied.all():
+            nstk, ndip = columns.stop - columns.start, geometry.cells[0]
+            length_km, wid_km = end_km - start_km, width_km
+            shyp, dhyp = (
+                (
+                    ((strike_cells - columns.start) / nstk - 0.5) * length_km,
+                    dip_cells / ndip * wid_km,
+                )
+                if on_plane
+                else (NO_HYPOCENTRE, NO_HYPOCENTRE)
+            )
+        else:
+            nstk, ndip = int(occupied.sum()), 1
+            along = np.linalg.norm(np.diff(plane, axis=1), axis=-1)
+            down = np.linalg.norm(np.diff(plane, axis=0), axis=-1)
+            length_km = nstk * float((0.5 * (along[:-1] + along[1:]))[occupied].mean())
+            wid_km = float((0.5 * (down[:, :-1] + down[:, 1:]))[occupied].mean())
+            shyp, dhyp = NO_HYPOCENTRE, NO_HYPOCENTRE
+            if on_plane and hypocentre is not None:
+                i, j = geometry.cell_at(hypocentre.strike_km, hypocentre.dip_km)
+                k = int(occupied[:i].sum() + occupied[i, : j - columns.start].sum())
+                shyp, dhyp = ((k + 0.5) / nstk - 0.5) * length_km, 0.5 * wid_km
         headers.append(
             srf.Plane(
                 elon=float(centre_lon),
                 elat=float(centre_lat),
-                nstk=columns.stop - columns.start,
-                ndip=geometry.cells[0],
-                len=end_km - start_km,
-                wid=width_km,
-                stk=strike_deg,
-                dip=float(geometry.dip_deg[:, columns].mean()),
-                dtop=float(plane[0, 0, 2]),
-                shyp=(
-                    hypocentre.strike_km - 0.5 * (start_km + end_km)
-                    if on_plane
-                    else NO_HYPOCENTRE
-                ),
-                dhyp=hypocentre.dip_km if on_plane else NO_HYPOCENTRE,
+                nstk=nstk,
+                ndip=ndip,
+                len=length_km,
+                wid=wid_km,
+                stk=float(mean_strike_deg % 360.0),
+                dip=float(geometry.dip_deg[:, columns][occupied].mean()),
+                dtop=float(plane[..., 2][bordering(occupied, (0, 1))].min()),
+                shyp=shyp,
+                dhyp=dhyp,
             )
         )
-        strikes.append(strike_deg)
         if on_plane:
             hypocentre = None
-    return headers, strikes
+    return headers
 
 
 def _plane_points(
     name: str,
     rupture: SegmentRupture,
     columns: slice,
-    strike_deg: float,
+    strike_deg: CellArray,
     transformer: pyproj.Transformer,
 ) -> tuple[srf.Points, srf.SlipRate]:
     """One plane's points and slip-rate rows, in SRF order and SRF units.
+
+    Only the plane's occupied cells, which is all of them on a plane without holes.
 
     Raises
     ------
@@ -128,13 +198,13 @@ def _plane_points(
     """
     geometry, dt_s, beta = rupture.geometry, rupture.dt_s, rupture.beta
 
-    def cells(field: CellArray) -> np.ndarray:
-        return np.ascontiguousarray(field[:, columns]).ravel()
+    occupied = geometry.occupied[:, columns]
 
-    centres = geometry.centres[:, columns]
-    lon, lat = _to_lon_lat(
-        transformer, centres[..., 0].ravel(), centres[..., 1].ravel()
-    )
+    def cells(field: CellArray) -> np.ndarray:
+        return np.ascontiguousarray(field[:, columns][occupied])
+
+    centres = geometry.centres[:, columns][occupied]
+    lon, lat = to_lon_lat(transformer, centres[:, 0], centres[:, 1])
     slip_m, rise_s = cells(rupture.slip_m), cells(rupture.rise_time_s)
     try:
         row_offsets, rates = synthesise_pulses(
@@ -153,8 +223,8 @@ def _plane_points(
     points = srf.Points(
         lon=single(lon),
         lat=single(lat),
-        dep=single(centres[..., 2].ravel()),
-        stk=np.full(lon.size, strike_deg, dtype=np.float32),
+        dep=single(centres[:, 2]),
+        stk=single(cells(strike_deg)),
         dip=single(cells(geometry.dip_deg)),
         area=single(cells(geometry.areas_km2) * CM2_PER_KM2),
         tinit=single(cells(rupture.onset_s)),
@@ -195,7 +265,8 @@ def write_rupture(
     ------
     RuptureGeneratorError
         For a ``beta`` outside ``(0, 0.5]``, a slipping subfault's negative or
-        non-finite rise time, or points or comments the SRF writer refuses. A rise
+        non-finite rise time, a plane with no occupied cell to summarise in its
+        header, or points or comments the SRF writer refuses. A rise
         time under half of ``dt_s`` is no error: that subfault slips within one
         sample.
     OSError
@@ -207,21 +278,24 @@ def write_rupture(
     )
     hypocentre = realisation.hypocentre
     planes: list[srf.Plane] = []
-    strikes: dict[str, list[float]] = {}
+    strikes: dict[str, CellArray] = {}
     for name, rupture in realisation.items():
+        geometry = rupture.geometry
+        strikes[name] = true_azimuth_deg(
+            transformer, geometry.centres[..., :2], geometry.strike
+        )
         on_segment = hypocentre if hypocentre and hypocentre.segment == name else None
-        headers, strikes[name] = _planes(rupture.geometry, on_segment, transformer)
-        planes.extend(headers)
+        planes.extend(_planes(name, geometry, strikes[name], on_segment, transformer))
 
     partial = path.with_name(f".{path.name}.{secrets.token_hex(4)}.partial")
     try:
         with srf.Writer(partial, planes, comments=comments) as writer:
             for name, rupture in realisation.items():
-                for columns, strike_deg in zip(
-                    _plane_slices(rupture.geometry), strikes[name], strict=True
-                ):
+                for columns in _plane_slices(rupture.geometry):
                     writer.write(
-                        *_plane_points(name, rupture, columns, strike_deg, transformer)
+                        *_plane_points(
+                            name, rupture, columns, strikes[name], transformer
+                        )
                     )
         partial.replace(path)
     except srf.SrfError as error:

@@ -1,6 +1,4 @@
-<!-- vale Google.Headings = NO -->
 # Rupture Generator
-<!-- vale Google.Headings = YES -->
 [![DOI](https://zenodo.org/badge/1302333750.svg)](https://doi.org/10.5281/zenodo.23384099)
 
 ![Slip on the seven faults of the Beavan rupture of the 2010 Darfield earthquake, seen from the south](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/beavan_slip.png)
@@ -17,13 +15,11 @@ magnitudes, the generator draws a slip distribution and works out when each subf
 starts and how long it slips for. The result is an SRF, or a smaller file of the
 fields that makes the same SRF later.
 
-<!-- vale Google.Acronyms = NO -->
 Built on the Graves and Pitarka generator
 ([2010](https://doi.org/10.1785/0120100057),
 [2015](https://doi.org/10.1785/0220140101),
 [2016](https://doi.org/10.1785/0120160088)), loosely based on the
 [SCEC BBP platform](https://github.com/SCECcode/bbp).
-<!-- vale Google.Acronyms = YES -->
 
 ---
 
@@ -53,12 +49,13 @@ uv run rupture-generator examples/alpine_hope.toml alpine_hope.srf
 uv run rupture-view alpine_hope.srf
 ```
 
-A rupture is one TOML file next to a GeoJSON fault system. The SRF's header comments
+A rupture is one TOML file next to its fault geometry: GeoJSON sections, GOCAD TSurf
+surfaces, or both. The SRF's header comments
 record the run: the config with every default written out, and the software and
 inputs it ran with.
 
-`examples/` holds past earthquakes and hazard-model scenarios, each with the source
-of its fault geometry. Their parameters are illustrative: no example tunes them to
+`examples/` holds past earthquakes, hazard-model scenarios and hypothetical
+scenarios, each with the source of its fault geometry. Their parameters are illustrative: no example tunes them to
 match the observations of its earthquake.
 
 | Example            | Rupture                                  | Geometry from                                                                                                                                                            |
@@ -69,11 +66,21 @@ match the observations of its earthquake.
 | `colombia.toml`    | 2026 Mw 7.4 San José del Palmar, Colombia, earthquake, intermediate depth | USGS finite-fault model [us6000tjl2](https://earthquake.usgs.gov/earthquakes/eventpage/us6000tjl2/finite-fault), trimmed with [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
 | `venezuela.toml`   | 2026 Mw 7.5 Catia La Mar, Venezuela, earthquake | USGS finite-fault model [us6000t7zp](https://earthquake.usgs.gov/earthquakes/eventpage/us6000t7zp/finite-fault), trimmed with  [Somerville et al. (1999)](https://doi.org/10.1785/gssrl.70.1.59) |
 | `alpine_hope.toml` | Alpine-Hope Mw 8.31 scenario, rupture 71072 of the 2022 NZ NSHM | [Gerstenberger et al. (2024)](https://doi.org/10.1785/0120230165), on the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
+| `hikurangi.toml`   | Hypothetical Mw 8.9 rupture of the whole Hikurangi subduction interface | The triangulated interface of the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
+| `puysegur.toml`    | Hypothetical Mw 8.5 rupture of the whole Puysegur subduction interface | The triangulated interface of the NZ Community Fault Model v1.0 of [Seebeck et al. (2024)](https://doi.org/10.1080/00288306.2023.2181362) |
+| `maule.toml`       | 2010 Mw 8.8 Maule, Chile, earthquake     | Slab2 of [Hayes et al. (2018)](https://doi.org/10.1126/science.aat4723), cut to the outline of SRCMOD s2010MAULEC02HAYE of [Hayes (2017)](https://doi.org/10.1016/j.epsl.2017.04.003) by `examples/maule_surface.py` |
 
 `crustal.toml` is a scenario Mw 6.2 on the Hope fault, and `two_faults.toml` and
 `two_faults_segments.toml` are small made-up systems for testing.
 
 `examples/from_realisation.py` converts a [workflow](https://github.com/ucgmsim/workflow) `realisation.json` into inputs for this repository.
+
+[![Slip on the curved Maule interface beneath the Chilean coast, the camera circling it](https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/images/maule_orbit.gif)](https://app.rerun.io/version/0.38.1/?url=https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/maule.rrd)
+
+*The 2010 Mw 8.8 Maule earthquake on the Slab2
+interface, at 5 km resolution for visualisation purposes, with depth stretched three times and Chile's coastline from
+[Natural Earth](https://www.naturalearthdata.com) at sea level. The black lines are the
+rupture front every ten seconds. [Open it in Rerun's web viewer](https://app.rerun.io/version/0.38.1/?url=https://raw.githubusercontent.com/ucgmsim/rupture_generator/master/docs/maule.rrd) to see an interactive 3D model. Rupture definition is in `examples/maule.toml`*
 
 ---
 
@@ -111,8 +118,8 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 | Table                                                     | Sets                                                                                                                                          |
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
 | `seed`                                                    | Rupture realisation seed.                                                                                                                     |
-| `[geometry]`                                              | Path to GeoJSON source definition, its projected CRS, and the grid spacing.                                                                   |
-| `[hypocentre]`                                            | Location of hypocentre.                                                                                                                       |
+| `[geometry]`                                              | The fault files, their projected CRS, and the grid spacing (see below).                                                                       |
+| `[hypocentre]`                                            | The segment the rupture starts on, and where on it (see below).                                                                              |
 | `[medium]`                                                | A 1-D velocity model: layer bottoms, shear speed, density. More complex media (e.g. 3D velocity models) are expressed through the python API. |
 | `[source]`                                                | `per_fault` magnitudes and rakes, or one `finite` magnitude shared between components (see below).                                            |
 | `[propagation]`                                           | Which fault triggers which: `predetermined`, `sampled`, `likeliest`.                                                                          |
@@ -122,6 +129,41 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 
 Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
 or `profile` tables.
+
+`[geometry] path` is one file or a list of them, relative to the config. A file
+ending in `.ts` or `.ts.gz` is a GOCAD TSurf of triangle meshes, such as the NZ
+Community Fault Model's subduction interfaces, in the coordinates of `crs`. Each
+mesh is one segment, named by its header. The generator unrolls the mesh onto a flat
+sheet and grids that sheet at `spacing_km`. Cells off the mesh never slip. Any other
+file is GeoJSON fault sections. Every segment in every file needs a name of its own,
+and a curved interface and planar crustal faults can then rupture together:
+
+```toml
+[geometry]
+path = ["cfm/Hikurangi.ts.gz", "crustal.geojson"]
+crs = "EPSG:2193"
+spacing_km = 0.1
+```
+
+`[hypocentre]` names a segment and one position on it, in one of three forms.
+
+| Keys                                | Position                                                    |
+|-------------------------------------|-------------------------------------------------------------|
+| `strike_km` and `dip_km`            | Distances along the chart's top row and down its first column |
+| `strike_fraction` and `dip_fraction` | The same distances as fractions of the chart's extent        |
+| `longitude_deg` and `latitude_deg`  | The cell of the fault nearest the point in plan              |
+
+A curved interface's chart has a top row and first column partly off the fault, and
+a longitude and latitude suits it better. A near-vertical fault stacks its cells in
+plan, so give its hypocentre as distances or fractions. Whatever the form, the
+position has to name a cell of the fault.
+
+```toml
+[hypocentre]
+segment = "Hikurangi"
+longitude_deg = 176.42
+latitude_deg = -40.42
+```
 
 A `finite` source shares its moment between segments by the apportionment of Bradley
 & Faulkner, *A kinematic rupture generator for multi-segment fault geometries*.
@@ -294,6 +336,17 @@ pull request against the base branch and posts the comparison.
 - Jumps cross along a straight line. A shear wave in a layered medium bends, and
   can arrive sooner along a fast layer than along the chord. Ray traced jumps
   are a planned addition.
-- The plumbing for curved rupture exists but is as-yet unimplemented. This is implemented in an upcoming release.
+- A curved interface writes as one SRF plane, so tools that read the plane headers as
+  rectangles, such as `srf2stoch`, see one rectangle for the whole interface.
+- A curved interface's grid is regular on the unrolled sheet and can't follow a
+  curving strike. The correlation lengths' strike and dip axes turn from the local
+  strike and dip by 28 degrees on the NZ Community Fault Model's Hikurangi interface
+  and 13 on Puysegur, for all but the most turned twentieth of the area. Rake is
+  measured from each cell's own strike and is unaffected.
+- Where an interface lies nearly flat and its mesh dips locally the other way, the cell's
+  strike turns by 180 degrees, and a constant rake slips that cell the opposite way:
+  on the Hikurangi interface charted at 5 km, 1% of the area, at 3 km depth with
+  dips under 1.3 degrees.
+- A TSurf file must be in the config's `crs`.
 - Aspects of the Graves and Pitarka method aren't yet implemented. The main
   holdout is roughness which is implemented in an upcoming release.
