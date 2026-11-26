@@ -34,58 +34,79 @@ from .conftest import EXAMPLE, holed, tilted
 EXAMPLES = EXAMPLE.parent
 
 
-def _occupied_chart(occupied):
-    """A flat chart of 1 km cells dipping 30 degrees, with this occupied mask."""
-    return tilted(0.0, 30.0, cells=occupied.shape, occupied=occupied)[0]
+def _chart(occupied, dip_km=1.0, strike_km=1.0):
+    """A flat chart dipping 30 degrees, with cells this long down dip and along strike
+    and this occupied mask."""
+    rows, columns = occupied.shape
+    i, j = np.mgrid[0 : rows + 1, 0 : columns + 1].astype(float)
+    down = np.array([0.0, -np.cos(np.radians(30.0)), np.sin(np.radians(30.0))])
+    along = np.array([1.0, 0.0, 0.0])
+    nodes = (i * dip_km)[..., None] * down + (j * strike_km)[..., None] * along
+    return Geometry(nodes, occupied, (columns,))
 
 
 def _covariates(geometry):
     return {name: read_covariate(geometry, name) for name in COVARIATES}
 
 
+CELL_KM = st.sampled_from([0.5, 1.0, 2.0])
+"""Cell lengths down dip and along strike, which differ in most charts drawn."""
+
+
 # ------------------------------------------------------------------ covariates
 
 
 @settings(max_examples=40, deadline=None)
-@given(
-    st.floats(0.0, 359.0),
-    st.floats(5.0, 90.0),
-    st.integers(1, 7),
-    st.integers(1, 9),
-)
-def test_a_planes_covariates_are_its_distances(strike_deg, dip_deg, rows, columns):
-    geometry, _ = tilted(strike_deg, dip_deg, cells=(rows, columns))
+@given(st.integers(1, 7), st.integers(1, 9), CELL_KM, CELL_KM)
+def test_a_planes_covariates_are_its_distances(rows, columns, dip_km, strike_km):
+    geometry = _chart(np.ones((rows, columns), bool), dip_km, strike_km)
     i, j = np.mgrid[0:rows, 0:columns] + 0.5
     covariates = _covariates(geometry)
     expected = {
-        "depth_km": i * np.sin(np.radians(dip_deg)),
-        "dip_km": i,
+        "depth_km": i * dip_km * 0.5,
+        "dip_km": i * dip_km,
         "dip_fraction": i / rows,
-        "strike_km": j,
+        "strike_km": j * strike_km,
         "strike_fraction": j / columns,
-        "edge_distance_km": np.minimum.reduce([i, rows - i, j, columns - j]),
+        "edge_distance_km": np.minimum.reduce(
+            [i * dip_km, (rows - i) * dip_km, j * strike_km, (columns - j) * strike_km]
+        ),
     }
     for name, values in expected.items():
         np.testing.assert_allclose(covariates[name], values, atol=1e-9, err_msg=name)
 
 
-def test_a_holed_charts_distances_start_at_its_own_edges():
+def test_a_holed_charts_distances_start_at_its_edges():
     covariates = _covariates(holed())
-    # Column 0 starts a row down, and column 3 ends a row up.
-    np.testing.assert_allclose(covariates["dip_km"][1:, 0], [0.5, 1.5])
-    np.testing.assert_allclose(covariates["dip_fraction"][1:, 0], [0.25, 0.75])
-    np.testing.assert_allclose(covariates["dip_fraction"][:2, 3], [0.25, 0.75])
+    # Column 0 starts a row down, and row 0 a column along, each still on its edge.
+    np.testing.assert_allclose(
+        covariates["dip_km"],
+        [[0.5, 0.5, 0.5, 0.5], [0.5, 1.5, 1.5, 1.5], [1.5, 2.5, 2.5, 1.5]],
+    )
+    np.testing.assert_allclose(covariates["dip_fraction"][:, 0], [1 / 4, 1 / 4, 3 / 4])
     np.testing.assert_allclose(covariates["strike_km"][0, 1:], [0.5, 1.5, 2.5])
     np.testing.assert_allclose(
         covariates["strike_fraction"][2, :3], [1 / 6, 0.5, 5 / 6]
     )
-    # A cell off the fault takes its nearest fault cell's value.
-    for values in covariates.values():
-        assert np.all(np.isfinite(values))
-    assert covariates["dip_km"][0, 0] in (
-        covariates["dip_km"][1, 0],
-        covariates["dip_km"][0, 1],
-    )
+
+
+def test_an_oblique_end_is_a_side_and_not_the_up_dip_edge():
+    """A fault whose top runs level for 80 km and then steps down two rows a column,
+    as an interface's oblique end does: the end's columns start deep, far down dip."""
+    columns = np.arange(120)
+    top = np.maximum(0, 2 * (columns - 80))
+    occupied = np.arange(100)[:, None] >= top[None, :]
+    geometry = _chart(occupied)
+    dip_km = geometry.dip_km
+    assert np.all(dip_km[0, :60] == 0.5)
+    # A column on the end starts as far down dip as its distance to the level top.
+    for column in range(100, 120):
+        first = top[column]
+        assert dip_km[first, column] > 0.5 * first
+    for column in columns:
+        on = occupied[:, column]
+        assert np.all(np.diff(dip_km[on, column]) > 0.0)
+        assert np.all(np.diff(geometry.dip_fraction[on, column]) > 0.0)
 
 
 def _segment_distance(points, start, end):
@@ -94,8 +115,8 @@ def _segment_distance(points, start, end):
     return np.linalg.norm(points - (start + t[:, None] * step), axis=-1)
 
 
-def _outline_distance(occupied):
-    """Distance from each fault cell's centre to the outline, side by side, in cells."""
+def _outline_distance(occupied, cell):
+    """Distance from each fault cell's centre to the outline, side by side."""
     n_i, n_j = occupied.shape
     padded = np.pad(occupied, 1)
     sides = [
@@ -110,25 +131,44 @@ def _outline_distance(occupied):
         if padded[i + 1, b] != padded[i + 1, b + 1]
     ]
     i, j = np.nonzero(occupied)
-    centres = np.stack([i + 0.5, j + 0.5], axis=-1)
-    return np.min([_segment_distance(centres, *side) for side in sides], axis=0)
-
-
-@settings(max_examples=60, deadline=None)
-@given(hnp.arrays(bool, st.tuples(st.integers(1, 6), st.integers(1, 6))))
-def test_the_edge_distance_is_to_the_nearest_side_of_the_outline(occupied):
-    if not occupied.any():
-        return
-    geometry = _occupied_chart(occupied)
-    np.testing.assert_allclose(
-        geometry.edge_distance_km[occupied], _outline_distance(occupied), atol=1e-9
+    centres = np.stack([i + 0.5, j + 0.5], axis=-1) * cell
+    return np.min(
+        [_segment_distance(centres, a * cell, b * cell) for a, b in sides], axis=0
     )
 
 
-@pytest.fixture(scope="module")
-def hikurangi() -> Geometry:
+MASKS = hnp.arrays(bool, st.tuples(st.integers(1, 6), st.integers(1, 6))).filter(np.any)
+
+
+@settings(max_examples=60, deadline=None)
+@given(MASKS, CELL_KM, CELL_KM)
+def test_the_edge_distance_is_to_the_nearest_side_of_the_outline(
+    occupied, dip_km, strike_km
+):
+    geometry = _chart(occupied, dip_km, strike_km)
+    np.testing.assert_allclose(
+        geometry.edge_distance_km[occupied],
+        _outline_distance(occupied, np.array([dip_km, strike_km])),
+        atol=1e-9,
+    )
+
+
+@settings(max_examples=60, deadline=None)
+@given(MASKS, CELL_KM, CELL_KM)
+def test_a_cell_off_the_fault_reads_a_nearest_fault_cell(occupied, dip_km, strike_km):
+    geometry = _chart(occupied, dip_km, strike_km)
+    edge_km = geometry.edge_distance_km
+    i, j = np.nonzero(occupied)
+    for cell in zip(*np.nonzero(~occupied), strict=True):
+        apart_km = np.hypot((i - cell[0]) * dip_km, (j - cell[1]) * strike_km)
+        nearest = apart_km <= apart_km.min() + 1e-9
+        assert np.any(np.isclose(edge_km[cell], edge_km[i[nearest], j[nearest]]))
+
+
+@pytest.fixture(scope="module", params=[5.0, 2.0])
+def hikurangi(request) -> Geometry:
     loaded = rupture_config.load(EXAMPLES / "hikurangi.toml")
-    geometry = dataclasses.replace(loaded.geometry, spacing_km=10.0)
+    geometry = dataclasses.replace(loaded.geometry, spacing_km=request.param)
     scenario = rupture_config.build(dataclasses.replace(loaded, geometry=geometry))
     return scenario.realisation["Hikurangi"]
 
@@ -142,33 +182,29 @@ def test_a_curved_interfaces_covariates_follow_its_outline(hikurangi):
         assert np.all(np.isfinite(values)), name
     for name in ("dip_fraction", "strike_fraction"):
         assert np.all((covariates[name] > 0.0) & (covariates[name] < 1.0)), name
-    # Down every column of fault the distance grows from the trench, and the bottom
-    # is deeper than the top, though the interface near the trench is not monotone.
-    dip_km = np.where(occupied, covariates["dip_km"], np.nan)
-    depth_km = np.where(occupied, covariates["depth_km"], np.nan)
-    for column in range(hikurangi.cells[1]):
+    # Down every column of fault the distance and fraction grow.
+    for column in np.flatnonzero(occupied.sum(axis=0) > 1):
         on = occupied[:, column]
-        if on.sum() > 1:
-            assert np.all(np.diff(dip_km[on, column]) > 0.0)
-            assert depth_km[on, column][-1] > depth_km[on, column][0]
-    # Each column's fraction runs from its own top edge to its own bottom edge,
-    # wherever along strike they lie.
-    columns = np.flatnonzero(occupied.sum(axis=0) > 4)
+        assert np.all(np.diff(covariates["dip_km"][on, column]) > 0.0)
+        assert np.all(np.diff(covariates["dip_fraction"][on, column]) > 0.0)
+    # The interface's southern end is oblique, and its columns start deep: they start
+    # far down dip, not on the up-dip edge.
+    columns = np.flatnonzero(occupied.any(axis=0))
     first = np.argmax(occupied, axis=0)[columns]
-    last = occupied.shape[0] - 1 - np.argmax(occupied[::-1], axis=0)[columns]
-    fraction = covariates["dip_fraction"]
-    assert np.all(fraction[first, columns] < 0.15)
-    assert np.all(fraction[last, columns] > 0.85)
-    # The distance over the fraction is the column's length, all the way down it.
-    for column in columns:
-        on = occupied[:, column]
-        length_km = dip_km[on, column] / fraction[on, column]
-        np.testing.assert_allclose(length_km, length_km[0], rtol=1e-12)
-    # The top edge is part of the outline, so no cell is farther from the outline
-    # than from its column's top, but for the chart's 1-2% stretch.
-    on = occupied
+    deep = hikurangi.centres[first, columns, 2] > 20.0
+    assert deep.sum() > 5
+    assert np.all(covariates["dip_km"][first[deep], columns[deep]] > 40.0)
+    shallow = hikurangi.centres[first, columns, 2] < 15.0
+    on_edge = (
+        covariates["dip_km"][first[shallow], columns[shallow]]
+        == 0.5 * (hikurangi.spacing_km[1])
+    )
+    assert on_edge.mean() > 0.95
+    # The up-dip edge is part of the outline, so no cell is farther from the outline
+    # than from that edge.
     assert np.all(
-        covariates["edge_distance_km"][on] <= 1.05 * covariates["dip_km"][on] + 1e-9
+        covariates["edge_distance_km"][occupied]
+        <= covariates["dip_km"][occupied] + 1e-9
     )
 
 
@@ -195,6 +231,14 @@ def test_a_covariate_from_elsewhere_is_any_function_of_the_chart():
             "'depth' is not a covariate",
         ),
         (lambda: covariate_ramp("dip_km", 1.0, 0.0, 0.0, 1.0), "is a step"),
+        (
+            lambda: covariate_ramp("dip_fraction", 6.5, 1.5, 1.0, 0.0),
+            "from 5 to 8 lies wholly outside dip_fraction's range, 0 to 1",
+        ),
+        (
+            lambda: covariate_profile("edge_distance_km", [-3.0, -1.0], [1.0, 0.0]),
+            "lies wholly outside edge_distance_km's range, 0 to inf",
+        ),
         (
             lambda: covariate_profile("dip_km", [1.0, 0.0], [0.0, 1.0]),
             "do not increase",
@@ -279,9 +323,17 @@ def test_a_speed_ramp_on_the_edge_distance_slows_the_front_at_the_edges(scenario
 
 
 def test_a_profile_can_read_the_whole_chart(scenario):
-    by_dip = chart_field(lambda chart: 1.0 + (chart.dip_deg > 0.0))
-    drawn = _draw(scenario, RuptureModel(rise=CorrelatedRise(factor=by_dip)))
-    assert all(np.all(r.rise_time_s >= 0.0) for r in drawn.values())
+    deeper = chart_field(lambda chart: 1.0 + chart.dip_fraction * chart.dip_deg / 90.0)
+    plain = _draw(scenario, RuptureModel())
+    drawn = _draw(scenario, RuptureModel(rise=CorrelatedRise(factor=deeper)))
+    for name, rupture in drawn.items():
+        geometry = rupture.geometry
+        # Rise time is the same pattern times the factor, scaled to the same mean.
+        ratio = rupture.rise_time_s / plain[name].rise_time_s
+        expected = 1.0 + geometry.dip_fraction * geometry.dip_deg / 90.0
+        scaled = (ratio / expected)[geometry.occupied]
+        np.testing.assert_allclose(scaled, scaled[0], rtol=1e-10)
+        assert np.ptp(expected[geometry.occupied]) > 0.1
 
 
 # ------------------------------------------------------------ backward compatibility
@@ -362,6 +414,65 @@ def test_the_old_names_read_as_the_new():
     )
 
 
+def test_the_old_names_read_and_replace_as_the_new():
+    ramp = rupture_config.Ramp(centre_km=6.5, half_width_km=1.5, shallow=1.0, deep=0.0)
+    assert (ramp.centre_km, ramp.half_width_km, ramp.shallow, ramp.deep) == (
+        6.5,
+        1.5,
+        1.0,
+        0.0,
+    )
+    moved = dataclasses.replace(ramp, centre_km=3.0)
+    assert (moved.centre, moved.centre_km, moved.half_width) == (3.0, 3.0, 1.5)
+    assert dataclasses.replace(ramp, centre=4.0).centre_km == 4.0
+    profile = rupture_config.Profile(depth_km=(1.0, 2.0), values=(0.0, 1.0))
+    assert profile.depth_km == profile.at == (1.0, 2.0)
+    assert dataclasses.replace(profile, depth_km=(3.0, 4.0)).at == (3.0, 4.0)
+
+
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        (
+            lambda: rupture_config.Ramp(
+                covariate="dip_fraction",
+                centre_km=0.5,
+                half_width=0.1,
+                below=0.0,
+                above=1.0,
+            ),
+            "a ramp of dip_fraction takes centre; centre_km names kilometres",
+        ),
+        (
+            lambda: rupture_config.Profile(
+                covariate="dip_km", depth_km=(1.0, 2.0), values=(0.0, 1.0)
+            ),
+            "a profile of dip_km takes at; depth_km names depths",
+        ),
+        (
+            lambda: rupture_config.Ramp(
+                covariate="dip_fraction",
+                centre=6.5,
+                half_width=1.5,
+                below=1.0,
+                above=0.0,
+            ),
+            "wholly outside dip_fraction's range",
+        ),
+    ],
+)
+def test_a_profile_whose_units_contradict_its_covariate_is_refused(build, message):
+    with pytest.raises(RuptureGeneratorError, match=message):
+        build()
+
+
+def test_an_old_name_in_kilometres_reads_on_a_covariate_in_kilometres():
+    ramp = rupture_config.Ramp(
+        covariate="dip_km", centre_km=10.0, half_width_km=5.0, shallow=1.0, deep=0.0
+    )
+    assert (ramp.centre, ramp.half_width) == (10.0, 5.0)
+
+
 # ---------------------------------------------------------------------- config
 
 BASE = EXAMPLE.read_text().replace(
@@ -431,6 +542,26 @@ def test_a_file_in_the_old_names_loads_as_in_the_new(tmp_path):
         (
             "half_width = 1.0, below = 0.5, above = 0.1",
             "pulse.beta: a ramp needs centre",
+        ),
+        (
+            (
+                'covariate = "dip_fraction", centre_km = 0.3, half_width = 0.1, '
+                "below = 0.5, above = 0.1"
+            ),
+            (
+                "pulse.beta: a ramp of dip_fraction takes centre; centre_km names "
+                "kilometres, which dip_fraction is not in"
+            ),
+        ),
+        (
+            (
+                'covariate = "dip_fraction", centre = 6.5, half_width = 1.5, '
+                "below = 0.5, above = 0.1"
+            ),
+            (
+                "pulse.beta: a profile from 5 to 8 lies wholly outside dip_fraction's "
+                "range, 0 to 1, so it is one value over the whole fault"
+            ),
         ),
     ],
 )

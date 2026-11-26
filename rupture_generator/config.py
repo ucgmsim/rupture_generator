@@ -24,6 +24,7 @@ filled in, which records what a run used.
 """
 
 import dataclasses
+import functools
 import gzip
 import tomllib
 from pathlib import Path
@@ -138,46 +139,154 @@ class Jump(JumpModel):
 # ---------------------------------------------------------------------- profiles
 
 
-def _resolve_aliases(table: object, kind: str, renamed: dict[str, str]) -> None:
-    """Move each old key's value to its new key, and refuse a key missing or given twice.
+OLD_NAMES: dict[str, dict[str, str]] = {
+    "ramp": {
+        "centre_km": "centre",
+        "half_width_km": "half_width",
+        "shallow": "below",
+        "deep": "above",
+    },
+    "profile": {"depth_km": "at"},
+}
+"""Each profile kind's keys under the names they had when every profile was of depth,
+and the names they have now. The old names still read, in a file and as keywords."""
 
-    ``renamed`` maps each new key to the old name it had when every profile was of
-    depth. A config still giving the old name reads the same.
+
+def _check_old_names(kind: str, covariate: str, given: list[str]) -> None:
+    """Refuse an old name whose units say something untrue of the covariate.
 
     Raises
     ------
     RuptureGeneratorError
-        If a key is given under both names, or under neither.
+        For ``depth_km`` on a profile of anything but depth, or another old name in
+        kilometres on a covariate that isn't.
     """
-    for key, old in renamed.items():
-        given, aliased = getattr(table, key), getattr(table, old)
-        if given is not None and aliased is not None:
+    for old in given:
+        new = OLD_NAMES[kind][old]
+        if old == "depth_km" and covariate != DEPTH_KM:
             raise RuptureGeneratorError(
-                f"a {kind} takes {key} or its old name {old}, not both"
+                f"a {kind} of {covariate} takes {new}; {old} names depths"
             )
-        if given is None and aliased is None:
-            raise RuptureGeneratorError(f"a {kind} needs {key}")
-        if aliased is not None:
-            object.__setattr__(table, key, aliased)
-            object.__setattr__(table, old, None)
+        if old.endswith("_km") and not covariate.endswith("_km"):
+            raise RuptureGeneratorError(
+                f"a {kind} of {covariate} takes {new}; {old} names kilometres, which "
+                f"{covariate} is not in"
+            )
+
+
+def _new_names(value: object, path: str = "") -> object:
+    """Rename the old keys of every profile in a document, before it is decoded.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        For a profile that gives a key under both names, or an old name its
+        covariate's units contradict, naming the profile's table.
+    """
+    if isinstance(value, list):
+        return [_new_names(item, path) for item in value]
+    if not isinstance(value, dict):
+        return value
+    table = {
+        key: _new_names(item, f"{path}.{key}" if path else key)
+        for key, item in value.items()
+    }
+    kind = table.get("type")
+    if not isinstance(kind, str) or kind not in OLD_NAMES:
+        return table
+    renamed = OLD_NAMES[kind]
+    given = [old for old in renamed if old in table]
+    try:
+        _check_old_names(kind, str(table.get("covariate", DEPTH_KM)), given)
+        for old in given:
+            if renamed[old] in table:
+                raise RuptureGeneratorError(
+                    f"a {kind} takes {renamed[old]} or its old name {old}, not both"
+                )
+            table[renamed[old]] = table.pop(old)
+    except RuptureGeneratorError as error:
+        raise RuptureGeneratorError(f"{path or 'the file'}: {error}") from None
+    return table
+
+
+class _ReadFloat(float):
+    """A value read through an old name, which :func:`dataclasses.replace` passes back."""
+
+
+class _ReadTuple(tuple):
+    """Values read through an old name, which :func:`dataclasses.replace` passes back."""
+
+
+def _read_back(new: str) -> property:
+    """An old name's attribute: its new name's value, marked as read back."""
+
+    def read(table: object) -> object:
+        value = getattr(table, new)
+        return _ReadTuple(value) if isinstance(value, tuple) else _ReadFloat(value)
+
+    return property(read)
+
+
+def _resolve_old_names(table: "Profile | Ramp", given: dict[str, object]) -> None:
+    """Take each old name given as its new one, and refuse a key given under neither.
+
+    An old name given overrides its new name, so :func:`dataclasses.replace` takes
+    either. That replace passes every old name back as it reads, marked so, and a
+    value so marked gives way to its new name. Then refuse an old name its
+    covariate's units contradict, or an unknown covariate.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a key is given under neither name, an old name's units contradict the
+        covariate, or the covariate is unknown.
+    """
+    kind = table.type
+    renamed = OLD_NAMES[kind]
+    used = {
+        old: value
+        for old, value in given.items()
+        if value is not None
+        and not (
+            isinstance(value, (_ReadFloat, _ReadTuple))
+            and getattr(table, renamed[old]) is not None
+        )
+    }
+    _check_old_names(kind, table.covariate, list(used))
+    for old, value in used.items():
+        plain = tuple(value) if isinstance(value, tuple) else float(value)  # ty: ignore[invalid-argument-type]
+        object.__setattr__(table, renamed[old], plain)
+    for new in OLD_NAMES[kind].values():
+        if getattr(table, new) is None:
+            raise RuptureGeneratorError(f"a {kind} needs {new}")
+    check_covariate(table.covariate)
 
 
 class _Profile:
     """A profile the file describes.
 
     It is a :class:`~rupture_generator.rupture.covariates.ChartField`, which a model
-    reads on its chart, and a :data:`SpatialField` too where it reads depth.
+    reads on its chart, and a :data:`SpatialField` too where it reads depth. A table
+    builds its profile once, when it is made, so a profile that is no profile is
+    refused as the file loads.
     """
 
+    def _build(self) -> SpatialField:
+        raise NotImplementedError
+
+    @functools.cached_property
+    def _built(self) -> SpatialField:
+        return self._build()
+
     def field(self) -> SpatialField:
-        """Build the profile the table describes.
+        """The profile the table describes.
 
         Returns
         -------
         SpatialField
             The profile, which a :class:`CovariateField` is too.
         """
-        raise NotImplementedError
+        return self._built
 
     def on_chart(self, geometry: Geometry) -> CellArray:
         """Read the profile on a chart's cells.
@@ -231,14 +340,7 @@ class Constant(_Profile):
     value: float
     Config = _Strict
 
-    def field(self) -> SpatialField:
-        """Build the profile as a function of position.
-
-        Returns
-        -------
-        SpatialField
-            The value at every position.
-        """
+    def _build(self) -> SpatialField:
         return constant_field(self.value)
 
 
@@ -259,29 +361,23 @@ class Profile(_Profile):
     values : list of float
         One value per point.
     depth_km : list of float, optional
-        ``at``'s old name, from when every profile was of depth. Give one or the other.
+        ``at``'s old name, from when every profile was of depth, for a profile of
+        depth alone. Given, it overrides ``at``, and reads as ``at``.
     """
 
     type: Literal["profile"] = "profile"
     covariate: str = DEPTH_KM
     at: tuple[float, ...] | None = None
     values: tuple[float, ...]
-    depth_km: tuple[float, ...] | None = None
+    depth_km: dataclasses.InitVar[tuple[float, ...] | None] = None
     Config = _Strict
 
-    def __post_init__(self) -> None:
-        """Read ``depth_km`` as ``at``, and refuse an unknown covariate."""
-        _resolve_aliases(self, "profile", {"at": "depth_km"})
-        check_covariate(self.covariate)
+    def __post_init__(self, depth_km: tuple[float, ...] | None) -> None:
+        """Read ``depth_km`` as ``at``, and build the profile to check it."""
+        _resolve_old_names(self, {"depth_km": depth_km})
+        self.field()
 
-    def field(self) -> CovariateField:
-        """Build the profile as a function of its covariate.
-
-        Returns
-        -------
-        CovariateField
-            The values interpolated at each cell's covariate.
-        """
+    def _build(self) -> CovariateField:
         assert self.at is not None
         return covariate_profile(
             self.covariate, np.array(self.at), np.array(self.values)
@@ -312,7 +408,8 @@ class Ramp(_Profile):
         depth.
     centre_km, half_width_km, shallow, deep : float, optional
         ``centre``, ``half_width``, ``below`` and ``above``'s old names, from when
-        every profile was of depth. Give each under one name or the other.
+        every profile was of depth, the first two for a covariate in kilometres alone.
+        Given, each overrides its new name, and reads as it.
     """
 
     type: Literal["ramp"] = "ramp"
@@ -321,39 +418,51 @@ class Ramp(_Profile):
     half_width: float | None = None
     below: float | None = None
     above: float | None = None
-    centre_km: float | None = None
-    half_width_km: float | None = None
-    shallow: float | None = None
-    deep: float | None = None
+    centre_km: dataclasses.InitVar[float | None] = None
+    half_width_km: dataclasses.InitVar[float | None] = None
+    shallow: dataclasses.InitVar[float | None] = None
+    deep: dataclasses.InitVar[float | None] = None
     Config = _Strict
 
-    def __post_init__(self) -> None:
-        """Read the old names as the new, and refuse an unknown covariate."""
-        _resolve_aliases(
+    def __post_init__(
+        self,
+        centre_km: float | None,
+        half_width_km: float | None,
+        shallow: float | None,
+        deep: float | None,
+    ) -> None:
+        """Read the old names as the new, and build the ramp to check it."""
+        _resolve_old_names(
             self,
-            "ramp",
             {
-                "centre": "centre_km",
-                "half_width": "half_width_km",
-                "below": "shallow",
-                "above": "deep",
+                "centre_km": centre_km,
+                "half_width_km": half_width_km,
+                "shallow": shallow,
+                "deep": deep,
             },
         )
-        check_covariate(self.covariate)
+        self.field()
 
-    def field(self) -> CovariateField:
-        """Build the profile as a function of its covariate.
-
-        Returns
-        -------
-        CovariateField
-            The ramp at each cell's covariate.
-        """
+    def _build(self) -> CovariateField:
         assert self.centre is not None and self.half_width is not None
         assert self.below is not None and self.above is not None
         return covariate_ramp(
             self.covariate, self.centre, self.half_width, self.below, self.above
         )
+
+
+def _read_old_names_as_new() -> None:
+    """Make each old name an attribute that reads its new name.
+
+    The dataclasses took the old names' defaults as they were made, so a property
+    put in their place afterwards leaves construction unchanged.
+    """
+    for kind, table in (("ramp", Ramp), ("profile", Profile)):
+        for old, new in OLD_NAMES[kind].items():
+            setattr(table, old, _read_back(new))
+
+
+_read_old_names_as_new()
 
 
 type ProfileConfig = Annotated[
@@ -1000,6 +1109,8 @@ def load(path: str | Path) -> RuptureConfig:
         document = tomllib.loads(path.read_text())
     except tomllib.TOMLDecodeError as error:
         raise RuptureGeneratorError(f"{path} is not TOML: {error}") from None
+    document = _new_names(document)
+    assert isinstance(document, dict)
     try:
         config = _DECODER.decode({**document, "segments": {}})
     except (InvalidFieldValue, MissingField, ExtraKeysError) as error:

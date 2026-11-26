@@ -132,25 +132,43 @@ family's `weight`, are `constant`, `ramp` or `profile` tables. A `ramp` or `prof
 is a function of one covariate of each cell, which `covariate` names, and depth
 when it is absent.
 
-| `covariate`        | Each cell's                                                                     |
-|--------------------|---------------------------------------------------------------------------------|
-| `depth_km`         | Depth below sea level, in km (the default)                                      |
-| `dip_km`           | Distance down dip from the fault's top edge, through its column's centres, in km |
-| `dip_fraction`     | `dip_km` over its column's length from top edge to bottom edge, 0 to 1          |
-| `strike_km`        | Distance along strike from the fault's start, through its row's centres, in km  |
-| `strike_fraction`  | `strike_km` over its row's length from start to end, 0 to 1                     |
-| `edge_distance_km` | Distance across the chart to the nearest edge of the fault, in km               |
+| `covariate`        | Each cell's                                                                |
+|--------------------|----------------------------------------------------------------------------|
+| `depth_km`         | Depth below sea level, in km (the default)                                 |
+| `dip_km`           | Distance down dip from the fault's up-dip edge, in km                      |
+| `dip_fraction`     | How far from the up-dip edge to the down-dip edge, 0 to 1                  |
+| `strike_km`        | Distance along strike from the fault's first end, in km                    |
+| `strike_fraction`  | How far from the first end to the last, 0 to 1                             |
+| `edge_distance_km` | Distance across the chart to the nearest edge of the fault, in km          |
 
-Columns and rows are the chart's. On a curved interface they follow the unrolled
-sheet's down-dip and along-strike directions, and each column's top and bottom are
-those of its own fault cells, so `dip_fraction` 0 follows the trench and 1 the fault's
-bottom edge, whatever their depths. A cell off the fault takes the value of the fault
-cell nearest it.
+The up-dip edge is the part of the fault's outline that faces up dip, the trench on
+an interface. It excludes the fault's ends, however deep an oblique end starts. On
+the chart, a column's top is on the up-dip edge when the column tops within 20 km to
+either side run within 45° of strike. On Hikurangi, that keeps every column that
+starts deeper than 20 km, on the oblique southern end, off the edge.
+
+Each column's shallowest fault cell takes its distance across the chart to the
+nearest stretch of that edge: half a cell where the column starts on the edge.
+`dip_km` then grows down the column. `dip_fraction` is `dip_km` over `dip_km` plus the
+distance up from the down-dip edge, found the same way. It is 0 at the up-dip edge
+and 1 at the down-dip edge, and grows down every column. The strike pair is the same
+along rows, from the fault's ends.
+
+Every distance is across the chart at its spacing. On a curved interface that is the
+unrolled sheet, to within its stretch of about 1%. Each fault of a rupture measures
+from its own edges, and a cell off the fault takes the value of the fault cell
+nearest it. On a plane, `dip_km` and `strike_km` are the distances from the top edge
+and from the start of the trace.
 
 A `ramp` takes a `centre` and a `half_width` in the covariate's units, and the values
 `below` and `above` the ramp. A `profile` takes points `at` along the covariate and
-the `values` there. The names from when every profile was of depth, `centre_km`,
-`half_width_km`, `shallow`, `deep` and `depth_km`, still read the same.
+the `values` there. A profile whose points all lie outside its covariate's range,
+such as a ramp centred at 6.5 on `dip_fraction`, is refused.
+
+The names from when every profile was of depth, `centre_km`, `half_width_km`,
+`shallow`, `deep` and `depth_km`, still read the same, with two exceptions:
+- `depth_km` works only on a profile of depth.
+- `centre_km` and `half_width_km` work only on a covariate in kilometres.
 
 ```toml
 # Graves & Pitarka's hybrid slip noise, crossfaded 30% of the way down dip rather

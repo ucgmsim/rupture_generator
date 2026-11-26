@@ -6,7 +6,7 @@ a function of position that a model reads at the cell centres, and most of those
 depth alone. A **covariate** is any other number a cell has on its chart, in physical
 units, and a profile can be a function of one in place of depth. On a curved
 interface, where the fault's top and bottom wander in depth along strike, the
-distance down dip from the top edge or the fraction of the way to the bottom edge
+distance down dip from the up-dip edge or the fraction of the way to the down-dip edge
 places a transition where depth cannot.
 
 :data:`COVARIATES` names the built-in ones, and a covariate from elsewhere, such as an
@@ -19,11 +19,15 @@ field with an ``on_chart`` method, which :func:`chart_field` makes of a function
 Every model reads a profile by its ``on_chart`` where it has one, and at the cell
 centres otherwise, so a plain function of position reads as it always has.
 
-Every covariate but depth is a distance or fraction **on the fault**, so it is
-measured over the chart's fault cells, the ``occupied`` ones. A cell off the fault
-takes the value of the fault cell nearest it on the chart, which keeps every covariate
-finite on the whole chart, as a noise weight needs. Depth is defined everywhere and
-reads the cell's own.
+Every covariate but depth is a distance or fraction **on the fault**, a property of
+the chart: :attr:`~rupture_generator.geometry.Geometry.dip_km` and the rest, which say
+exactly how each is measured. They are measured on each chart, so on a rupture of
+several faults each fault's own distances start from its own edges. A chart's row 0
+is up dip and its column 0 the start of its trace, as every chart is built. The
+distances are across the chart at its spacing, so on a curved chart they carry the
+flattening's stretch, about 1%. A cell off the fault takes the value of the fault cell
+nearest it on the chart, which keeps every covariate finite on the whole chart, as a
+noise weight needs. Depth is defined everywhere and reads the cell's own.
 """
 
 import dataclasses
@@ -76,6 +80,19 @@ COVARIATES: Mapping[str, Covariate] = types.MappingProxyType(
 of that name: :attr:`~rupture_generator.geometry.Geometry.dip_km` and the rest."""
 
 
+RANGES: Mapping[str, tuple[float, float]] = types.MappingProxyType(
+    {
+        "dip_km": (0.0, np.inf),
+        "dip_fraction": (0.0, 1.0),
+        "strike_km": (0.0, np.inf),
+        "strike_fraction": (0.0, 1.0),
+        "edge_distance_km": (0.0, np.inf),
+    }
+)
+"""The values each built-in covariate but depth takes on the fault, bounds included.
+A profile whose points all lie outside them is one value over the whole fault."""
+
+
 def check_covariate(name: str) -> str:
     """Check that a name is a built-in covariate's.
 
@@ -114,7 +131,9 @@ def read_covariate(geometry: Geometry, covariate: str | Covariate) -> CellArray:
     Returns
     -------
     CellArray
-        The covariate on every cell, ``(n_i, n_j)``.
+        The covariate on every cell, ``(n_i, n_j)``. A built-in's is the chart's own
+        cached array, as :attr:`~rupture_generator.geometry.Geometry.centres` is, so
+        leave it unchanged.
 
     Raises
     ------
@@ -337,9 +356,18 @@ def covariate_profile(
     ------
     RuptureGeneratorError
         If the points fail to increase, the values fail to give one finite number per
-        point, or the covariate's name is no built-in's.
+        point, the covariate's name is no built-in's, or the points lie wholly outside
+        the built-in's :data:`RANGES`.
     """
     at, heights = checked_profile(points, values, "points")
+    if isinstance(covariate, str) and covariate in RANGES:
+        low, high = RANGES[covariate]
+        if at[-1] < low or at[0] > high:
+            raise RuptureGeneratorError(
+                f"a profile from {at[0]:g} to {at[-1]:g} lies wholly outside "
+                f"{covariate}'s range, {low:g} to {high:g}, so it is one value over "
+                "the whole fault"
+            )
     return CovariateField(covariate, functools.partial(_interpolate, at, heights))
 
 
@@ -381,7 +409,8 @@ def covariate_ramp(
     Raises
     ------
     RuptureGeneratorError
-        If the ramp has no width, or its centre or width isn't finite.
+        If the ramp has no width, its centre or width isn't finite, or it lies wholly
+        outside a built-in covariate's :data:`RANGES`.
     """
     if not half_width > 0.0:
         raise RuptureGeneratorError(f"a ramp {half_width} wide is a step")
@@ -395,6 +424,7 @@ def covariate_ramp(
 __all__ = [
     "COVARIATES",
     "DEPTH_KM",
+    "RANGES",
     "ChartField",
     "Covariate",
     "CovariateField",
