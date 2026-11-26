@@ -25,6 +25,16 @@ from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.formats.fields import read_fields, write_fields
 from rupture_generator.formats.srf import write_rupture
 from rupture_generator.geometry import Geometry, Segment, geometry_from_geojson
+from rupture_generator.rupture.covariates import (
+    COVARIATES,
+    ChartField,
+    Covariate,
+    CovariateField,
+    chart_field,
+    covariate_profile,
+    covariate_ramp,
+    read_covariate,
+)
 from rupture_generator.rupture.generator import (
     JumpRule,
     JumpSeed,
@@ -91,6 +101,7 @@ __version__ = version("rupture-generator")
 """The installed version, from the latest git tag when it was built."""
 
 __all__ = [
+    "COVARIATES",
     "GENSLIP_MAI_BEROZA",
     "GENSLIP_SKARLATOUDIS_2016",
     "GENSLIP_SUZUKI_2022",
@@ -100,9 +111,12 @@ __all__ = [
     "SKARLATOUDIS_2016",
     "STATIONARY",
     "SUZUKI_2022",
+    "ChartField",
     "CorrelatedPerturbation",
     "CorrelatedRise",
     "CorrelationRelation",
+    "Covariate",
+    "CovariateField",
     "Drawn",
     "DrawnSlip",
     "GaussianRake",
@@ -131,8 +145,11 @@ __all__ = [
     "SlipModel",
     "SpatialField",
     "SpeedModel",
+    "chart_field",
     "component_weights",
     "constant_field",
+    "covariate_profile",
+    "covariate_ramp",
     "embed",
     "first_arrival",
     "gaussian_anamorphosis",
@@ -147,6 +164,7 @@ __all__ = [
     "moment_components",
     "moment_from_magnitude",
     "ramp_field",
+    "read_covariate",
     "read_fields",
     "rigidity_weighted_areas",
     "sample_path",

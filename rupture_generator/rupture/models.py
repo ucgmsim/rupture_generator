@@ -36,6 +36,7 @@ import scipy as sp
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, CellMask, Geometry
+from rupture_generator.rupture.covariates import read_profile
 from rupture_generator.rupture.medium import (
     SpatialField,
     constant_field,
@@ -378,7 +379,7 @@ def read_at_centres(
     accept: Callable[[CellArray], np.ndarray],
     wanted: str,
 ) -> CellArray:
-    """Read a spatial field at a chart's cell centres, and check it.
+    """Read a spatial field at a chart's cell centres, or a profile on it, and check it.
 
     Parameters
     ----------
@@ -387,7 +388,9 @@ def read_at_centres(
     name : str
         What to call the field in an error.
     field : SpatialField
-        The field, a function of position.
+        The field, a function of position read at the cell centres, or a profile
+        that reads the chart by its ``on_chart``, as
+        :func:`~rupture_generator.rupture.covariates.read_profile` does.
     accept : callable
         Whether each value is acceptable, cell by cell.
     wanted : str
@@ -396,14 +399,14 @@ def read_at_centres(
     Returns
     -------
     CellArray
-        The field at the cell centres.
+        The field on the chart's cells.
 
     Raises
     ------
     RuptureGeneratorError
         If the field gives the wrong shape, or a value ``accept`` refuses.
     """
-    return check_cells(geometry, name, field(geometry.centres), accept, wanted)
+    return check_cells(geometry, name, read_profile(field, geometry), accept, wanted)
 
 
 def unit_interval(values: CellArray) -> np.ndarray:
@@ -576,7 +579,9 @@ class NoiseFamily:
     hurst : float
         The Hurst exponent.
     weight : SpatialField
-        How much of the field this family is at each position, in ``[0, 1]``.
+        How much of the field this family is at each position or cell, in ``[0, 1]``:
+        a function of position, or a profile of a covariate such as
+        :func:`~rupture_generator.rupture.covariates.covariate_ramp` builds.
     """
 
     relation: CorrelationRelation = GENSLIP_MAI_BEROZA
@@ -801,8 +806,8 @@ class CorrelatedRise:
     ``risetime_coef*1.0e-09*exp(log(mom)/3.0)``, which gave every rupture of one
     magnitude the same mean rise time.
 
-    The pattern is a power of a field correlated with slip's latent, times a depth
-    profile.
+    The pattern is a power of a field correlated with slip's latent, times a profile,
+    of depth or another covariate.
 
     Attributes
     ----------
@@ -981,9 +986,9 @@ class ShearFractionSpeed:
     """A front at a fraction of the shear speed, held off the forbidden zone.
 
     The front moves at ``velocity_fraction / alpha_T`` of the shear speed, held to the
-    sub-Rayleigh or supershear branch, times a depth profile. A fraction in the
-    forbidden zone, between the Rayleigh fraction and 1, moves up by the zone's
-    width onto the supershear branch.
+    sub-Rayleigh or supershear branch, times a profile, of depth or another
+    covariate. A fraction in the forbidden zone, between the Rayleigh fraction and 1,
+    moves up by the zone's width onto the supershear branch.
 
     Attributes
     ----------

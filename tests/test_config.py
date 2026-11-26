@@ -74,10 +74,11 @@ def test_defaults_are_the_librarys():
         ("seed = 7\n", "", "seed: is missing"),
         ("seed = 7\n", "seed = -7\n", "seed: a seed is a non-negative integer"),
         ("seed = 7\n", "seed = 7.5\n", "seed: a seed is a non-negative integer"),
+        # An old name reads as its new one, which the error then names.
         (
             "centre_km = 2.0",
             'centre_km = "two"',
-            "rise.slip_weight.centre_km:",
+            "rise.slip_weight.centre:",
         ),
         (
             "dip_fraction = 0.5\n",

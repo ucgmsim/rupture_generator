@@ -46,6 +46,21 @@ cell's normal can tilt by about 2e-10 from rounding alone. The tolerance is fift
 that, 6e-7 degrees."""
 
 
+EDGE_WINDOW_KM = 20.0
+"""How far to either side of a column, or row, the outline is read to decide whether
+the line's end lies on the fault's up-dip, down-dip or end edge, or on another.
+
+Wide enough to read an outline that steps down the chart a cell or more at a time as
+the line it is. On the Hikurangi interface charted at 5, 2 and 1 km, it puts none of
+the columns that start deeper than 20 km, on the interface's oblique southern end, on
+the up-dip edge, and all but at most 3 of those that start shallower than 15 km. Half
+the width, 10 km, puts columns starting 70 km deep on the edge at 5 km."""
+
+EDGE_MAX_ANGLE_DEG = 45.0
+"""The steepest an edge may run from its own direction and still be that edge: past
+it, a stretch of outline runs more across the fault than along it, so it is a side."""
+
+
 def bordering(mask: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
     """Flag the nodes or node steps that border a flagged cell.
 
@@ -284,6 +299,208 @@ class Geometry:
         """np.ndarray: Distance down dip of each ``j = 0`` edge node row, in km."""
         steps = np.linalg.norm(np.diff(self.nodes[:, 0], axis=0), axis=-1)
         return np.concatenate([[0.0], np.cumsum(steps)])
+
+    # ----------------------------------------------------- distances on the fault
+    #
+    # The fault's outline is every cell side between a fault cell and a cell off the
+    # fault or off the chart. Each distance below is the straight line across the
+    # chart, at :attr:`spacing_km`, from a cell centre to the nearest of some of those
+    # sides. On a lattice at half the spacing, cell centres and the ends and midpoints
+    # of cell sides are all lattice points, and the point of a side nearest a centre is
+    # one of those, so a Euclidean distance transform on that lattice is exact at the
+    # spacing. On a curved chart the distances are across the unrolled sheet, which
+    # the flattening keeps to within its stretch, about 1% on the NZ Community Fault
+    # Model's interfaces.
+
+    @functools.cached_property
+    def _nearest_fault_cell(self) -> CellSelection | None:
+        """CellSelection | None: The fault cell nearest each cell, ``None`` if all are.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a chart with no fault cell, which has nothing to measure from.
+        """
+        occupied = self.occupied
+        if not occupied.any():
+            raise RuptureGeneratorError(
+                "a chart with no fault cell has no distance measured on the fault"
+            )
+        if occupied.all():
+            return None
+        strike_km, dip_km = self.spacing_km
+        i, j = sp.ndimage.distance_transform_edt(
+            ~occupied,
+            sampling=(dip_km, strike_km),
+            return_distances=False,
+            return_indices=True,
+        )
+        return i, j
+
+    def _on_fault(self, values: np.ndarray) -> CellArray:
+        """The values, with each cell off the fault given its nearest fault cell's."""
+        nearest = self._nearest_fault_cell
+        return values if nearest is None else values[nearest]
+
+    def _line_ends(self, axis: int, *, reverse: bool) -> np.ndarray:
+        """Each column's (``axis = 0``) or row's first fault cell, or last when
+        ``reverse``, as an index along the axis, shaped to index along it."""
+        occupied = self.occupied
+        end = np.argmax(np.flip(occupied, axis) if reverse else occupied, axis=axis)
+        if reverse:
+            end = occupied.shape[axis] - 1 - end
+        return np.expand_dims(end, axis)
+
+    @functools.cached_property
+    def _outline(self) -> np.ndarray:
+        """np.ndarray: The midpoints of the outline's sides, on the half-spacing lattice.
+
+        ``(2 n_i + 1, 2 n_j + 1)``, the lattice's even rows and columns on node lines
+        and its odd ones on cell centres.
+        """
+        occupied = self.occupied
+        midpoints = np.zeros(
+            (2 * occupied.shape[0] + 1, 2 * occupied.shape[1] + 1), bool
+        )
+        # Sides along strike on the lattice's even rows, then down dip on its even
+        # columns, the same marking on the transposes.
+        for cells, lattice in ((occupied, midpoints), (occupied.T, midpoints.T)):
+            padded = np.pad(cells, 1)
+            lattice[::2, 1::2] = padded[:-1, 1:-1] != padded[1:, 1:-1]
+        return midpoints
+
+    def _edge_sides(self, axis: int, *, reverse: bool) -> np.ndarray:
+        """The midpoints of one edge's sides, on the half-spacing lattice.
+
+        The edge is the outer side of each column's first fault cell (``axis = 0``,
+        the up-dip edge), its last (``reverse``, the down-dip edge), or each row's
+        first or last (``axis = 1``, the ends), where the edge runs within
+        :data:`EDGE_MAX_ANGLE_DEG` of its own direction: where those sides, over the
+        lines within :data:`EDGE_WINDOW_KM` to either side, move along the axis in
+        all, step by step, by no more than the tangent of that angle times how far
+        they move across it. Their total movement, not their net, so the two flanks of
+        a ridge don't cancel. A ragged or oblique stretch of outline steps down the
+        chart a cell or more per line, so it is a side of the fault rather than a run
+        of tops. An edge no line qualifies for takes every line.
+        """
+        occupied = self.occupied
+        lines = np.flatnonzero(occupied.any(axis=axis))
+        ends = np.take(self._line_ends(axis, reverse=reverse), lines, axis=1 - axis)
+        ends = ends.ravel() + (1 if reverse else 0)
+        along_km, across_km = self.spacing_km[1 - axis], self.spacing_km[axis]
+        window = max(1, round(EDGE_WINDOW_KM / across_km))
+        k = np.arange(lines.size)
+        low, high = np.maximum(k - window, 0), np.minimum(k + window, lines.size - 1)
+        steps = np.concatenate([[0], np.cumsum(np.abs(np.diff(ends)))])
+        moved_along = (steps[high] - steps[low]) * along_km
+        moved_across = (lines[high] - lines[low]) * across_km
+        on = moved_along <= np.tan(np.radians(EDGE_MAX_ANGLE_DEG)) * moved_across
+        if not on.any():
+            on[:] = True
+        midpoints = np.zeros_like(self._outline)
+        sides = (2 * ends[on], 2 * lines[on] + 1)
+        midpoints[sides if axis == 0 else sides[::-1]] = True
+        return midpoints
+
+    @staticmethod
+    def _read_only(values: np.ndarray) -> CellArray:
+        """The values, which the chart caches, made read-only so no write corrupts
+        them or what is derived from them later."""
+        values.setflags(write=False)
+        return values
+
+    def _distance_to(self, midpoints: np.ndarray) -> CellArray:
+        """Distance from each cell centre to the nearest of some sides, in km."""
+        # A side runs from the lattice point before its midpoint to the one after.
+        marked = midpoints.copy()
+        rows, columns = midpoints.copy(), midpoints.copy()
+        rows[1::2] = False
+        columns[::2] = False
+        marked[:, 1:] |= rows[:, :-1]
+        marked[:, :-1] |= rows[:, 1:]
+        marked[1:] |= columns[:-1]
+        marked[:-1] |= columns[1:]
+        strike_km, dip_km = self.spacing_km
+        distance = sp.ndimage.distance_transform_edt(
+            ~marked, sampling=(0.5 * dip_km, 0.5 * strike_km)
+        )
+        # A copy, so the cache doesn't keep the whole lattice alive.
+        return self._on_fault(distance[1::2, 1::2].copy())
+
+    def _from_edge(self, axis: int, *, reverse: bool) -> CellArray:
+        """Distance from one edge, down each column (``axis = 0``) or along each row.
+
+        The line's first fault cell, or last when ``reverse``, sits at its distance
+        to the edge, and each cell along the line at that plus its distance from that
+        cell along the line, at :attr:`spacing_km`.
+        """
+        anchor = self._line_ends(axis, reverse=reverse)
+        index = np.expand_dims(np.arange(self.occupied.shape[axis]), 1 - axis)
+        offset_km = (anchor - index if reverse else index - anchor) * self.spacing_km[
+            1 - axis
+        ]
+        nearest_km = self._distance_to(self._edge_sides(axis, reverse=reverse))
+        return self._read_only(
+            self._on_fault(np.take_along_axis(nearest_km, anchor, axis) + offset_km)
+        )
+
+    @functools.cached_property
+    def dip_km(self) -> CellArray:
+        """CellArray: Distance down dip from the fault's up-dip edge, in kilometres.
+
+        The up-dip edge is the part of the outline facing up dip, the trench on an
+        interface, and not its ends, however deep an oblique end starts. A column's
+        shallowest fault cell sits at its distance across the chart to the nearest
+        side of that edge, half a cell where the column starts on it, and each cell
+        below at that plus its distance down the column, so the distance grows down
+        every column. Each cell off the fault takes the value of the fault cell
+        nearest it on the chart, as every distance on the fault does. On a plane it
+        is the distance down dip from the top edge.
+        """
+        return self._from_edge(0, reverse=False)
+
+    @functools.cached_property
+    def dip_fraction(self) -> CellArray:
+        """CellArray: How far from the up-dip edge to the down-dip edge, ``[0, 1]``.
+
+        :attr:`dip_km` over itself plus the distance up the column from the down-dip
+        edge, found as :attr:`dip_km` is from the up-dip edge. The sum is one length
+        per column, so the fraction grows down every column, from near 0 at the
+        up-dip edge to near 1 at the down-dip edge. A column that starts and ends on
+        an oblique end runs between the fractions of the edges nearest its ends. Each
+        distance is at least half a cell, so the sum is never zero.
+        """
+        top, bottom = self.dip_km, self._from_edge(0, reverse=True)
+        return self._read_only(top / (top + bottom))
+
+    @functools.cached_property
+    def strike_km(self) -> CellArray:
+        """CellArray: Distance along strike from the fault's first end, in kilometres.
+
+        As :attr:`dip_km`, along each row from the part of the outline facing back
+        along strike. On a plane it is the distance along strike from the start of
+        the trace.
+        """
+        return self._from_edge(1, reverse=False)
+
+    @functools.cached_property
+    def strike_fraction(self) -> CellArray:
+        """CellArray: How far from the first end to the last along strike, ``[0, 1]``.
+
+        As :attr:`dip_fraction`, along each row between the fault's first and last
+        ends.
+        """
+        start, end = self.strike_km, self._from_edge(1, reverse=True)
+        return self._read_only(start / (start + end))
+
+    @functools.cached_property
+    def edge_distance_km(self) -> CellArray:
+        """CellArray: Distance to the nearest edge of the fault, in kilometres.
+
+        The nearest side of the whole outline: the top, bottom and ends, and any hole.
+        A fault cell on the edge reads half a cell.
+        """
+        return self._read_only(self._distance_to(self._outline))
 
     def cell_at(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """Find the cell containing a position on the fault.

@@ -127,8 +127,68 @@ Every table but `[geometry]`, `[hypocentre]`, `[medium]` and `[source]` is optio
 | `[pulse]`                                                 | Slip-rate sampling and shape parameters.                                                                                                      |
 | `[segments.<name>]`                                       | Per-segment rupture field models.                                                                                                     |
 
-Depth profiles, such as `[rise.factor]` or `[speed.factor]`, are `constant`, `ramp`
-or `profile` tables.
+Profiles, such as `[rise.factor]`, `[speed.factor]`, `[pulse.beta]` or a noise
+family's `weight`, are `constant`, `ramp` or `profile` tables. A `ramp` or `profile`
+is a function of one covariate of each cell, which `covariate` names, and depth
+when it is absent.
+
+| `covariate`        | Each cell's                                                                |
+|--------------------|----------------------------------------------------------------------------|
+| `depth_km`         | Depth below sea level, in km (the default)                                 |
+| `dip_km`           | Distance down dip from the fault's up-dip edge, in km                      |
+| `dip_fraction`     | How far from the up-dip edge to the down-dip edge, 0 to 1                  |
+| `strike_km`        | Distance along strike from the fault's first end, in km                    |
+| `strike_fraction`  | How far from the first end to the last, 0 to 1                             |
+| `edge_distance_km` | Distance across the chart to the nearest edge of the fault, in km          |
+
+The up-dip edge is the part of the fault's outline that faces up dip, the trench on
+an interface. It excludes the fault's ends, however deep an oblique end starts. On
+the chart, a column's top is on the up-dip edge when the column tops within 20 km to
+either side run within 45° of strike. On Hikurangi, that keeps every column that
+starts deeper than 20 km, on the oblique southern end, off the edge.
+
+Each column's shallowest fault cell takes its distance across the chart to the
+nearest stretch of that edge: half a cell where the column starts on the edge.
+`dip_km` then grows down the column. `dip_fraction` is `dip_km` over `dip_km` plus the
+distance up from the down-dip edge, found the same way. It is 0 at the up-dip edge
+and 1 at the down-dip edge, and grows down every column. The strike pair is the same
+along rows, from the fault's ends.
+
+Every distance is across the chart at its spacing. On a curved interface that is the
+unrolled sheet, to within its stretch of about 1%. Each fault of a rupture measures
+from its own edges, and a cell off the fault takes the value of the fault cell
+nearest it. On a plane, `dip_km` and `strike_km` are the distances from the top edge
+and from the start of the trace.
+
+A `ramp` takes a `centre` and a `half_width` in the covariate's units, and the values
+`below` and `above` the ramp. A `profile` takes points `at` along the covariate and
+the `values` there. A profile whose points all lie outside its covariate's range,
+such as a ramp centred at 6.5 on `dip_fraction`, is refused.
+
+The names from when every profile was of depth, `centre_km`, `half_width_km`,
+`shallow`, `deep` and `depth_km`, still read the same, with two exceptions:
+- `depth_km` works only on a profile of depth.
+- `centre_km` and `half_width_km` work only on a covariate in kilometres.
+
+```toml
+# Graves & Pitarka's hybrid slip noise, crossfaded 30% of the way down dip rather
+# than at 6.5 km depth.
+[[slip.noise]]
+relation = { strike_offset = 1.67, dip_exponent = 0.5, dip_offset = 1.69, dip_saturation = 6.3 }
+weight = { type = "ramp", covariate = "dip_fraction", centre = 0.3, half_width = 0.1, below = 1.0, above = 0.0 }
+
+[[slip.noise]]
+weight = { type = "ramp", covariate = "dip_fraction", centre = 0.3, half_width = 0.1, below = 0.0, above = 1.0 }
+
+# A front at half speed on the fault's edges, rising to full speed 3 km in.
+[speed.factor]
+type = "ramp"
+covariate = "edge_distance_km"
+centre = 1.5
+half_width = 1.5
+below = 0.5
+above = 1.0
+```
 
 `[geometry] path` is one file or a list of them, relative to the config. A file
 ending in `.ts` or `.ts.gz` is a GOCAD TSurf of triangle meshes, such as the NZ
@@ -311,6 +371,47 @@ ruptures = generate(realisation, medium, sources, models, seed=seed)
 ```
 
 All other fields can be modified in the same manner.
+
+A profile in the API is a function of position, as `ramp_field` builds one of depth,
+or a `ChartField`, which a model reads on the chart by its `on_chart` method.
+`covariate_ramp` and `covariate_profile` build one on a covariate, a name from the
+table above or any function of the chart, such as a raster sampled at the cell
+centres. `chart_field` makes any function of the chart a profile.
+
+```python
+from rupture_generator import (
+    GENSLIP_SUZUKI_2022,
+    CorrelatedRise,
+    DrawnSlip,
+    NoiseFamily,
+    RuptureModel,
+    chart_field,
+    covariate_ramp,
+    read_covariate,
+)
+
+# The hybrid slip noise, crossfaded 30% of the way down dip.
+shallow = covariate_ramp("dip_fraction", 0.3, 0.1, 1.0, 0.0)
+deep = covariate_ramp("dip_fraction", 0.3, 0.1, 0.0, 1.0)
+slip = DrawnSlip(
+    noise=(NoiseFamily(GENSLIP_SUZUKI_2022, weight=shallow), NoiseFamily(weight=deep))
+)
+
+# A covariate from elsewhere: interface coupling, a RegularGridInterpolator over a
+# raster in the realisation's CRS, read at each cell's centre. Rise time doubles
+# where the interface creeps.
+creeping = covariate_ramp(
+    lambda chart: coupling(chart.centres[..., :2]), 0.5, 0.2, 2.0, 1.0
+)
+
+# Anything else of the chart: the down-dip fraction, but only where the fault is
+# shallower than 30 degrees.
+gentle = chart_field(
+    lambda chart: read_covariate(chart, "dip_fraction") * (chart.dip_deg < 30.0)
+)
+
+model = RuptureModel(slip=slip, rise=CorrelatedRise(factor=creeping))
+```
 
 ---
 
