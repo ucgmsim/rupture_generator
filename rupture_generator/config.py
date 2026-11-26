@@ -4,16 +4,17 @@ This module is an adapter over the library and nothing in the library imports it
 The default models of :class:`~rupture_generator.rupture.models.RuptureModel`, the
 correlation relation and the jump model are the library's own classes. A subclass makes
 each one strict about unknown keys, and the library still defines every default once. A
-subclass restates a field only to read a depth profile where the library takes any
-function of position. A small class here builds whatever the file describes
-declaratively and the library takes as a function: a depth profile, or a medium.
+subclass restates a field only to read a profile where the library takes any
+function of position or the chart. A small class here builds whatever the file
+describes declaratively and the library takes as a function: a profile of depth or
+another covariate, or a medium.
 
 The file configures the default models alone. Any other model comes in through the
 library.
 
 A ``[segments.<name>]`` table overrides the global settings on one segment. Its
 ``slip``, ``rise``, ``rake``, ``speed`` and ``perturbation`` tables each start from the
-global table and replace the keys they give. A depth profile or a noise list, one key
+global table and replace the keys they give. A profile or a noise list, one key
 of its table, replaces the global one whole. :func:`load` does this merge. A loaded config stores each segment's tables in
 full.
 
@@ -45,10 +46,19 @@ from mashumaro.types import Discriminator
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import (
     NSHM_ALIASES,
+    CellArray,
     Geometry,
     geometry_from_geojson,
     geometry_from_tsurf,
     projected_crs,
+)
+from rupture_generator.rupture.covariates import (
+    DEPTH_KM,
+    CovariateField,
+    check_covariate,
+    covariate_profile,
+    covariate_ramp,
+    read_profile,
 )
 from rupture_generator.rupture.generator import check_seed, moment_rng
 from rupture_generator.rupture.medium import (
@@ -56,9 +66,7 @@ from rupture_generator.rupture.medium import (
     Medium,
     SpatialField,
     constant_field,
-    interpolated_field,
     layered_medium,
-    ramp_field,
 )
 from rupture_generator.rupture.models import (
     MODELS,
@@ -127,24 +135,67 @@ class Jump(JumpModel):
     Config = _Strict
 
 
-# ---------------------------------------------------------------- depth profiles
+# ---------------------------------------------------------------------- profiles
 
 
-class _DepthProfile:
-    """A profile the file describes, read at positions as a :data:`SpatialField`."""
+def _resolve_aliases(table: object, kind: str, renamed: dict[str, str]) -> None:
+    """Move each old key's value to its new key, and refuse a key missing or given twice.
+
+    ``renamed`` maps each new key to the old name it had when every profile was of
+    depth. A config still giving the old name reads the same.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If a key is given under both names, or under neither.
+    """
+    for key, old in renamed.items():
+        given, aliased = getattr(table, key), getattr(table, old)
+        if given is not None and aliased is not None:
+            raise RuptureGeneratorError(
+                f"a {kind} takes {key} or its old name {old}, not both"
+            )
+        if given is None and aliased is None:
+            raise RuptureGeneratorError(f"a {kind} needs {key}")
+        if aliased is not None:
+            object.__setattr__(table, key, aliased)
+            object.__setattr__(table, old, None)
+
+
+class _Profile:
+    """A profile the file describes.
+
+    It is a :class:`~rupture_generator.rupture.covariates.ChartField`, which a model
+    reads on its chart, and a :data:`SpatialField` too where it reads depth.
+    """
 
     def field(self) -> SpatialField:
-        """Build the profile as a function of position.
+        """Build the profile the table describes.
 
         Returns
         -------
         SpatialField
-            The profile at each position.
+            The profile, which a :class:`CovariateField` is too.
         """
         raise NotImplementedError
 
+    def on_chart(self, geometry: Geometry) -> CellArray:
+        """Read the profile on a chart's cells.
+
+        Parameters
+        ----------
+        geometry : Geometry
+            The chart.
+
+        Returns
+        -------
+        CellArray
+            The profile on each cell.
+        """
+        return read_profile(self.field(), geometry)
+
     def __call__(self, positions: np.ndarray) -> np.ndarray:
-        """Read the profile at positions, as a :data:`SpatialField` does.
+        """Read a depth profile at positions, as a :data:`SpatialField` does.
 
         Parameters
         ----------
@@ -155,13 +206,18 @@ class _DepthProfile:
         -------
         numpy.ndarray
             The profile at each position ``(...)``.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a profile of a covariate other than depth.
         """
         return self.field()(positions)
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Constant(_DepthProfile):
-    """The same value at every depth.
+class Constant(_Profile):
+    """The same value everywhere.
 
     Parameters
     ----------
@@ -187,74 +243,125 @@ class Constant(_DepthProfile):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Profile(_DepthProfile):
-    """Values at depths, linear between them and flat beyond.
+class Profile(_Profile):
+    """Values at points along a covariate, linear between them and flat beyond.
 
     Parameters
     ----------
     type : {"profile"}
         The profile's kind.
-    depth_km : list of float
-        The depths, in kilometres, increasing.
+    covariate : str
+        The covariate the points lie along, a name in
+        :data:`~rupture_generator.rupture.covariates.COVARIATES`. Depth in kilometres,
+        ``"depth_km"``, when absent.
+    at : list of float
+        The covariate's value at each point, increasing.
     values : list of float
-        One value per depth.
+        One value per point.
+    depth_km : list of float, optional
+        ``at``'s old name, from when every profile was of depth. Give one or the other.
     """
 
     type: Literal["profile"] = "profile"
-    depth_km: tuple[float, ...]
+    covariate: str = DEPTH_KM
+    at: tuple[float, ...] | None = None
     values: tuple[float, ...]
+    depth_km: tuple[float, ...] | None = None
     Config = _Strict
 
-    def field(self) -> SpatialField:
-        """Build the profile as a function of position.
+    def __post_init__(self) -> None:
+        """Read ``depth_km`` as ``at``, and refuse an unknown covariate."""
+        _resolve_aliases(self, "profile", {"at": "depth_km"})
+        check_covariate(self.covariate)
+
+    def field(self) -> CovariateField:
+        """Build the profile as a function of its covariate.
 
         Returns
         -------
-        SpatialField
-            The values interpolated at each position's depth.
+        CovariateField
+            The values interpolated at each cell's covariate.
         """
-        return interpolated_field(np.array(self.depth_km), np.array(self.values))
+        assert self.at is not None
+        return covariate_profile(
+            self.covariate, np.array(self.at), np.array(self.values)
+        )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class Ramp(_DepthProfile):
-    """One value at shallow depths and another at deep ones, linear between.
+class Ramp(_Profile):
+    """One value below a covariate's range and another above it, linear between.
 
     Parameters
     ----------
     type : {"ramp"}
         The profile's kind.
-    centre_km : float
-        The depth of the ramp's midpoint, in kilometres.
-    half_width_km : float
-        Half the ramp's depth range, in kilometres. Positive.
-    shallow : float
-        The value shallower than ``centre_km - half_width_km``.
-    deep : float
-        The value below ``centre_km + half_width_km``.
+    covariate : str
+        The covariate the ramp runs along, a name in
+        :data:`~rupture_generator.rupture.covariates.COVARIATES`. Depth in kilometres,
+        ``"depth_km"``, when absent.
+    centre : float
+        The covariate's value at the ramp's midpoint.
+    half_width : float
+        Half the ramp's extent, in the covariate's units. Positive.
+    below : float
+        The value where the covariate is below ``centre - half_width``: shallower, for
+        depth.
+    above : float
+        The value where the covariate is above ``centre + half_width``: deeper, for
+        depth.
+    centre_km, half_width_km, shallow, deep : float, optional
+        ``centre``, ``half_width``, ``below`` and ``above``'s old names, from when
+        every profile was of depth. Give each under one name or the other.
     """
 
     type: Literal["ramp"] = "ramp"
-    centre_km: float
-    half_width_km: float
-    shallow: float
-    deep: float
+    covariate: str = DEPTH_KM
+    centre: float | None = None
+    half_width: float | None = None
+    below: float | None = None
+    above: float | None = None
+    centre_km: float | None = None
+    half_width_km: float | None = None
+    shallow: float | None = None
+    deep: float | None = None
     Config = _Strict
 
-    def field(self) -> SpatialField:
-        """Build the profile as a function of position.
+    def __post_init__(self) -> None:
+        """Read the old names as the new, and refuse an unknown covariate."""
+        _resolve_aliases(
+            self,
+            "ramp",
+            {
+                "centre": "centre_km",
+                "half_width": "half_width_km",
+                "below": "shallow",
+                "above": "deep",
+            },
+        )
+        check_covariate(self.covariate)
+
+    def field(self) -> CovariateField:
+        """Build the profile as a function of its covariate.
 
         Returns
         -------
-        SpatialField
-            The ramp at each position's depth.
+        CovariateField
+            The ramp at each cell's covariate.
         """
-        return ramp_field(self.centre_km, self.half_width_km, self.shallow, self.deep)
+        assert self.centre is not None and self.half_width is not None
+        assert self.below is not None and self.above is not None
+        return covariate_ramp(
+            self.covariate, self.centre, self.half_width, self.below, self.above
+        )
 
 
-type DepthProfile = Annotated[
+type ProfileConfig = Annotated[
     Constant | Profile | Ramp, Discriminator(field="type", include_supertypes=True)
 ]
+
+DepthProfile = ProfileConfig
+""":data:`ProfileConfig`'s old name, from when every profile was of depth."""
 
 UNMODIFIED = Constant(value=1.0)
 """The profile that leaves what it scales unmodified."""
@@ -271,12 +378,12 @@ class Family(NoiseFamily):
     ----------
     relation : Correlation
         ``relation``, the family's correlation lengths.
-    weight : DepthProfile
+    weight : ProfileConfig
         ``weight``, how much of the field the family is.
     """
 
     relation: Correlation = dataclasses.field(default_factory=Correlation)
-    weight: DepthProfile = UNMODIFIED
+    weight: ProfileConfig = UNMODIFIED
     Config = _Strict
 
 
@@ -286,9 +393,9 @@ STATIONARY = (Family(),)
 GP_HYBRID = (
     Family(
         relation=Correlation(**dataclasses.asdict(GENSLIP_SUZUKI_2022)),
-        weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=1.0, deep=0.0),
+        weight=Ramp(centre=6.5, half_width=1.5, below=1.0, above=0.0),
     ),
-    Family(weight=Ramp(centre_km=6.5, half_width_km=1.5, shallow=0.0, deep=1.0)),
+    Family(weight=Ramp(centre=6.5, half_width=1.5, below=0.0, above=1.0)),
 )
 """Graves & Pitarka's hybrid as genslip v5.6.3 configures it: slip's default."""
 
@@ -313,15 +420,15 @@ class Rise(CorrelatedRise):
 
     Parameters
     ----------
-    factor : DepthProfile
+    factor : ProfileConfig
         ``[rise.factor]``, the relative rise time.
-    slip_weight : DepthProfile
+    slip_weight : ProfileConfig
         ``[rise.slip_weight]``, how much of rise time's correlation with slip is the
         configured value.
     """
 
-    factor: DepthProfile = UNMODIFIED
-    slip_weight: DepthProfile = UNMODIFIED
+    factor: ProfileConfig = UNMODIFIED
+    slip_weight: ProfileConfig = UNMODIFIED
     Config = _Strict
 
 
@@ -345,11 +452,11 @@ class Speed(ShearFractionSpeed):
 
     Parameters
     ----------
-    factor : DepthProfile
+    factor : ProfileConfig
         ``[speed.factor]``, the factor on the front's speed.
     """
 
-    factor: DepthProfile = UNMODIFIED
+    factor: ProfileConfig = UNMODIFIED
     Config = _Strict
 
 
@@ -520,13 +627,13 @@ class PulseConfig:
     ----------
     dt_s : float
         The slip-rate sample interval, in seconds.
-    beta : DepthProfile, optional
+    beta : ProfileConfig, optional
         The Liu-Archuleta-Hartzell rising fraction. Without it, every pulse is a
         single-sample impulse.
     """
 
     dt_s: float = 0.005
-    beta: DepthProfile | None = None
+    beta: ProfileConfig | None = None
     Config = _Strict
 
     def __post_init__(self) -> None:
@@ -828,7 +935,7 @@ def _table(table: object) -> dict[str, Any]:
 def _merged(document: dict[str, Any], overrides: object) -> dict[str, Any]:
     """Fill one ``[segments.<name>]`` table in from the global tables it overrides.
 
-    Each of its tables replaces the keys it gives, so a depth profile, which is one key
+    Each of its tables replaces the keys it gives, so a profile, which is one key
     of its table, replaces the global profile whole.
 
     Raises
