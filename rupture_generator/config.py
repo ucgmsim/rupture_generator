@@ -360,9 +360,6 @@ type ProfileConfig = Annotated[
     Constant | Profile | Ramp, Discriminator(field="type", include_supertypes=True)
 ]
 
-DepthProfile = ProfileConfig
-""":data:`ProfileConfig`'s old name, from when every profile was of depth."""
-
 UNMODIFIED = Constant(value=1.0)
 """The profile that leaves what it scales unmodified."""
 

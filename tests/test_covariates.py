@@ -1,7 +1,6 @@
 """Profiles of covariates other than depth: the covariates, the profiles, the config."""
 
 import dataclasses
-from typing import Any
 
 import numpy as np
 import pytest
@@ -13,10 +12,8 @@ from rupture_generator import (
     COVARIATES,
     SUZUKI_2022,
     CorrelatedRise,
-    DrawnSlip,
     Geometry,
     NoiseFamily,
-    PulseSettings,
     RuptureGeneratorError,
     RuptureModel,
     ShearFractionSpeed,
@@ -31,7 +28,6 @@ from rupture_generator import (
     read_covariate,
 )
 from rupture_generator import config as rupture_config
-from rupture_generator.rupture.covariates import edge_distance_km
 
 from .conftest import EXAMPLE, holed, tilted
 
@@ -125,7 +121,7 @@ def test_the_edge_distance_is_to_the_nearest_side_of_the_outline(occupied):
         return
     geometry = _occupied_chart(occupied)
     np.testing.assert_allclose(
-        edge_distance_km(geometry)[occupied], _outline_distance(occupied), atol=1e-9
+        geometry.edge_distance_km[occupied], _outline_distance(occupied), atol=1e-9
     )
 
 
@@ -291,57 +287,24 @@ def test_a_profile_can_read_the_whole_chart(scenario):
 # ------------------------------------------------------------ backward compatibility
 
 
-def _legacy(profile):
-    """The plain function of position a config profile was before covariates."""
-    match profile:
+def _legacy(value):
+    """A model with each config profile as the plain function of position it was
+    before covariates."""
+    match value:
         case rupture_config.Constant():
-            return constant_field(profile.value)
-        case rupture_config.Ramp():
-            assert profile.covariate == "depth_km"
-            return ramp_field(
-                profile.centre, profile.half_width, profile.below, profile.above
+            return constant_field(value.value)
+        case rupture_config.Ramp(covariate="depth_km"):
+            return ramp_field(value.centre, value.half_width, value.below, value.above)
+        case rupture_config.Profile(covariate="depth_km"):
+            return interpolated_field(np.array(value.at), np.array(value.values))
+        case tuple():
+            return tuple(map(_legacy, value))
+        case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            fields = dataclasses.fields(value)
+            return dataclasses.replace(
+                value, **{f.name: _legacy(getattr(value, f.name)) for f in fields}
             )
-        case rupture_config.Profile():
-            assert profile.covariate == "depth_km"
-            return interpolated_field(np.array(profile.at), np.array(profile.values))
-    return profile
-
-
-def _legacy_noise(noise):
-    if noise is None:
-        return None
-    return tuple(
-        NoiseFamily(family.relation, family.hurst, _legacy(family.weight))
-        for family in noise
-    )
-
-
-def _legacy_model(model: Any) -> RuptureModel:
-    return dataclasses.replace(
-        model,
-        slip=DrawnSlip(
-            **{
-                field.name: getattr(model.slip, field.name)
-                for field in dataclasses.fields(DrawnSlip)
-                if field.name != "noise"
-            },
-            noise=_legacy_noise(model.slip.noise),
-        ),
-        rise=dataclasses.replace(
-            model.rise,
-            factor=_legacy(model.rise.factor),
-            slip_weight=_legacy(model.rise.slip_weight),
-        ),
-        rake=dataclasses.replace(model.rake, noise=_legacy_noise(model.rake.noise)),
-        speed=dataclasses.replace(model.speed, factor=_legacy(model.speed.factor)),
-        perturbation=dataclasses.replace(
-            model.perturbation, noise=_legacy_noise(model.perturbation.noise)
-        ),
-        pulse=PulseSettings(
-            model.pulse.dt_s,
-            None if model.pulse.beta is None else _legacy(model.pulse.beta),
-        ),
-    )
+    return value
 
 
 @pytest.mark.parametrize(
@@ -361,9 +324,9 @@ def test_every_depth_profile_draws_as_it_did_before_covariates(example):
     )
     model = scenario.model
     legacy = (
-        {name: _legacy_model(m) for name, m in model.items()}
+        {name: _legacy(m) for name, m in model.items()}
         if isinstance(model, dict)
-        else _legacy_model(model)
+        else _legacy(model)
     )
     ours, theirs = (
         _draw(scenario, model, scenario.seed),

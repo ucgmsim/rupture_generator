@@ -202,8 +202,10 @@ def constant_field(value: float) -> SpatialField:
     return field
 
 
-def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
-    """Depths as a non-empty, finite, strictly increasing 1-D array.
+def _increasing_depths(
+    depth_km: ArrayLike, what: str, noun: str = "depths"
+) -> np.ndarray:
+    """Depths, or other points, as a non-empty, finite, strictly increasing 1-D array.
 
     Raises
     ------
@@ -214,7 +216,7 @@ def _increasing_depths(depth_km: np.ndarray, what: str) -> np.ndarray:
     depths = np.asarray(depth_km, dtype=np.float64)
     if depths.ndim != 1 or depths.size == 0:
         raise RuptureGeneratorError(
-            f"the {what} are shaped {depths.shape}; they want a non-empty list of depths"
+            f"the {what} are shaped {depths.shape}; they want a non-empty list of {noun}"
         )
     if not np.all(np.isfinite(depths)):
         raise RuptureGeneratorError(f"the {what} {depths.tolist()} are not all finite")
@@ -350,19 +352,49 @@ def interpolated_field(depth_km: np.ndarray, values: np.ndarray) -> SpatialField
         per depth. :func:`numpy.interp` reads unsorted points as a different profile
         rather than as a mistake, so the ordering check is the one that matters.
     """
-    depths = _increasing_depths(depth_km, "profile depths")
-    heights = np.asarray(values, dtype=np.float64)
-    if heights.shape != depths.shape:
-        raise RuptureGeneratorError(
-            f"the profile has {heights.size} values for {depths.size} depths"
-        )
-    if not np.all(np.isfinite(heights)):
-        raise RuptureGeneratorError("a profile value is not finite")
+    depths, heights = checked_profile(depth_km, values)
 
     def field(positions_km: np.ndarray) -> np.ndarray:
         return np.interp(positions_km[..., DEPTH], depths, heights)
 
     return field
+
+
+def checked_profile(
+    points: ArrayLike, values: ArrayLike, noun: str = "depths"
+) -> tuple[np.ndarray, np.ndarray]:
+    """Check a profile's points and values, as :func:`numpy.interp` takes them.
+
+    Parameters
+    ----------
+    points : ArrayLike
+        The points, strictly increasing.
+    values : ArrayLike
+        The profile's value at each point.
+    noun : str
+        What to call the points in an error.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        The points and the values, as double precision.
+
+    Raises
+    ------
+    RuptureGeneratorError
+        If the points fail to increase, or the values fail to give one finite number
+        per point. :func:`numpy.interp` reads unsorted points as a different profile
+        rather than as a mistake, so the ordering check is the one that matters.
+    """
+    at = _increasing_depths(points, f"profile {noun}", noun)
+    heights = np.asarray(values, dtype=np.float64)
+    if heights.shape != at.shape:
+        raise RuptureGeneratorError(
+            f"the profile has {heights.size} values for {at.size} {noun}"
+        )
+    if not np.all(np.isfinite(heights)):
+        raise RuptureGeneratorError("a profile value is not finite")
+    return at, heights
 
 
 def ramp_field(

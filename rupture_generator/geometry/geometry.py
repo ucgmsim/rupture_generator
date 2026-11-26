@@ -285,6 +285,145 @@ class Geometry:
         steps = np.linalg.norm(np.diff(self.nodes[:, 0], axis=0), axis=-1)
         return np.concatenate([[0.0], np.cumsum(steps)])
 
+    # ----------------------------------------------------- distances on the fault
+
+    @functools.cached_property
+    def _nearest_fault_cell(self) -> CellSelection | None:
+        """CellSelection | None: The fault cell nearest each cell, ``None`` if all are.
+
+        Raises
+        ------
+        RuptureGeneratorError
+            For a chart with no fault cell, which has nothing to measure from.
+        """
+        occupied = self.occupied
+        if not occupied.any():
+            raise RuptureGeneratorError(
+                "a chart with no fault cell has no distance measured on the fault"
+            )
+        if occupied.all():
+            return None
+        strike_km, dip_km = self.spacing_km
+        i, j = sp.ndimage.distance_transform_edt(
+            ~occupied,
+            sampling=(dip_km, strike_km),
+            return_distances=False,
+            return_indices=True,
+        )
+        return i, j
+
+    def _on_fault(self, values: np.ndarray) -> CellArray:
+        """The values, with each cell off the fault given its nearest fault cell's."""
+        nearest = self._nearest_fault_cell
+        return values if nearest is None else values[nearest]
+
+    def _arcs(self, axis: int) -> tuple[CellArray, CellArray]:
+        """Distance and fraction along one chart axis from the fault's first edge.
+
+        Along each column (``axis = 0``) or row (``axis = 1``) of cells, through the
+        cell centres, the distance runs from the near side of the line's first fault
+        cell, and the fraction divides it by the distance to the far side of its last.
+        A cell's step is the mean of the two node steps on its sides along the axis.
+        Cells off the fault between the two count towards both.
+        """
+        steps = np.linalg.norm(np.diff(self.nodes, axis=axis), axis=-1)
+        sides = [slice(None), slice(None)]
+        sides[1 - axis] = slice(None, -1)
+        before = steps[tuple(sides)]
+        sides[1 - axis] = slice(1, None)
+        steps = 0.5 * (before + steps[tuple(sides)])
+        to_centre = np.cumsum(steps, axis=axis) - 0.5 * steps
+        occupied = self.occupied
+        first = np.expand_dims(np.argmax(occupied, axis=axis), axis)
+        last = occupied.shape[axis] - 1 - np.argmax(np.flip(occupied, axis), axis=axis)
+        last = np.expand_dims(last, axis)
+
+        def at(values: np.ndarray, index: np.ndarray) -> np.ndarray:
+            return np.take_along_axis(values, index, axis)
+
+        start = at(to_centre, first) - 0.5 * at(steps, first)
+        end = at(to_centre, last) + 0.5 * at(steps, last)
+        distance = to_centre - start
+        return self._on_fault(distance), self._on_fault(distance / (end - start))
+
+    @functools.cached_property
+    def _dip_arcs(self) -> tuple[CellArray, CellArray]:
+        """tuple[CellArray, CellArray]: :attr:`dip_km` and :attr:`dip_fraction`."""
+        return self._arcs(0)
+
+    @functools.cached_property
+    def _strike_arcs(self) -> tuple[CellArray, CellArray]:
+        """tuple[CellArray, CellArray]: :attr:`strike_km` and :attr:`strike_fraction`."""
+        return self._arcs(1)
+
+    @property
+    def dip_km(self) -> CellArray:
+        """CellArray: Distance down dip from the fault's top edge, in kilometres.
+
+        Measured down each column of cells, through the cell centres, from the top of
+        the column's shallowest fault cell, so on a curved chart the top edge follows
+        the trench wherever it lies. A cell off the fault takes the value of the fault
+        cell nearest it on the chart, as every distance on the fault does.
+        """
+        return self._dip_arcs[0]
+
+    @property
+    def dip_fraction(self) -> CellArray:
+        """CellArray: How far from the fault's top edge to its bottom edge, ``[0, 1]``.
+
+        :attr:`dip_km` over the length of the cell's column, from the top of its
+        shallowest fault cell to the bottom of its deepest.
+        """
+        return self._dip_arcs[1]
+
+    @property
+    def strike_km(self) -> CellArray:
+        """CellArray: Distance along strike from the fault's start, in kilometres.
+
+        Measured along each row of cells, through the cell centres, from the start of
+        the row's first fault cell.
+        """
+        return self._strike_arcs[0]
+
+    @property
+    def strike_fraction(self) -> CellArray:
+        """CellArray: How far from the fault's start to its end along strike, ``[0, 1]``.
+
+        :attr:`strike_km` over the length of the cell's row, from the start of its
+        first fault cell to the end of its last.
+        """
+        return self._strike_arcs[1]
+
+    @functools.cached_property
+    def edge_distance_km(self) -> CellArray:
+        """CellArray: Distance to the nearest edge of the fault, in kilometres.
+
+        The edge is the fault's whole outline, every cell side between a fault cell and
+        a cell off the fault or off the chart. The distance is the straight line across
+        the chart from the cell centre, at :attr:`spacing_km`: on a curved chart, across
+        the unrolled sheet, which the flattening keeps to within its stretch, about 1%
+        on the NZ Community Fault Model's interfaces. On a lattice at half the spacing,
+        cell centres and the ends and midpoints of cell sides are all lattice points,
+        and the point of a side nearest a centre is one of those, so a Euclidean
+        distance transform on that lattice is exact at the spacing. A fault cell on the
+        edge reads half a cell.
+        """
+        occupied = self.occupied
+        outline = np.zeros((2 * occupied.shape[0] + 1, 2 * occupied.shape[1] + 1), bool)
+        # Sides along strike on the lattice's even rows, then down dip on its even
+        # columns, the same marking on the transposes.
+        for cells, lattice in ((occupied, outline), (occupied.T, outline.T)):
+            padded = np.pad(cells, 1)
+            sides = padded[:-1, 1:-1] != padded[1:, 1:-1]
+            for offset in range(3):
+                lattice[::2, offset : offset + 2 * cells.shape[1] : 2] |= sides
+        strike_km, dip_km = self.spacing_km
+        distance = sp.ndimage.distance_transform_edt(
+            ~outline, sampling=(0.5 * dip_km, 0.5 * strike_km)
+        )
+        # A copy, so the cache doesn't keep the whole lattice alive.
+        return self._on_fault(distance[1::2, 1::2].copy())
+
     def cell_at(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """Find the cell containing a position on the fault.
 

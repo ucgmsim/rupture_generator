@@ -28,17 +28,17 @@ reads the cell's own.
 
 import dataclasses
 import functools
+import operator
 import types
 from collections.abc import Callable, Mapping
 from typing import Protocol, runtime_checkable
 
 import numpy as np
-import scipy as sp
 from numpy.typing import ArrayLike
 
 from rupture_generator.errors import RuptureGeneratorError
 from rupture_generator.geometry import CellArray, Geometry
-from rupture_generator.rupture.medium import DEPTH, SpatialField
+from rupture_generator.rupture.medium import DEPTH, SpatialField, checked_profile
 
 type Covariate = Callable[[Geometry], ArrayLike]
 """A covariate from elsewhere: given a chart, one finite value per cell, ``(n_i, n_j)``."""
@@ -51,239 +51,29 @@ covariates."""
 # ------------------------------------------------------------- the built-in ones
 
 
-def _off_fault_from_nearest(geometry: Geometry, values: np.ndarray) -> CellArray:
-    """Give each cell off the fault the value of the fault cell nearest it on the chart.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        For a chart with no fault cell, which has nothing to measure from.
-    """
-    occupied = geometry.occupied
-    if not occupied.any():
-        raise RuptureGeneratorError(
-            "a chart with no fault cell has no covariate measured on the fault"
-        )
-    if occupied.all():
-        return values
-    strike_km, dip_km = geometry.spacing_km
-    _, (i, j) = sp.ndimage.distance_transform_edt(
-        ~occupied, sampling=(dip_km, strike_km), return_indices=True
-    )
-    return values[i, j]
-
-
-def _cell_steps(geometry: Geometry, axis: int) -> CellArray:
-    """Each cell's length along one chart axis, in kilometres, ``(n_i, n_j)``.
-
-    The mean of the two node steps on the cell's sides along that axis, so the length
-    of the line through the cell's centre.
-    """
-    steps = np.linalg.norm(np.diff(geometry.nodes, axis=axis), axis=-1)
-    return (
-        0.5 * (steps[:, :-1] + steps[:, 1:])
-        if axis == 0
-        else 0.5 * (steps[:-1] + steps[1:])
-    )
-
-
-@functools.lru_cache(maxsize=32)
-def _arcs(geometry: Geometry, axis: int) -> tuple[CellArray, CellArray]:
-    """Distance and fraction along one chart axis from the fault's first edge.
-
-    Along each column (``axis = 0``) or row (``axis = 1``) of cells, the distance runs
-    from the near side of its first fault cell, through each cell's centre, and the
-    fraction divides it by the distance to the far side of its last fault cell. Cells
-    off the fault between the two count towards both.
-    """
-    occupied = geometry.occupied
-    steps = _cell_steps(geometry, axis)
-    to_centre = np.cumsum(steps, axis=axis) - 0.5 * steps
-    count = occupied.shape[axis]
-    first = np.argmax(occupied, axis=axis)
-    last = count - 1 - np.argmax(np.flip(occupied, axis), axis=axis)
-    if axis == 0:
-        lines = np.arange(occupied.shape[1])
-        start = to_centre[first, lines] - 0.5 * steps[first, lines]
-        end = to_centre[last, lines] + 0.5 * steps[last, lines]
-        start, end = start[None, :], end[None, :]
-    else:
-        lines = np.arange(occupied.shape[0])
-        start = to_centre[lines, first] - 0.5 * steps[lines, first]
-        end = to_centre[lines, last] + 0.5 * steps[lines, last]
-        start, end = start[:, None], end[:, None]
-    distance = to_centre - start
-    fraction = distance / (end - start)
-    return (
-        _frozen(_off_fault_from_nearest(geometry, distance)),
-        _frozen(_off_fault_from_nearest(geometry, fraction)),
-    )
-
-
-@functools.lru_cache(maxsize=32)
-def _edge_distance(geometry: Geometry) -> CellArray:
-    """Distance from each cell centre to the fault's outline, on the chart.
-
-    The outline is every cell side between a fault cell and a cell off the fault or
-    off the chart. On a lattice at half the spacing, cell centres and the midpoints and
-    ends of cell sides are all lattice points, and the point of a side nearest a
-    centre is one of those three, so a Euclidean distance transform on that lattice
-    is exact at the chart's spacing.
-    """
-    occupied = geometry.occupied
-    n_i, n_j = occupied.shape
-    padded = np.pad(occupied, 1)
-    outline = np.zeros((2 * n_i + 1, 2 * n_j + 1), dtype=bool)
-    # Sides along strike, on node row a between cell rows a - 1 and a.
-    across = padded[:-1, 1:-1] != padded[1:, 1:-1]
-    for offset in range(3):
-        outline[::2, offset : offset + 2 * n_j : 2] |= across
-    # Sides down dip, on node column b between cell columns b - 1 and b.
-    along = padded[1:-1, :-1] != padded[1:-1, 1:]
-    for offset in range(3):
-        outline[offset : offset + 2 * n_i : 2, ::2] |= along
-    strike_km, dip_km = geometry.spacing_km
-    distance = sp.ndimage.distance_transform_edt(
-        ~outline, sampling=(0.5 * dip_km, 0.5 * strike_km)
-    )[1::2, 1::2]
-    return _frozen(_off_fault_from_nearest(geometry, distance))
-
-
-def _frozen(values: np.ndarray) -> CellArray:
-    """The values as a read-only array, since a cache hands the same one out again."""
-    values = np.array(values, dtype=np.float64)
-    values.flags.writeable = False
-    return values
-
-
-def depth_km(geometry: Geometry) -> CellArray:
-    """Depth of each cell centre, in kilometres below sea level.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The centres' depths, on every cell.
-    """
+def _depth_km(geometry: Geometry) -> CellArray:
     return geometry.centres[..., DEPTH]
-
-
-def dip_km(geometry: Geometry) -> CellArray:
-    """Distance down dip from the fault's top edge, in kilometres.
-
-    Measured down each column of cells, through the cell centres, from the top of the
-    column's shallowest fault cell. On a curved chart a column follows the unrolled
-    sheet's down-dip direction, and where the trench wanders, the top edge does too.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The distance at each cell centre.
-    """
-    return _arcs(geometry, 0)[0]
-
-
-def dip_fraction(geometry: Geometry) -> CellArray:
-    """How far from the fault's top edge to its bottom edge each cell lies, in ``[0, 1]``.
-
-    :func:`dip_km` over the length of the cell's column, from the top of its
-    shallowest fault cell to the bottom of its deepest. 0 is the top edge and 1 the
-    bottom edge, wherever along strike they lie.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The fraction at each cell centre.
-    """
-    return _arcs(geometry, 0)[1]
-
-
-def strike_km(geometry: Geometry) -> CellArray:
-    """Distance along strike from the fault's start, in kilometres.
-
-    Measured along each row of cells, through the cell centres, from the start of the
-    row's first fault cell.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The distance at each cell centre.
-    """
-    return _arcs(geometry, 1)[0]
-
-
-def strike_fraction(geometry: Geometry) -> CellArray:
-    """How far from the fault's start to its end each cell lies along strike, ``[0, 1]``.
-
-    :func:`strike_km` over the length of the cell's row, from the start of its first
-    fault cell to the end of its last.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The fraction at each cell centre.
-    """
-    return _arcs(geometry, 1)[1]
-
-
-def edge_distance_km(geometry: Geometry) -> CellArray:
-    """Distance to the nearest edge of the fault, in kilometres.
-
-    The edge is the fault's whole outline, its top, bottom and ends and any hole,
-    and the distance is the straight line across the chart from the cell centre to the
-    outline at the chart's :attr:`~rupture_generator.geometry.Geometry.spacing_km`.
-    On a curved chart that is the distance across the unrolled sheet, which the
-    flattening keeps to within its stretch, about 1% on the NZ Community Fault Model's
-    interfaces.
-
-    Parameters
-    ----------
-    geometry : Geometry
-        The chart.
-
-    Returns
-    -------
-    CellArray
-        The distance at each cell centre: half a cell for a fault cell on the edge.
-    """
-    return _edge_distance(geometry)
 
 
 COVARIATES: Mapping[str, Covariate] = types.MappingProxyType(
     {
-        DEPTH_KM: depth_km,
-        "dip_km": dip_km,
-        "dip_fraction": dip_fraction,
-        "strike_km": strike_km,
-        "strike_fraction": strike_fraction,
-        "edge_distance_km": edge_distance_km,
+        DEPTH_KM: _depth_km,
+        **{
+            name: operator.attrgetter(name)
+            for name in (
+                "dip_km",
+                "dip_fraction",
+                "strike_km",
+                "strike_fraction",
+                "edge_distance_km",
+            )
+        },
     }
 )
-"""The built-in covariates by name, the names a rupture file's profile may give."""
+"""The built-in covariates by name, the names a rupture file's profile may give.
+
+``depth_km`` is each cell centre's depth, and every other name is the chart's property
+of that name: :attr:`~rupture_generator.geometry.Geometry.dip_km` and the rest."""
 
 
 def check_covariate(name: str) -> str:
@@ -457,7 +247,7 @@ def chart_field(function: Callable[[Geometry], ArrayLike]) -> ChartField:
 
     Examples
     --------
-    >>> deeper_down_dip = chart_field(lambda geometry: dip_fraction(geometry) ** 2)
+    >>> deeper_down_dip = chart_field(lambda geometry: geometry.dip_fraction**2)
     """
     return _OnChart(function)
 
@@ -521,31 +311,6 @@ class CovariateField:
         return self.function(np.asarray(positions_km)[..., DEPTH])
 
 
-def _increasing(points: ArrayLike) -> np.ndarray:
-    """Points as a non-empty, finite, strictly increasing 1-D array.
-
-    Raises
-    ------
-    RuptureGeneratorError
-        Otherwise: :func:`numpy.interp` reads unsorted points as a different profile
-        rather than as a mistake.
-    """
-    at = np.asarray(points, dtype=np.float64)
-    if at.ndim != 1 or at.size == 0:
-        raise RuptureGeneratorError(
-            f"the profile's points are shaped {at.shape}; they want a non-empty list"
-        )
-    if not np.all(np.isfinite(at)):
-        raise RuptureGeneratorError(
-            f"the profile's points {at.tolist()} are not all finite"
-        )
-    if np.any(np.diff(at) <= 0.0):
-        raise RuptureGeneratorError(
-            f"the profile's points {at.tolist()} do not increase"
-        )
-    return at
-
-
 def covariate_profile(
     covariate: str | Covariate, points: ArrayLike, values: ArrayLike
 ) -> CovariateField:
@@ -574,14 +339,7 @@ def covariate_profile(
         If the points fail to increase, the values fail to give one finite number per
         point, or the covariate's name is no built-in's.
     """
-    at = _increasing(points)
-    heights = np.asarray(values, dtype=np.float64)
-    if heights.shape != at.shape:
-        raise RuptureGeneratorError(
-            f"the profile has {heights.size} values for {at.size} points"
-        )
-    if not np.all(np.isfinite(heights)):
-        raise RuptureGeneratorError("a profile value is not finite")
+    at, heights = checked_profile(points, values, "points")
     return CovariateField(covariate, functools.partial(_interpolate, at, heights))
 
 
@@ -644,12 +402,6 @@ __all__ = [
     "check_covariate",
     "covariate_profile",
     "covariate_ramp",
-    "depth_km",
-    "dip_fraction",
-    "dip_km",
-    "edge_distance_km",
     "read_covariate",
     "read_profile",
-    "strike_fraction",
-    "strike_km",
 ]
