@@ -230,16 +230,16 @@ def _read_back(new: str) -> property:
 def _resolve_old_names(table: "Profile | Ramp", given: dict[str, object]) -> None:
     """Take each old name given as its new one, and refuse a key given under neither.
 
-    An old name given overrides its new name, so :func:`dataclasses.replace` takes
-    either. That replace passes every old name back as it reads, marked so, and a
-    value so marked gives way to its new name. Then refuse an old name its
-    covariate's units contradict, or an unknown covariate.
+    A key given under both names is refused, as in a file. :func:`dataclasses.replace`
+    passes every old name back as it reads, marked so, and a value so marked gives
+    way to its new name, so a replace by the new name works. Then refuse an old name
+    its covariate's units contradict, or an unknown covariate.
 
     Raises
     ------
     RuptureGeneratorError
-        If a key is given under neither name, an old name's units contradict the
-        covariate, or the covariate is unknown.
+        If a key is given under both names or neither, an old name's units
+        contradict the covariate, or the covariate is unknown.
     """
     kind = table.type
     renamed = OLD_NAMES[kind]
@@ -253,6 +253,11 @@ def _resolve_old_names(table: "Profile | Ramp", given: dict[str, object]) -> Non
         )
     }
     _check_old_names(kind, table.covariate, list(used))
+    for old in used:
+        if getattr(table, renamed[old]) is not None:
+            raise RuptureGeneratorError(
+                f"a {kind} takes {renamed[old]} or its old name {old}, not both"
+            )
     for old, value in used.items():
         plain = tuple(value) if isinstance(value, tuple) else float(value)  # ty: ignore[invalid-argument-type]
         object.__setattr__(table, renamed[old], plain)
@@ -362,7 +367,7 @@ class Profile(_Profile):
         One value per point.
     depth_km : list of float, optional
         ``at``'s old name, from when every profile was of depth, for a profile of
-        depth alone. Given, it overrides ``at``, and reads as ``at``.
+        depth alone. It reads as ``at``, and can't be given with it.
     """
 
     type: Literal["profile"] = "profile"
@@ -409,7 +414,7 @@ class Ramp(_Profile):
     centre_km, half_width_km, shallow, deep : float, optional
         ``centre``, ``half_width``, ``below`` and ``above``'s old names, from when
         every profile was of depth, the first two for a covariate in kilometres alone.
-        Given, each overrides its new name, and reads as it.
+        Each reads as its new name, and can't be given with it.
     """
 
     type: Literal["ramp"] = "ramp"

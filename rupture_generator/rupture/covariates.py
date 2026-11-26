@@ -89,8 +89,9 @@ RANGES: Mapping[str, tuple[float, float]] = types.MappingProxyType(
         "edge_distance_km": (0.0, np.inf),
     }
 )
-"""The values each built-in covariate but depth takes on the fault, bounds included.
-A profile whose points all lie outside them is one value over the whole fault."""
+"""The bounds of the values each built-in covariate but depth takes on the fault. The
+fault's cell centres lie strictly inside them, so a profile whose points all lie
+outside them, or on one, is one value over the whole fault."""
 
 
 def check_covariate(name: str) -> str:
@@ -131,9 +132,8 @@ def read_covariate(geometry: Geometry, covariate: str | Covariate) -> CellArray:
     Returns
     -------
     CellArray
-        The covariate on every cell, ``(n_i, n_j)``. A built-in's is the chart's own
-        cached array, as :attr:`~rupture_generator.geometry.Geometry.centres` is, so
-        leave it unchanged.
+        The covariate on every cell, ``(n_i, n_j)``. A built-in's other than depth is
+        the chart's own cached array, read-only.
 
     Raises
     ------
@@ -362,7 +362,8 @@ def covariate_profile(
     at, heights = checked_profile(points, values, "points")
     if isinstance(covariate, str) and covariate in RANGES:
         low, high = RANGES[covariate]
-        if at[-1] < low or at[0] > high:
+        # Touching a bound is outside too: the fault's cell centres never reach one.
+        if at[-1] <= low or at[0] >= high:
             raise RuptureGeneratorError(
                 f"a profile from {at[0]:g} to {at[-1]:g} lies wholly outside "
                 f"{covariate}'s range, {low:g} to {high:g}, so it is one value over "

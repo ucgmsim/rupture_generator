@@ -109,6 +109,47 @@ def test_an_oblique_end_is_a_side_and_not_the_up_dip_edge():
         assert np.all(np.diff(geometry.dip_fraction[on, column]) > 0.0)
 
 
+def _apex(spacing_km):
+    """A fault 200 km long whose top rises to a point at its middle, along two flanks
+    at 50 degrees to strike, and lies level 60 km down beyond them.
+
+    The flanks step 5 km at a time, so every spacing that divides 5 km draws the same
+    outline, to within a cell along strike.
+    """
+    columns = round(200.0 / spacing_km)
+    x_km = (np.arange(columns) + 0.5) * spacing_km
+    rise_km = np.abs(x_km - 100.0) * np.tan(np.radians(50.0))
+    top_km = np.minimum(5.0 * np.ceil(rise_km / 5.0), 60.0)
+    depth_km = (np.arange(round(120.0 / spacing_km)) + 0.5) * spacing_km
+    return _chart(depth_km[:, None] > top_km[None, :], spacing_km, spacing_km), x_km
+
+
+def test_a_ridges_flanks_are_sides_whatever_the_spacing():
+    readings = {}
+    for spacing_km in (5.0, 2.5, 1.0):
+        geometry, x_km = _apex(spacing_km)
+        top = geometry._edge_sides(0, reverse=False)[::2, 1::2].any(axis=0)
+        # Within 30 km of the apex, every window lies on the flanks, which run
+        # steeper than an edge may, though they rise and fall by the same amount.
+        assert not top[np.abs(x_km - 100.0) < 30.0].any()
+        assert top[np.abs(x_km - 100.0) > 75.0].all()
+        readings[spacing_km] = geometry.dip_km[
+            round(70.0 / spacing_km), round(75.0 / spacing_km)
+        ]
+    # The cell read and the edge it measures to each lie within a cell of where they
+    # lie at 1 km, so the distance does to within two cells.
+    for spacing_km, dip_km in readings.items():
+        assert abs(dip_km - readings[1.0]) <= 2.0 * spacing_km
+
+
+def test_the_charts_covariates_are_read_only():
+    geometry = holed()
+    for name in COVARIATES:
+        if name != "depth_km":
+            with pytest.raises(ValueError, match="read-only"):
+                read_covariate(geometry, name)[0, 1] = 0.0
+
+
 def _segment_distance(points, start, end):
     step = end - start
     t = np.clip(((points - start) @ step) / (step @ step), 0.0, 1.0)
@@ -238,6 +279,10 @@ def test_a_covariate_from_elsewhere_is_any_function_of_the_chart():
         (
             lambda: covariate_profile("edge_distance_km", [-3.0, -1.0], [1.0, 0.0]),
             "lies wholly outside edge_distance_km's range, 0 to inf",
+        ),
+        (
+            lambda: covariate_profile("dip_fraction", [1.0, 2.0], [1.0, 0.0]),
+            "from 1 to 2 lies wholly outside dip_fraction's range",
         ),
         (
             lambda: covariate_profile("dip_km", [1.0, 0.0], [0.0, 1.0]),
@@ -422,12 +467,22 @@ def test_the_old_names_read_and_replace_as_the_new():
         1.0,
         0.0,
     )
-    moved = dataclasses.replace(ramp, centre_km=3.0)
-    assert (moved.centre, moved.centre_km, moved.half_width) == (3.0, 3.0, 1.5)
-    assert dataclasses.replace(ramp, centre=4.0).centre_km == 4.0
+    moved = dataclasses.replace(ramp, centre=4.0)
+    assert (moved.centre, moved.centre_km, moved.half_width) == (4.0, 4.0, 1.5)
     profile = rupture_config.Profile(depth_km=(1.0, 2.0), values=(0.0, 1.0))
     assert profile.depth_km == profile.at == (1.0, 2.0)
-    assert dataclasses.replace(profile, depth_km=(3.0, 4.0)).at == (3.0, 4.0)
+    assert dataclasses.replace(profile, at=(3.0, 4.0)).depth_km == (3.0, 4.0)
+
+
+def test_a_key_under_both_names_is_refused_in_python_as_in_a_file():
+    with pytest.raises(RuptureGeneratorError, match="centre or its old name centre_km"):
+        rupture_config.Ramp(
+            centre=5.0, centre_km=6.0, half_width=1.0, below=0.0, above=1.0
+        )
+    # A replace by an old name gives that key twice, the new name from the table.
+    ramp = rupture_config.Ramp(centre=5.0, half_width=1.0, below=0.0, above=1.0)
+    with pytest.raises(RuptureGeneratorError, match="not both"):
+        dataclasses.replace(ramp, centre_km=6.0)
 
 
 @pytest.mark.parametrize(

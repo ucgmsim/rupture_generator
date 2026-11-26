@@ -56,6 +56,10 @@ the columns that start deeper than 20 km, on the interface's oblique southern en
 the up-dip edge, and all but at most 3 of those that start shallower than 15 km. Half
 the width, 10 km, puts columns starting 70 km deep on the edge at 5 km."""
 
+EDGE_MAX_ANGLE_DEG = 45.0
+"""The steepest an edge may run from its own direction and still be that edge: past
+it, a stretch of outline runs more across the fault than along it, so it is a side."""
+
 
 def bordering(mask: np.ndarray, axes: tuple[int, ...]) -> np.ndarray:
     """Flag the nodes or node steps that border a flagged cell.
@@ -370,13 +374,14 @@ class Geometry:
 
         The edge is the outer side of each column's first fault cell (``axis = 0``,
         the up-dip edge), its last (``reverse``, the down-dip edge), or each row's
-        first or last (``axis = 1``, the ends), where the edge runs within 45 degrees
-        of its own direction: where those sides, over the lines within
-        :data:`EDGE_WINDOW_KM` to either side, move along the axis by no more than
-        they move across it. A
-        ragged or oblique stretch of outline steps down the chart a cell or more per
-        line, so it is a side of the fault rather than a run of tops. An edge no line
-        qualifies for takes every line.
+        first or last (``axis = 1``, the ends), where the edge runs within
+        :data:`EDGE_MAX_ANGLE_DEG` of its own direction: where those sides, over the
+        lines within :data:`EDGE_WINDOW_KM` to either side, move along the axis in
+        all, step by step, by no more than the tangent of that angle times how far
+        they move across it. Their total movement, not their net, so the two flanks of
+        a ridge don't cancel. A ragged or oblique stretch of outline steps down the
+        chart a cell or more per line, so it is a side of the fault rather than a run
+        of tops. An edge no line qualifies for takes every line.
         """
         occupied = self.occupied
         lines = np.flatnonzero(occupied.any(axis=axis))
@@ -386,15 +391,23 @@ class Geometry:
         window = max(1, round(EDGE_WINDOW_KM / across_km))
         k = np.arange(lines.size)
         low, high = np.maximum(k - window, 0), np.minimum(k + window, lines.size - 1)
-        moved_along = np.abs(ends[high] - ends[low]) * along_km
+        steps = np.concatenate([[0], np.cumsum(np.abs(np.diff(ends)))])
+        moved_along = (steps[high] - steps[low]) * along_km
         moved_across = (lines[high] - lines[low]) * across_km
-        on = moved_along <= moved_across
+        on = moved_along <= np.tan(np.radians(EDGE_MAX_ANGLE_DEG)) * moved_across
         if not on.any():
             on[:] = True
         midpoints = np.zeros_like(self._outline)
         sides = (2 * ends[on], 2 * lines[on] + 1)
         midpoints[sides if axis == 0 else sides[::-1]] = True
         return midpoints
+
+    @staticmethod
+    def _read_only(values: np.ndarray) -> CellArray:
+        """The values, which the chart caches, made read-only so no write corrupts
+        them or what is derived from them later."""
+        values.setflags(write=False)
+        return values
 
     def _distance_to(self, midpoints: np.ndarray) -> CellArray:
         """Distance from each cell centre to the nearest of some sides, in km."""
@@ -427,7 +440,9 @@ class Geometry:
             1 - axis
         ]
         nearest_km = self._distance_to(self._edge_sides(axis, reverse=reverse))
-        return self._on_fault(np.take_along_axis(nearest_km, anchor, axis) + offset_km)
+        return self._read_only(
+            self._on_fault(np.take_along_axis(nearest_km, anchor, axis) + offset_km)
+        )
 
     @functools.cached_property
     def dip_km(self) -> CellArray:
@@ -456,7 +471,7 @@ class Geometry:
         distance is at least half a cell, so the sum is never zero.
         """
         top, bottom = self.dip_km, self._from_edge(0, reverse=True)
-        return top / (top + bottom)
+        return self._read_only(top / (top + bottom))
 
     @functools.cached_property
     def strike_km(self) -> CellArray:
@@ -476,7 +491,7 @@ class Geometry:
         ends.
         """
         start, end = self.strike_km, self._from_edge(1, reverse=True)
-        return start / (start + end)
+        return self._read_only(start / (start + end))
 
     @functools.cached_property
     def edge_distance_km(self) -> CellArray:
@@ -485,7 +500,7 @@ class Geometry:
         The nearest side of the whole outline: the top, bottom and ends, and any hole.
         A fault cell on the edge reads half a cell.
         """
-        return self._distance_to(self._outline)
+        return self._read_only(self._distance_to(self._outline))
 
     def cell_at(self, strike_km: float, dip_km: float) -> tuple[int, int]:
         """Find the cell containing a position on the fault.
